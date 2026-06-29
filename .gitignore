@@ -1,0 +1,12 @@
+.next
+node_modules
+.data
+*.log
+
+# secrets & local env
+.env
+.env.*
+
+# build artifacts
+*.tsbuildinfo
+next-env.d.ts

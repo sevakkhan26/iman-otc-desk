@@ -1,0 +1,53 @@
+"use client";
+
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import {
+  Activity,
+  Bell,
+  ChartCandlestick,
+  Gauge,
+  Newspaper,
+  Settings,
+  ShieldAlert
+} from "lucide-react";
+
+const navItems = [
+  { href: "/dashboard", label: "داشبورد", icon: Gauge },
+  { href: "/tether-market", label: "بازار تتر ایران", icon: ChartCandlestick },
+  { href: "/exchange-monitor", label: "مانیتور صرافی‌ها", icon: Activity },
+  { href: "/impact-news", label: "خبرهای اثرگذار", icon: Newspaper },
+  { href: "/alerts", label: "هشدارها", icon: Bell },
+  { href: "/settings", label: "تنظیمات", icon: Settings }
+];
+
+export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
+  const pathname = usePathname();
+  return (
+    <div className="shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <h1 className="brand-title">OTC Desk</h1>
+          <div className="brand-subtitle">داشبورد عملیاتی Dealing Desk</div>
+        </div>
+        <nav className="nav" aria-label="صفحات">
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const active = pathname === item.href;
+            return (
+              <Link key={item.href} className={`nav-link ${active ? "active" : ""}`} href={item.href}>
+                <Icon aria-hidden="true" />
+                <span>{item.label}</span>
+              </Link>
+            );
+          })}
+        </nav>
+        <div className="sidebar-foot">
+          <ShieldAlert aria-hidden="true" size={17} />
+          <div>منابع واقعی؛ منبع قطع باشد، عددی نمایش داده نمی‌شود.</div>
+        </div>
+      </aside>
+      <main className="main">{children}</main>
+    </div>
+  );
+}

@@ -1658,3 +1658,39 @@ tr:last-child td {
     transform: translateX(-50%);
   }
 }
+
+/* ===== Trading-terminal price flash (green = up, red = down) ===== */
+.price-value {
+  border-radius: 5px;
+  padding: 0 3px;
+  margin: 0 -3px;
+  transition: color 0.5s ease;
+}
+
+.price-value.flash-up {
+  color: var(--green);
+  animation: price-pulse-up 1.6s ease-out;
+}
+
+.price-value.flash-down {
+  color: var(--red);
+  animation: price-pulse-down 1.6s ease-out;
+}
+
+@keyframes price-pulse-up {
+  0% {
+    background: var(--green-bg);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+@keyframes price-pulse-down {
+  0% {
+    background: var(--red-bg);
+  }
+  100% {
+    background: transparent;
+  }
+}

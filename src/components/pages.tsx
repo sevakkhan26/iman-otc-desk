@@ -210,6 +210,34 @@ const AssetTags = memo(function AssetTags({ assets }: { assets: AssetTag[] }) {
   );
 });
 
+/** Trading-terminal price flash: remembers the previous value and reports up/down for a short window. */
+const PRICE_FLASH_MS = 1_600;
+
+function usePriceDirection(value: number | null) {
+  const prevRef = useRef<number | null>(null);
+  const [direction, setDirection] = useState<"up" | "down" | null>(null);
+
+  useEffect(() => {
+    const prev = prevRef.current;
+    prevRef.current = value;
+    if (prev === null || value === null || value === prev) return;
+    setDirection(value > prev ? "up" : "down");
+    const id = setTimeout(() => setDirection(null), PRICE_FLASH_MS);
+    return () => clearTimeout(id);
+  }, [value]);
+
+  return direction;
+}
+
+const PriceValue = memo(function PriceValue({ value, className = "" }: { value: number | null; className?: string }) {
+  const direction = usePriceDirection(value);
+  return (
+    <span className={`price-value ${direction ? `flash-${direction}` : ""} ${className}`.trim()}>
+      {value === null ? "—" : formatToman(value)}
+    </span>
+  );
+});
+
 function AnswerStat({
   question,
   value,
@@ -391,7 +419,9 @@ function QuickDecisionCockpit({
       <div className="cockpit-hero-row">
         <div className="cockpit-hero">
           <div className="cockpit-hero-label">قیمت میانه تتر (USDT/IRT)</div>
-          <div className="cockpit-hero-value number">{formatToman(quickDecision.median)}</div>
+          <div className="cockpit-hero-value number">
+            <PriceValue value={quickDecision.median} />
+          </div>
           <div className="cockpit-hero-sub">اختلاف بازار بین صرافی‌ها: {formatPercent(quickDecision.spreadPercent)}</div>
         </div>
         <span className={`state-pill lg ${marketStateTone(marketState)}`}>
@@ -402,24 +432,24 @@ function QuickDecisionCockpit({
       <div className="grid answer-grid">
         <AnswerStat
           question="بالاترین قیمت"
-          value={formatToman(quickDecision.highest.price)}
+          value={<PriceValue value={quickDecision.highest.price} />}
           note={quickDecision.highest.exchange ?? "—"}
           tone="danger"
         />
         <AnswerStat
           question="پایین‌ترین قیمت"
-          value={formatToman(quickDecision.lowest.price)}
+          value={<PriceValue value={quickDecision.lowest.price} />}
           note={quickDecision.lowest.exchange ?? "—"}
           tone="good"
         />
         <AnswerStat
           question="بهترین قیمت خرید"
-          value={formatToman(quickDecision.bestBuy.price)}
+          value={<PriceValue value={quickDecision.bestBuy.price} />}
           note={quickDecision.bestBuy.exchange ?? "—"}
         />
         <AnswerStat
           question="بهترین قیمت فروش"
-          value={formatToman(quickDecision.bestSell.price)}
+          value={<PriceValue value={quickDecision.bestSell.price} />}
           note={quickDecision.bestSell.exchange ?? "—"}
         />
       </div>
@@ -527,15 +557,15 @@ const ExchangeCard = memo(function ExchangeCard({
         <div className="exch-prices">
           <div className="exch-row">
             <span className="exch-k">خرید</span>
-            <span className="exch-v number">{row.buyPrice === null ? "—" : formatToman(row.buyPrice)}</span>
+            <PriceValue value={row.buyPrice} className="exch-v number" />
           </div>
           <div className="exch-row">
             <span className="exch-k">فروش</span>
-            <span className="exch-v number">{row.sellPrice === null ? "—" : formatToman(row.sellPrice)}</span>
+            <PriceValue value={row.sellPrice} className="exch-v number" />
           </div>
           <div className="exch-row mid">
             <span className="exch-k">قیمت وسط</span>
-            <span className="exch-v number">{formatToman(row.midPrice)}</span>
+            <PriceValue value={row.midPrice} className="exch-v number" />
           </div>
         </div>
       )}

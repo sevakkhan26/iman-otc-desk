@@ -42,8 +42,8 @@ export function formatDate(value: string | null | undefined) {
 
 export function statusLabel(status: SourceStatus | "unknown") {
   if (status === "available") return "فعال";
-  if (status === "degraded") return "داده ناقص";
-  if (status === "unavailable") return "منبع در دسترس نیست";
+  if (status === "degraded") return "ناقص";
+  if (status === "unavailable") return "قطع";
   return "نامشخص";
 }
 

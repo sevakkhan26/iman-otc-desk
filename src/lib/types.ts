@@ -3,6 +3,7 @@ export type Severity = "low" | "medium" | "high";
 export type MarketState = "calm" | "caution" | "risky";
 export type AssetTag = "USDT" | "BTC" | "ETH" | "MACRO";
 export type NewsCategory = "macro" | "asset";
+export type NewsGroup = "global" | "iran" | "lp";
 export type AlertCategory = "forex" | "price-diff" | "lp-specific" | "market";
 export type DecisionLevel = "ok" | "watch" | "act";
 export type ForexImpact = "high" | "medium" | "low" | "holiday";
@@ -52,6 +53,7 @@ export interface DomesticQuote {
   buyPrice: number | null;
   sellPrice: number | null;
   midPrice: number | null;
+  volume: number | null;
   spread: number | null;
   spreadPercent: number | null;
   deviationFromMedianPercent: number | null;
@@ -117,6 +119,7 @@ export interface ImpactNewsItem {
   recommendedAction: string;
   assets: AssetTag[];
   category: NewsCategory;
+  group: NewsGroup;
   url?: string;
 }
 

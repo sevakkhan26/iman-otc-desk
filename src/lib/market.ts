@@ -310,6 +310,7 @@ export async function getDashboard(): Promise<DashboardResponse> {
     quickDecision: buildQuickDecision(tetherMarket, globalMarket, globalStatuses, settings),
     forex,
     intelligence,
-    alerts: alerts.slice(0, 5)
+    // داشبورد فقط هشدارهای اتصال/قطع LPهای ایرانی را پایین نمایش می‌دهد
+    alerts: alerts.filter((alert) => alert.category === "lp-specific").slice(0, 8)
   };
 }

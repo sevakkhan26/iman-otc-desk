@@ -2,7 +2,23 @@ import { createHash } from "node:crypto";
 import { XMLParser } from "fast-xml-parser";
 import { fetchText } from "@/lib/http";
 import { detectAssets, newsCategoryFromAssets } from "@/lib/assets";
-import type { DeskSettings, ImpactNewsItem, ImpactNewsResponse, Severity } from "@/lib/types";
+import type { DeskSettings, ImpactNewsItem, ImpactNewsResponse, NewsGroup, Severity } from "@/lib/types";
+
+// دسته‌بندی خبر برای صفحه اخبار: اتصال صرافی‌ها (LP) / ایران / جهانی
+function newsGroup(title: string): NewsGroup {
+  const t = title.toLowerCase();
+  if (
+    /withdrawal|deposit|maintenance|outage|incident|downtime|halt|suspend|delisting|api\b|صرافی|واریز|برداشت|اختلال|توقف|قطعی/.test(
+      t
+    )
+  ) {
+    return "lp";
+  }
+  if (/iran|tehran|rial|toman|sanction|ایران|تهران|ریال|تومان|تحریم/.test(t)) {
+    return "iran";
+  }
+  return "global";
+}
 
 type RssItem = {
   title?: string;
@@ -216,6 +232,7 @@ async function fetchFeed(feed: (typeof feeds)[number]): Promise<ImpactNewsItem[]
         recommendedAction: actionFor(title, severity),
         assets,
         category: newsCategoryFromAssets(assets),
+        group: newsGroup(title),
         url: item.link
       };
     });

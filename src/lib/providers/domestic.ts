@@ -16,6 +16,7 @@ function unavailable(exchangeId: string, exchangeName: string, message: string):
     buyPrice: null,
     sellPrice: null,
     midPrice: null,
+    volume: null,
     spread: null,
     spreadPercent: null,
     deviationFromMedianPercent: null,
@@ -32,7 +33,13 @@ function buildQuote(
   exchangeName: string,
   buyPrice: number | null,
   sellPrice: number | null,
-  options?: { midPrice?: number | null; status?: SourceStatus; errorMessage?: string; lastUpdated?: string | null }
+  options?: {
+    midPrice?: number | null;
+    volume?: number | null;
+    status?: SourceStatus;
+    errorMessage?: string;
+    lastUpdated?: string | null;
+  }
 ): DomesticQuote {
   const midPrice =
     options?.midPrice ??
@@ -46,6 +53,7 @@ function buildQuote(
     buyPrice,
     sellPrice,
     midPrice,
+    volume: options?.volume ?? null,
     spread,
     spreadPercent,
     deviationFromMedianPercent: null,
@@ -70,7 +78,7 @@ async function nobitex(): Promise<DomesticQuote> {
   const name = "نوبیتکس";
   try {
     const data = await fetchJson<{
-      stats?: Record<string, { bestBuy?: string; bestSell?: string; latest?: string }>;
+      stats?: Record<string, { bestBuy?: string; bestSell?: string; latest?: string; volumeSrc?: string }>;
       status?: string;
     }>("https://api.nobitex.ir/market/stats?srcCurrency=usdt&dstCurrency=rls", 9_000);
 
@@ -80,7 +88,7 @@ async function nobitex(): Promise<DomesticQuote> {
     if (buyPrice === null && sellPrice === null) {
       return unavailable(id, name, "داده قیمت تتر در پاسخ منبع پیدا نشد");
     }
-    return buildQuote(id, name, buyPrice, sellPrice);
+    return buildQuote(id, name, buyPrice, sellPrice, { volume: numeric(stats?.volumeSrc) });
   } catch (error) {
     return unavailable(id, name, error instanceof Error ? error.message : "منبع در دسترس نیست");
   }

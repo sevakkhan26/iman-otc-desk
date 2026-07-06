@@ -23,63 +23,47 @@
   src: url("/fonts/iranyekanwebbold.woff2") format("woff2");
 }
 
-/* ===== Blue Bank theme — Dark (default) ===== */
+/* ===== Fresh Oasis — cyan→lavender glassmorphism (single theme for dark & light toggle) ===== */
 :root,
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --bg: #0a2540;
-  --sidebar-bg: #071b30;
-  --surface: #0d2b4a;
-  --surface-2: #123a61;
-  --card: #0f2e50;
-  --card-2: #0b243f;
-  --input-bg: #081f37;
-  --hover: #15406b;
-  --hover-border: #2a5a8c;
-  --line: #1c4067;
-  --line-soft: #143150;
-  --text: #f4f8fc;
-  --muted: #a7bbd2;
-  --muted-2: #6b82a0;
-  --on-accent: #04121f;
-  --accent-soft: rgba(30, 144, 255, 0.08);
-  --green: #21d07a;
-  --green-bg: rgba(33, 208, 122, 0.14);
-  --yellow: #f5c24b;
-  --yellow-bg: rgba(245, 194, 75, 0.14);
-  --red: #ff5c6c;
-  --red-bg: rgba(255, 92, 108, 0.14);
-  --blue: #1e90ff;
-  --blue-2: #00b2ff;
-}
-
-/* ===== Blue Bank theme — Light ===== */
+:root[data-theme="dark"],
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #eaf1f8;
-  --sidebar-bg: #ffffff;
-  --surface: #ffffff;
-  --surface-2: #eef4fb;
-  --card: #f5f9fd;
-  --card-2: #e9f1f9;
-  --input-bg: #f4f8fd;
-  --hover: #e2edf9;
-  --hover-border: #b9d2ec;
-  --line: #d3e0ee;
-  --line-soft: #e4ecf5;
-  --text: #0a2540;
-  --muted: #4c6079;
-  --muted-2: #74859b;
+
+  /* page gradient stops */
+  --oasis-1: #7de2fc;
+  --oasis-2: #b9b6e5;
+
+  /* frosted-glass tokens */
+  --glass-blur: blur(18px) saturate(135%);
+  --glass-shadow: 0 12px 34px rgba(37, 61, 105, 0.16);
+  --glass-shadow-sm: 0 6px 18px rgba(37, 61, 105, 0.12);
+
+  --bg: #a8d9ee; /* solid fallback (used by SVG strokes); real bg is the gradient on .shell */
+  --sidebar-bg: rgba(255, 255, 255, 0.34);
+  --surface: rgba(255, 255, 255, 0.42);
+  --surface-2: rgba(255, 255, 255, 0.3);
+  --card: rgba(255, 255, 255, 0.5);
+  --card-2: rgba(255, 255, 255, 0.32);
+  --input-bg: rgba(255, 255, 255, 0.62);
+  --hover: rgba(255, 255, 255, 0.55);
+  --hover-border: rgba(255, 255, 255, 0.85);
+  --line: rgba(255, 255, 255, 0.55);
+  --line-soft: rgba(255, 255, 255, 0.38);
+
+  --text: #12283b;
+  --muted: #3d566d;
+  --muted-2: #5c7286;
   --on-accent: #ffffff;
-  --accent-soft: rgba(18, 115, 230, 0.08);
-  --green: #0e9f5b;
-  --green-bg: rgba(14, 159, 91, 0.12);
-  --yellow: #b07c00;
-  --yellow-bg: rgba(176, 124, 0, 0.12);
-  --red: #db3b43;
-  --red-bg: rgba(219, 59, 67, 0.1);
-  --blue: #1273e6;
-  --blue-2: #00b2ff;
+  --accent-soft: rgba(255, 255, 255, 0.28);
+
+  --green: #0c9c56;
+  --green-bg: rgba(12, 156, 86, 0.16);
+  --yellow: #a9750f;
+  --yellow-bg: rgba(169, 117, 15, 0.16);
+  --red: #dc2f3a;
+  --red-bg: rgba(220, 47, 58, 0.14);
+  --blue: #1774d1;
+  --blue-2: #0fb5d6;
 }
 
 * {
@@ -90,7 +74,8 @@ html,
 body {
   margin: 0;
   min-height: 100%;
-  background: var(--bg);
+  background: linear-gradient(135deg, var(--oasis-1) 0%, var(--oasis-2) 100%);
+  background-attachment: fixed;
   color: var(--text);
   font-family:
     "IRANYekan",
@@ -120,9 +105,8 @@ input {
   min-height: 100vh;
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
-  background:
-    radial-gradient(circle at 20% 0%, var(--accent-soft), transparent 36%),
-    var(--bg);
+  background: linear-gradient(135deg, var(--oasis-1) 0%, var(--oasis-2) 100%);
+  background-attachment: fixed;
 }
 
 .shell.collapsed {
@@ -234,11 +218,21 @@ input {
   color: var(--muted);
 }
 
-.nav-link:hover,
+.nav-link:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.3);
+  border-color: var(--line-soft);
+}
+
+/* active item = frosted glass pill (not a solid block) */
 .nav-link.active {
   color: var(--text);
-  background: var(--surface-2);
-  border-color: var(--line);
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.6);
+  border-color: var(--hover-border);
+  box-shadow: var(--glass-shadow-sm);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
 }
 
 .nav-link svg {
@@ -1693,4 +1687,56 @@ tr:last-child td {
   100% {
     background: transparent;
   }
+}
+
+/* ============================================================
+ * Fresh Oasis — frosted glass (backdrop blur + soft shadows)
+ * Additive layer: colors come from the variables above; this only
+ * adds the blur + premium shadows that CSS variables can't carry.
+ * ========================================================== */
+.sidebar,
+.panel,
+.cockpit,
+.metric,
+.exch-card,
+.answer-stat,
+.decision-card,
+.alert-row,
+.news-item,
+.report-row,
+.forex-card,
+.status-chip,
+.badge,
+.state-pill,
+.segment,
+.chip,
+.ticker,
+.toast,
+.icon-button,
+.primary-button,
+.field input,
+.filter-search,
+table th {
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+
+/* premium soft shadows on the larger glass surfaces */
+.sidebar,
+.panel,
+.cockpit,
+.metric,
+.exch-card,
+.ticker,
+.toast {
+  box-shadow: var(--glass-shadow);
+}
+
+.answer-stat,
+.decision-card,
+.alert-row,
+.news-item,
+.report-row,
+.forex-card {
+  box-shadow: var(--glass-shadow-sm);
 }

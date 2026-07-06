@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard",
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": ["-c", "cd /Users/imanhosseini/dealing-desk-otc-dashboard && exec /Users/imanhosseini/.local/node/bin/node node_modules/next/dist/bin/next dev --hostname 127.0.0.1 --port 3000"],
+      "port": 3000
+    }
+  ]
+}

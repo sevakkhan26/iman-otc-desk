@@ -16,7 +16,8 @@ import type {
   ImpactNewsItem,
   ImpactNewsResponse,
   PublicSettings,
-  TelegramPricesResponse,
+  FxPricesApiItem,
+  FxPricesApiResponse,
   QuickDecision,
   Severity,
   TetherMarketResponse
@@ -803,39 +804,66 @@ export function ForexView() {
   );
 }
 
-function TelegramPrices() {
-  const { data } = useApi<TelegramPricesResponse>("/api/telegram-prices", 30_000);
-  const items = data?.items ?? [];
-  const hasAny = items.some((item) => item.status === "ok" && item.price !== null);
-  const meta = data?.message || (data?.lastUpdated ? `به‌روزرسانی: ${formatDate(data.lastUpdated)}` : "");
+const sitePriceOrder: Record<FxPricesApiItem["asset"], number> = {
+  "دلار کاغذی": 0,
+  "دلار فردایی": 1,
+  "دلار سبزه میدان": 2,
+  "دلار بن‌بست": 3,
+  "درهم امارات": 4
+};
+
+function isValidSitePrice(item: FxPricesApiItem): boolean {
+  return item.status === "ok" && (item.buy !== null || item.sell !== null || item.mid !== null);
+}
+
+function SitePrices() {
+  const { data: fx } = useApi<FxPricesApiResponse>("/api/fx-prices", 30_000);
+  const cards = useMemo(
+    () =>
+      (fx?.items ?? [])
+        .filter(isValidSitePrice)
+        .sort((a, b) => sitePriceOrder[a.asset] - sitePriceOrder[b.asset] || a.source.localeCompare(b.source)),
+    [fx?.items]
+  );
+  const metaParts = cards.length
+    ? [fx?.lastUpdated ? `به‌روزرسانی: ${formatDate(fx.lastUpdated)}` : "", ...(fx?.notes ?? [])].filter(Boolean)
+    : [];
+  const meta = metaParts.join(" · ");
+
   return (
-    <Panel title="قیمت‌های تلگرام" meta={meta ? <span className="muted">{meta}</span> : undefined}>
-      {!hasAny ? (
-        <div className="empty">هنوز داده‌ای از تلگرام دریافت نشده</div>
+    <Panel title="قیمت‌های سایت" meta={meta ? <span className="muted">{meta}</span> : undefined}>
+      {!cards.length ? (
+        <div className="empty">فعلاً داده‌ای از منابع سایت دریافت نشد</div>
       ) : (
         <div className="exch-grid">
-          {items.map((item) => {
-            const ok = item.status === "ok" && item.price !== null;
+          {cards.map((quote) => {
+            const sourceLabel = sourceLabels[quote.source] ?? quote.source;
             return (
-              <article className={`exch-card ${ok ? "" : "is-empty"}`} key={item.type}>
+              <article className="exch-card" key={`${quote.source}-${quote.asset}`}>
                 <header className="exch-card-head">
-                  <span className="exch-name">{item.type}</span>
-                  <Badge tone={ok ? "good" : "neutral"}>{ok ? "دریافت شد" : "بدون داده"}</Badge>
+                  <span className="exch-name">
+                    {quote.asset}
+                    <span className="muted"> · {sourceLabel}</span>
+                  </span>
+                  <Badge tone="good">فعال</Badge>
                 </header>
-                {ok ? (
-                  <>
-                    <div className="exch-row mid">
-                      <span className="exch-k">{item.currency}</span>
-                      <span className="exch-v number">{formatNumber(item.price, 0)}</span>
-                    </div>
-                    <div className="tg-meta muted">
-                      {item.sourceChannel} · {formatDate(item.messageDate)}
-                    </div>
-                    {item.rawText ? <div className="tg-snippet muted">{item.rawText}</div> : null}
-                  </>
-                ) : (
-                  <div className="exch-empty-label">بدون داده</div>
-                )}
+                <div className="exch-prices">
+                  <div className="exch-row">
+                    <span className="exch-k">خرید</span>
+                    <PriceValue value={quote.buy} className="exch-v number" />
+                  </div>
+                  <div className="exch-row">
+                    <span className="exch-k">فروش</span>
+                    <PriceValue value={quote.sell} className="exch-v number" />
+                  </div>
+                  <div className="exch-row mid">
+                    <span className="exch-k">قیمت وسط</span>
+                    <PriceValue value={quote.mid} className="exch-v number" />
+                  </div>
+                  {quote.lastUpdated ? (
+                    <div className="tg-meta muted">{formatDate(quote.lastUpdated)}</div>
+                  ) : null}
+                </div>
               </article>
             );
           })}
@@ -878,7 +906,7 @@ export function DashboardView() {
           >
             <DashboardExchangeCards rows={data.tetherMarket.exchanges} summary={data.tetherMarket.summary} />
           </Panel>
-          <TelegramPrices />
+          <SitePrices />
           <div className="grid two-col">
             <Panel title="روند قیمت میانه تتر (USDT/IRT)">
               <MedianChart />
@@ -1153,6 +1181,10 @@ const sourceLabels: Record<string, string> = {
   ramzinex: "رمزینکس",
   abantether: "آبان‌تتر",
   ompfinex: "OMPFinex",
+  exir: "اکسیر",
+  tetherland: "تترلند",
+  navasan: "نوسان",
+  bonbast: "بن‌بست",
   binance: "Binance",
   kraken: "Kraken",
   okx: "OKX",

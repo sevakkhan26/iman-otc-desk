@@ -236,6 +236,56 @@ async function ompFinex(): Promise<DomesticQuote> {
   }
 }
 
+async function tetherland(): Promise<DomesticQuote> {
+  const id = "tetherland";
+  const name = "تترلند";
+  try {
+    const data = await fetchJson<{
+      status?: number;
+      data?: { currencies?: { USDT?: { buy_price?: number; sell_price?: number; price?: number } } };
+    }>("https://api.tetherland.com/currencies", 9_000);
+
+    const usdt = data.data?.currencies?.USDT;
+    const buyPrice = toToman(usdt?.sell_price ?? usdt?.price);
+    const sellPrice = toToman(usdt?.buy_price ?? usdt?.price);
+    const midPrice = toToman(usdt?.price);
+    if (buyPrice === null && sellPrice === null && midPrice === null) {
+      return unavailable(id, name, "داده قیمت تتر در پاسخ منبع پیدا نشد");
+    }
+    const spreadMatches = buyPrice !== null && sellPrice !== null && buyPrice === sellPrice;
+    return buildQuote(id, name, buyPrice, sellPrice, {
+      midPrice,
+      status: spreadMatches ? "degraded" : "available",
+      errorMessage: spreadMatches ? "API عمومی خرید و فروش یکسان برگرداند" : undefined
+    });
+  } catch (error) {
+    return unavailable(id, name, error instanceof Error ? error.message : "منبع در دسترس نیست");
+  }
+}
+
+async function exir(): Promise<DomesticQuote> {
+  const id = "exir";
+  const name = "اکسیر";
+  try {
+    // Exir (HollaEx) public ticker — usdt-irt is quoted in Toman
+    const data = await fetchJson<{ last?: number; close?: number }>(
+      "https://api.exir.io/v1/ticker?symbol=usdt-irt",
+      9_000
+    );
+    const midPrice = toToman(data.last ?? data.close);
+    if (midPrice === null) {
+      return unavailable(id, name, "داده قیمت تتر در پاسخ منبع پیدا نشد");
+    }
+    return buildQuote(id, name, null, null, {
+      midPrice,
+      status: "degraded",
+      errorMessage: "API عمومی فقط قیمت آخر را می‌دهد؛ خرید و فروش دریافت نشد"
+    });
+  } catch (error) {
+    return unavailable(id, name, error instanceof Error ? error.message : "منبع در دسترس نیست");
+  }
+}
+
 const providers: Provider[] = [
   { id: "nobitex", name: "نوبیتکس", fetchQuote: nobitex },
   { id: "wallex", name: "والکس", fetchQuote: wallex },
@@ -243,7 +293,9 @@ const providers: Provider[] = [
   { id: "tabdeal", name: "تبدیل", fetchQuote: tabdeal },
   { id: "ramzinex", name: "رمزینکس", fetchQuote: ramzinex },
   { id: "abantether", name: "آبان‌تتر", fetchQuote: abanTether },
-  { id: "ompfinex", name: "OMPFinex", fetchQuote: ompFinex }
+  { id: "ompfinex", name: "OMPFinex", fetchQuote: ompFinex },
+  { id: "exir", name: "اکسیر", fetchQuote: exir },
+  { id: "tetherland", name: "تترلند", fetchQuote: tetherland }
 ];
 
 export async function getDomesticQuotes(settings: DeskSettings): Promise<DomesticQuote[]> {

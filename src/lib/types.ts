@@ -242,7 +242,51 @@ export interface SettingsPatch {
   enabledSources?: Record<string, boolean>;
 }
 
+export type FxStreetAssetType = "دلار کاغذی" | "دلار فردایی" | "دلار سبزه میدان" | "دلار بن‌بست" | "درهم امارات";
+
 export type TelegramPriceType = "دلار کاغذی" | "دلار سبزه میدان" | "درهم امارات" | "دلار خروجی";
+
+export interface FxStreetQuote {
+  sourceId: string;
+  sourceName: string;
+  assetType: FxStreetAssetType;
+  buyPrice: number | null;
+  sellPrice: number | null;
+  midPrice: number | null;
+  lastUpdated: string | null;
+  status: SourceStatus;
+  errorMessage?: string;
+}
+
+export interface FxStreetResponse {
+  quotes: FxStreetQuote[];
+  sourceStatus: SourceStatus;
+  lastUpdated: string | null;
+  message?: string;
+  notes?: string[];
+  stale?: boolean;
+}
+
+export type FxPricesApiSource = "navasan" | "bonbast";
+
+export type FxPricesApiStatus = "ok" | "unavailable" | "error";
+
+export interface FxPricesApiItem {
+  source: FxPricesApiSource;
+  asset: FxStreetAssetType;
+  buy: number | null;
+  sell: number | null;
+  mid: number | null;
+  lastUpdated: string;
+  status: FxPricesApiStatus;
+  error?: string;
+}
+
+export interface FxPricesApiResponse {
+  items: FxPricesApiItem[];
+  lastUpdated?: string;
+  notes?: string[];
+}
 
 export interface TelegramPrice {
   type: TelegramPriceType;

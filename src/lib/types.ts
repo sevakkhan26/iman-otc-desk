@@ -241,3 +241,24 @@ export interface SettingsPatch {
   depegAlertThresholdPercent?: number;
   enabledSources?: Record<string, boolean>;
 }
+
+export type TelegramPriceType = "دلار کاغذی" | "دلار سبزه میدان" | "درهم امارات" | "دلار خروجی";
+
+export interface TelegramPrice {
+  type: TelegramPriceType;
+  price: number | null;
+  currency: string;
+  sourceChannel: string;
+  messageDate: string | null;
+  receivedAt: string;
+  rawText: string;
+  confidence: "high" | "medium" | "low";
+  status: "ok" | "no-data";
+}
+
+export interface TelegramPricesResponse {
+  items: TelegramPrice[];
+  sourceStatus: SourceStatus;
+  lastUpdated: string | null;
+  message?: string;
+}

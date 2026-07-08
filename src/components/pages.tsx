@@ -16,6 +16,7 @@ import type {
   ImpactNewsItem,
   ImpactNewsResponse,
   PublicSettings,
+  TelegramPricesResponse,
   QuickDecision,
   Severity,
   TetherMarketResponse
@@ -802,6 +803,48 @@ export function ForexView() {
   );
 }
 
+function TelegramPrices() {
+  const { data } = useApi<TelegramPricesResponse>("/api/telegram-prices", 30_000);
+  const items = data?.items ?? [];
+  const hasAny = items.some((item) => item.status === "ok" && item.price !== null);
+  const meta = data?.message || (data?.lastUpdated ? `به‌روزرسانی: ${formatDate(data.lastUpdated)}` : "");
+  return (
+    <Panel title="قیمت‌های تلگرام" meta={meta ? <span className="muted">{meta}</span> : undefined}>
+      {!hasAny ? (
+        <div className="empty">هنوز داده‌ای از تلگرام دریافت نشده</div>
+      ) : (
+        <div className="exch-grid">
+          {items.map((item) => {
+            const ok = item.status === "ok" && item.price !== null;
+            return (
+              <article className={`exch-card ${ok ? "" : "is-empty"}`} key={item.type}>
+                <header className="exch-card-head">
+                  <span className="exch-name">{item.type}</span>
+                  <Badge tone={ok ? "good" : "neutral"}>{ok ? "دریافت شد" : "بدون داده"}</Badge>
+                </header>
+                {ok ? (
+                  <>
+                    <div className="exch-row mid">
+                      <span className="exch-k">{item.currency}</span>
+                      <span className="exch-v number">{formatNumber(item.price, 0)}</span>
+                    </div>
+                    <div className="tg-meta muted">
+                      {item.sourceChannel} · {formatDate(item.messageDate)}
+                    </div>
+                    {item.rawText ? <div className="tg-snippet muted">{item.rawText}</div> : null}
+                  </>
+                ) : (
+                  <div className="exch-empty-label">بدون داده</div>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 /* ============================================================
  * Page views
  * ========================================================== */
@@ -835,6 +878,7 @@ export function DashboardView() {
           >
             <DashboardExchangeCards rows={data.tetherMarket.exchanges} summary={data.tetherMarket.summary} />
           </Panel>
+          <TelegramPrices />
           <div className="grid two-col">
             <Panel title="روند قیمت میانه تتر (USDT/IRT)">
               <MedianChart />

@@ -9,6 +9,7 @@ import {
   CalendarClock,
   ChartCandlestick,
   Gauge,
+  LogOut,
   Menu,
   Newspaper,
   Settings,
@@ -88,6 +89,19 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
             );
           })}
         </nav>
+        <button
+          type="button"
+          className="nav-link logout-link"
+          title="خروج"
+          onClick={() => {
+            fetch("/api/auth/logout", { method: "POST" })
+              .catch(() => {})
+              .finally(() => window.location.replace("/login"));
+          }}
+        >
+          <LogOut aria-hidden="true" />
+          <span>خروج</span>
+        </button>
         <div className="sidebar-foot">
           <ShieldAlert aria-hidden="true" size={17} />
           <div className="sidebar-foot-text">منابع واقعی؛ منبع قطع باشد، عددی نمایش داده نمی‌شود.</div>

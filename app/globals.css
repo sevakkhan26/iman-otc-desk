@@ -1806,3 +1806,66 @@ table th {
 .forex-card {
   box-shadow: var(--glass-shadow-sm), var(--glass-inner);
 }
+
+/* ===== Login page (Fresh Oasis glass) ===== */
+.login-wrap {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.login-card {
+  width: min(400px, 92vw);
+  display: grid;
+  gap: 14px;
+  padding: 30px 26px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow), var(--glass-inner);
+}
+
+.login-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.login-subtitle {
+  text-align: center;
+  font-size: 12.5px;
+  margin-top: -8px;
+}
+
+.login-error {
+  color: var(--red);
+  background: var(--red-bg);
+  border: 1px solid var(--red-bg);
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  text-align: center;
+}
+
+.login-button {
+  justify-content: center;
+  min-height: 44px;
+  font-weight: 700;
+}
+
+/* logout button in the sidebar (button element reusing nav-link look) */
+.logout-link {
+  margin-top: auto;
+  width: 100%;
+  background: transparent;
+  cursor: pointer;
+  text-align: start;
+}
+
+.logout-link + .sidebar-foot {
+  margin-top: 0;
+}

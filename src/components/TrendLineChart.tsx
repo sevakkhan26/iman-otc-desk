@@ -1,9 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { TrendingDown, TrendingUp } from "lucide-react";
-import type { MedianHistoryRange, MedianHistoryResponse } from "@/lib/types";
-import { formatPercent, formatToman } from "@/components/format";
+import { formatPercent } from "@/components/format";
 
 const faNum = new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 0 });
 const faTime = new Intl.DateTimeFormat("fa-IR", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Tehran" });
@@ -63,17 +62,23 @@ function useChartColors() {
   return colors;
 }
 
-function axisLabel(iso: string, range: MedianHistoryRange) {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "—";
-  return range === "7d" ? faDay.format(date) : faTime.format(date);
-}
+export type TrendLineChartRange = "24h" | "7d";
 
-function tooltipLabel(iso: string, range: MedianHistoryRange) {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "—";
-  return range === "7d" ? faDateTime.format(date) : faTime.format(date);
-}
+export type TrendLineChartPoint = { t: string; v: number };
+
+export type TrendLineChartData = {
+  range: TrendLineChartRange;
+  points: TrendLineChartPoint[];
+  changePercent: number | null;
+};
+
+export type TrendLineChartFormatters = {
+  formatValue: (value: number | null | undefined) => string;
+  formatAxisValue?: (value: number) => string;
+  formatAverage?: (value: number) => string;
+  ariaLabel: string;
+  emptyMessage?: string;
+};
 
 const W = 720;
 const H = 280;
@@ -83,6 +88,18 @@ const PAD_BOTTOM = 36;
 const PAD_RIGHT = 20;
 
 type PlotPoint = { x: number; y: number; v: number; t: string };
+
+function axisLabel(iso: string, range: TrendLineChartRange) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+  return range === "7d" ? faDay.format(date) : faTime.format(date);
+}
+
+function tooltipLabel(iso: string, range: TrendLineChartRange) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+  return range === "7d" ? faDateTime.format(date) : faTime.format(date);
+}
 
 function smoothLinePath(plotPoints: PlotPoint[]): string {
   if (plotPoints.length < 2) return "";
@@ -110,12 +127,87 @@ function smoothLinePath(plotPoints: PlotPoint[]): string {
   return d;
 }
 
-function smoothAreaPath(plotPoints: PlotPoint[], baseY: number): string {
-  const line = smoothLinePath(plotPoints);
-  if (!line) return "";
-  const first = plotPoints[0];
-  const last = plotPoints[plotPoints.length - 1];
-  return `${line} L ${last.x} ${baseY} L ${first.x} ${baseY} Z`;
+function linearLinePath(plotPoints: PlotPoint[]): string {
+  if (plotPoints.length < 2) return "";
+  let d = `M ${plotPoints[0].x} ${plotPoints[0].y}`;
+  for (let i = 1; i < plotPoints.length; i++) {
+    d += ` L ${plotPoints[i].x} ${plotPoints[i].y}`;
+  }
+  return d;
+}
+
+function pointTimeMs(point: PlotPoint): number {
+  const time = new Date(point.t).getTime();
+  return Number.isNaN(time) ? 0 : time;
+}
+
+function medianTimeDeltaMs(plotPoints: PlotPoint[]): number {
+  if (plotPoints.length < 2) return Infinity;
+  const deltas: number[] = [];
+  for (let i = 1; i < plotPoints.length; i++) {
+    const delta = pointTimeMs(plotPoints[i]) - pointTimeMs(plotPoints[i - 1]);
+    if (delta > 0) deltas.push(delta);
+  }
+  if (!deltas.length) return Infinity;
+  deltas.sort((a, b) => a - b);
+  return deltas[Math.floor(deltas.length / 2)];
+}
+
+function splitPlotSegments(plotPoints: PlotPoint[], gapThresholdMs: number): PlotPoint[][] {
+  if (plotPoints.length < 2) return plotPoints.length ? [plotPoints] : [];
+  const segments: PlotPoint[][] = [[plotPoints[0]]];
+  for (let i = 1; i < plotPoints.length; i++) {
+    const prev = plotPoints[i - 1];
+    const curr = plotPoints[i];
+    const gap = pointTimeMs(curr) - pointTimeMs(prev);
+    if (gap > gapThresholdMs) {
+      if (segments[segments.length - 1].length >= 1) {
+        segments.push([curr]);
+      } else {
+        segments[segments.length - 1].push(curr);
+      }
+      continue;
+    }
+    segments[segments.length - 1].push(curr);
+  }
+  return segments.filter((segment) => segment.length >= 2);
+}
+
+function buildLinePaths(
+  plotPoints: PlotPoint[],
+  pathMode: "linear" | "smooth",
+  breakGaps: boolean
+): string[] {
+  if (plotPoints.length < 2) return [];
+  const lineFn = pathMode === "linear" ? linearLinePath : smoothLinePath;
+  if (!breakGaps) {
+    const path = lineFn(plotPoints);
+    return path ? [path] : [];
+  }
+  const gapThreshold = medianTimeDeltaMs(plotPoints) * 4;
+  return splitPlotSegments(plotPoints, gapThreshold).map(lineFn).filter(Boolean);
+}
+
+function buildAreaPaths(plotPoints: PlotPoint[], baseY: number, pathMode: "linear" | "smooth", breakGaps: boolean): string[] {
+  if (plotPoints.length < 2) return [];
+  const lineFn = pathMode === "linear" ? linearLinePath : smoothLinePath;
+  if (!breakGaps) {
+    const line = lineFn(plotPoints);
+    if (!line) return [];
+    const first = plotPoints[0];
+    const last = plotPoints[plotPoints.length - 1];
+    return [`${line} L ${last.x} ${baseY} L ${first.x} ${baseY} Z`];
+  }
+  const gapThreshold = medianTimeDeltaMs(plotPoints) * 4;
+  return splitPlotSegments(plotPoints, gapThreshold)
+    .map((segment) => {
+      const line = lineFn(segment);
+      if (!line) return "";
+      const first = segment[0];
+      const last = segment[segment.length - 1];
+      return `${line} L ${last.x} ${baseY} L ${first.x} ${baseY} Z`;
+    })
+    .filter(Boolean);
 }
 
 type XScale = (index: number) => number;
@@ -124,7 +216,6 @@ function makeXScale(pointCount: number, plotW: number): XScale {
   return (index: number) => PAD_X + (index / (pointCount - 1)) * plotW;
 }
 
-/** SVG viewBox coords -> client coords (same transform as rendered points). */
 function svgToClient(svg: SVGSVGElement, viewX: number, viewY: number) {
   const pt = svg.createSVGPoint();
   pt.x = viewX;
@@ -141,7 +232,6 @@ function plotScreenBounds(svg: SVGSVGElement, plotW: number) {
   return { left: Math.min(left, right), width: Math.abs(right - left) };
 }
 
-/** Same ratio mapping used for hover index selection. */
 function indexFromClientX(
   clientX: number,
   svg: SVGSVGElement,
@@ -168,12 +258,24 @@ function overlayPercent(svg: SVGSVGElement, body: HTMLDivElement, viewX: number,
   };
 }
 
-function Chart({ data }: { data: MedianHistoryResponse }) {
+export function TrendLineChartPanel({
+  data,
+  formatters,
+  pathMode = "smooth",
+  breakGaps = false
+}: {
+  data: TrendLineChartData;
+  formatters: TrendLineChartFormatters;
+  pathMode?: "linear" | "smooth";
+  breakGaps?: boolean;
+}) {
   const uid = useId().replace(/:/g, "");
   const colors = useChartColors();
   const bodyRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const formatAxisValue = formatters.formatAxisValue ?? ((value: number) => faNum.format(Math.round(value)));
+  const formatAverage = formatters.formatAverage ?? ((value: number) => formatters.formatValue(Math.round(value)));
 
   const { points, range } = data;
 
@@ -193,8 +295,10 @@ function Chart({ data }: { data: MedianHistoryResponse }) {
     const xScale = makeXScale(points.length, plotW);
     const y = (v: number) => PAD_TOP + (1 - (v - min) / (max - min)) * plotH;
     const plotPoints: PlotPoint[] = points.map((p, i) => ({ x: xScale(i), y: y(p.v), v: p.v, t: p.t }));
-    const linePath = smoothLinePath(plotPoints);
-    const areaPath = smoothAreaPath(plotPoints, baseY);
+    const linePaths = buildLinePaths(plotPoints, pathMode, breakGaps);
+    const areaPaths = buildAreaPaths(plotPoints, baseY, pathMode, breakGaps);
+    const linePath = linePaths[0] ?? "";
+    const areaPath = areaPaths[0] ?? "";
     const last = plotPoints[plotPoints.length - 1];
     const avg = values.reduce((sum, v) => sum + v, 0) / values.length;
     const change =
@@ -209,6 +313,8 @@ function Chart({ data }: { data: MedianHistoryResponse }) {
       baseY,
       xScale,
       plotPoints,
+      linePaths,
+      areaPaths,
       linePath,
       areaPath,
       lastX: last.x,
@@ -219,7 +325,7 @@ function Chart({ data }: { data: MedianHistoryResponse }) {
       avg,
       change
     };
-  }, [points, data.changePercent]);
+  }, [points, data.changePercent, pathMode, breakGaps]);
 
   const handlePointer = useCallback(
     (clientX: number) => {
@@ -234,7 +340,8 @@ function Chart({ data }: { data: MedianHistoryResponse }) {
   if (!geom) {
     return (
       <div className="empty">
-        هنوز داده کافی برای نمودار ثبت نشده است؛ با باز ماندن داشبورد، روند قیمت به‌مرور تکمیل می‌شود.
+        {formatters.emptyMessage ??
+          "هنوز داده کافی برای نمودار ثبت نشده است؛ با باز ماندن داشبورد، روند قیمت به‌مرور تکمیل می‌شود."}
       </div>
     );
   }
@@ -259,19 +366,19 @@ function Chart({ data }: { data: MedianHistoryResponse }) {
       <div className="median-chart-mini-stats" aria-label="خلاصه بازه نمودار">
         <div className="median-mini-stat">
           <span className="median-mini-stat-label">آخرین</span>
-          <span className="median-mini-stat-value number">{formatToman(geom.lastV)}</span>
+          <span className="median-mini-stat-value number">{formatters.formatValue(geom.lastV)}</span>
         </div>
         <div className="median-mini-stat">
           <span className="median-mini-stat-label">کمترین</span>
-          <span className="median-mini-stat-value number">{formatToman(geom.minV)}</span>
+          <span className="median-mini-stat-value number">{formatters.formatValue(geom.minV)}</span>
         </div>
         <div className="median-mini-stat">
           <span className="median-mini-stat-label">بیشترین</span>
-          <span className="median-mini-stat-value number">{formatToman(geom.maxV)}</span>
+          <span className="median-mini-stat-value number">{formatters.formatValue(geom.maxV)}</span>
         </div>
         <div className="median-mini-stat">
           <span className="median-mini-stat-label">میانگین</span>
-          <span className="median-mini-stat-value number">{formatToman(Math.round(geom.avg))}</span>
+          <span className="median-mini-stat-value number">{formatAverage(geom.avg)}</span>
         </div>
         <div className="median-mini-stat">
           <span className="median-mini-stat-label">تغییر</span>
@@ -296,7 +403,7 @@ function Chart({ data }: { data: MedianHistoryResponse }) {
           viewBox={`0 0 ${W} ${H}`}
           preserveAspectRatio="none"
           role="img"
-          aria-label="نمودار روند قیمت میانه تتر"
+          aria-label={formatters.ariaLabel}
         >
           <defs>
             <linearGradient id={`medianFill-${uid}`} x1="0" y1="0" x2="0" y2="1">
@@ -340,7 +447,7 @@ function Chart({ data }: { data: MedianHistoryResponse }) {
                   strokeDasharray={frac === 0 || frac === 1 ? "none" : "5 7"}
                 />
                 <text x={PAD_X - 12} y={yy + 4} textAnchor="end" className="median-axis">
-                  {faNum.format(Math.round(v))}
+                  {formatAxisValue(v)}
                 </text>
               </g>
             );
@@ -355,7 +462,9 @@ function Chart({ data }: { data: MedianHistoryResponse }) {
           </text>
 
           <g clipPath={`url(#medianPlot-${uid})`}>
-            <path d={geom.areaPath} fill={`url(#medianFill-${uid})`} className="median-chart-area" />
+            {geom.areaPaths.map((path, index) => (
+              <path key={`area-${index}`} d={path} fill={`url(#medianFill-${uid})`} className="median-chart-area" />
+            ))}
             <rect
               x={PAD_X}
               y={PAD_TOP}
@@ -364,16 +473,19 @@ function Chart({ data }: { data: MedianHistoryResponse }) {
               fill={`url(#medianGlass-${uid})`}
               pointerEvents="none"
             />
-            <path
-              d={geom.linePath}
-              fill="none"
-              stroke={`url(#medianLine-${uid})`}
-              strokeWidth="3.25"
-              strokeLinejoin="round"
-              strokeLinecap="round"
-              className="median-chart-line"
-              filter={`url(#medianGlow-${uid})`}
-            />
+            {geom.linePaths.map((path, index) => (
+              <path
+                key={`line-${index}`}
+                d={path}
+                fill="none"
+                stroke={`url(#medianLine-${uid})`}
+                strokeWidth="3.25"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                className="median-chart-line"
+                filter={`url(#medianGlow-${uid})`}
+              />
+            ))}
             {isHovering ? (
               <line
                 x1={geom.xScale(activeIndex)}
@@ -409,7 +521,7 @@ function Chart({ data }: { data: MedianHistoryResponse }) {
             }}
           >
             <span className="median-chart-live-badge-label">آخرین قیمت</span>
-            <span className="median-chart-live-badge-value number">{formatToman(geom.lastV)}</span>
+            <span className="median-chart-live-badge-value number">{formatters.formatValue(geom.lastV)}</span>
           </div>
         ) : null}
 
@@ -421,76 +533,80 @@ function Chart({ data }: { data: MedianHistoryResponse }) {
           }}
         >
           <span className="median-chart-tooltip-time">{tooltipLabel(active.t, range)}</span>
-          <span className="median-chart-tooltip-value number">{formatToman(active.v)}</span>
+          <span className="median-chart-tooltip-value number">{formatters.formatValue(active.v)}</span>
         </div>
       </div>
     </div>
   );
 }
 
-export function MedianChart() {
-  const [range, setRange] = useState<MedianHistoryRange>("24h");
-  const [data, setData] = useState<MedianHistoryResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export type MedianChartRangeOption<T extends string> = { key: T; label: string };
 
-  useEffect(() => {
-    const controller = new AbortController();
-    setLoading(true);
-    setError(null);
-    fetch(`/api/median-history?range=${range}`, { cache: "no-store", signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return (await response.json()) as MedianHistoryResponse;
-      })
-      .then(setData)
-      .catch((err: unknown) => {
-        if (err instanceof Error && err.name === "AbortError") return;
-        setError(err instanceof Error ? err.message : "داده‌ای دریافت نشد");
-      })
-      .finally(() => setLoading(false));
-    return () => controller.abort();
-  }, [range]);
-
-  const up = (data?.changePercent ?? 0) >= 0;
-  const options: Array<{ key: MedianHistoryRange; label: string }> = [
-    { key: "24h", label: "۲۴ ساعته" },
-    { key: "7d", label: "۷ روزه" }
-  ];
+export function MedianChartShell<T extends string>({
+  className,
+  lastValue,
+  changePercent,
+  showChange,
+  range,
+  rangeOptions,
+  onRangeChange,
+  rangeAriaLabel,
+  toolbar,
+  loading,
+  hasData,
+  error,
+  children
+}: {
+  className?: string;
+  lastValue: ReactNode;
+  changePercent: number | null | undefined;
+  showChange: boolean;
+  range: T;
+  rangeOptions: MedianChartRangeOption<T>[];
+  onRangeChange: (range: T) => void;
+  rangeAriaLabel: string;
+  toolbar?: ReactNode;
+  loading: boolean;
+  hasData: boolean;
+  error: string | null;
+  children: ReactNode;
+}) {
+  const up = (changePercent ?? 0) >= 0;
 
   return (
-    <div className="median-chart">
+    <div className={className ? `median-chart ${className}` : "median-chart"}>
       <div className="median-chart-head">
         <div className="median-chart-stats">
-          <span className="median-chart-value number">{formatToman(data?.last)}</span>
-          {data && data.changePercent !== null ? (
+          <span className="median-chart-value number">{lastValue}</span>
+          {showChange && changePercent !== null && changePercent !== undefined ? (
             <span className={`median-chart-change ${up ? "good" : "danger"}`}>
               {up ? <TrendingUp aria-hidden="true" size={15} /> : <TrendingDown aria-hidden="true" size={15} />}
-              {formatPercent(data.changePercent)}
+              {formatPercent(changePercent)}
             </span>
           ) : null}
         </div>
-        <div className="segment" role="tablist" aria-label="بازه زمانی نمودار">
-          {options.map((option) => (
+        <div className="segment" role="tablist" aria-label={rangeAriaLabel}>
+          {rangeOptions.map((option) => (
             <button
               key={option.key}
               type="button"
               role="tab"
               aria-selected={range === option.key}
               className={`segment-item ${range === option.key ? "active" : ""}`}
-              onClick={() => setRange(option.key)}
+              onClick={() => onRangeChange(option.key)}
             >
               {option.label}
             </button>
           ))}
         </div>
       </div>
-      {loading && !data ? (
+      {toolbar}
+      {loading && !hasData ? (
         <div className="loading">در حال دریافت داده...</div>
       ) : error ? (
         <div className="empty">داده‌ای دریافت نشد: {error}</div>
-      ) : data ? (
-        <Chart data={data} />
+      ) : hasData ? (
+        children
       ) : null}
     </div>
   );

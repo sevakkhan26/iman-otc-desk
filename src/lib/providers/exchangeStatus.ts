@@ -1,4 +1,5 @@
 import { fetchJson } from "@/lib/http";
+import { createProviderCache, ttlFromMinutes } from "@/lib/providerCache";
 import type { DeskSettings, ExchangeOperationalStatus, SourceStatus } from "@/lib/types";
 
 type ExchangeName = ExchangeOperationalStatus["exchangeName"];
@@ -137,13 +138,29 @@ const providers: Array<{ id: string; name: ExchangeName; run: () => Promise<Exch
   { id: "coinbase", name: "Coinbase", run: coinbase }
 ];
 
-export async function getGlobalExchangeStatuses(settings: DeskSettings): Promise<ExchangeOperationalStatus[]> {
+const exchangeStatusCache = createProviderCache<ExchangeOperationalStatus[]>();
+
+function exchangeStatusCacheKey(settings: DeskSettings): string {
+  return providers
+    .map((provider) => `${provider.id}:${settings.enabledSources[provider.id] === false ? 0 : 1}`)
+    .join("|");
+}
+
+async function fetchGlobalExchangeStatuses(settings: DeskSettings): Promise<ExchangeOperationalStatus[]> {
   return Promise.all(
     providers.map((provider) => {
       if (settings.enabledSources[provider.id] === false) {
         return Promise.resolve(unavailable(provider.name, "این منبع در تنظیمات غیرفعال است"));
       }
-      return provider.run();
+      return provider.run().catch((error) =>
+        unavailable(provider.name, error instanceof Error ? error.message : "منبع در دسترس نیست")
+      );
     })
   );
+}
+
+export async function getGlobalExchangeStatuses(settings: DeskSettings): Promise<ExchangeOperationalStatus[]> {
+  const key = exchangeStatusCacheKey(settings);
+  const ttlMs = ttlFromMinutes(settings.globalExchangeRefreshMinutes);
+  return exchangeStatusCache.get(key, ttlMs, () => fetchGlobalExchangeStatuses(settings));
 }

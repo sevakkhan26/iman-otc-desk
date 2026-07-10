@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { XMLParser } from "fast-xml-parser";
 import { fetchText } from "@/lib/http";
 import { detectAssets, newsCategoryFromAssets } from "@/lib/assets";
+import { applyNewsTranslations } from "@/lib/newsTranslation";
+import { createProviderCache, ttlFromMinutes } from "@/lib/providerCache";
 import type { DeskSettings, ImpactNewsItem, ImpactNewsResponse, NewsGroup, Severity } from "@/lib/types";
 
 // دسته‌بندی خبر برای صفحه اخبار: اتصال صرافی‌ها (LP) / ایران / جهانی
@@ -222,13 +224,16 @@ async function fetchFeed(feed: (typeof feeds)[number]): Promise<ImpactNewsItem[]
       const title = item.title ?? "";
       const severity = classify(title);
       const assets = detectAssets(title);
+      const impactOnUsdtIrt = impactFor(title, severity);
       return {
         id: idFor(`${title}:${item.link ?? ""}`),
         title,
+        translatedTitle: title,
+        translatedSummary: impactOnUsdtIrt,
         source: sourceName(item, feed.name),
         publishedAt: item.pubDate ? new Date(item.pubDate).toISOString() : null,
         severity,
-        impactOnUsdtIrt: impactFor(title, severity),
+        impactOnUsdtIrt,
         recommendedAction: actionFor(title, severity),
         assets,
         category: newsCategoryFromAssets(assets),
@@ -238,16 +243,9 @@ async function fetchFeed(feed: (typeof feeds)[number]): Promise<ImpactNewsItem[]
     });
 }
 
-export async function getImpactNews(settings: DeskSettings): Promise<ImpactNewsResponse> {
-  if (settings.enabledSources.news === false) {
-    return {
-      items: [],
-      sourceStatus: "unavailable",
-      lastUpdated: null,
-      message: "منبع خبر در تنظیمات غیرفعال است"
-    };
-  }
+const newsCache = createProviderCache<ImpactNewsResponse>();
 
+async function fetchImpactNews(settings: DeskSettings): Promise<ImpactNewsResponse> {
   const results = await Promise.allSettled(feeds.map(fetchFeed));
   const items = results
     .flatMap((result) => (result.status === "fulfilled" ? result.value : []))
@@ -265,9 +263,25 @@ export async function getImpactNews(settings: DeskSettings): Promise<ImpactNewsR
     };
   }
 
+  const translatedItems = await applyNewsTranslations(unique, settings);
+
   return {
-    items: unique,
+    items: translatedItems,
     sourceStatus: "available",
     lastUpdated: new Date().toISOString()
   };
+}
+
+export async function getImpactNews(settings: DeskSettings): Promise<ImpactNewsResponse> {
+  if (settings.enabledSources.news === false) {
+    return {
+      items: [],
+      sourceStatus: "unavailable",
+      lastUpdated: null,
+      message: "منبع خبر در تنظیمات غیرفعال است"
+    };
+  }
+
+  const ttlMs = ttlFromMinutes(settings.newsRefreshMinutes);
+  return newsCache.get(`news:${settings.newsRefreshMinutes}`, ttlMs, () => fetchImpactNews(settings));
 }

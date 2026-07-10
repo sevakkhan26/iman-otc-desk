@@ -1,4 +1,5 @@
 import { fetchJson, numeric } from "@/lib/http";
+import { createProviderCache, ttlFromMinutes } from "@/lib/providerCache";
 import type { GlobalPrice } from "@/lib/types";
 
 const nowIso = () => new Date().toISOString();
@@ -63,6 +64,13 @@ async function tetherUsd(): Promise<GlobalPrice> {
   }
 }
 
-export async function getGlobalPrices(): Promise<GlobalPrice[]> {
+const globalMarketCache = createProviderCache<GlobalPrice[]>();
+
+async function fetchGlobalPrices(): Promise<GlobalPrice[]> {
   return Promise.all([gateTicker("BTC_USDT", "BTC/USDT"), gateTicker("ETH_USDT", "ETH/USDT"), tetherUsd()]);
+}
+
+export async function getGlobalPrices(refreshMinutes = 1): Promise<GlobalPrice[]> {
+  const ttlMs = ttlFromMinutes(refreshMinutes);
+  return globalMarketCache.get(`global:${refreshMinutes}`, ttlMs, fetchGlobalPrices);
 }

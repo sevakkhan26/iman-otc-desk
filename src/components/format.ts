@@ -103,6 +103,34 @@ export function formatTehran(value: string | null | undefined) {
   }).format(date);
 }
 
+/** News timestamps in Tehran local time: HH:mm ، YYYY/MM/DD (Jalali, Persian digits). */
+export function formatNewsTehranTime(value: string | null | undefined) {
+  if (!value) return "زمان نامشخص";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "زمان نامشخص";
+
+  const time = new Intl.DateTimeFormat("fa-IR", {
+    timeZone: "Asia/Tehran",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(date);
+
+  const parts = new Intl.DateTimeFormat("fa-IR-u-ca-persian", {
+    timeZone: "Asia/Tehran",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+  if (!year || !month || !day) return "زمان نامشخص";
+
+  return `${time} ، ${year}/${month}/${day}`;
+}
+
 export function forexImpactLabel(impact: ForexImpact) {
   if (impact === "high") return "اثر بالا";
   if (impact === "medium") return "اثر متوسط";

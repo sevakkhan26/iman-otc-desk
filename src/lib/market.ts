@@ -278,7 +278,7 @@ export async function getDashboard(): Promise<DashboardResponse> {
   const settings = await getSettings();
   const [quotes, globalMarket, globalStatuses, news, forex] = await Promise.all([
     getDomesticQuotes(settings),
-    getGlobalPrices(),
+    getGlobalPrices(settings.globalMarketRefreshMinutes),
     getGlobalExchangeStatuses(settings),
     getImpactNews(settings),
     getForexEvents(settings)

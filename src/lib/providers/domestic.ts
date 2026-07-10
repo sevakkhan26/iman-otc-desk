@@ -1,5 +1,26 @@
-import { fetchJson, numeric } from "@/lib/http";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { fetchJson, numeric, ProviderError } from "@/lib/http";
+import { createProviderCache, ttlFromMinutes } from "@/lib/providerCache";
 import type { DeskSettings, DomesticQuote, SourceStatus } from "@/lib/types";
+
+const dataDir = path.join(process.cwd(), ".data");
+const ompCachePath = path.join(dataDir, "ompfinex-cache.json");
+
+const OMP_USDT_MARKET_ID = 9;
+const OMP_MIN_FETCH_MS = 5 * 60_000;
+const OMP_STALE_TTL_MS = 30 * 60_000;
+const OMP_RATE_LIMIT_BACKOFF_MS = 10 * 60_000;
+
+const DESK_UA = "TraderBot/OTCDesk";
+
+type OmpCacheEntry = {
+  quote: DomesticQuote;
+  fetchedAt: number;
+  rateLimitedUntil?: number;
+};
+
+let ompMemCache: OmpCacheEntry | null = null;
 
 type Provider = {
   id: string;
@@ -80,7 +101,9 @@ async function nobitex(): Promise<DomesticQuote> {
     const data = await fetchJson<{
       stats?: Record<string, { bestBuy?: string; bestSell?: string; latest?: string; volumeSrc?: string }>;
       status?: string;
-    }>("https://api.nobitex.ir/market/stats?srcCurrency=usdt&dstCurrency=rls", 9_000);
+    }>("https://apiv2.nobitex.ir/market/stats?srcCurrency=usdt&dstCurrency=rls", 12_000, {
+      headers: { "user-agent": DESK_UA }
+    });
 
     const stats = data.stats?.["usdt-rls"] ?? data.stats?.USDT_RLS;
     const buyPrice = toToman(stats?.bestBuy, "rial");
@@ -188,50 +211,103 @@ async function ramzinex(): Promise<DomesticQuote> {
   }
 }
 
-async function abanTether(): Promise<DomesticQuote> {
-  const id = "abantether";
-  const name = "آبان‌تتر";
+function abanTether(): Promise<DomesticQuote> {
+  return Promise.resolve(unavailable("abantether", "آبان‌تتر", "API عمومی آبان‌تتر در دسترس نیست"));
+}
+
+async function readOmpCache(): Promise<OmpCacheEntry | null> {
+  if (ompMemCache) return ompMemCache;
   try {
-    const data = await fetchJson<Record<string, unknown>>(
-      "https://api.abantether.com/api/v1/otc/coin-price/?symbol=USDT",
-      9_000
-    );
-    const buyPrice = toToman(data.buy ?? data.buyPrice ?? data.bid);
-    const sellPrice = toToman(data.sell ?? data.sellPrice ?? data.ask);
-    if (buyPrice === null && sellPrice === null) {
-      return unavailable(id, name, "API عمومی سازگار برای قیمت تتر دریافت نشد");
-    }
-    return buildQuote(id, name, buyPrice, sellPrice);
-  } catch (error) {
-    return unavailable(id, name, error instanceof Error ? error.message : "منبع در دسترس نیست");
+    const raw = await readFile(ompCachePath, "utf8");
+    ompMemCache = JSON.parse(raw) as OmpCacheEntry;
+    return ompMemCache;
+  } catch {
+    return null;
   }
+}
+
+async function writeOmpCache(entry: OmpCacheEntry): Promise<void> {
+  ompMemCache = entry;
+  try {
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(ompCachePath, JSON.stringify(entry), "utf8");
+  } catch {
+    // best-effort
+  }
+}
+
+function ompQuoteFromCache(entry: OmpCacheEntry, stale = false): DomesticQuote {
+  return {
+    ...entry.quote,
+    sourceStatus: stale ? "degraded" : entry.quote.sourceStatus,
+    errorMessage: stale ? "آخرین قیمت معتبر OMPFinex نمایش داده می‌شود" : entry.quote.errorMessage
+  };
+}
+
+function isOmpRateLimited(error: unknown): boolean {
+  return error instanceof ProviderError && error.message.includes("429");
+}
+
+async function fetchOmpFinexLive(): Promise<DomesticQuote> {
+  const id = "ompfinex";
+  const name = "OMPFinex";
+  const data = await fetchJson<{
+    data?: { bids?: Array<[string, string]>; asks?: Array<[string, string]> };
+  }>(`https://api.ompfinex.com/v1/market/${OMP_USDT_MARKET_ID}/depth`, 12_000, {
+    headers: { "user-agent": DESK_UA }
+  });
+
+  const buyPrice = toToman(data.data?.bids?.[0]?.[0], "rial");
+  const sellPrice = toToman(data.data?.asks?.[0]?.[0], "rial");
+  if (buyPrice === null && sellPrice === null) {
+    throw new ProviderError("داده دفتر سفارش تتر دریافت نشد");
+  }
+  return buildQuote(id, name, buyPrice, sellPrice);
 }
 
 async function ompFinex(): Promise<DomesticQuote> {
   const id = "ompfinex";
   const name = "OMPFinex";
-  try {
-    const data = await fetchJson<Record<string, unknown>>("https://api.ompfinex.com/v1/markets", 9_000);
-    const markets = Array.isArray(data) ? data : Array.isArray(data.data) ? data.data : [];
-    const item = markets.find((entry) => {
-      if (!entry || typeof entry !== "object") return false;
-      const row = entry as Record<string, unknown>;
-      const symbol = String(row.symbol ?? row.name ?? row.market ?? "").toLowerCase();
-      return symbol.includes("usdt") && (symbol.includes("irt") || symbol.includes("tmn"));
-    }) as Record<string, unknown> | undefined;
+  const now = Date.now();
+  const cache = await readOmpCache();
 
-    const buyPrice = toToman(item?.buy ?? item?.bid ?? item?.highest_bid);
-    const sellPrice = toToman(item?.sell ?? item?.ask ?? item?.lowest_ask);
-    const midPrice = toToman(item?.last ?? item?.lastPrice ?? item?.price);
-    if (buyPrice === null && sellPrice === null && midPrice === null) {
-      return unavailable(id, name, "داده قیمت تتر در پاسخ منبع پیدا نشد");
+  if (cache?.rateLimitedUntil && now < cache.rateLimitedUntil) {
+    if (cache.quote.buyPrice !== null || cache.quote.sellPrice !== null || cache.quote.midPrice !== null) {
+      return ompQuoteFromCache(cache, true);
     }
-    return buildQuote(id, name, buyPrice, sellPrice, {
-      midPrice,
-      status: buyPrice === null || sellPrice === null ? "degraded" : "available",
-      errorMessage: buyPrice === null || sellPrice === null ? "خرید و فروش کامل دریافت نشد" : undefined
-    });
+    return unavailable(id, name, "محدودیت نرخ OMPFinex؛ بعداً دوباره تلاش کنید");
+  }
+
+  if (cache && now - cache.fetchedAt < OMP_MIN_FETCH_MS) {
+    if (cache.quote.buyPrice !== null || cache.quote.sellPrice !== null || cache.quote.midPrice !== null) {
+      return cache.quote;
+    }
+  }
+
+  try {
+    const quote = await fetchOmpFinexLive();
+    await writeOmpCache({ quote, fetchedAt: now });
+    return quote;
   } catch (error) {
+    if (isOmpRateLimited(error)) {
+      const nextCache: OmpCacheEntry = {
+        quote: cache?.quote ?? unavailable(id, name, "محدودیت نرخ OMPFinex"),
+        fetchedAt: cache?.fetchedAt ?? now,
+        rateLimitedUntil: now + OMP_RATE_LIMIT_BACKOFF_MS
+      };
+      await writeOmpCache(nextCache);
+      if (cache && (cache.quote.buyPrice !== null || cache.quote.sellPrice !== null || cache.quote.midPrice !== null)) {
+        return ompQuoteFromCache(cache, true);
+      }
+      return unavailable(id, name, "محدودیت نرخ OMPFinex؛ بعداً دوباره تلاش کنید");
+    }
+
+    if (cache && now - cache.fetchedAt < OMP_STALE_TTL_MS) {
+      if (cache.quote.buyPrice !== null || cache.quote.sellPrice !== null || cache.quote.midPrice !== null) {
+        return ompQuoteFromCache(cache, true);
+      }
+    }
+
     return unavailable(id, name, error instanceof Error ? error.message : "منبع در دسترس نیست");
   }
 }
@@ -298,13 +374,33 @@ const providers: Provider[] = [
   { id: "tetherland", name: "تترلند", fetchQuote: tetherland }
 ];
 
-export async function getDomesticQuotes(settings: DeskSettings): Promise<DomesticQuote[]> {
+const domesticCache = createProviderCache<DomesticQuote[]>();
+
+function domesticCacheKey(settings: DeskSettings): string {
+  return providers.map((provider) => `${provider.id}:${settings.enabledSources[provider.id] === false ? 0 : 1}`).join("|");
+}
+
+async function fetchDomesticQuotes(settings: DeskSettings): Promise<DomesticQuote[]> {
   return Promise.all(
     providers.map(async (provider) => {
       if (settings.enabledSources[provider.id] === false) {
         return unavailable(provider.id, provider.name, "این منبع در تنظیمات غیرفعال است");
       }
-      return provider.fetchQuote();
+      try {
+        return await provider.fetchQuote();
+      } catch (error) {
+        return unavailable(
+          provider.id,
+          provider.name,
+          error instanceof Error ? error.message : "منبع در دسترس نیست"
+        );
+      }
     })
   );
+}
+
+export async function getDomesticQuotes(settings: DeskSettings): Promise<DomesticQuote[]> {
+  const key = domesticCacheKey(settings);
+  const ttlMs = ttlFromMinutes(settings.priceRefreshMinutes);
+  return domesticCache.get(key, ttlMs, () => fetchDomesticQuotes(settings));
 }

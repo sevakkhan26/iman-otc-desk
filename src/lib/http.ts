@@ -285,7 +285,33 @@ function httpsGetWithCookies(url: string, timeoutMs: number, headers: Record<str
   }));
 }
 
+function parseJsonResponse<T>(text: string): T {
+  if (!text.trim()) {
+    throw new ProviderError("پاسخ خالی بود");
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new ProviderError("پاسخ JSON معتبر نبود");
+  }
+}
+
 export async function fetchJson<T>(url: string, timeoutMs = 10_000, init?: RequestInit): Promise<T> {
+  const headers = {
+    accept: "application/json, text/plain;q=0.8, */*;q=0.5",
+    "user-agent": BROWSER_UA,
+    ...(init?.headers ?? {})
+  } as Record<string, string>;
+
+  try {
+    const text = await httpsGetText(url, timeoutMs, headers);
+    return parseJsonResponse<T>(text);
+  } catch (httpsError) {
+    if (!(httpsError instanceof ProviderError)) {
+      throw httpsError;
+    }
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -293,11 +319,7 @@ export async function fetchJson<T>(url: string, timeoutMs = 10_000, init?: Reque
     const response = await fetch(url, {
       ...init,
       cache: "no-store",
-      headers: {
-        accept: "application/json, text/plain;q=0.8, */*;q=0.5",
-        "user-agent": BROWSER_UA,
-        ...(init?.headers ?? {})
-      },
+      headers,
       signal: controller.signal
     });
 
@@ -305,17 +327,15 @@ export async function fetchJson<T>(url: string, timeoutMs = 10_000, init?: Reque
       throw new ProviderError(`HTTP ${response.status}`);
     }
 
-    const text = await response.text();
-    if (!text.trim()) {
-      throw new ProviderError("پاسخ خالی بود");
-    }
-
-    try {
-      return JSON.parse(text) as T;
-    } catch {
-      throw new ProviderError("پاسخ JSON معتبر نبود");
-    }
+    return parseJsonResponse<T>(await response.text());
   } catch (error) {
+    if (shouldRetryWithHttps(error)) {
+      try {
+        return parseJsonResponse<T>(await httpsGetText(url, timeoutMs, headers));
+      } catch (retryError) {
+        if (retryError instanceof ProviderError) throw retryError;
+      }
+    }
     if (error instanceof ProviderError) {
       throw error;
     }

@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useApi } from "@/hooks/useApi";
 import { CalendarClock, Clock, RefreshCw, Save, X } from "lucide-react";
 import type {
   AlertItem,
@@ -13,11 +14,13 @@ import type {
   ForexEvent,
   ForexEventsResponse,
   GlobalPrice,
-  ImpactNewsItem,
   ImpactNewsResponse,
   PublicSettings,
   FxPricesApiItem,
   FxPricesApiResponse,
+  GoldInstrumentType,
+  GoldPricesApiItem,
+  GoldPricesApiResponse,
   QuickDecision,
   Severity,
   TetherMarketResponse
@@ -29,6 +32,7 @@ import {
   forexImpactTone,
   formatCountdown,
   formatDate,
+  formatNewsTehranTime,
   formatNumber,
   formatPercent,
   formatTehran,
@@ -44,6 +48,8 @@ import {
   statusTone
 } from "@/components/format";
 import { SmartFilter, matchAsset, matchQuery, type AssetFilter } from "@/components/SmartFilter";
+import { GoldPriceChart } from "@/components/GoldPriceChart";
+import { GoldMarketSummary } from "@/components/GoldMarketSummary";
 import { MedianChart } from "@/components/MedianChart";
 import { assetLabel } from "@/lib/assets";
 
@@ -58,50 +64,6 @@ const TOAST_TTL_MS = 9_000;
 const MAX_TOASTS = 5;
 const TICKER_MAX_ITEMS = 12;
 const FOREX_LOOKBACK_MS = 2 * 60 * 60 * 1_000;
-
-/* ============================================================
- * Data hook
- * ========================================================== */
-function useApi<T>(url: string, refreshMs?: number) {
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
-  const [revision, setRevision] = useState(0);
-  const hasDataRef = useRef(false);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    setError(null);
-    fetch(url, { cache: "no-store", signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return (await response.json()) as T;
-      })
-      .then((value) => {
-        setData(value);
-        hasDataRef.current = true;
-        setLastUpdated(Date.now());
-      })
-      .catch((err: unknown) => {
-        if (err instanceof Error && err.name === "AbortError") return;
-        // keep showing last good data on background-refresh errors
-        if (!hasDataRef.current) setError(err instanceof Error ? err.message : "داده‌ای دریافت نشد");
-      })
-      .finally(() => setLoading(false));
-    return () => controller.abort();
-  }, [url, revision]);
-
-  // background auto-refresh (no loading flash — the fetch effect no longer flips loading)
-  useEffect(() => {
-    if (!refreshMs) return;
-    const id = setInterval(() => setRevision((value) => value + 1), refreshMs);
-    return () => clearInterval(id);
-  }, [refreshMs]);
-
-  const reload = useCallback(() => setRevision((value) => value + 1), []);
-  return { data, loading, error, reload, lastUpdated };
-}
 
 const clockDateFmt = new Intl.DateTimeFormat("fa-IR", { weekday: "short", year: "numeric", month: "2-digit", day: "2-digit" });
 const clockTimeFmt = new Intl.DateTimeFormat("fa-IR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -389,7 +351,10 @@ function NewsTicker() {
             const content = (
               <>
                 <span className={`ticker-dot ${severityTone(item.severity)}`} aria-hidden="true" />
-                <span className="ticker-text">{item.title}</span>
+                <span className="ticker-text">{item.translatedTitle}</span>
+                {item.publishedAt ? (
+                  <span className="ticker-time">{formatNewsTehranTime(item.publishedAt)}</span>
+                ) : null}
                 <span className="ticker-src">— {item.source}</span>
               </>
             );
@@ -652,39 +617,6 @@ function AlertsList({
   );
 }
 
-const NewsItemCard = memo(function NewsItemCard({ item }: { item: ImpactNewsItem }) {
-  return (
-    <article className="news-item">
-      <div className="row-meta">
-        <Badge tone={severityTone(item.severity)}>{severityLabel(item.severity)}</Badge>
-        <span>{item.source}</span>
-        <span className="nowrap">{formatDate(item.publishedAt)}</span>
-      </div>
-      <h4 className="news-item-title">
-        {item.url ? (
-          <a href={item.url} target="_blank" rel="noreferrer">
-            {item.title}
-          </a>
-        ) : (
-          item.title
-        )}
-      </h4>
-      <AssetTags assets={item.assets} />
-      <div className="muted news-item-impact">{item.impactOnUsdtIrt}</div>
-    </article>
-  );
-});
-
-function NewsColumn({ items }: { items: ImpactNewsItem[] }) {
-  return (
-    <div className="stack">
-      {items.map((item) => (
-        <NewsItemCard key={item.id} item={item} />
-      ))}
-    </div>
-  );
-}
-
 function GlobalMetricGrid({ rows }: { rows: GlobalPrice[] }) {
   return (
     <div className="grid global-metrics">
@@ -776,6 +708,57 @@ function ForexEventsWidget({ forex, limit = 6 }: { forex: ForexEventsResponse; l
   );
 }
 
+export function GoldMarketView() {
+  const { data, loading, error, reload, lastUpdated } = useApi<GoldPricesApiResponse>("/api/gold-prices", 30_000);
+  const [instrument, setInstrument] = useState<GoldInstrumentType>("اونس طلا به دلار");
+  const cards = useMemo(
+    () =>
+      (data?.items ?? [])
+        .filter(isValidGoldPrice)
+        .sort(
+          (a, b) =>
+            goldInstrumentOrder[a.instrument] - goldInstrumentOrder[b.instrument] ||
+            goldSourceOrder[a.source] - goldSourceOrder[b.source]
+        ),
+    [data?.items]
+  );
+  const summaryInstrument = useMemo(() => {
+    const hasSelected = cards.some((item) => item.instrument === instrument);
+    if (hasSelected) return instrument;
+    return cards[0]?.instrument ?? instrument;
+  }, [cards, instrument]);
+  const metaParts = cards.length
+    ? [data?.lastUpdated ? `به‌روزرسانی: ${formatDate(data.lastUpdated)}` : "", ...(data?.notes ?? [])].filter(Boolean)
+    : [];
+  const meta = metaParts.join(" · ");
+
+  return (
+    <>
+      <PageHeader title="بازار طلا" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+      <LoadState loading={loading} error={error} />
+      {data ? (
+        <div className="grid gold-page" data-layout-version="gold-summary-panel-v1">
+          {!cards.length ? (
+            <Panel title="قیمت‌های بازار طلا" meta={meta ? <span className="muted">{meta}</span> : undefined}>
+              <div className="empty">فعلاً داده‌ای از بازار طلا دریافت نشد</div>
+            </Panel>
+          ) : (
+            <div className="gold-page-layout">
+              <div className="gold-page-main">
+                <Panel title="قیمت‌های بازار طلا" meta={meta ? <span className="muted">{meta}</span> : undefined}>
+                  <GoldMarketCards items={cards} />
+                  <GoldPriceChart instrument={summaryInstrument} onInstrumentChange={setInstrument} />
+                </Panel>
+              </div>
+              <GoldMarketSummary items={cards} instrument={summaryInstrument} />
+            </div>
+          )}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 export function ForexView() {
   const { data, loading, error, reload, lastUpdated } = useApi<ForexEventsResponse>("/api/forex");
   return (
@@ -816,6 +799,140 @@ function isValidSitePrice(item: FxPricesApiItem): boolean {
   return item.status === "ok" && (item.buy !== null || item.sell !== null || item.mid !== null);
 }
 
+function sitePriceAssetLabel(quote: FxPricesApiItem): string {
+  if (quote.source === "bonbast" && quote.asset === "دلار بن‌بست") return "دلار کاغذی";
+  return quote.asset;
+}
+
+const goldInstrumentOrder: Record<GoldInstrumentType, number> = {
+  "اونس طلا به دلار": 0,
+  "یک گرم طلای 18 عیار": 1,
+  "سکه طرح امامی": 2,
+  "مثقال طلای آبشده": 3
+};
+
+const goldSourceOrder: Record<GoldPricesApiItem["source"], number> = {
+  navasan: 0,
+  bonbast: 1,
+  talavest: 2
+};
+
+function isValidGoldPrice(item: GoldPricesApiItem): boolean {
+  return item.status === "ok" && (item.buy !== null || item.sell !== null || item.mid !== null);
+}
+
+function GoldPriceValue({ item, value, className }: { item: GoldPricesApiItem; value: number | null; className?: string }) {
+  if (value === null || !Number.isFinite(value)) {
+    return <span className={className}>—</span>;
+  }
+  return <span className={className}>{item.unit === "usd_oz" ? formatUsd(value) : formatToman(value)}</span>;
+}
+
+function GoldMarketCard({ quote }: { quote: GoldPricesApiItem }) {
+  const sourceLabel = sourceLabels[quote.source] ?? quote.source;
+  const hasBuySell = quote.buy !== null || quote.sell !== null;
+  const singlePrice = quote.mid !== null && !hasBuySell;
+
+  return (
+    <article className="exch-card gold-source-card">
+      <header className="exch-card-head">
+        <span className="exch-name">{sourceLabel}</span>
+        <Badge tone="good">فعال</Badge>
+      </header>
+      <div className="exch-prices">
+        {quote.buy !== null ? (
+          <div className="exch-row">
+            <span className="exch-k">خرید</span>
+            <GoldPriceValue item={quote} value={quote.buy} className="exch-v number" />
+          </div>
+        ) : null}
+        {quote.sell !== null ? (
+          <div className="exch-row">
+            <span className="exch-k">فروش</span>
+            <GoldPriceValue item={quote} value={quote.sell} className="exch-v number" />
+          </div>
+        ) : null}
+        {singlePrice ? (
+          <div className="exch-row mid">
+            <span className="exch-k">قیمت</span>
+            <GoldPriceValue item={quote} value={quote.mid} className="exch-v number" />
+          </div>
+        ) : quote.mid !== null ? (
+          <div className="exch-row mid">
+            <span className="exch-k">قیمت وسط</span>
+            <GoldPriceValue item={quote} value={quote.mid} className="exch-v number" />
+          </div>
+        ) : null}
+        {quote.lastUpdated ? <div className="tg-meta muted">{formatDate(quote.lastUpdated)}</div> : null}
+      </div>
+    </article>
+  );
+}
+
+function GoldMarketCards({ items }: { items: GoldPricesApiItem[] }) {
+  const groups = useMemo(() => {
+    const byInstrument = new Map<GoldInstrumentType, GoldPricesApiItem[]>();
+    for (const item of items) {
+      const list = byInstrument.get(item.instrument) ?? [];
+      list.push(item);
+      byInstrument.set(item.instrument, list);
+    }
+    return [...byInstrument.entries()]
+      .sort(([a], [b]) => goldInstrumentOrder[a] - goldInstrumentOrder[b])
+      .map(([instrument, cards]) => ({
+        instrument,
+        cards: cards.sort((a, b) => goldSourceOrder[a.source] - goldSourceOrder[b.source])
+      }));
+  }, [items]);
+
+  return (
+    <div className="gold-groups">
+      {groups.map((group) => (
+        <section className="gold-group" key={group.instrument}>
+          <h3 className="gold-group-title">{group.instrument}</h3>
+          <div className="gold-group-grid">
+            {group.cards.map((quote) => (
+              <GoldMarketCard key={`${quote.source}-${quote.instrument}`} quote={quote} />
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function GoldMarketPanel({ title = "بازار طلا" }: { title?: string }) {
+  const { data: gold } = useApi<GoldPricesApiResponse>("/api/gold-prices", 30_000);
+  const cards = useMemo(
+    () =>
+      (gold?.items ?? [])
+        .filter(isValidGoldPrice)
+        .sort(
+          (a, b) =>
+            goldInstrumentOrder[a.instrument] - goldInstrumentOrder[b.instrument] ||
+            goldSourceOrder[a.source] - goldSourceOrder[b.source]
+        ),
+    [gold?.items]
+  );
+  const metaParts = cards.length
+    ? [gold?.lastUpdated ? `به‌روزرسانی: ${formatDate(gold.lastUpdated)}` : "", ...(gold?.notes ?? [])].filter(Boolean)
+    : [];
+  const meta = metaParts.join(" · ");
+
+  return (
+    <Panel title={title} meta={meta ? <span className="muted">{meta}</span> : undefined}>
+      {!cards.length ? (
+        <div className="empty">فعلاً داده‌ای از بازار طلا دریافت نشد</div>
+      ) : (
+        <>
+          <GoldMarketCards items={cards} />
+          <GoldPriceChart />
+        </>
+      )}
+    </Panel>
+  );
+}
+
 function SitePrices() {
   const { data: fx } = useApi<FxPricesApiResponse>("/api/fx-prices", 30_000);
   const cards = useMemo(
@@ -842,7 +959,7 @@ function SitePrices() {
               <article className="exch-card" key={`${quote.source}-${quote.asset}`}>
                 <header className="exch-card-head">
                   <span className="exch-name">
-                    {quote.asset}
+                    {sitePriceAssetLabel(quote)}
                     <span className="muted"> · {sourceLabel}</span>
                   </span>
                   <Badge tone="good">فعال</Badge>
@@ -1066,56 +1183,7 @@ export function ExchangeMonitorView() {
           <Panel title="صرافی‌های جهانی">
             <GlobalExchangeTable rows={data.global} />
           </Panel>
-        </div>
-      ) : null}
-    </>
-  );
-}
-
-export function ImpactNewsView() {
-  const { data, loading, error, reload, lastUpdated } = useApi<ImpactNewsResponse>("/api/impact-news");
-  const [asset, setAsset] = useState<AssetFilter>("all");
-  const [query, setQuery] = useState("");
-
-  const filtered = useMemo(() => {
-    if (!data) return [];
-    return data.items.filter(
-      (item) => matchAsset(item.assets, asset) && matchQuery(`${item.title} ${item.source} ${item.impactOnUsdtIrt}`, query)
-    );
-  }, [data, asset, query]);
-
-  const groups: Array<{ key: string; title: string; items: ImpactNewsItem[] }> = [
-    { key: "global", title: "اخبار جهانی", items: filtered.filter((item) => item.group === "global") },
-    { key: "iran", title: "اخبار ایران", items: filtered.filter((item) => item.group === "iran") },
-    { key: "lp", title: "اتصال به صرافی‌ها (LP)", items: filtered.filter((item) => item.group === "lp") }
-  ];
-  const nonEmpty = groups.filter((group) => group.items.length > 0);
-
-  return (
-    <>
-      <PageHeader title="خبرهای اثرگذار" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
-      <LoadState loading={loading} error={error} />
-      {data ? (
-        <div className="grid">
-          <SmartFilter
-            asset={asset}
-            query={query}
-            onAsset={setAsset}
-            onQuery={setQuery}
-            placeholder="جستجو در خبرها..."
-            resultLabel={`${filtered.length} از ${data.items.length} خبر`}
-          />
-          {nonEmpty.length ? (
-            <div className="grid news-columns">
-              {nonEmpty.map((group) => (
-                <Panel key={group.key} title={group.title} meta={<Badge tone="neutral">{group.items.length}</Badge>}>
-                  <NewsColumn items={group.items} />
-                </Panel>
-              ))}
-            </div>
-          ) : (
-            <div className="empty">{data.message || "داده‌ای دریافت نشد"}</div>
-          )}
+          <GoldMarketPanel title="بازار طلا" />
         </div>
       ) : null}
     </>
@@ -1185,6 +1253,7 @@ const sourceLabels: Record<string, string> = {
   tetherland: "تترلند",
   navasan: "نوسان",
   bonbast: "بن‌بست",
+  talavest: "Talavest",
   binance: "Binance",
   kraken: "Kraken",
   okx: "OKX",

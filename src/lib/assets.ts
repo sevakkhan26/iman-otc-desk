@@ -29,6 +29,24 @@ const assetLabels: Record<AssetTag, string> = {
   MACRO: "کلان / مالی"
 };
 
+export type NewsLabelGroupKey = AssetTag | "OTHER";
+
+export const NEWS_LABEL_GROUPS: Array<{ key: NewsLabelGroupKey; title: string }> = [
+  { key: "USDT", title: assetLabels.USDT },
+  { key: "BTC", title: assetLabels.BTC },
+  { key: "ETH", title: assetLabels.ETH },
+  { key: "MACRO", title: assetLabels.MACRO },
+  { key: "OTHER", title: "سایر" }
+];
+
+const PRIMARY_LABEL_ORDER: AssetTag[] = ["USDT", "BTC", "ETH", "MACRO"];
+
 export function assetLabel(asset: AssetTag): string {
   return assetLabels[asset];
+}
+
+/** Primary label bucket for impact-news grouping (no duplicates across groups). */
+export function primaryNewsGroup(assets: AssetTag[]): NewsLabelGroupKey {
+  if (!assets.length) return "OTHER";
+  return PRIMARY_LABEL_ORDER.find((tag) => assets.includes(tag)) ?? "OTHER";
 }

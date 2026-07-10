@@ -112,6 +112,8 @@ export interface ExchangeOperationalStatus {
 export interface ImpactNewsItem {
   id: string;
   title: string;
+  translatedTitle: string;
+  translatedSummary: string;
   source: string;
   publishedAt: string | null;
   severity: Severity;
@@ -286,6 +288,75 @@ export interface FxPricesApiResponse {
   items: FxPricesApiItem[];
   lastUpdated?: string;
   notes?: string[];
+}
+
+export type GoldInstrumentType =
+  | "اونس طلا به دلار"
+  | "یک گرم طلای 18 عیار"
+  | "سکه طرح امامی"
+  | "مثقال طلای آبشده";
+
+export type GoldPriceUnit = "toman" | "usd_oz";
+
+export type GoldPricesApiSource = "navasan" | "bonbast" | "talavest";
+
+export type GoldHistoryRange = "24h" | "7d";
+
+export type GoldPricesApiStatus = "ok" | "unavailable" | "error";
+
+export interface GoldMarketQuote {
+  sourceId: GoldPricesApiSource;
+  sourceName: string;
+  instrument: GoldInstrumentType;
+  unit: GoldPriceUnit;
+  buyPrice: number | null;
+  sellPrice: number | null;
+  midPrice: number | null;
+  lastUpdated: string | null;
+  status: SourceStatus;
+}
+
+export interface GoldMarketResponse {
+  quotes: GoldMarketQuote[];
+  sourceStatus: SourceStatus;
+  lastUpdated: string | null;
+  notes?: string[];
+  stale?: boolean;
+}
+
+export interface GoldPricesApiItem {
+  source: GoldPricesApiSource;
+  instrument: GoldInstrumentType;
+  unit: GoldPriceUnit;
+  buy: number | null;
+  sell: number | null;
+  mid: number | null;
+  lastUpdated: string;
+  status: GoldPricesApiStatus;
+}
+
+export interface GoldPricesApiResponse {
+  items: GoldPricesApiItem[];
+  lastUpdated?: string;
+  notes?: string[];
+}
+
+export interface GoldHistoryPoint {
+  t: string;
+  v: number;
+}
+
+export interface GoldHistorySeries {
+  source: GoldPricesApiSource;
+  sourceName: string;
+  unit: GoldPriceUnit;
+  points: GoldHistoryPoint[];
+}
+
+export interface GoldHistoryResponse {
+  range: GoldHistoryRange;
+  instrument: GoldInstrumentType;
+  series: GoldHistorySeries[];
 }
 
 export interface TelegramPrice {

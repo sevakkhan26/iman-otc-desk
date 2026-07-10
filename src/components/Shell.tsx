@@ -3,28 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import {
-  Activity,
-  Bell,
-  CalendarClock,
-  ChartCandlestick,
-  Gauge,
-  LogOut,
-  Menu,
-  Newspaper,
-  Settings,
-  ShieldAlert
-} from "lucide-react";
-
-const navItems = [
-  { href: "/dashboard", label: "داشبورد", icon: Gauge },
-  { href: "/tether-market", label: "بازار تتر ایران", icon: ChartCandlestick },
-  { href: "/exchange-monitor", label: "مانیتور صرافی‌ها", icon: Activity },
-  { href: "/forex", label: "فارکس", icon: CalendarClock },
-  { href: "/impact-news", label: "خبرهای اثرگذار", icon: Newspaper },
-  { href: "/alerts", label: "هشدارها", icon: Bell },
-  { href: "/settings", label: "تنظیمات", icon: Settings }
-];
+import { LogOut, Menu, ShieldAlert } from "lucide-react";
+import { sidebarNavItems } from "@/lib/sidebarNav";
 
 const STORAGE_KEY = "otc-sidebar-collapsed";
 
@@ -73,7 +53,7 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
           </div>
         </div>
         <nav className="nav" aria-label="صفحات">
-          {navItems.map((item) => {
+          {sidebarNavItems.map((item) => {
             const Icon = item.icon;
             const active = pathname === item.href;
             return (

@@ -17,6 +17,7 @@ const allSources = [
   "tetherland",
   "navasan",
   "bonbast",
+  "talavest",
   "binance",
   "kraken",
   "okx",
@@ -56,12 +57,22 @@ function mergeSettings(value: Partial<DeskSettings>): DeskSettings {
   };
 }
 
+let settingsMemCache: { value: DeskSettings; at: number } | null = null;
+const SETTINGS_MEM_TTL_MS = 5_000;
+
 export async function getSettings(): Promise<DeskSettings> {
+  if (settingsMemCache && Date.now() - settingsMemCache.at < SETTINGS_MEM_TTL_MS) {
+    return settingsMemCache.value;
+  }
   try {
     const raw = await readFile(settingsPath, "utf8");
-    return mergeSettings(JSON.parse(raw) as Partial<DeskSettings>);
+    const value = mergeSettings(JSON.parse(raw) as Partial<DeskSettings>);
+    settingsMemCache = { value, at: Date.now() };
+    return value;
   } catch {
-    return mergeSettings({});
+    const value = mergeSettings({});
+    settingsMemCache = { value, at: Date.now() };
+    return value;
   }
 }
 
@@ -82,6 +93,7 @@ export async function patchSettings(patch: SettingsPatch): Promise<PublicSetting
 
   await mkdir(dataDir, { recursive: true });
   await writeFile(settingsPath, JSON.stringify(next, null, 2), "utf8");
+  settingsMemCache = { value: next, at: Date.now() };
   return toPublicSettings(next);
 }
 

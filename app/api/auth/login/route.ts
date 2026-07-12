@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { AUTH_COOKIE, AUTH_TOKEN, checkCredentials } from "@/lib/auth";
+import { AUTH_COOKIE, sessionTokenForRole } from "@/lib/auth";
+import { verifyCredentials } from "@/lib/authCredentials";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -14,12 +15,13 @@ export async function POST(request: NextRequest) {
     // fall through to the credential check with empty body
   }
 
-  if (!checkCredentials(body.username, body.password)) {
+  const role = verifyCredentials(body.username, body.password);
+  if (!role) {
     return NextResponse.json({ ok: false, message: "نام کاربری یا رمز عبور اشتباه است" }, { status: 401 });
   }
 
-  const response = NextResponse.json({ ok: true });
-  response.cookies.set(AUTH_COOKIE, AUTH_TOKEN, {
+  const response = NextResponse.json({ ok: true, role });
+  response.cookies.set(AUTH_COOKIE, sessionTokenForRole(role), {
     httpOnly: true,
     sameSite: "lax",
     path: "/",

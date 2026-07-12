@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { AUTH_COOKIE, isAuthenticated } from "@/lib/auth";
+import { AUTH_COOKIE, getRoleFromCookie } from "@/lib/auth";
+
+const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  const loggedIn = isAuthenticated(request.cookies.get(AUTH_COOKIE)?.value);
+  const role = getRoleFromCookie(request.cookies.get(AUTH_COOKIE)?.value);
+  const loggedIn = role !== null;
+  const method = request.method.toUpperCase();
 
-  // auth endpoints stay reachable for login/logout
+  // auth endpoints stay reachable for login/logout/session
   if (pathname.startsWith("/api/auth/")) {
     return NextResponse.next();
   }
@@ -18,17 +22,28 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  if (loggedIn) {
-    return NextResponse.next();
+  if (!loggedIn) {
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json({ error: "unauthorized", message: "ابتدا وارد شوید" }, { status: 401 });
+    }
+    return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  // protected data APIs: return 401 JSON instead of a redirect
-  if (pathname.startsWith("/api/")) {
-    return NextResponse.json({ error: "unauthorized", message: "ابتدا وارد شوید" }, { status: 401 });
+  if (role === "viewer") {
+    if (pathname === "/settings" || pathname.startsWith("/settings/")) {
+      return NextResponse.redirect(new URL("/dashboard", request.url));
+    }
+
+    if (pathname === "/api/settings" || pathname.startsWith("/api/settings/")) {
+      return NextResponse.json({ error: "forbidden", message: "دسترسی مجاز نیست" }, { status: 403 });
+    }
+
+    if (pathname.startsWith("/api/") && !READ_METHODS.has(method)) {
+      return NextResponse.json({ error: "forbidden", message: "دسترسی فقط خواندنی" }, { status: 403 });
+    }
   }
 
-  // protected pages → login
-  return NextResponse.redirect(new URL("/login", request.url));
+  return NextResponse.next();
 }
 
 export const config = {

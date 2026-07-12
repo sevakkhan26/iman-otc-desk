@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { LogOut, Menu, ShieldAlert } from "lucide-react";
+import type { DeskRole } from "@/lib/auth";
 import { sidebarNavItems } from "@/lib/sidebarNav";
 import { formatAppVersionLabel } from "@/lib/version";
 
@@ -19,6 +20,7 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [tehranTime, setTehranTime] = useState<string | null>(null);
+  const [role, setRole] = useState<DeskRole | null>(null);
 
   // default open; restore the user's last choice after mount (avoids hydration mismatch)
   useEffect(() => {
@@ -35,6 +37,20 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
     const id = setInterval(update, 30_000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    fetch("/api/auth/me", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) return null;
+        return (await response.json()) as { role?: DeskRole };
+      })
+      .then((data) => {
+        if (data?.role === "admin" || data?.role === "viewer") setRole(data.role);
+      })
+      .catch(() => {});
+  }, []);
+
+  const navItems = sidebarNavItems.filter((item) => !item.adminOnly || role === "admin");
 
   const toggle = () => {
     setCollapsed((prev) => {
@@ -68,7 +84,7 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
           </div>
         </div>
         <nav className="nav" aria-label="صفحات">
-          {sidebarNavItems.map((item) => {
+          {navItems.map((item) => {
             const Icon = item.icon;
             const active = pathname === item.href;
             return (

@@ -1,19 +1,31 @@
-// Simple local/internal auth for the desk dashboard.
-// Constants only (edge-safe) — imported by both middleware and the auth API routes.
+// Edge-safe auth helpers (middleware + shared constants).
 
 export const AUTH_COOKIE = "otc-auth";
 
-// Static session token: fine for a local dashboard, survives server restarts,
-// and an httpOnly cookie means the browser never exposes it to page scripts.
-export const AUTH_TOKEN = "otc-desk-session-9f2c41ab7d5e";
+export type DeskRole = "admin" | "viewer";
 
-const AUTH_USERNAME = "admin";
-const AUTH_PASSWORD = "1234";
+const SESSION_TOKENS: Record<DeskRole, string> = {
+  admin: "otc-desk-session-admin-9f2c41ab7d5e",
+  viewer: "otc-desk-session-viewer-8e1b30bc6c4f"
+};
 
-export function checkCredentials(username: unknown, password: unknown): boolean {
-  return username === AUTH_USERNAME && password === AUTH_PASSWORD;
+const TOKEN_TO_ROLE = new Map<string, DeskRole>(
+  (Object.entries(SESSION_TOKENS) as Array<[DeskRole, string]>).map(([role, token]) => [token, role])
+);
+
+export function sessionTokenForRole(role: DeskRole): string {
+  return SESSION_TOKENS[role];
+}
+
+export function getRoleFromCookie(value: string | undefined): DeskRole | null {
+  if (!value) return null;
+  return TOKEN_TO_ROLE.get(value) ?? null;
 }
 
 export function isAuthenticated(cookieValue: string | undefined): boolean {
-  return cookieValue === AUTH_TOKEN;
+  return getRoleFromCookie(cookieValue) !== null;
+}
+
+export function isAdminRole(role: DeskRole | null): role is "admin" {
+  return role === "admin";
 }

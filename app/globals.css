@@ -308,23 +308,17 @@ input {
 
 .sidebar-version {
   align-self: flex-end;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0 12px 12px;
-  padding: 6px 10px;
-  border: 1px solid var(--line-soft);
-  border-radius: 999px;
-  background: var(--surface-2);
-  color: var(--muted);
+  margin: 0 12px 4px;
+  padding: 0 2px;
+  color: var(--muted-2);
   font-size: 11px;
-  line-height: 1;
+  line-height: 1.4;
   white-space: nowrap;
 }
 
 .sidebar-version-value {
-  font-weight: 800;
-  color: var(--text);
+  font-weight: 700;
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
   direction: ltr;
   unicode-bidi: isolate;
@@ -333,12 +327,7 @@ input {
 .shell.collapsed .sidebar-version {
   align-self: center;
   margin-inline: 0;
-  margin-bottom: 10px;
-  padding: 5px 7px;
-}
-
-.shell.collapsed .sidebar-version-label {
-  display: none;
+  font-size: 10px;
 }
 
 .app-version {

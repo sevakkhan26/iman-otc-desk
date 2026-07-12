@@ -2,7 +2,7 @@
 
 import { useMemo, type ReactNode } from "react";
 import type { GoldInstrumentType, GoldPricesApiItem, GoldPriceUnit } from "@/lib/types";
-import { formatDate, formatPercent, formatToman, formatUsd } from "@/components/format";
+import { formatGoldTehran, formatPercent, formatToman, formatUsd } from "@/components/format";
 
 const GOLD_SOURCES = new Set<GoldPricesApiItem["source"]>(["navasan", "bonbast", "talavest"]);
 
@@ -133,7 +133,7 @@ export function GoldMarketSummary({
               <SummaryRow label="تعداد منابع فعال" value={summary.activeSources} />
               <SummaryRow
                 label="آخرین بروزرسانی"
-                value={summary.lastUpdated ? formatDate(summary.lastUpdated) : "—"}
+                value={summary.lastUpdated ? formatGoldTehran(summary.lastUpdated) : "—"}
               />
               <SummaryRow
                 label="بیشترین اختلاف بین منابع"

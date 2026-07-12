@@ -89,6 +89,19 @@ export function decisionLabel(level: DecisionLevel) {
   return "عادی";
 }
 
+/** Gold timestamps: single Asia/Tehran display pass from stored UTC ISO. */
+export function formatGoldTehran(value: string | null | undefined) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("fa-IR", {
+    timeZone: "Asia/Tehran",
+    dateStyle: "short",
+    timeStyle: "short",
+    hour12: false
+  }).format(date);
+}
+
 export function formatTehran(value: string | null | undefined) {
   if (!value) return "داده‌ای دریافت نشد";
   const date = new Date(value);

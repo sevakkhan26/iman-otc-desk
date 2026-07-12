@@ -32,6 +32,7 @@ import {
   forexImpactTone,
   formatCountdown,
   formatDate,
+  formatGoldTehran,
   formatNewsTehranTime,
   formatNumber,
   formatPercent,
@@ -75,11 +76,13 @@ function PageHeader({
   title,
   onRefresh,
   lastUpdated,
+  lastUpdatedDisplay,
   loading = false
 }: {
   title: string;
   onRefresh?: () => void;
   lastUpdated?: number | null;
+  lastUpdatedDisplay?: string | null;
   loading?: boolean;
 }) {
   // mount-guarded so the server render (null) matches the first client render, then ticks every second
@@ -99,7 +102,10 @@ function PageHeader({
           <span className="clock-time number">{now ? clockTimeFmt.format(now) : "—"}</span>
         </div>
         <div className="last-update">
-          آخرین بروزرسانی: <span className="number">{lastUpdated ? clockTimeFmt.format(lastUpdated) : "—"}</span>
+          آخرین بروزرسانی:{" "}
+          <span className="number">
+            {lastUpdatedDisplay ?? (lastUpdated ? clockTimeFmt.format(lastUpdated) : "—")}
+          </span>
         </div>
         {onRefresh ? (
           <button
@@ -728,13 +734,19 @@ export function GoldMarketView() {
     return cards[0]?.instrument ?? instrument;
   }, [cards, instrument]);
   const metaParts = cards.length
-    ? [data?.lastUpdated ? `به‌روزرسانی: ${formatDate(data.lastUpdated)}` : "", ...(data?.notes ?? [])].filter(Boolean)
+    ? [data?.lastUpdated ? `به‌روزرسانی: ${formatGoldTehran(data.lastUpdated)}` : "", ...(data?.notes ?? [])].filter(Boolean)
     : [];
   const meta = metaParts.join(" · ");
 
   return (
     <>
-      <PageHeader title="بازار طلا" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+      <PageHeader
+        title="بازار طلا"
+        onRefresh={reload}
+        lastUpdated={lastUpdated}
+        lastUpdatedDisplay={data?.lastUpdated ? formatGoldTehran(data.lastUpdated) : null}
+        loading={loading}
+      />
       <LoadState loading={loading} error={error} />
       {data ? (
         <div className="grid gold-page" data-layout-version="gold-summary-panel-v1">
@@ -863,7 +875,7 @@ function GoldMarketCard({ quote }: { quote: GoldPricesApiItem }) {
             <GoldPriceValue item={quote} value={quote.mid} className="exch-v number" />
           </div>
         ) : null}
-        {quote.lastUpdated ? <div className="tg-meta muted">{formatDate(quote.lastUpdated)}</div> : null}
+        {quote.lastUpdated ? <div className="tg-meta muted">{formatGoldTehran(quote.lastUpdated)}</div> : null}
       </div>
     </article>
   );
@@ -915,7 +927,7 @@ function GoldMarketPanel({ title = "بازار طلا" }: { title?: string }) {
     [gold?.items]
   );
   const metaParts = cards.length
-    ? [gold?.lastUpdated ? `به‌روزرسانی: ${formatDate(gold.lastUpdated)}` : "", ...(gold?.notes ?? [])].filter(Boolean)
+    ? [gold?.lastUpdated ? `به‌روزرسانی: ${formatGoldTehran(gold.lastUpdated)}` : "", ...(gold?.notes ?? [])].filter(Boolean)
     : [];
   const meta = metaParts.join(" · ");
 

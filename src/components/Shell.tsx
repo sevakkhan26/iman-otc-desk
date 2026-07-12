@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { LogOut, Menu, ShieldAlert } from "lucide-react";
 import { sidebarNavItems } from "@/lib/sidebarNav";
-import { APP_VERSION } from "@/lib/version";
+import { formatAppVersionLabel } from "@/lib/version";
 
 const STORAGE_KEY = "otc-sidebar-collapsed";
 
@@ -71,6 +71,9 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
           })}
         </nav>
         <div className="sidebar-bottom">
+          <div className="sidebar-version" title={`نسخه: ${formatAppVersionLabel()}`}>
+            نسخه: <span className="sidebar-version-value">{formatAppVersionLabel()}</span>
+          </div>
           <button
             type="button"
             className="nav-link logout-link"
@@ -87,10 +90,6 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
           <div className="sidebar-foot">
             <ShieldAlert aria-hidden="true" size={17} />
             <div className="sidebar-foot-text">منابع واقعی؛ منبع قطع باشد، عددی نمایش داده نمی‌شود.</div>
-          </div>
-          <div className="sidebar-version" title={`نسخه فعلی: ${APP_VERSION}`}>
-            <span className="sidebar-version-label">نسخه</span>
-            <span className="sidebar-version-value">{APP_VERSION}</span>
           </div>
         </div>
       </aside>

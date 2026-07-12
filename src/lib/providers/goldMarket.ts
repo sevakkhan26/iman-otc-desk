@@ -1,6 +1,12 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { recordGoldHistory } from "@/lib/goldHistory";
+import {
+  clampToNow,
+  parseNavasanEpoch,
+  parseTehranNaiveDateTime,
+  toUtcIso
+} from "@/lib/tehranTime";
 import { BROWSER_UA, fetchJson, fetchPageWithCookies, fetchPostForm, fetchText, numeric } from "@/lib/http";
 import type { DeskSettings, GoldInstrumentType, GoldMarketQuote, GoldMarketResponse, GoldPriceUnit, SourceStatus } from "@/lib/types";
 
@@ -38,7 +44,9 @@ const NAVASAN_THOUSANDS_KEYS = new Set(["sekkeh", "abshodeh"]);
 
 function navasanUpdatedAt(rate: NavasanRate | undefined): string | null {
   if (!rate?.date || !Number.isFinite(rate.date)) return null;
-  return new Date(rate.date).toISOString();
+  const parsed = parseNavasanEpoch(rate.date);
+  if (!parsed) return null;
+  return clampToNow(toUtcIso(parsed));
 }
 
 function navasanValue(rate: NavasanRate | undefined): number | null {
@@ -99,11 +107,12 @@ function quoteFromPrices(
 
 function latestTimestamp(values: Array<string | null>): string | null {
   const timestamps = values
+    .map((value) => clampToNow(value))
     .filter((value): value is string => Boolean(value))
     .map((value) => new Date(value).getTime())
     .filter(Number.isFinite);
   if (!timestamps.length) return null;
-  return new Date(Math.max(...timestamps)).toISOString();
+  return clampToNow(new Date(Math.max(...timestamps)).toISOString());
 }
 
 function aggregateStatus(quotes: GoldMarketQuote[]): SourceStatus {
@@ -217,13 +226,13 @@ function bonbastPrice(value: unknown): number | null {
 function bonbastUpdatedAt(payload: BonbastPayload): string | null {
   const modified = typeof payload.last_modified === "string" ? payload.last_modified.trim() : "";
   if (modified) {
-    const parsed = new Date(modified);
-    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+    const parsed = parseTehranNaiveDateTime(modified);
+    if (parsed) return clampToNow(toUtcIso(parsed));
   }
   const created = typeof payload.created === "string" ? payload.created.trim() : "";
   if (created) {
-    const parsed = new Date(created);
-    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+    const parsed = parseTehranNaiveDateTime(created);
+    if (parsed) return clampToNow(toUtcIso(parsed));
   }
   return null;
 }
@@ -282,13 +291,16 @@ function talavestRialToToman(value: number | null): number | null {
 }
 
 function talavestUpdatedAt(payload: TalavestTalaPayload): string | null {
+  const timestamp = Number(payload.timestamp);
+  if (Number.isFinite(timestamp) && timestamp > 0) {
+    const parsed = parseNavasanEpoch(timestamp);
+    if (parsed) return clampToNow(toUtcIso(parsed));
+  }
   const serverTime = typeof payload.serverTime === "string" ? payload.serverTime.trim() : "";
   if (serverTime) {
-    const parsed = new Date(serverTime.replace(" ", "T") + "+03:30");
-    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+    const parsed = parseTehranNaiveDateTime(serverTime);
+    if (parsed) return clampToNow(toUtcIso(parsed));
   }
-  const timestamp = Number(payload.timestamp);
-  if (Number.isFinite(timestamp)) return new Date(timestamp * 1000).toISOString();
   return null;
 }
 

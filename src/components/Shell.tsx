@@ -8,10 +8,17 @@ import { sidebarNavItems } from "@/lib/sidebarNav";
 import { formatAppVersionLabel } from "@/lib/version";
 
 const STORAGE_KEY = "otc-sidebar-collapsed";
+const tehranTimeFmt = new Intl.DateTimeFormat("fa-IR", {
+  timeZone: "Asia/Tehran",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false
+});
 
 export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+  const [tehranTime, setTehranTime] = useState<string | null>(null);
 
   // default open; restore the user's last choice after mount (avoids hydration mismatch)
   useEffect(() => {
@@ -20,6 +27,13 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
     } catch {
       /* ignore storage errors */
     }
+  }, []);
+
+  useEffect(() => {
+    const update = () => setTehranTime(tehranTimeFmt.format(new Date()));
+    update();
+    const id = setInterval(update, 30_000);
+    return () => clearInterval(id);
   }, []);
 
   const toggle = () => {
@@ -71,8 +85,13 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
           })}
         </nav>
         <div className="sidebar-bottom">
-          <div className="sidebar-version" title={`نسخه: ${formatAppVersionLabel()}`}>
-            نسخه: <span className="sidebar-version-value">{formatAppVersionLabel()}</span>
+          <div className="sidebar-meta-bottom">
+            <div className="sidebar-tehran-time" title="ساعت به وقت تهران">
+              ساعت تهران: <span className="sidebar-meta-value number">{tehranTime ?? "—"}</span>
+            </div>
+            <div className="sidebar-version" title={`نسخه: ${formatAppVersionLabel()}`}>
+              نسخه: <span className="sidebar-version-value">{formatAppVersionLabel()}</span>
+            </div>
           </div>
           <button
             type="button"

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { LogIn } from "lucide-react";
+import { APP_VERSION } from "@/lib/version";
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");
@@ -63,6 +64,10 @@ export default function LoginPage() {
           {submitting ? "در حال ورود..." : "ورود"}
         </button>
       </form>
+      <div className="app-version app-version--login">
+        <span className="app-version-label">نسخه</span>
+        <span className="app-version-value">{APP_VERSION}</span>
+      </div>
     </main>
   );
 }

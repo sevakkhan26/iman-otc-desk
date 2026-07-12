@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { AUTH_COOKIE, getRoleFromCookie } from "@/lib/auth";
+import { AUTH_COOKIE } from "@/lib/auth";
+import { getSessionRoleFromClaims, verifySessionToken } from "@/lib/authToken";
 
 const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  const role = getRoleFromCookie(request.cookies.get(AUTH_COOKIE)?.value);
+  const session = await verifySessionToken(request.cookies.get(AUTH_COOKIE)?.value);
+  const role = getSessionRoleFromClaims(session);
   const loggedIn = role !== null;
   const method = request.method.toUpperCase();
 

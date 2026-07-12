@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { AUTH_COOKIE, sessionTokenForRole } from "@/lib/auth";
+import { AUTH_COOKIE, COOKIE_MAX_AGE_S, INVALID_CREDENTIALS_MESSAGE } from "@/lib/auth";
 import { verifyCredentials } from "@/lib/authCredentials";
+import { createSessionToken } from "@/lib/authToken.server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const COOKIE_MAX_AGE_S = 30 * 24 * 60 * 60; // 30 days
+function cookieSecure(request: NextRequest): boolean {
+  return process.env.NODE_ENV === "production" || request.nextUrl.protocol === "https:";
+}
 
 export async function POST(request: NextRequest) {
   let body: { username?: unknown; password?: unknown } = {};
@@ -15,19 +18,23 @@ export async function POST(request: NextRequest) {
     // fall through to the credential check with empty body
   }
 
-  const role = verifyCredentials(body.username, body.password);
-  if (!role) {
-    return NextResponse.json({ ok: false, message: "نام کاربری یا رمز عبور اشتباه است" }, { status: 401 });
+  const identity = verifyCredentials(body.username, body.password);
+  if (!identity) {
+    return NextResponse.json({ ok: false, message: INVALID_CREDENTIALS_MESSAGE }, { status: 401 });
   }
 
-  const response = NextResponse.json({ ok: true, role });
-  response.cookies.set(AUTH_COOKIE, sessionTokenForRole(role), {
+  const token = createSessionToken(identity.username, identity.role);
+  if (!token) {
+    return NextResponse.json({ ok: false, message: INVALID_CREDENTIALS_MESSAGE }, { status: 401 });
+  }
+
+  const response = NextResponse.json({ ok: true });
+  response.cookies.set(AUTH_COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
     maxAge: COOKIE_MAX_AGE_S,
-    // secure only when actually served over https (the internal prod server runs on http://127.0.0.1)
-    secure: request.nextUrl.protocol === "https:"
+    secure: cookieSecure(request)
   });
   return response;
 }

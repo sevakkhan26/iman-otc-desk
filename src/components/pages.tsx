@@ -695,18 +695,20 @@ function ForexEventsWidget({ forex, limit = 6 }: { forex: ForexEventsResponse; l
   const now = useNow(WIDGET_TICK_MS);
 
   const events = useMemo(() => {
+    if (!forex || !Array.isArray(forex.events)) return [];
     return forex.events
       .filter((event) => {
+        if (!event || !event.id) return false;
         if (!event.date) return true;
         const time = new Date(event.date).getTime();
         // keep upcoming events and ones released within the last lookback window
         return !Number.isFinite(time) || now - time < FOREX_LOOKBACK_MS;
       })
       .slice(0, limit);
-  }, [forex.events, now, limit]);
+  }, [forex, now, limit]);
 
-  if (!forex.events.length) {
-    return <div className="empty">{forex.message || "داده‌ای دریافت نشد"}</div>;
+  if (!forex || !Array.isArray(forex.events) || !forex.events.length) {
+    return <div className="empty">{(forex && forex.message) || "داده‌ای دریافت نشد"}</div>;
   }
   if (!events.length) {
     return <div className="empty">رویداد پیش‌روی مهمی در تقویم این هفته باقی نمانده است</div>;
@@ -714,17 +716,21 @@ function ForexEventsWidget({ forex, limit = 6 }: { forex: ForexEventsResponse; l
 
   return (
     <div className="forex-grid">
-      {events.map((event: ForexEvent) => {
+      {events.map((event: ForexEvent, idx: number) => {
+        if (!event || !event.id) return null;
         const tone = forexImpactTone(event.impact);
-        const countdown = formatCountdown(event.date, now);
+        const countdown = formatCountdown(event.date, now, !!event.actual);
         return (
-          <article className={`forex-card ${tone} ${countdown.state}`} key={event.id}>
+          <article className={`forex-card ${tone} ${countdown.state}`} key={event.id || idx}>
             <div className="forex-top">
               <span className="forex-cat">{event.category}</span>
               <Badge tone={tone}>{forexImpactLabel(event.impact)}</Badge>
             </div>
             <div className="forex-title">
               {event.title} <span className="forex-country">{event.country}</span>
+              {event.link && (
+                <a href={event.link} target="_blank" rel="noopener noreferrer" className="ml-1 text-[9px] underline text-muted">منبع</a>
+              )}
             </div>
             <div className={`forex-countdown ${countdown.state}`}>{countdown.text}</div>
             <div className="forex-time muted">{formatTehran(event.date)} — به وقت ایران</div>
@@ -740,6 +746,9 @@ function ForexEventsWidget({ forex, limit = 6 }: { forex: ForexEventsResponse; l
               <div>
                 <span className="muted">واقعی</span>
                 <strong className={event.actual ? "forex-actual" : ""}>{event.actual ?? "—"}</strong>
+                {event.actualComparison && (
+                  <span className="ml-1 text-[10px] text-muted">({event.actualComparison})</span>
+                )}
               </div>
             </div>
             <div className={`forex-premium ${premiumImpactTone(event.premiumImpact)}`}>
@@ -795,15 +804,13 @@ export function GoldMarketView() {
               <div className="empty">فعلاً داده‌ای از بازار طلا دریافت نشد</div>
             </Panel>
           ) : (
-            <div className="gold-page-layout">
-              <div className="gold-page-main">
-                <Panel title="قیمت‌های بازار طلا" meta={meta ? <span className="muted">{meta}</span> : undefined}>
-                  <GoldMarketCards items={cards} />
-                  <GoldPriceChart instrument={summaryInstrument} onInstrumentChange={setInstrument} />
-                </Panel>
+            <Panel title="قیمت‌های بازار طلا" meta={meta ? <span className="muted">{meta}</span> : undefined}>
+              <div className="gold-summary-and-cards">
+                <GoldMarketSummary items={cards} instrument={summaryInstrument} />
+                <GoldMarketCards items={cards} />
               </div>
-              <GoldMarketSummary items={cards} instrument={summaryInstrument} />
-            </div>
+              <GoldPriceChart instrument={summaryInstrument} onInstrumentChange={setInstrument} />
+            </Panel>
           )}
         </div>
       ) : null}
@@ -812,29 +819,36 @@ export function GoldMarketView() {
 }
 
 export function ForexView() {
-  const { data, loading, error, reload, lastUpdated } = useApi<ForexEventsResponse>("/api/forex");
+  const { data, loading, error, reload, lastUpdated } = useApi<ForexEventsResponse>("/api/forex", 15000);
+  if (!data || !Array.isArray(data.events)) {
+    return (
+      <>
+        <PageHeader title="فارکس" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+        <LoadState loading={loading} error={error} />
+        <div className="empty">داده‌های فارکس در دسترس نیست</div>
+      </>
+    );
+  }
   return (
     <>
       <PageHeader title="فارکس" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
       <LoadState loading={loading} error={error} />
-      {data ? (
-        <div className="grid">
-          <Panel
-            title="رویدادهای مهم فارکس (USD)"
-            meta={
-              <span className="panel-meta-icon muted">
-                <CalendarClock aria-hidden="true" size={15} />
-                {data.message || `به‌روزرسانی: ${formatDate(data.lastUpdated)}`}
-              </span>
-            }
-          >
-            <ForexEventsWidget forex={data} limit={24} />
-          </Panel>
-          <div className="forex-note muted">
-            تأثیر هر رویداد روی «پرمیوم تتر ایران» بر اساس نوع داده و مقایسه واقعی با پیش‌بینی برآورد می‌شود؛ صرفاً جنبه راهنما دارد.
-          </div>
+      <div className="grid">
+        <Panel
+          title="رویدادهای مهم فارکس (USD)"
+          meta={
+            <span className="panel-meta-icon muted">
+              <CalendarClock aria-hidden="true" size={15} />
+              {data.message || `به‌روزرسانی: ${formatDate(data.lastUpdated)}`}
+            </span>
+          }
+        >
+          <ForexEventsWidget forex={data} limit={24} />
+        </Panel>
+        <div className="forex-note muted">
+          تأثیر هر رویداد روی «پرمیوم تتر ایران» بر اساس نوع داده و مقایسه واقعی با پیش‌بینی برآورد می‌شود؛ صرفاً جنبه راهنما دارد.
         </div>
-      ) : null}
+      </div>
     </>
   );
 }

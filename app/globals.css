@@ -977,9 +977,8 @@ tr:last-child td {
 }
 
 .gold-summary-panel {
-  position: sticky;
-  top: 18px;
-  min-width: 260px;
+  width: 100%;
+  max-width: 100%;
 }
 
 .gold-summary-body {
@@ -1031,6 +1030,14 @@ tr:last-child td {
 .gold-summary-empty {
   margin: 0;
   padding: 12px 0;
+}
+
+.gold-summary-and-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: 100%;
+  min-width: 0;
 }
 
 .gold-groups {
@@ -1970,8 +1977,8 @@ tr:last-child td {
   }
 
   .gold-summary-panel {
-    position: static;
-    min-width: 0;
+    width: 100%;
+    max-width: 100%;
   }
 }
 

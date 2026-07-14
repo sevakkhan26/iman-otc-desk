@@ -171,16 +171,18 @@ export function premiumImpactTone(impact: PremiumImpact): "danger" | "good" | "n
 
 export function formatCountdown(
   targetIso: string | null | undefined,
-  nowMs: number
+  nowMs: number,
+  hasActual = false
 ): { text: string; state: "soon" | "upcoming" | "passed" } {
   if (!targetIso) return { text: "—", state: "upcoming" };
   const target = new Date(targetIso).getTime();
   if (!Number.isFinite(target)) return { text: "—", state: "upcoming" };
   const diffMs = target - nowMs;
   if (diffMs <= 0) {
-    const agoMin = Math.round(-diffMs / 60_000);
-    if (agoMin <= 90) return { text: `${faInteger.format(agoMin)} دقیقه پیش منتشر شد`, state: "passed" };
-    return { text: "منتشر شد", state: "passed" };
+    if (hasActual) {
+      return { text: "منتشر شد", state: "passed" };
+    }
+    return { text: "در انتظار داده", state: "passed" };
   }
   const totalMin = Math.round(diffMs / 60_000);
   const hours = Math.floor(totalMin / 60);

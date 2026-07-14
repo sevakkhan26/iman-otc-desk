@@ -16,6 +16,8 @@ type RawEvent = {
   forecast?: string;
   previous?: string;
   actual?: string;
+  link?: string;
+  url?: string;
 };
 
 // Only the high-impact event types the desk cares about.
@@ -81,6 +83,19 @@ function premiumImpactFor(
   return { impact: "neutral", reason: "در انتظار انتشار؛ احتمال نوسان" };
 }
 
+function getActualComparison(category: string, forecast: string | null, actual: string | null): string | null {
+  const f = parseNumeric(forecast);
+  const a = parseNumeric(actual);
+  if (f === null || a === null) return null;
+  const tolerance = Math.max(Math.abs(f) * 0.005, 0.05);
+  if (Math.abs(a - f) <= tolerance) {
+    return "مطابق پیش‌بینی";
+  }
+  const inverse = inverseCategories.has(category);
+  const isBetter = inverse ? a < f : a > f;
+  return isBetter ? "بهتر از پیش‌بینی" : "بدتر از پیش‌بینی";
+}
+
 function idFor(value: string) {
   return createHash("sha1").update(value).digest("hex").slice(0, 12);
 }
@@ -108,7 +123,9 @@ function toEvent(raw: RawEvent): ForexEvent | null {
     forecast,
     actual,
     premiumImpact: premium.impact,
-    premiumImpactReason: premium.reason
+    premiumImpactReason: premium.reason,
+    actualComparison: getActualComparison(category, forecast, actual),
+    link: clean(raw.link || raw.url)
   };
 }
 
@@ -127,8 +144,9 @@ const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 // Forex Factory rate-limits aggressive polling, and the calendar only changes weekly,
 // so cache successful responses (in memory AND on disk) and fall back to the last good
 // result on transient errors (e.g. HTTP 429). Disk persistence survives server restarts.
-const FRESH_TTL_MS = 30 * 60_000; // 30 min: do not re-fetch within this window
+const FRESH_TTL_MS = 60 * 1000; // 1 min normal
 const STALE_TTL_MS = 24 * 60 * 60_000; // 24 h: serve last good data when the source fails
+const HOT_TTL_MS = 20 * 1000; // 20s around release times
 
 const dataDir = path.join(process.cwd(), ".data");
 const cachePath = path.join(dataDir, "forex-cache.json");
@@ -205,8 +223,19 @@ export async function getForexEvents(settings: DeskSettings): Promise<ForexEvent
   }
 
   const cached = await getCachedEntry();
-  if (cached && cached.data.events.length && Date.now() - cached.at < FRESH_TTL_MS) {
-    return cached.data; // still fresh — no network call
+  let effectiveTtl = FRESH_TTL_MS;
+  if (cached && cached.data.events.length) {
+    const now = Date.now();
+    const hasNearRelease = cached.data.events.some((ev) => {
+      if (!ev.date) return false;
+      const t = new Date(ev.date).getTime();
+      if (!Number.isFinite(t)) return false;
+      return Math.abs(t - now) < 15 * 60 * 1000; // within ~15min of release
+    });
+    effectiveTtl = hasNearRelease ? HOT_TTL_MS : FRESH_TTL_MS;
+    if (Date.now() - cached.at < effectiveTtl) {
+      return cached.data; // still fresh — no network call
+    }
   }
 
   // De-duplicate concurrent refreshes (e.g. dashboard + alerts) into one upstream request.

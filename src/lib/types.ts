@@ -21,6 +21,8 @@ export interface ForexEvent {
   actual: string | null;
   premiumImpact: PremiumImpact;
   premiumImpactReason: string | null;
+  actualComparison?: string | null;
+  link?: string | null;
 }
 
 export type MedianHistoryRange = "24h" | "7d";

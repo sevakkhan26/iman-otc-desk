@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fetchJson, numeric, ProviderError } from "@/lib/http";
+import { BROWSER_UA, fetchJson, numeric, ProviderError } from "@/lib/http";
 import { createProviderCache, ttlFromMinutes } from "@/lib/providerCache";
 import type { DeskSettings, DomesticQuote, SourceStatus } from "@/lib/types";
 
@@ -12,6 +12,11 @@ const OMP_MIN_FETCH_MS = 5 * 60_000;
 const OMP_STALE_TTL_MS = 30 * 60_000;
 const OMP_RATE_LIMIT_BACKOFF_MS = 10 * 60_000;
 
+const ABAN_CACHE_PATH = path.join(dataDir, "abantether-cache.json");
+const ABAN_MIN_FETCH_MS = 2.5 * 60 * 1000;
+const ABAN_STALE_TTL_MS = 10 * 60 * 1000;
+const ABAN_RATE_LIMIT_BACKOFF_MS = 60 * 1000;
+
 const DESK_UA = "TraderBot/OTCDesk";
 
 type OmpCacheEntry = {
@@ -21,6 +26,14 @@ type OmpCacheEntry = {
 };
 
 let ompMemCache: OmpCacheEntry | null = null;
+
+type AbanCacheEntry = {
+  quote: DomesticQuote;
+  fetchedAt: number;
+  rateLimitedUntil?: number;
+};
+
+let abanMemCache: AbanCacheEntry | null = null;
 
 type Provider = {
   id: string;
@@ -211,8 +224,94 @@ async function ramzinex(): Promise<DomesticQuote> {
   }
 }
 
-function abanTether(): Promise<DomesticQuote> {
-  return Promise.resolve(unavailable("abantether", "آبان‌تتر", "API عمومی آبان‌تتر در دسترس نیست"));
+async function fetchAbanTetherLive(): Promise<DomesticQuote> {
+  const id = "abantether";
+  const name = "آبان‌تتر";
+
+  const data = await fetchJson<{
+    data?: {
+      markets?: Record<string, {
+        symbol?: string;
+        buy_price?: string | number;
+        sell_price?: string | number;
+        active?: boolean;
+      }>;
+    };
+  }>("https://api.abantether.com/api/v1/manager/otc/ticker", 8000, {
+    headers: {
+      "user-agent": BROWSER_UA,
+      accept: "application/json",
+    }
+  });
+
+  const markets = data.data?.markets || {};
+  // Prefer USDTIRT which is USDT vs IRT (toman)
+  let usdt = markets.USDTIRT || markets["USDTIRT"];
+  if (!usdt) {
+    // fallback search
+    const found = Object.values(markets).find((m: unknown) => {
+      const mm = m as { symbol?: string; buy_price?: string | number };
+      return (mm.symbol === "USDT" || mm.symbol === "USDTIRT") && mm.buy_price;
+    });
+    if (found) usdt = found;
+  }
+  if (!usdt || !usdt.buy_price || !usdt.sell_price) {
+    throw new ProviderError("داده قیمت تتر در پاسخ تیکِر آبان‌تتر پیدا نشد");
+  }
+  const buyPrice = toToman(usdt.buy_price);
+  const sellPrice = toToman(usdt.sell_price);
+  if (buyPrice === null && sellPrice === null) {
+    throw new ProviderError("قیمت‌های خرید/فروش تتر معتبر نیستند");
+  }
+  return buildQuote(id, name, buyPrice, sellPrice);
+}
+
+async function abanTether(): Promise<DomesticQuote> {
+  const id = "abantether";
+  const name = "آبان‌تتر";
+  const now = Date.now();
+  const cache = await readAbanCache();
+
+  if (cache?.rateLimitedUntil && now < cache.rateLimitedUntil) {
+    if (cache.quote.buyPrice !== null || cache.quote.sellPrice !== null || cache.quote.midPrice !== null) {
+      return abanQuoteFromCache(cache, true);
+    }
+    return unavailable(id, name, "محدودیت نرخ آبان‌تتر؛ بعداً دوباره تلاش کنید");
+  }
+
+  if (cache && now - cache.fetchedAt < ABAN_MIN_FETCH_MS) {
+    if (cache.quote.buyPrice !== null || cache.quote.sellPrice !== null || cache.quote.midPrice !== null) {
+      return cache.quote;
+    }
+  }
+
+  try {
+    const quote = await fetchAbanTetherLive();
+    await writeAbanCache({ quote, fetchedAt: now });
+    return quote;
+  } catch (error) {
+    const isRateLimited = error instanceof ProviderError && /429|rate|limit/i.test(error.message);
+    if (isRateLimited) {
+      const nextCache: AbanCacheEntry = {
+        quote: cache?.quote ?? unavailable(id, name, "محدودیت نرخ آبان‌تتر"),
+        fetchedAt: cache?.fetchedAt ?? now,
+        rateLimitedUntil: now + ABAN_RATE_LIMIT_BACKOFF_MS
+      };
+      await writeAbanCache(nextCache);
+      if (cache && (cache.quote.buyPrice !== null || cache.quote.sellPrice !== null || cache.quote.midPrice !== null)) {
+        return abanQuoteFromCache(cache, true);
+      }
+      return unavailable(id, name, "محدودیت نرخ آبان‌تتر؛ بعداً دوباره تلاش کنید");
+    }
+
+    if (cache && now - cache.fetchedAt < ABAN_STALE_TTL_MS) {
+      if (cache.quote.buyPrice !== null || cache.quote.sellPrice !== null || cache.quote.midPrice !== null) {
+        return abanQuoteFromCache(cache, true);
+      }
+    }
+
+    return unavailable(id, name, error instanceof Error ? error.message : "منبع در دسترس نیست");
+  }
 }
 
 async function readOmpCache(): Promise<OmpCacheEntry | null> {
@@ -236,11 +335,40 @@ async function writeOmpCache(entry: OmpCacheEntry): Promise<void> {
   }
 }
 
+async function readAbanCache(): Promise<AbanCacheEntry | null> {
+  if (abanMemCache) return abanMemCache;
+  try {
+    const raw = await readFile(ABAN_CACHE_PATH, "utf8");
+    abanMemCache = JSON.parse(raw) as AbanCacheEntry;
+    return abanMemCache;
+  } catch {
+    return null;
+  }
+}
+
+async function writeAbanCache(entry: AbanCacheEntry): Promise<void> {
+  abanMemCache = entry;
+  try {
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(ABAN_CACHE_PATH, JSON.stringify(entry), "utf8");
+  } catch {
+    // best-effort
+  }
+}
+
 function ompQuoteFromCache(entry: OmpCacheEntry, stale = false): DomesticQuote {
   return {
     ...entry.quote,
     sourceStatus: stale ? "degraded" : entry.quote.sourceStatus,
     errorMessage: stale ? "آخرین قیمت معتبر OMPFinex نمایش داده می‌شود" : entry.quote.errorMessage
+  };
+}
+
+function abanQuoteFromCache(entry: AbanCacheEntry, stale = false): DomesticQuote {
+  return {
+    ...entry.quote,
+    sourceStatus: stale ? "degraded" : entry.quote.sourceStatus,
+    errorMessage: stale ? "آخرین قیمت معتبر آبان‌تتر نمایش داده می‌شود" : entry.quote.errorMessage
   };
 }
 

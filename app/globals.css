@@ -965,16 +965,7 @@ tr:last-child td {
   gap: 14px;
 }
 
-.gold-page-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 300px);
-  gap: 18px;
-  align-items: start;
-}
-
-.gold-page-main {
-  min-width: 0;
-}
+/* removed old reversed gold-page-layout to avoid empty/wrong columns */
 
 .gold-summary-panel {
   width: 100%;
@@ -995,27 +986,28 @@ tr:last-child td {
 
 .gold-summary-stats {
   display: grid;
-  gap: 10px;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
 }
 
 .gold-summary-row {
   display: grid;
-  gap: 4px;
-  padding: 10px 12px;
+  gap: 2px;
+  padding: 6px 8px;
   border: 1px solid var(--line-soft);
-  border-radius: 10px;
+  border-radius: 8px;
   background: var(--card);
 }
 
 .gold-summary-label {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 10px;
 }
 
 .gold-summary-value {
-  font-size: 17px;
-  font-weight: 800;
-  line-height: 1.45;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.3;
   overflow-wrap: anywhere;
 }
 
@@ -1029,20 +1021,44 @@ tr:last-child td {
 
 .gold-summary-empty {
   margin: 0;
-  padding: 12px 0;
+  padding: 6px 0;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .gold-summary-and-cards {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) 1fr;
   gap: 18px;
+  align-items: start;
   width: 100%;
   min-width: 0;
+}
+
+.gold-summary-and-cards > * {
+  min-width: 0;
+}
+
+.gold-summary-col {
+  min-width: 0;
+  width: 100%;
+}
+
+.gold-prices-col {
+  min-width: 0;
+  width: 100%;
 }
 
 .gold-groups {
   display: grid;
   gap: 18px;
+  width: 100%;
+  min-width: 0;
+}
+
+.gold-group {
+  width: 100%;
+  min-width: 0;
 }
 
 .gold-group-title {
@@ -1054,7 +1070,7 @@ tr:last-child td {
 
 .gold-group-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 14px;
 }
 
@@ -1972,7 +1988,7 @@ tr:last-child td {
     grid-template-columns: 1fr;
   }
 
-  .gold-page-layout {
+  .gold-summary-and-cards {
     grid-template-columns: 1fr;
   }
 

@@ -126,7 +126,7 @@ export function GoldMarketSummary({
       <div className="panel-body gold-summary-body">
         <div className="gold-summary-instrument">{instrument}</div>
         {!summary ? (
-          <div className="empty gold-summary-empty">داده کافی برای مقایسه وجود ندارد</div>
+          <div className="gold-summary-empty">داده کافی برای مقایسه وجود ندارد</div>
         ) : (
           <>
             <div className="gold-summary-stats">

@@ -798,7 +798,7 @@ export function GoldMarketView() {
       />
       <LoadState loading={loading} error={error} />
       {data ? (
-        <div className="grid gold-page" data-layout-version="gold-summary-panel-v1">
+        <div className="grid gold-page" data-layout-version="gold-cols-v2">
           {!cards.length ? (
             <Panel title="قیمت‌های بازار طلا" meta={meta ? <span className="muted">{meta}</span> : undefined}>
               <div className="empty">فعلاً داده‌ای از بازار طلا دریافت نشد</div>
@@ -806,8 +806,12 @@ export function GoldMarketView() {
           ) : (
             <Panel title="قیمت‌های بازار طلا" meta={meta ? <span className="muted">{meta}</span> : undefined}>
               <div className="gold-summary-and-cards">
-                <GoldMarketSummary items={cards} instrument={summaryInstrument} />
-                <GoldMarketCards items={cards} />
+                <div className="gold-summary-col">
+                  <GoldMarketSummary items={cards} instrument={summaryInstrument} />
+                </div>
+                <div className="gold-prices-col">
+                  <GoldMarketCards items={cards} />
+                </div>
               </div>
               <GoldPriceChart instrument={summaryInstrument} onInstrumentChange={setInstrument} />
             </Panel>

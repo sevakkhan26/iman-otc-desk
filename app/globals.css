@@ -81,21 +81,21 @@
 
   --glass-shadow: 0 16px 44px rgba(0, 0, 0, 0.42);
   --glass-shadow-sm: 0 8px 24px rgba(0, 0, 0, 0.34);
-  --glass-inner: inset 0 1px 0 rgba(255, 255, 255, 0.1), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --glass-inner: inset 0 1px 0 rgba(180, 210, 255, 0.28), inset 0 0 0 1px rgba(180, 210, 255, 0.14);
 
   --bg: #0d2436; /* solid fallback for SVG strokes */
-  --sidebar-bg: rgba(13, 27, 44, 0.5);
-  --surface: rgba(16, 32, 51, 0.5);
-  --surface-2: rgba(22, 40, 60, 0.42);
-  --card: rgba(18, 36, 56, 0.55);
-  --card-2: rgba(11, 26, 42, 0.42);
-  --input-bg: rgba(9, 22, 36, 0.6);
+  --sidebar-bg: rgba(31, 48, 74, 0.82);
+  --surface: rgba(31, 48, 74, 0.82);
+  --surface-2: rgba(27, 44, 68, 0.76);
+  --card: rgba(43, 64, 96, 0.90);
+  --card-2: rgba(37, 58, 88, 0.82);
+  --input-bg: rgba(12, 26, 42, 0.68);
   --hover: rgba(44, 66, 96, 0.55);
   --hover-border: rgba(255, 255, 255, 0.24);
-  --line: rgba(255, 255, 255, 0.14);
-  --line-soft: rgba(255, 255, 255, 0.08);
+  --line: rgba(180, 210, 255, 0.28);
+  --line-soft: rgba(180, 210, 255, 0.22);
   --nav-hover: rgba(255, 255, 255, 0.08);
-  --nav-active: rgba(255, 255, 255, 0.15);
+  --nav-active: rgba(255, 255, 255, 0.18);
 
   --text: #eaf3fb;
   --muted: #a7bccf;

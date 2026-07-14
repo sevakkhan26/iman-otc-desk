@@ -1142,6 +1142,13 @@ export function TetherMarketView() {
     });
   }, [data, asset, query, connection]);
 
+  const marketHighest = data ? data.summary.highest : null;
+  const marketLowest = data ? data.summary.lowest : null;
+  const marketDiffToman = (marketHighest != null && marketLowest != null) ? marketHighest - marketLowest : null;
+  const marketHighEx = data ? data.summary.highestExchange : null;
+  const marketLowEx = data ? data.summary.lowestExchange : null;
+  const hasEnoughMarketData = marketDiffToman != null && marketDiffToman > 0 && marketHighEx && marketLowEx;
+
   return (
     <>
       <PageHeader title="بازار تتر ایران" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
@@ -1152,7 +1159,20 @@ export function TetherMarketView() {
             <Metric label="Median بازار" value={formatToman(data.summary.median)} />
             <Metric label="بیشترین قیمت" value={formatToman(data.summary.highest)} note={data.summary.highestExchange ?? undefined} />
             <Metric label="کمترین قیمت" value={formatToman(data.summary.lowest)} note={data.summary.lowestExchange ?? undefined} />
-            <Metric label="اختلاف درصدی بازار" value={formatPercent(data.summary.marketSpreadPercent)} />
+            {hasEnoughMarketData ? (
+              <div className="metric">
+                <div className="metric-label">اختلاف تومانی بازار</div>
+                <div className="metric-value">{formatToman(marketDiffToman)}</div>
+                <div className="metric-note">{marketHighEx} ↔ {marketLowEx}</div>
+                <div className="metric-note">بالاترین: {marketHighEx} — {formatToman(marketHighest)}</div>
+                <div className="metric-note">پایین‌ترین: {marketLowEx} — {formatToman(marketLowest)}</div>
+              </div>
+            ) : (
+              <div className="metric">
+                <div className="metric-label">اختلاف تومانی بازار</div>
+                <div className="metric-note">داده کافی برای مقایسه وجود ندارد</div>
+              </div>
+            )}
             <Metric label="بهترین قیمت خرید" value={formatToman(data.summary.bestBuy)} note={data.summary.bestBuyExchange ?? undefined} />
             <Metric label="بهترین قیمت فروش" value={formatToman(data.summary.bestSell)} note={data.summary.bestSellExchange ?? undefined} />
             <Metric label="منابع فعال" value={formatNumber(data.summary.activeSources, 0)} />

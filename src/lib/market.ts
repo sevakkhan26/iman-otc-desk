@@ -89,8 +89,22 @@ export function calculateTetherMarket(exchanges: DomesticQuote[], outlierThresho
   const marketSpreadPercent = highest !== null && lowest !== null && finalMedian ? ((highest - lowest) / finalMedian) * 100 : null;
   // بهترین قیمت خرید = پایین‌ترین قیمت خرید بین صرافی‌ها (ارزان‌ترین نقطه خرید)
   const bestBuyQuote = pick(valid, (exchange) => exchange.buyPrice, "min");
+  // بدترین قیمت خرید = بالاترین قیمت خرید بین صرافی‌ها (گران‌ترین نقطه خرید)
+  const worstBuyQuote = pick(valid, (exchange) => exchange.buyPrice, "max");
   // بهترین قیمت فروش = بالاترین قیمت فروش بین صرافی‌ها (گران‌ترین نقطه فروش)
   const bestSellQuote = pick(valid, (exchange) => exchange.sellPrice, "max");
+  // بدترین قیمت فروش = پایین‌ترین قیمت فروش بین صرافی‌ها
+  const worstSellQuote = pick(valid, (exchange) => exchange.sellPrice, "min");
+
+  const buySpreadPercent =
+    bestBuyQuote?.buyPrice != null && worstBuyQuote?.buyPrice != null && bestBuyQuote.buyPrice > 0
+      ? ((worstBuyQuote.buyPrice - bestBuyQuote.buyPrice) / bestBuyQuote.buyPrice) * 100
+      : null;
+
+  const sellSpreadPercent =
+    bestSellQuote?.sellPrice != null && worstSellQuote?.sellPrice != null && worstSellQuote.sellPrice > 0
+      ? ((bestSellQuote.sellPrice - worstSellQuote.sellPrice) / worstSellQuote.sellPrice) * 100
+      : null;
 
   const summary: TetherMarketSummary = {
     median: finalMedian,
@@ -103,6 +117,12 @@ export function calculateTetherMarket(exchanges: DomesticQuote[], outlierThresho
     bestBuyExchange: bestBuyQuote?.exchangeName ?? null,
     bestSell: bestSellQuote?.sellPrice ?? null,
     bestSellExchange: bestSellQuote?.exchangeName ?? null,
+    worstBuy: worstBuyQuote?.buyPrice ?? null,
+    worstBuyExchange: worstBuyQuote?.exchangeName ?? null,
+    buySpreadPercent,
+    worstSell: worstSellQuote?.sellPrice ?? null,
+    worstSellExchange: worstSellQuote?.exchangeName ?? null,
+    sellSpreadPercent,
     activeSources: recalculated.filter((exchange) => exchange.sourceStatus !== "unavailable").length,
     unavailableSources: recalculated.filter((exchange) => exchange.sourceStatus === "unavailable").length,
     outlierCount: recalculated.filter((exchange) => exchange.isOutlier).length,
@@ -256,6 +276,16 @@ function buildQuickDecision(
     lowest: { price: summary.lowest, exchange: summary.lowestExchange },
     bestBuy: { price: summary.bestBuy, exchange: summary.bestBuyExchange },
     bestSell: { price: summary.bestSell, exchange: summary.bestSellExchange },
+    buySpread: {
+      best: { price: summary.bestBuy, exchange: summary.bestBuyExchange },
+      worst: { price: summary.worstBuy, exchange: summary.worstBuyExchange },
+      percent: summary.buySpreadPercent
+    },
+    sellSpread: {
+      best: { price: summary.bestSell, exchange: summary.bestSellExchange },
+      worst: { price: summary.worstSell, exchange: summary.worstSellExchange },
+      percent: summary.sellSpreadPercent
+    },
     spreadAction,
     maxOrderAction,
     lpCaution,

@@ -403,18 +403,58 @@ function QuickDecisionCockpit({
       </div>
 
       <div className="grid answer-grid">
-        <AnswerStat
-          question="بالاترین قیمت"
-          value={<PriceValue value={quickDecision.highest.price} />}
-          note={quickDecision.highest.exchange ?? "—"}
-          tone="danger"
-        />
-        <AnswerStat
-          question="پایین‌ترین قیمت"
-          value={<PriceValue value={quickDecision.lowest.price} />}
-          note={quickDecision.lowest.exchange ?? "—"}
-          tone="good"
-        />
+        {/* اختلاف قیمت خرید */}
+        {(() => {
+          const s = quickDecision.buySpread;
+          const hasData = s.best.price != null && s.worst.price != null;
+          return (
+            <div className="answer-stat">
+              <div className="answer-question">اختلاف قیمت خرید</div>
+              {hasData ? (
+                <>
+                  <div className="answer-value number" style={{ fontSize: "15px", lineHeight: 1.3 }}>
+                    بهترین: {s.best.exchange ?? "—"} — <PriceValue value={s.best.price} />
+                  </div>
+                  <div className="answer-note" style={{ marginTop: 2 }}>
+                    بدترین: {s.worst.exchange ?? "—"} — <PriceValue value={s.worst.price} />
+                  </div>
+                  <div className="answer-note" style={{ marginTop: 1, fontWeight: 700 }}>
+                    اختلاف: {s.percent != null ? s.percent.toFixed(2) : "—"}٪
+                  </div>
+                </>
+              ) : (
+                <div className="answer-note">داده کافی برای مقایسه وجود ندارد</div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* اختلاف قیمت فروش */}
+        {(() => {
+          const s = quickDecision.sellSpread;
+          const hasData = s.best.price != null && s.worst.price != null;
+          return (
+            <div className="answer-stat">
+              <div className="answer-question">اختلاف قیمت فروش</div>
+              {hasData ? (
+                <>
+                  <div className="answer-value number" style={{ fontSize: "15px", lineHeight: 1.3 }}>
+                    بهترین: {s.best.exchange ?? "—"} — <PriceValue value={s.best.price} />
+                  </div>
+                  <div className="answer-note" style={{ marginTop: 2 }}>
+                    بدترین: {s.worst.exchange ?? "—"} — <PriceValue value={s.worst.price} />
+                  </div>
+                  <div className="answer-note" style={{ marginTop: 1, fontWeight: 700 }}>
+                    اختلاف: {s.percent != null ? s.percent.toFixed(2) : "—"}٪
+                  </div>
+                </>
+              ) : (
+                <div className="answer-note">داده کافی برای مقایسه وجود ندارد</div>
+              )}
+            </div>
+          );
+        })()}
+
         <AnswerStat
           question="بهترین قیمت خرید"
           value={<PriceValue value={quickDecision.bestBuy.price} />}

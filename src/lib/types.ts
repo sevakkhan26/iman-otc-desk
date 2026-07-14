@@ -75,6 +75,12 @@ export interface TetherMarketSummary {
   bestBuyExchange: string | null;
   bestSell: number | null;
   bestSellExchange: string | null;
+  worstBuy: number | null;
+  worstBuyExchange: string | null;
+  buySpreadPercent: number | null;
+  worstSell: number | null;
+  worstSellExchange: string | null;
+  sellSpreadPercent: number | null;
   activeSources: number;
   unavailableSources: number;
   outlierCount: number;
@@ -151,6 +157,16 @@ export interface QuickDecision {
   lowest: { price: number | null; exchange: string | null };
   bestBuy: { price: number | null; exchange: string | null };
   bestSell: { price: number | null; exchange: string | null };
+  buySpread: {
+    best: { price: number | null; exchange: string | null };
+    worst: { price: number | null; exchange: string | null };
+    percent: number | null;
+  };
+  sellSpread: {
+    best: { price: number | null; exchange: string | null };
+    worst: { price: number | null; exchange: string | null };
+    percent: number | null;
+  };
   spreadAction: DecisionCard;
   maxOrderAction: DecisionCard;
   lpCaution: DecisionCard;

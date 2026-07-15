@@ -565,6 +565,389 @@ async function exir(): Promise<DomesticQuote> {
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/* New domestic sources: Bit24, OK-EX, Arzinja                                  */
+/* -------------------------------------------------------------------------- */
+
+const NEW_SOURCE_MIN_FETCH_MS = 2.5 * 60 * 1000;
+const NEW_SOURCE_STALE_TTL_MS = 10 * 60 * 1000;
+
+type SimpleQuoteCache = { quote: DomesticQuote; fetchedAt: number };
+let bit24MemCache: SimpleQuoteCache | null = null;
+let okexIrMemCache: SimpleQuoteCache | null = null;
+let arzinjaMemCache: SimpleQuoteCache | null = null;
+
+function fromSimpleCache(cache: SimpleQuoteCache | null, now: number, minMs: number): DomesticQuote | null {
+  if (!cache || now - cache.fetchedAt >= minMs) return null;
+  if (cache.quote.buyPrice === null && cache.quote.sellPrice === null && cache.quote.midPrice === null) return null;
+  return cache.quote;
+}
+
+function staleSimpleCache(
+  cache: SimpleQuoteCache | null,
+  now: number,
+  staleMs: number,
+  message: string
+): DomesticQuote | null {
+  if (!cache || now - cache.fetchedAt >= staleMs) return null;
+  if (cache.quote.buyPrice === null && cache.quote.sellPrice === null && cache.quote.midPrice === null) return null;
+  return { ...cache.quote, sourceStatus: "degraded", errorMessage: message };
+}
+
+/**
+ * Bit24 (بیت۲۴)
+ * Official public spot order book used by the trade UI (pro API, no auth):
+ * GET https://pro.bit24.cash/api/v3/markets/USDT-IRT/order-books
+ * Response: data.buy_orders[] / data.sell_orders[] with { price, amount, ... }
+ * buy_orders are bids (highest first), sell_orders are asks (lowest first).
+ * Quote coin IRT is Toman on Bit24 — convert once via toToman (unit=toman).
+ * Desk mapping: buyPrice = highest bid, sellPrice = lowest ask, mid = average.
+ */
+async function bit24(): Promise<DomesticQuote> {
+  const id = "bit24";
+  const name = "بیت۲۴";
+  const now = Date.now();
+  const hit = fromSimpleCache(bit24MemCache, now, NEW_SOURCE_MIN_FETCH_MS);
+  if (hit) return hit;
+
+  try {
+    const data = await fetchJson<{
+      success?: boolean;
+      data?: {
+        buy_orders?: Array<{ price?: string | number }>;
+        sell_orders?: Array<{ price?: string | number }>;
+      };
+    }>("https://pro.bit24.cash/api/v3/markets/USDT-IRT/order-books", 8_000, {
+      headers: {
+        "user-agent": BROWSER_UA,
+        accept: "application/json",
+        origin: "https://bit24.cash",
+        referer: "https://bit24.cash/trade/usdt_irt/"
+      }
+    });
+
+    if (data.success === false) {
+      throw new ProviderError("پاسخ order-books بیت۲۴ ناموفق بود");
+    }
+
+    const buyOrders = data.data?.buy_orders ?? [];
+    const sellOrders = data.data?.sell_orders ?? [];
+
+    // Highest valid bid / lowest valid ask — scan top levels in case of null/zero rows
+    let buyPrice: number | null = null;
+    for (const row of buyOrders) {
+      const p = toToman(row.price);
+      if (p !== null && p > 0) {
+        buyPrice = buyPrice === null ? p : Math.max(buyPrice, p);
+        // book is sorted highest-first; first valid is enough, but max is safe
+        break;
+      }
+    }
+    let sellPrice: number | null = null;
+    for (const row of sellOrders) {
+      const p = toToman(row.price);
+      if (p !== null && p > 0) {
+        sellPrice = sellPrice === null ? p : Math.min(sellPrice, p);
+        break;
+      }
+    }
+
+    if (buyPrice === null || sellPrice === null) {
+      throw new ProviderError("دفتر سفارش عمومی بیت۲۴ خرید/فروش معتبر برنگرداند");
+    }
+    if (buyPrice > sellPrice) {
+      throw new ProviderError("دفتر سفارش بیت۲۴ نامعتبر است (bid > ask)");
+    }
+
+    const quote = buildQuote(id, name, buyPrice, sellPrice);
+    bit24MemCache = { quote, fetchedAt: now };
+    return quote;
+  } catch (error) {
+    const stale = staleSimpleCache(bit24MemCache, now, NEW_SOURCE_STALE_TTL_MS, "آخرین قیمت معتبر بیت۲۴ نمایش داده می‌شود");
+    if (stale) return stale;
+    return unavailable(id, name, error instanceof Error ? error.message : "منبع در دسترس نیست");
+  }
+}
+
+/**
+ * OK-EX / اوکی اکسچنج
+ * Official public OTC ticker list used by https://ok-ex.io frontend:
+ * GET https://azapi.ok-ex.io/api/v1/asset/otc/tickers
+ * USDT row: buyAmt / sellAmt in IRT (Toman).
+ * Field meaning (user-facing OTC): buyAmt = قیمت خرید کاربر (ask), sellAmt = قیمت فروش کاربر (bid).
+ * Dashboard mapping (same as order-book convention): buyPrice=bid=sellAmt, sellPrice=ask=buyAmt.
+ */
+async function okexIr(): Promise<DomesticQuote> {
+  const id = "okex_ir";
+  const name = "اوکی اکسچنج";
+  const now = Date.now();
+  const hit = fromSimpleCache(okexIrMemCache, now, NEW_SOURCE_MIN_FETCH_MS);
+  if (hit) return hit;
+
+  try {
+    const data = await fetchJson<
+      Array<{
+        asset?: string;
+        buyAmt?: string | number;
+        sellAmt?: string | number;
+        nameFa?: string;
+      }>
+    >("https://azapi.ok-ex.io/api/v1/asset/otc/tickers", 8_000, {
+      headers: { "user-agent": BROWSER_UA, accept: "application/json" }
+    });
+    const usdt = data.find((row) => (row.asset ?? "").toUpperCase() === "USDT");
+    if (!usdt) throw new ProviderError("ردیف USDT در تیکر OTC اوکی اکسچنج پیدا نشد");
+
+    // User-facing: buyAmt = price to buy USDT, sellAmt = price to sell USDT
+    const userBuy = toToman(usdt.buyAmt); // ask side
+    const userSell = toToman(usdt.sellAmt); // bid side
+    // Desk convention: buyPrice = highest bid, sellPrice = lowest ask
+    const buyPrice = userSell;
+    const sellPrice = userBuy;
+    if (buyPrice === null && sellPrice === null) {
+      throw new ProviderError("قیمت خرید/فروش USDT اوکی اکسچنج معتبر نیست");
+    }
+    const quote = buildQuote(id, name, buyPrice, sellPrice, {
+      status:
+        buyPrice !== null && sellPrice !== null && buyPrice === sellPrice ? "degraded" : "available",
+      errorMessage:
+        buyPrice !== null && sellPrice !== null && buyPrice === sellPrice
+          ? "API عمومی OTC خرید و فروش یکسان برگرداند"
+          : undefined
+    });
+    okexIrMemCache = { quote, fetchedAt: now };
+    return quote;
+  } catch (error) {
+    const stale = staleSimpleCache(okexIrMemCache, now, NEW_SOURCE_STALE_TTL_MS, "آخرین قیمت معتبر اوکی اکسچنج نمایش داده می‌شود");
+    if (stale) return stale;
+    return unavailable(id, name, error instanceof Error ? error.message : "منبع در دسترس نیست");
+  }
+}
+
+const ARZINJA_API_HEADERS = {
+  "user-agent": BROWSER_UA,
+  accept: "application/json",
+  origin: "https://arzinja.ir",
+  referer: "https://arzinja.ir/tether"
+} as const;
+
+/**
+ * Parse executable bid/ask from Arzinja P2P order book levels [price, amount].
+ * Desk mapping: buyPrice = highest bid, sellPrice = lowest ask.
+ * IRT quote is Toman on Arzinja (enQuoteAsset: "Toman") — toToman once, unit=toman.
+ */
+function arzinjaBidAskFromOrderBook(data: {
+  success?: boolean;
+  result?: {
+    symbol?: string;
+    bids?: Array<[string | number, string | number] | (string | number)[]>;
+    asks?: Array<[string | number, string | number] | (string | number)[]>;
+  };
+}): { buyPrice: number; sellPrice: number } | null {
+  if (data.success === false) return null;
+  const symbol = (data.result?.symbol ?? "").toUpperCase().replace(/[_/-]/g, "");
+  if (symbol && symbol !== "USDTIRT") return null;
+
+  let buyPrice: number | null = null;
+  for (const row of data.result?.bids ?? []) {
+    const p = toToman(Array.isArray(row) ? row[0] : null);
+    if (p !== null && p > 0) {
+      buyPrice = p;
+      break;
+    }
+  }
+  let sellPrice: number | null = null;
+  for (const row of data.result?.asks ?? []) {
+    const p = toToman(Array.isArray(row) ? row[0] : null);
+    if (p !== null && p > 0) {
+      sellPrice = p;
+      break;
+    }
+  }
+  if (buyPrice === null || sellPrice === null || buyPrice <= 0 || sellPrice <= 0) return null;
+  if (buyPrice > sellPrice) return null;
+  if (buyPrice < 10_000 || sellPrice < 10_000 || buyPrice > 2_000_000 || sellPrice > 2_000_000) return null;
+  return { buyPrice, sellPrice };
+}
+
+/**
+ * Fallback: P2P market stats from official all-market list (same USDT/IRT pair).
+ * stats.bidPrice / stats.askPrice are best bid/ask in Toman.
+ */
+function arzinjaBidAskFromAllMarket(data: {
+  success?: boolean;
+  result?: Array<Record<string, {
+    pair?: string;
+    baseAsset?: string;
+    quoteAsset?: string;
+    faQuoteAsset?: string;
+    stats?: { bidPrice?: string | number; askPrice?: string | number; lastPrice?: string | number };
+  }>>;
+}): { buyPrice: number; sellPrice: number } | null {
+  if (data.success === false) return null;
+  for (const row of data.result ?? []) {
+    const market =
+      row.USDTIRT ??
+      Object.values(row).find(
+        (m) =>
+          (m?.pair ?? "").toUpperCase().replace(/[_/-]/g, "") === "USDTIRT" ||
+          ((m?.baseAsset ?? "").toUpperCase() === "USDT" && (m?.quoteAsset ?? "").toUpperCase() === "IRT")
+      );
+    if (!market) continue;
+    if ((market.baseAsset ?? "USDT").toUpperCase() !== "USDT") continue;
+    if ((market.quoteAsset ?? "IRT").toUpperCase() !== "IRT") continue;
+
+    const buyPrice = toToman(market.stats?.bidPrice);
+    const sellPrice = toToman(market.stats?.askPrice);
+    if (buyPrice === null || sellPrice === null || buyPrice <= 0 || sellPrice <= 0) continue;
+    if (buyPrice > sellPrice) continue;
+    if (buyPrice < 10_000 || sellPrice < 10_000 || buyPrice > 2_000_000 || sellPrice > 2_000_000) continue;
+    return { buyPrice, sellPrice };
+  }
+  return null;
+}
+
+/**
+ * Arzinja (ارزینجا) — live official API used by https://arzinja.ir
+ *
+ * Primary (executable book):
+ *   GET https://api-v2.arzinja.ir/api/v1/trade/p2p/orderbook?pair=USDTIRT
+ *   result.bids[0][0] = best bid, result.asks[0][0] = best ask (Toman)
+ *
+ * Fallback:
+ *   GET https://api-v2.arzinja.ir/api/v1/market/all-market?page=1&base_asset=USDT&provider_type=p2p
+ *   result[].USDTIRT.stats.bidPrice / askPrice
+ *
+ * Legacy https://arzinja.app/prices is frozen/stale (~60k) and must not be used.
+ * Rial→Toman: quote is already Toman — convert once via toToman (unit=toman).
+ * Outlier gate (>10% vs domestic median) stays in fetchDomesticQuotes; never invent prices.
+ */
+async function arzinja(): Promise<DomesticQuote> {
+  const id = "arzinja";
+  const name = "ارزینجا";
+  const now = Date.now();
+  // Drop any previously cached stale ~60k quotes from the old /prices feed
+  if (
+    arzinjaMemCache &&
+    arzinjaMemCache.quote.midPrice !== null &&
+    arzinjaMemCache.quote.midPrice < 100_000
+  ) {
+    arzinjaMemCache = null;
+  }
+  const hit = fromSimpleCache(arzinjaMemCache, now, NEW_SOURCE_MIN_FETCH_MS);
+  if (hit) return hit;
+
+  try {
+    let bidAsk: { buyPrice: number; sellPrice: number } | null = null;
+
+    try {
+      const book = await fetchJson<{
+        success?: boolean;
+        result?: {
+          symbol?: string;
+          bids?: Array<[string | number, string | number] | (string | number)[]>;
+          asks?: Array<[string | number, string | number] | (string | number)[]>;
+        };
+      }>("https://api-v2.arzinja.ir/api/v1/trade/p2p/orderbook?pair=USDTIRT", 8_000, {
+        headers: { ...ARZINJA_API_HEADERS }
+      });
+      bidAsk = arzinjaBidAskFromOrderBook(book);
+    } catch {
+      bidAsk = null;
+    }
+
+    if (!bidAsk) {
+      const markets = await fetchJson<{
+        success?: boolean;
+        result?: Array<
+          Record<
+            string,
+            {
+              pair?: string;
+              baseAsset?: string;
+              quoteAsset?: string;
+              faQuoteAsset?: string;
+              stats?: { bidPrice?: string | number; askPrice?: string | number; lastPrice?: string | number };
+            }
+          >
+        >;
+      }>(
+        "https://api-v2.arzinja.ir/api/v1/market/all-market?page=1&base_asset=USDT&provider_type=p2p",
+        8_000,
+        { headers: { ...ARZINJA_API_HEADERS } }
+      );
+      bidAsk = arzinjaBidAskFromAllMarket(markets);
+    }
+
+    if (!bidAsk) {
+      throw new ProviderError("قیمت خرید/فروش زنده USDT/IRT ارزینجا دریافت نشد");
+    }
+
+    const quote = buildQuote(id, name, bidAsk.buyPrice, bidAsk.sellPrice);
+    arzinjaMemCache = { quote, fetchedAt: now };
+    return quote;
+  } catch (error) {
+    const stale = staleSimpleCache(arzinjaMemCache, now, NEW_SOURCE_STALE_TTL_MS, "آخرین قیمت معتبر ارزینجا نمایش داده می‌شود");
+    if (stale) return stale;
+    return unavailable(id, name, error instanceof Error ? error.message : "منبع در دسترس نیست");
+  }
+}
+
+/** Median of finite numbers (sorted). */
+function simpleMedian(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
+/**
+ * Arzinja-only gate: if mid differs >10% from the median of other valid domestic
+ * sources, mark unavailable. Does not rewrite prices to the median.
+ */
+function applyArzinjaMedianGate(quotes: DomesticQuote[]): DomesticQuote[] {
+  const arzinjaIdx = quotes.findIndex((q) => q.exchangeId === "arzinja");
+  if (arzinjaIdx < 0) return quotes;
+
+  const arzinjaQuote = quotes[arzinjaIdx];
+  if (
+    arzinjaQuote.sourceStatus === "unavailable" ||
+    arzinjaQuote.midPrice === null ||
+    !Number.isFinite(arzinjaQuote.midPrice)
+  ) {
+    return quotes;
+  }
+
+  const peerMids = quotes
+    .filter(
+      (q) =>
+        q.exchangeId !== "arzinja" &&
+        q.sourceStatus !== "unavailable" &&
+        q.midPrice !== null &&
+        Number.isFinite(q.midPrice) &&
+        q.midPrice > 0
+    )
+    .map((q) => q.midPrice as number);
+
+  const peerMedian = simpleMedian(peerMids);
+  if (peerMedian === null || peerMedian <= 0) {
+    return quotes;
+  }
+
+  const deviation = Math.abs(arzinjaQuote.midPrice - peerMedian) / peerMedian;
+  if (deviation > 0.1) {
+    const next = [...quotes];
+    next[arzinjaIdx] = unavailable(
+      "arzinja",
+      "ارزینجا",
+      "قیمت ارزینجا بیش از ۱۰٪ از میانه داخلی فاصله دارد (قیمت اصلاح یا جعل نمی‌شود)"
+    );
+    return next;
+  }
+
+  return quotes;
+}
+
 const providers: Provider[] = [
   { id: "nobitex", name: "نوبیتکس", fetchQuote: nobitex },
   { id: "wallex", name: "والکس", fetchQuote: wallex },
@@ -574,7 +957,10 @@ const providers: Provider[] = [
   { id: "abantether", name: "آبان‌تتر", fetchQuote: abanTether },
   { id: "ompfinex", name: "OMPFinex", fetchQuote: ompFinex },
   { id: "exir", name: "اکسیر", fetchQuote: exir },
-  { id: "tetherland", name: "تترلند", fetchQuote: tetherland }
+  { id: "tetherland", name: "تترلند", fetchQuote: tetherland },
+  { id: "bit24", name: "بیت۲۴", fetchQuote: bit24 },
+  { id: "okex_ir", name: "اوکی اکسچنج", fetchQuote: okexIr },
+  { id: "arzinja", name: "ارزینجا", fetchQuote: arzinja }
 ];
 
 const domesticCache = createProviderCache<DomesticQuote[]>();
@@ -584,7 +970,7 @@ function domesticCacheKey(settings: DeskSettings): string {
 }
 
 async function fetchDomesticQuotes(settings: DeskSettings): Promise<DomesticQuote[]> {
-  return Promise.all(
+  const quotes = await Promise.all(
     providers.map(async (provider) => {
       if (settings.enabledSources[provider.id] === false) {
         return unavailable(provider.id, provider.name, "این منبع در تنظیمات غیرفعال است");
@@ -600,6 +986,7 @@ async function fetchDomesticQuotes(settings: DeskSettings): Promise<DomesticQuot
       }
     })
   );
+  return applyArzinjaMedianGate(quotes);
 }
 
 export async function getDomesticQuotes(settings: DeskSettings): Promise<DomesticQuote[]> {

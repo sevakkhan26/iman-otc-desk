@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { useApi } from "@/hooks/useApi";
 import { CalendarClock, Clock, RefreshCw, Save, X } from "lucide-react";
 import type {
@@ -49,10 +50,18 @@ import {
   statusTone
 } from "@/components/format";
 import { SmartFilter, matchAsset, matchQuery, type AssetFilter } from "@/components/SmartFilter";
-import { GoldPriceChart } from "@/components/GoldPriceChart";
 import { GoldMarketSummary } from "@/components/GoldMarketSummary";
-import { MedianChart } from "@/components/MedianChart";
 import { assetLabel } from "@/lib/assets";
+
+// Heavy chart bundles — load after first paint (same UI, deferred JS)
+const MedianChart = dynamic(
+  () => import("@/components/MedianChart").then((m) => ({ default: m.MedianChart })),
+  { ssr: false, loading: () => <div className="loading">بارگذاری نمودار…</div> }
+);
+const GoldPriceChart = dynamic(
+  () => import("@/components/GoldPriceChart").then((m) => ({ default: m.GoldPriceChart })),
+  { ssr: false, loading: () => <div className="loading">بارگذاری نمودار…</div> }
+);
 
 type AlertsResponse = { items: AlertItem[] };
 
@@ -477,9 +486,39 @@ function QuickDecisionCockpit({
   );
 }
 
-function LoadState({ loading, error }: { loading: boolean; error: string | null }) {
-  if (loading) return <div className="loading">در حال دریافت داده...</div>;
-  if (error) return <div className="empty">داده‌ای دریافت نشد: {error}</div>;
+function PageSkeleton({ rows = 3 }: { rows?: number }) {
+  return (
+    <div className="grid page-skeleton" aria-hidden="true">
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i} className="skeleton-panel">
+          <div className="skeleton-line w40" />
+          <div className="skeleton-line w80" />
+          <div className="skeleton-line w60" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LoadState({
+  loading,
+  error,
+  hasData = false
+}: {
+  loading: boolean;
+  error: string | null;
+  hasData?: boolean;
+}) {
+  // Keep previous content visible while refreshing; only skeleton on first load
+  if (loading && !hasData) {
+    return (
+      <>
+        <div className="loading">در حال دریافت داده...</div>
+        <PageSkeleton />
+      </>
+    );
+  }
+  if (error && !hasData) return <div className="empty">داده‌ای دریافت نشد: {error}</div>;
   return null;
 }
 
@@ -799,7 +838,7 @@ export function GoldMarketView() {
         lastUpdatedDisplay={data?.lastUpdated ? formatGoldTehran(data.lastUpdated) : null}
         loading={loading}
       />
-      <LoadState loading={loading} error={error} />
+      <LoadState loading={loading} error={error} hasData={Boolean(data)} />
       {data ? (
         <div className="grid gold-page" data-layout-version="gold-cols-v2">
           {!cards.length ? (
@@ -826,20 +865,20 @@ export function GoldMarketView() {
 }
 
 export function ForexView() {
-  const { data, loading, error, reload, lastUpdated } = useApi<ForexEventsResponse>("/api/forex", 15000);
+  const { data, loading, error, reload, lastUpdated } = useApi<ForexEventsResponse>("/api/forex", 60_000);
   if (!data || !Array.isArray(data.events)) {
     return (
       <>
         <PageHeader title="فارکس" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
-        <LoadState loading={loading} error={error} />
-        <div className="empty">داده‌های فارکس در دسترس نیست</div>
+        <LoadState loading={loading} error={error} hasData={false} />
+        {!loading ? <div className="empty">داده‌های فارکس در دسترس نیست</div> : null}
       </>
     );
   }
   return (
     <>
       <PageHeader title="فارکس" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
-      <LoadState loading={loading} error={error} />
+      <LoadState loading={loading} error={error} hasData />
       <div className="grid">
         <Panel
           title="رویدادهای مهم فارکس (USD)"
@@ -1086,7 +1125,7 @@ export function DashboardView() {
       <Toasts toasts={toasts} onDismiss={dismiss} />
       <PageHeader title="داشبورد" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
       <NewsTicker />
-      <LoadState loading={loading} error={error} />
+      <LoadState loading={loading} error={error} hasData={Boolean(data)} />
       {data ? (
         <div className="grid">
           <QuickDecisionCockpit quickDecision={data.quickDecision} marketState={data.marketState} />
@@ -1147,7 +1186,7 @@ function ConnectionSegment({ value, onChange }: { value: ConnectionFilter; onCha
 }
 
 export function TetherMarketView() {
-  const { data, loading, error, reload, lastUpdated } = useApi<TetherMarketResponse>("/api/tether-market");
+  const { data, loading, error, reload, lastUpdated } = useApi<TetherMarketResponse>("/api/tether-market", 60_000);
   const [asset, setAsset] = useState<AssetFilter>("all");
   const [query, setQuery] = useState("");
   const [connection, setConnection] = useState<ConnectionFilter>("all");
@@ -1173,7 +1212,7 @@ export function TetherMarketView() {
   return (
     <>
       <PageHeader title="بازار تتر ایران" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
-      <LoadState loading={loading} error={error} />
+      <LoadState loading={loading} error={error} hasData={Boolean(data)} />
       {data ? (
         <div className="grid">
           <div className="grid metrics">
@@ -1267,7 +1306,7 @@ export function ExchangeMonitorView() {
   return (
     <>
       <PageHeader title="مانیتور صرافی‌ها" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
-      <LoadState loading={loading} error={error} />
+      <LoadState loading={loading} error={error} hasData={Boolean(data)} />
       {data ? (
         <div className="grid">
           <Panel title="صرافی‌های داخلی" meta={<span className="muted">میانه بازار: {formatToman(data.tetherSummary.median)}</span>}>

@@ -717,10 +717,55 @@ tr:last-child td {
 }
 
 .loading {
-  min-height: 220px;
+  min-height: 72px;
   display: grid;
   place-items: center;
   color: var(--muted);
+}
+
+.page-skeleton {
+  gap: 12px;
+}
+
+.skeleton-panel {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  background: var(--card);
+  display: grid;
+  gap: 10px;
+}
+
+.skeleton-line {
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--muted) 18%, transparent) 0%,
+    color-mix(in srgb, var(--muted) 32%, transparent) 50%,
+    color-mix(in srgb, var(--muted) 18%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.2s ease-in-out infinite;
+}
+
+.skeleton-line.w40 {
+  width: 40%;
+}
+.skeleton-line.w60 {
+  width: 60%;
+}
+.skeleton-line.w80 {
+  width: 80%;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
 }
 
 /* ===== Quick Decision cockpit ===== */

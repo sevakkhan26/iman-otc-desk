@@ -12,7 +12,10 @@ import type {
   DomesticQuote,
   ExchangeMonitorResponse,
   ExchangeOperationalStatus,
+  ForexEventsResponse,
   GlobalPrice,
+  ImpactNewsItem,
+  IntelligenceState,
   MarketState,
   QuickDecision,
   TetherMarketResponse,
@@ -152,7 +155,7 @@ export async function getTetherMarket(): Promise<TetherMarketResponse> {
   const exchanges = await getDomesticQuotes(settings);
   const response = calculateTetherMarket(exchanges, settings.outlierThresholdPercent);
   response.settings.marketSpreadAlertThresholdPercent = settings.marketSpreadAlertThresholdPercent;
-  await recordMedian(response.summary.median);
+  void recordMedian(response.summary.median).catch(() => {});
   return response;
 }
 
@@ -303,8 +306,17 @@ function buildQuickDecision(
 
 export async function getExchangeMonitor(): Promise<ExchangeMonitorResponse> {
   const settings = await getSettings();
-  const domestic = calculateTetherMarket(await getDomesticQuotes(settings), settings.outlierThresholdPercent);
-  const global = await getGlobalExchangeStatuses(settings);
+  const [domesticResult, globalResult] = await Promise.allSettled([
+    getDomesticQuotes(settings).then((quotes) =>
+      calculateTetherMarket(quotes, settings.outlierThresholdPercent)
+    ),
+    getGlobalExchangeStatuses(settings)
+  ]);
+  const domestic =
+    domesticResult.status === "fulfilled"
+      ? domesticResult.value
+      : calculateTetherMarket([], settings.outlierThresholdPercent);
+  const global = globalResult.status === "fulfilled" ? globalResult.value : [];
   return {
     domestic: domestic.exchanges,
     global,
@@ -312,18 +324,64 @@ export async function getExchangeMonitor(): Promise<ExchangeMonitorResponse> {
   };
 }
 
+function emptyForex(): ForexEventsResponse {
+  return { events: [], sourceStatus: "unavailable", lastUpdated: null, message: "داده فارکس در دسترس نیست" };
+}
+
+function emptyNews(): {
+  items: ImpactNewsItem[];
+  sourceStatus: "unavailable";
+  lastUpdated: null;
+  message: string;
+} {
+  return { items: [], sourceStatus: "unavailable", lastUpdated: null, message: "داده خبر در دسترس نیست" };
+}
+
+function emptyIntelligence(enabled: boolean): IntelligenceState {
+  return {
+    enabled,
+    message: "تحلیل هوشمند در پس‌زمینه",
+    latest: null
+  };
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallback), ms);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function getDashboard(): Promise<DashboardResponse> {
   const settings = await getSettings();
-  const [quotes, globalMarket, globalStatuses, news, forex] = await Promise.all([
+
+  // Isolated parallel loads — one slow/failed branch must not reject the whole dashboard
+  const settled = await Promise.allSettled([
     getDomesticQuotes(settings),
     getGlobalPrices(settings.globalMarketRefreshMinutes),
     getGlobalExchangeStatuses(settings),
     getImpactNews(settings),
     getForexEvents(settings)
   ]);
+
+  const quotes = settled[0].status === "fulfilled" ? settled[0].value : [];
+  const globalMarket = settled[1].status === "fulfilled" ? settled[1].value : [];
+  const globalStatuses = settled[2].status === "fulfilled" ? settled[2].value : [];
+  const news = settled[3].status === "fulfilled" ? settled[3].value : emptyNews();
+  const forex = settled[4].status === "fulfilled" ? settled[4].value : emptyForex();
+
   const tetherMarket = calculateTetherMarket(quotes, settings.outlierThresholdPercent);
   tetherMarket.settings.marketSpreadAlertThresholdPercent = settings.marketSpreadAlertThresholdPercent;
-  await recordMedian(tetherMarket.summary.median);
+  // Do not block the HTTP response on history write
+  void recordMedian(tetherMarket.summary.median).catch(() => {});
+
   const alerts = buildAlerts({
     tetherMarket,
     globalMarket,
@@ -332,14 +390,20 @@ export async function getDashboard(): Promise<DashboardResponse> {
     forexEvents: forex.events,
     settings
   }).slice(0, 20);
-  const intelligence = await getIntelligenceState({
-    tetherMarket,
-    globalMarket,
-    globalStatuses,
-    news: news.items,
-    alerts,
-    settings
-  });
+
+  // Intelligence can call OpenAI / disk — hard-cap so it never stalls the shell
+  const intelligence = await withTimeout(
+    getIntelligenceState({
+      tetherMarket,
+      globalMarket,
+      globalStatuses,
+      news: news.items,
+      alerts,
+      settings
+    }),
+    1_200,
+    emptyIntelligence(Boolean(settings.openAiApiKey))
+  );
 
   return {
     globalMarket,

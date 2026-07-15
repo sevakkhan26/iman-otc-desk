@@ -150,26 +150,65 @@ async function wallex(): Promise<DomesticQuote> {
   }
 }
 
+// Bitpin ticker only exposes last price — use official public order book for bid/ask.
+// Endpoint (verified live): GET https://api.bitpin.ir/api/v1/mth/orderbook/USDT_IRT/
+// Response: { bids: [[price, amount], ...], asks: [[price, amount], ...] }
+// bids[0] = highest bid, asks[0] = lowest ask; prices are already in Toman (IRT).
+const BITPIN_ORDERBOOK_URL = "https://api.bitpin.ir/api/v1/mth/orderbook/USDT_IRT/";
+const BITPIN_ORDERBOOK_URL_FALLBACK = "https://api.bitpin.org/api/v1/mth/orderbook/USDT_IRT/";
+const BITPIN_MIN_FETCH_MS = 2.5 * 60 * 1000;
+const BITPIN_STALE_TTL_MS = 10 * 60 * 1000;
+type BitpinCacheEntry = { quote: DomesticQuote; fetchedAt: number };
+let bitpinMemCache: BitpinCacheEntry | null = null;
+
+async function fetchBitpinOrderbook(): Promise<{ bids: Array<[string | number, string | number]>; asks: Array<[string | number, string | number]> }> {
+  try {
+    return await fetchJson(BITPIN_ORDERBOOK_URL, 8_000, {
+      headers: { "user-agent": BROWSER_UA, accept: "application/json" }
+    });
+  } catch {
+    return await fetchJson(BITPIN_ORDERBOOK_URL_FALLBACK, 8_000, {
+      headers: { "user-agent": BROWSER_UA, accept: "application/json" }
+    });
+  }
+}
+
 async function bitpin(): Promise<DomesticQuote> {
   const id = "bitpin";
   const name = "بیت‌پین";
-  try {
-    const data = await fetchJson<Array<{ symbol?: string; price?: string; timestamp?: number }>>(
-      "https://api.bitpin.org/api/v1/mkt/tickers/?symbol=USDT_IRT",
-      9_000
-    );
-    const item = data.find((entry) => entry.symbol === "USDT_IRT");
-    const midPrice = toToman(item?.price);
-    if (midPrice === null) {
-      return unavailable(id, name, "داده قیمت تتر در پاسخ منبع پیدا نشد");
+  const now = Date.now();
+
+  if (bitpinMemCache && now - bitpinMemCache.fetchedAt < BITPIN_MIN_FETCH_MS) {
+    if (bitpinMemCache.quote.buyPrice !== null || bitpinMemCache.quote.sellPrice !== null) {
+      return bitpinMemCache.quote;
     }
-    return buildQuote(id, name, null, null, {
-      midPrice,
-      status: "degraded",
-      lastUpdated: item?.timestamp ? new Date(item.timestamp * 1000).toISOString() : nowIso(),
-      errorMessage: "API عمومی فقط آخرین قیمت را برگرداند؛ خرید و فروش دریافت نشد"
-    });
+  }
+
+  try {
+    const data = await fetchBitpinOrderbook();
+    const bids = data.bids ?? [];
+    const asks = data.asks ?? [];
+    // highest bid / lowest ask (arrays are best-first on Bitpin public book)
+    const buyPrice = toToman(bids[0]?.[0]);
+    const sellPrice = toToman(asks[0]?.[0]);
+    if (buyPrice === null || sellPrice === null) {
+      throw new ProviderError("دفتر سفارش بیت‌پین خرید/فروش معتبر ندارد");
+    }
+    const quote = buildQuote(id, name, buyPrice, sellPrice);
+    bitpinMemCache = { quote, fetchedAt: now };
+    return quote;
   } catch (error) {
+    if (
+      bitpinMemCache &&
+      now - bitpinMemCache.fetchedAt < BITPIN_STALE_TTL_MS &&
+      (bitpinMemCache.quote.buyPrice !== null || bitpinMemCache.quote.sellPrice !== null)
+    ) {
+      return {
+        ...bitpinMemCache.quote,
+        sourceStatus: "degraded",
+        errorMessage: "آخرین قیمت معتبر بیت‌پین نمایش داده می‌شود"
+      };
+    }
     return unavailable(id, name, error instanceof Error ? error.message : "منبع در دسترس نیست");
   }
 }
@@ -467,25 +506,61 @@ async function tetherland(): Promise<DomesticQuote> {
   }
 }
 
+// Exir ticker only exposes last/close — use official public order book for bid/ask.
+// Endpoint (verified live): GET https://api.exir.io/v1/orderbook?symbol=usdt-irt
+// Response: { "usdt-irt": { bids: [[price, amount], ...], asks: [[price, amount], ...] } }
+// bids[0] = highest bid, asks[0] = lowest ask; prices are already in Toman.
+const EXIR_ORDERBOOK_URL = "https://api.exir.io/v1/orderbook?symbol=usdt-irt";
+const EXIR_MIN_FETCH_MS = 2.5 * 60 * 1000;
+const EXIR_STALE_TTL_MS = 10 * 60 * 1000;
+type ExirCacheEntry = { quote: DomesticQuote; fetchedAt: number };
+let exirMemCache: ExirCacheEntry | null = null;
+
 async function exir(): Promise<DomesticQuote> {
   const id = "exir";
   const name = "اکسیر";
-  try {
-    // Exir (HollaEx) public ticker — usdt-irt is quoted in Toman
-    const data = await fetchJson<{ last?: number; close?: number }>(
-      "https://api.exir.io/v1/ticker?symbol=usdt-irt",
-      9_000
-    );
-    const midPrice = toToman(data.last ?? data.close);
-    if (midPrice === null) {
-      return unavailable(id, name, "داده قیمت تتر در پاسخ منبع پیدا نشد");
+  const now = Date.now();
+
+  if (exirMemCache && now - exirMemCache.fetchedAt < EXIR_MIN_FETCH_MS) {
+    if (exirMemCache.quote.buyPrice !== null || exirMemCache.quote.sellPrice !== null) {
+      return exirMemCache.quote;
     }
-    return buildQuote(id, name, null, null, {
-      midPrice,
-      status: "degraded",
-      errorMessage: "API عمومی فقط قیمت آخر را می‌دهد؛ خرید و فروش دریافت نشد"
+  }
+
+  try {
+    const data = await fetchJson<{
+      "usdt-irt"?: {
+        bids?: Array<[number | string, number | string]>;
+        asks?: Array<[number | string, number | string]>;
+      };
+      bids?: Array<[number | string, number | string]>;
+      asks?: Array<[number | string, number | string]>;
+    }>(EXIR_ORDERBOOK_URL, 8_000, {
+      headers: { "user-agent": BROWSER_UA, accept: "application/json" }
     });
+    const book = data["usdt-irt"] ?? data;
+    const bids = book.bids ?? [];
+    const asks = book.asks ?? [];
+    const buyPrice = toToman(bids[0]?.[0]);
+    const sellPrice = toToman(asks[0]?.[0]);
+    if (buyPrice === null || sellPrice === null) {
+      throw new ProviderError("دفتر سفارش اکسیر خرید/فروش معتبر ندارد");
+    }
+    const quote = buildQuote(id, name, buyPrice, sellPrice);
+    exirMemCache = { quote, fetchedAt: now };
+    return quote;
   } catch (error) {
+    if (
+      exirMemCache &&
+      now - exirMemCache.fetchedAt < EXIR_STALE_TTL_MS &&
+      (exirMemCache.quote.buyPrice !== null || exirMemCache.quote.sellPrice !== null)
+    ) {
+      return {
+        ...exirMemCache.quote,
+        sourceStatus: "degraded",
+        errorMessage: "آخرین قیمت معتبر اکسیر نمایش داده می‌شود"
+      };
+    }
     return unavailable(id, name, error instanceof Error ? error.message : "منبع در دسترس نیست");
   }
 }

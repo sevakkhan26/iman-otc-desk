@@ -1131,3 +1131,34 @@ export async function getDomesticQuotes(settings: DeskSettings): Promise<Domesti
   const ttlMs = ttlFromMinutes(settings.priceRefreshMinutes);
   return domesticCache.get(key, ttlMs, () => fetchDomesticQuotes(settings));
 }
+
+/**
+ * Public diagnostic for Vercel: fetch Arzinja only (no settings, no disk).
+ * Used by GET /api/auth/login to verify datacenter reachability without session.
+ */
+export async function probeArzinjaQuote(): Promise<{
+  exchangeId: string;
+  buyPrice: number | null;
+  sellPrice: number | null;
+  midPrice: number | null;
+  sourceStatus: SourceStatus;
+  errorMessage?: string;
+  region: string | null;
+  vercel: boolean;
+  endpoint: string;
+}> {
+  // Bypass short mem-cache for a true connectivity probe
+  arzinjaMemCache = null;
+  const quote = await arzinja();
+  return {
+    exchangeId: quote.exchangeId,
+    buyPrice: quote.buyPrice,
+    sellPrice: quote.sellPrice,
+    midPrice: quote.midPrice,
+    sourceStatus: quote.sourceStatus,
+    errorMessage: quote.errorMessage,
+    region: process.env.VERCEL_REGION ?? null,
+    vercel: Boolean(process.env.VERCEL),
+    endpoint: ARZINJA_ORDERBOOK_URL
+  };
+}

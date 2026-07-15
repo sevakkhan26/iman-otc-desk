@@ -551,6 +551,9 @@ const ExchangeCard = memo(function ExchangeCard({
 }) {
   const down = row.sourceStatus === "unavailable";
   const noData = !down && row.midPrice === null;
+  // Reference-only: valid mid, no separate public bid/ask (e.g. Tetherland / OK-EX OTC)
+  const referenceOnly =
+    !down && row.midPrice !== null && row.buyPrice === null && row.sellPrice === null;
   const className = [
     "exch-card",
     down || noData ? "is-empty" : "",
@@ -577,7 +580,7 @@ const ExchangeCard = memo(function ExchangeCard({
             <PriceValue value={row.sellPrice} className="exch-v number" />
           </div>
           <div className="exch-row mid">
-            <span className="exch-k">قیمت وسط</span>
+            <span className="exch-k">{referenceOnly ? "قیمت مرجع" : "قیمت وسط"}</span>
             <PriceValue value={row.midPrice} className="exch-v number" />
           </div>
         </div>

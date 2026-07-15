@@ -82,19 +82,27 @@ export function calculateTetherMarket(exchanges: DomesticQuote[], outlierThresho
   const valid = recalculated.filter(
     (exchange) => exchange.midPrice !== null && exchange.sourceStatus !== "unavailable" && !exchange.excludedFromMedian
   );
-  const highestQuote = pick(valid, (exchange) => exchange.midPrice, "max");
-  const lowestQuote = pick(valid, (exchange) => exchange.midPrice, "min");
+  // Executable bid/ask only (exclude reference-only mid-only sources from buy/sell/spread/arb)
+  const executable = valid.filter(
+    (exchange) =>
+      exchange.buyPrice !== null &&
+      exchange.sellPrice !== null &&
+      Number.isFinite(exchange.buyPrice) &&
+      Number.isFinite(exchange.sellPrice)
+  );
+  const highestQuote = pick(executable, (exchange) => exchange.midPrice, "max");
+  const lowestQuote = pick(executable, (exchange) => exchange.midPrice, "min");
   const highest = highestQuote?.midPrice ?? null;
   const lowest = lowestQuote?.midPrice ?? null;
   const marketSpreadPercent = highest !== null && lowest !== null && finalMedian ? ((highest - lowest) / finalMedian) * 100 : null;
   // بهترین قیمت خرید = پایین‌ترین قیمت خرید بین صرافی‌ها (ارزان‌ترین نقطه خرید)
-  const bestBuyQuote = pick(valid, (exchange) => exchange.buyPrice, "min");
+  const bestBuyQuote = pick(executable, (exchange) => exchange.buyPrice, "min");
   // بدترین قیمت خرید = بالاترین قیمت خرید بین صرافی‌ها (گران‌ترین نقطه خرید)
-  const worstBuyQuote = pick(valid, (exchange) => exchange.buyPrice, "max");
+  const worstBuyQuote = pick(executable, (exchange) => exchange.buyPrice, "max");
   // بهترین قیمت فروش = بالاترین قیمت فروش بین صرافی‌ها (گران‌ترین نقطه فروش)
-  const bestSellQuote = pick(valid, (exchange) => exchange.sellPrice, "max");
+  const bestSellQuote = pick(executable, (exchange) => exchange.sellPrice, "max");
   // بدترین قیمت فروش = پایین‌ترین قیمت فروش بین صرافی‌ها
-  const worstSellQuote = pick(valid, (exchange) => exchange.sellPrice, "min");
+  const worstSellQuote = pick(executable, (exchange) => exchange.sellPrice, "min");
 
   const buySpreadPercent =
     bestBuyQuote?.buyPrice != null && worstBuyQuote?.buyPrice != null && bestBuyQuote.buyPrice > 0

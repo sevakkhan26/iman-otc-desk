@@ -2,36 +2,55 @@ import { NextRequest, NextResponse } from "next/server";
 import { AUTH_COOKIE, COOKIE_MAX_AGE_S, INVALID_CREDENTIALS_MESSAGE } from "@/lib/auth";
 import { verifyCredentials } from "@/lib/authCredentials";
 import { createSessionToken } from "@/lib/authToken.server";
-import { probeArzinjaQuote } from "@/lib/providers/domestic";
+import { probeArzinjaQuote, probeDomesticHealth } from "@/lib/providers/domestic";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-// Same region preference as tether-market so Arzinja probe matches production fetch path
+// Same region preference as tether-market so Arzinja/domestic probes match production fetch path
 export const preferredRegion = ["sin1"];
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 function cookieSecure(request: NextRequest): boolean {
   return process.env.NODE_ENV === "production" || request.nextUrl.protocol === "https:";
 }
 
 /**
- * Unauthenticated Arzinja connectivity probe (existing /api/auth/login path, GET only).
- * Query: ?probe=arzinja
- * Returns live buy/sell/mid from official API when reachable from this serverless region.
+ * Unauthenticated connectivity probes (existing /api/auth/login path, GET only).
+ *   ?probe=arzinja  — single Arzinja check
+ *   ?probe=domestic — full multi-provider health (isolated)
  */
 export async function GET(request: NextRequest) {
-  if (request.nextUrl.searchParams.get("probe") !== "arzinja") {
-    return NextResponse.json(
-      { ok: false, message: "Use POST to login, or GET ?probe=arzinja for connectivity check" },
-      { status: 400 }
-    );
+  const probe = request.nextUrl.searchParams.get("probe");
+  if (probe === "domestic") {
+    const report = await probeDomesticHealth();
+    const healthy = report.providers.filter(
+      (p) => p.status === "available" || p.status === "degraded"
+    ).length;
+    return NextResponse.json({
+      ok: healthy > 0,
+      commit: report.commit ?? process.env.VERCEL_GIT_COMMIT_SHA ?? null,
+      region: report.region,
+      vercel: report.vercel,
+      healthyCount: healthy,
+      total: report.providers.length,
+      providers: report.providers
+    });
   }
-  const arzinja = await probeArzinjaQuote();
-  return NextResponse.json({
-    ok: arzinja.sourceStatus === "available" || arzinja.sourceStatus === "degraded",
-    commit: process.env.VERCEL_GIT_COMMIT_SHA ?? null,
-    arzinja
-  });
+  if (probe === "arzinja") {
+    const arzinja = await probeArzinjaQuote();
+    return NextResponse.json({
+      ok: arzinja.sourceStatus === "available" || arzinja.sourceStatus === "degraded",
+      commit: process.env.VERCEL_GIT_COMMIT_SHA ?? null,
+      arzinja
+    });
+  }
+  return NextResponse.json(
+    {
+      ok: false,
+      message: "Use POST to login, or GET ?probe=arzinja|domestic for connectivity check"
+    },
+    { status: 400 }
+  );
 }
 
 export async function POST(request: NextRequest) {

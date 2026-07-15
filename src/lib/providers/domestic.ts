@@ -726,10 +726,139 @@ async function okexIr(): Promise<DomesticQuote> {
 
 const ARZINJA_API_HEADERS = {
   "user-agent": BROWSER_UA,
-  accept: "application/json",
+  accept: "application/json, text/plain;q=0.8, */*;q=0.5",
+  "accept-language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
   origin: "https://arzinja.ir",
   referer: "https://arzinja.ir/tether"
 } as const;
+
+const ARZINJA_ORDERBOOK_URL =
+  "https://api-v2.arzinja.ir/api/v1/trade/p2p/orderbook?pair=USDTIRT";
+const ARZINJA_ALL_MARKET_URL =
+  "https://api-v2.arzinja.ir/api/v1/market/all-market?page=1&base_asset=USDT&provider_type=p2p";
+
+type ArzinjaFetchDiag = {
+  finalUrl: string;
+  status: number | null;
+  contentType: string | null;
+  responseLength: number;
+  errorType: string | null;
+};
+
+function logArzinjaDiag(diag: ArzinjaFetchDiag & { attempt?: number; path?: string }): void {
+  // Safe structured log for Vercel — no secrets, no bodies
+  console.info(
+    "[arzinja-fetch]",
+    JSON.stringify({
+      path: diag.path ?? null,
+      status: diag.status,
+      finalUrl: diag.finalUrl,
+      contentType: diag.contentType,
+      responseLength: diag.responseLength,
+      errorType: diag.errorType,
+      attempt: diag.attempt ?? null,
+      vercel: Boolean(process.env.VERCEL),
+      region: process.env.VERCEL_REGION ?? null
+    })
+  );
+}
+
+/**
+ * Vercel-safe Arzinja HTTP GET.
+ * Uses native fetch first (avoids IP-pin hangs to Arvan from EU regions),
+ * with retry/backoff. On non-Vercel, falls back to shared fetchJson (DoH path).
+ * Never uses persistent disk — only the returned JSON.
+ */
+async function arzinjaHttpGetJson(url: string, timeoutMs: number): Promise<unknown> {
+  const attempts = process.env.VERCEL ? 3 : 2;
+  let lastError: ProviderError | null = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (attempt > 1) {
+      await new Promise((r) => setTimeout(r, 250 * attempt));
+    }
+
+    const diag: ArzinjaFetchDiag = {
+      finalUrl: url,
+      status: null,
+      contentType: null,
+      responseLength: 0,
+      errorType: null
+    };
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(url, {
+        cache: "no-store",
+        signal: controller.signal,
+        headers: { ...ARZINJA_API_HEADERS }
+      });
+      const text = await response.text();
+      diag.status = response.status;
+      diag.contentType = response.headers.get("content-type");
+      diag.responseLength = text.length;
+      diag.finalUrl = response.url || url;
+
+      if (!response.ok) {
+        diag.errorType = `HTTP ${response.status}`;
+        logArzinjaDiag({ ...diag, attempt, path: "fetch" });
+        lastError = new ProviderError(`HTTP ${response.status}`);
+        // Retry 403/429/5xx; do not retry other 4xx
+        if (response.status === 403 || response.status === 429 || response.status >= 500) {
+          continue;
+        }
+        throw lastError;
+      }
+      if (!text.trim()) {
+        diag.errorType = "empty";
+        logArzinjaDiag({ ...diag, attempt, path: "fetch" });
+        lastError = new ProviderError("پاسخ خالی بود");
+        continue;
+      }
+      try {
+        const json: unknown = JSON.parse(text);
+        logArzinjaDiag({ ...diag, attempt, path: "fetch", errorType: null });
+        return json;
+      } catch {
+        diag.errorType = "invalid_json";
+        logArzinjaDiag({ ...diag, attempt, path: "fetch" });
+        lastError = new ProviderError("پاسخ JSON معتبر نبود");
+        continue;
+      }
+    } catch (error) {
+      if (error instanceof ProviderError) {
+        lastError = error;
+      } else if (error instanceof Error && error.name === "AbortError") {
+        diag.errorType = "timeout";
+        lastError = new ProviderError("زمان پاسخ‌دهی منبع تمام شد");
+      } else {
+        diag.errorType = error instanceof Error ? error.name : "network";
+        lastError = new ProviderError(error instanceof Error ? error.message : "خطای شبکه");
+      }
+      logArzinjaDiag({ ...diag, attempt, path: "fetch" });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Local/dev only: try DoH+IP-pin helper as last resort (can hang from Vercel EU — skip there)
+  if (!process.env.VERCEL) {
+    try {
+      return await fetchJson(url, Math.min(timeoutMs, 10_000), {
+        headers: { ...ARZINJA_API_HEADERS }
+      });
+    } catch (error) {
+      lastError =
+        error instanceof ProviderError
+          ? error
+          : new ProviderError(error instanceof Error ? error.message : "خطای شبکه");
+    }
+  }
+
+  throw lastError ?? new ProviderError("اتصال به ارزینجا برقرار نشد");
+}
 
 /**
  * Parse executable bid/ask from Arzinja P2P order book levels [price, amount].
@@ -818,9 +947,9 @@ function arzinjaBidAskFromAllMarket(data: {
  *   GET https://api-v2.arzinja.ir/api/v1/market/all-market?page=1&base_asset=USDT&provider_type=p2p
  *   result[].USDTIRT.stats.bidPrice / askPrice
  *
+ * Vercel: prefer region sin1 (Arvan IR edges are often unreachable from fra1/EU).
+ * Uses native fetch + retries on Vercel; never invents prices; mem-cache only (no .data).
  * Legacy https://arzinja.app/prices is frozen/stale (~60k) and must not be used.
- * Rial→Toman: quote is already Toman — convert once via toToman (unit=toman).
- * Outlier gate (>10% vs domestic median) stays in fetchDomesticQuotes; never invent prices.
  */
 async function arzinja(): Promise<DomesticQuote> {
   const id = "arzinja";
@@ -837,28 +966,31 @@ async function arzinja(): Promise<DomesticQuote> {
   const hit = fromSimpleCache(arzinjaMemCache, now, NEW_SOURCE_MIN_FETCH_MS);
   if (hit) return hit;
 
+  const timeoutMs = process.env.VERCEL ? 10_000 : 12_000;
+  let lastDiagHint = "";
+
   try {
     let bidAsk: { buyPrice: number; sellPrice: number } | null = null;
 
     try {
-      const book = await fetchJson<{
+      const book = (await arzinjaHttpGetJson(ARZINJA_ORDERBOOK_URL, timeoutMs)) as {
         success?: boolean;
         result?: {
           symbol?: string;
           bids?: Array<[string | number, string | number] | (string | number)[]>;
           asks?: Array<[string | number, string | number] | (string | number)[]>;
         };
-      }>("https://api-v2.arzinja.ir/api/v1/trade/p2p/orderbook?pair=USDTIRT", 12_000, {
-        headers: { ...ARZINJA_API_HEADERS }
-      });
+      };
       bidAsk = arzinjaBidAskFromOrderBook(book);
-    } catch {
+      if (!bidAsk) lastDiagHint = "orderbook without valid bid/ask";
+    } catch (error) {
+      lastDiagHint = error instanceof Error ? error.message : "orderbook fetch failed";
       bidAsk = null;
     }
 
     if (!bidAsk) {
       try {
-        const markets = await fetchJson<{
+        const markets = (await arzinjaHttpGetJson(ARZINJA_ALL_MARKET_URL, timeoutMs)) as {
           success?: boolean;
           result?: Array<
             Record<
@@ -872,19 +1004,20 @@ async function arzinja(): Promise<DomesticQuote> {
               }
             >
           >;
-        }>(
-          "https://api-v2.arzinja.ir/api/v1/market/all-market?page=1&base_asset=USDT&provider_type=p2p",
-          12_000,
-          { headers: { ...ARZINJA_API_HEADERS } }
-        );
+        };
         bidAsk = arzinjaBidAskFromAllMarket(markets);
-      } catch {
+        if (!bidAsk) lastDiagHint = "all-market without valid bid/ask";
+      } catch (error) {
+        lastDiagHint = error instanceof Error ? error.message : "all-market fetch failed";
         bidAsk = null;
       }
     }
 
     if (!bidAsk) {
-      throw new ProviderError("قیمت خرید/فروش زنده USDT/IRT ارزینجا دریافت نشد");
+      const region = process.env.VERCEL_REGION ? ` region=${process.env.VERCEL_REGION}` : "";
+      throw new ProviderError(
+        `قیمت زنده USDT/IRT ارزینجا در دسترس نیست (${lastDiagHint || "no data"}${region})`
+      );
     }
 
     const quote = buildQuote(id, name, bidAsk.buyPrice, bidAsk.sellPrice);

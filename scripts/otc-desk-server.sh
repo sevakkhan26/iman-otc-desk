@@ -32,10 +32,25 @@ cd "$PROJECT" || { echo "[$(date)] ERROR: project dir missing" >> "$LOG"; exit 1
 
 echo "[$(date)] starting OTC Desk with $NODE ($("$NODE" -v))" >> "$LOG"
 
-# Build once if there is no production build yet.
+# Rebuild when missing, or when source is newer than the last production build.
+# Prevents launchd "server" mode from serving a stale .next (e.g. old Arzinja endpoint).
+NEED_BUILD=0
 if [ ! -f ".next/BUILD_ID" ]; then
+  NEED_BUILD=1
   echo "[$(date)] no production build found — building..." >> "$LOG"
-  "$NODE" node_modules/next/dist/bin/next build >> "$LOG" 2>&1
+else
+  # If any app/src file is newer than BUILD_ID, rebuild.
+  NEWER="$(find app src package.json next.config.ts -type f -newer .next/BUILD_ID 2>/dev/null | head -1 || true)"
+  if [ -n "$NEWER" ]; then
+    NEED_BUILD=1
+    echo "[$(date)] source newer than .next/BUILD_ID ($NEWER) — rebuilding..." >> "$LOG"
+  fi
+fi
+if [ "$NEED_BUILD" = "1" ]; then
+  "$NODE" node_modules/next/dist/bin/next build >> "$LOG" 2>&1 || {
+    echo "[$(date)] ERROR: next build failed" >> "$LOG"
+    exit 1
+  }
 fi
 
 exec "$NODE" node_modules/next/dist/bin/next start -H "$HOST" -p "$PORT"

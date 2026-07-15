@@ -848,7 +848,7 @@ async function arzinja(): Promise<DomesticQuote> {
           bids?: Array<[string | number, string | number] | (string | number)[]>;
           asks?: Array<[string | number, string | number] | (string | number)[]>;
         };
-      }>("https://api-v2.arzinja.ir/api/v1/trade/p2p/orderbook?pair=USDTIRT", 8_000, {
+      }>("https://api-v2.arzinja.ir/api/v1/trade/p2p/orderbook?pair=USDTIRT", 12_000, {
         headers: { ...ARZINJA_API_HEADERS }
       });
       bidAsk = arzinjaBidAskFromOrderBook(book);
@@ -857,26 +857,30 @@ async function arzinja(): Promise<DomesticQuote> {
     }
 
     if (!bidAsk) {
-      const markets = await fetchJson<{
-        success?: boolean;
-        result?: Array<
-          Record<
-            string,
-            {
-              pair?: string;
-              baseAsset?: string;
-              quoteAsset?: string;
-              faQuoteAsset?: string;
-              stats?: { bidPrice?: string | number; askPrice?: string | number; lastPrice?: string | number };
-            }
-          >
-        >;
-      }>(
-        "https://api-v2.arzinja.ir/api/v1/market/all-market?page=1&base_asset=USDT&provider_type=p2p",
-        8_000,
-        { headers: { ...ARZINJA_API_HEADERS } }
-      );
-      bidAsk = arzinjaBidAskFromAllMarket(markets);
+      try {
+        const markets = await fetchJson<{
+          success?: boolean;
+          result?: Array<
+            Record<
+              string,
+              {
+                pair?: string;
+                baseAsset?: string;
+                quoteAsset?: string;
+                faQuoteAsset?: string;
+                stats?: { bidPrice?: string | number; askPrice?: string | number; lastPrice?: string | number };
+              }
+            >
+          >;
+        }>(
+          "https://api-v2.arzinja.ir/api/v1/market/all-market?page=1&base_asset=USDT&provider_type=p2p",
+          12_000,
+          { headers: { ...ARZINJA_API_HEADERS } }
+        );
+        bidAsk = arzinjaBidAskFromAllMarket(markets);
+      } catch {
+        bidAsk = null;
+      }
     }
 
     if (!bidAsk) {

@@ -27,7 +27,10 @@ const DOH_RESOLVERS = [
 
 const FALLBACK_HOST_IPS: Record<string, string[]> = {
   "www.navasan.net": ["104.21.44.125", "172.67.199.191"],
-  "bonbast.com": ["104.21.44.125", "172.67.199.191"]
+  "bonbast.com": ["104.21.44.125", "172.67.199.191"],
+  // ArvanCloud edges for Arzinja (IR) — helps when DoH/system DNS fails on production
+  "api-v2.arzinja.ir": ["185.143.234.235", "185.143.233.235"],
+  "arzinja.ir": ["185.143.234.235", "185.143.233.235"]
 };
 
 const ipCache = new Map<string, { ips: string[]; at: number }>();

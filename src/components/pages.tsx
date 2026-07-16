@@ -6,8 +6,6 @@ import { useApi } from "@/hooks/useApi";
 import { CalendarClock, Clock, RefreshCw, Save, X } from "lucide-react";
 import { ThemeToggleButton } from "@/components/ThemeToggleButton";
 import type {
-  AlertItem,
-  AssetTag,
   DashboardResponse,
   DomesticProviderHealth,
   DomesticQuote,
@@ -27,7 +25,6 @@ import type {
   GoldProviderHealth,
   MedianHistoryResponse,
   QuickDecision,
-  Severity,
   TetherMarketResponse
 } from "@/lib/types";
 import {
@@ -46,16 +43,13 @@ import {
   marketStateTone,
   premiumImpactLabel,
   premiumImpactTone,
-  severityLabel,
   severityTone,
   statusLabel,
   statusTone
 } from "@/components/format";
 import { SmartFilter, matchAsset, matchQuery, type AssetFilter } from "@/components/SmartFilter";
 import { GoldMarketSummary } from "@/components/GoldMarketSummary";
-import { assetLabel } from "@/lib/assets";
 import {
-  AlertsSkeleton,
   DashboardSkeleton,
   ForexSkeleton,
   GoldSkeleton,
@@ -103,7 +97,7 @@ const GoldPriceChart = dynamic(
   }
 );
 
-type AlertsResponse = { items: AlertItem[] };
+
 
 // ---- Timing & display limits (single source of truth) ----
 const DASHBOARD_REFRESH_MS = 60_000;
@@ -216,19 +210,6 @@ const Metric = memo(function Metric({
       <div className="metric-label">{label}</div>
       <div className="metric-value">{value}</div>
       {note ? <div className="metric-note">{note}</div> : null}
-    </div>
-  );
-});
-
-const AssetTags = memo(function AssetTags({ assets }: { assets: AssetTag[] }) {
-  if (!assets.length) return null;
-  return (
-    <div className="asset-tags">
-      {assets.map((asset) => (
-        <span className="asset-tag" key={asset}>
-          {assetLabel(asset)}
-        </span>
-      ))}
     </div>
   );
 });
@@ -923,48 +904,6 @@ function DashboardExchangeCards({
           />
         );
       })}
-    </div>
-  );
-}
-
-const AlertRow = memo(function AlertRow({ item, compact }: { item: AlertItem; compact: boolean }) {
-  return (
-    <article className="alert-row">
-      <div className="row-meta">
-        <Badge tone={severityTone(item.severity)}>{severityLabel(item.severity)}</Badge>
-        <span>{item.source}</span>
-        <span>{formatDate(item.time)}</span>
-        {!compact ? <AssetTags assets={item.assets} /> : null}
-      </div>
-      <h4 className="row-title">{item.title}</h4>
-      {!compact ? (
-        <>
-          <div className="muted">{item.description}</div>
-          <div>{item.impactOnDesk}</div>
-          <strong>{item.recommendedAction}</strong>
-        </>
-      ) : (
-        <div className="muted">{item.recommendedAction}</div>
-      )}
-    </article>
-  );
-});
-
-function AlertsList({
-  items,
-  compact = false,
-  emptyMessage = "داده‌ای دریافت نشد"
-}: {
-  items: AlertItem[];
-  compact?: boolean;
-  emptyMessage?: string;
-}) {
-  if (!items.length) return <div className="empty">{emptyMessage}</div>;
-  return (
-    <div className="stack">
-      {items.map((item) => (
-        <AlertRow key={item.id} item={item} compact={compact} />
-      ))}
     </div>
   );
 }
@@ -2189,57 +2128,6 @@ export function TetherMarketView() {
     </>
   );
 }
-
-const severityColumns: Array<{ key: Severity; title: string; tone: "danger" | "warn" | "good" }> = [
-  { key: "high", title: "هشدار اضطراری (Emergency)", tone: "danger" },
-  { key: "medium", title: "هشدار مهم (Important)", tone: "warn" },
-  { key: "low", title: "هشدار معمولی (Normal)", tone: "good" }
-];
-
-export function AlertsView() {
-  const { data, loading, error, reload, lastUpdated } = useApi<AlertsResponse>("/api/alerts");
-  const [asset, setAsset] = useState<AssetFilter>("all");
-  const [query, setQuery] = useState("");
-
-  const filtered = useMemo(() => {
-    if (!data) return [];
-    return data.items.filter(
-      (item) =>
-        matchAsset(item.assets, asset) &&
-        matchQuery(`${item.title} ${item.source} ${item.description} ${item.recommendedAction}`, query)
-    );
-  }, [data, asset, query]);
-
-  return (
-    <>
-      <PageHeader title="هشدارها" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
-      <LoadState loading={loading} error={error} hasData={Boolean(data)} skeleton={<AlertsSkeleton />} />
-      {data ? (
-        <div className="grid">
-          <SmartFilter
-            asset={asset}
-            query={query}
-            onAsset={setAsset}
-            onQuery={setQuery}
-            placeholder="جستجو در هشدارها..."
-            resultLabel={`${filtered.length} از ${data.items.length} هشدار`}
-          />
-          <div className="grid alerts-columns">
-            {severityColumns.map((col) => {
-              const items = filtered.filter((item) => item.severity === col.key);
-              return (
-                <Panel key={col.key} title={col.title} meta={<Badge tone={col.tone}>{items.length}</Badge>}>
-                  <AlertsList items={items} emptyMessage="در این سطح هشداری نیست" />
-                </Panel>
-              );
-            })}
-          </div>
-        </div>
-      ) : null}
-    </>
-  );
-}
-
 
 const sourceLabels: Record<string, string> = {
   nobitex: "نوبیتکس",

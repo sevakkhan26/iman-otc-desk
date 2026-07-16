@@ -227,6 +227,109 @@ export interface AlertItem {
   category: AlertCategory;
 }
 
+/* ===== Configurable price alerts (Alerts page) ===== */
+
+export type PriceAlertInstrumentId =
+  | "usdt_irt"
+  | "xau_usd"
+  | "coin_emami"
+  | "gold_18"
+  | "aed"
+  | "btc_usdt"
+  | "eth_usdt";
+
+export type PriceAlertPriceType = "buy" | "sell" | "mid" | "reference";
+export type PriceAlertCondition = "gte" | "lte" | "cross_up" | "cross_down";
+export type PriceAlertRepeatMode = "once" | "repeat";
+export type PriceAlertStatus =
+  | "active"
+  | "degraded"
+  | "disconnected"
+  | "triggered"
+  | "disabled";
+
+export type PriceAlertProviderMode = "any" | "specific";
+
+export interface PriceAlertRule {
+  id: string;
+  instrument: PriceAlertInstrumentId;
+  targetPrice: number;
+  condition: PriceAlertCondition;
+  priceType: PriceAlertPriceType;
+  providerMode: PriceAlertProviderMode;
+  providerId: string | null;
+  enabled: boolean;
+  repeatMode: PriceAlertRepeatMode;
+  cooldownSeconds: number;
+  /** Always null — kept for backward-compatible storage only; not used by evaluation/UI. */
+  expiresAt: string | null;
+  note: string | null;
+  previousObservedPrice: number | null;
+  lastEvaluatedPrice: number | null;
+  lastEvaluatedAt: string | null;
+  lastTriggeredAt: string | null;
+  triggerCount: number;
+  lastProviderId: string | null;
+  lastProviderName: string | null;
+  status: PriceAlertStatus;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PriceAlertNotification {
+  id: string;
+  alertId: string;
+  instrument: PriceAlertInstrumentId;
+  providerId: string;
+  providerName: string;
+  priceType: PriceAlertPriceType;
+  targetPrice: number;
+  actualPrice: number;
+  condition: PriceAlertCondition;
+  triggeredAt: string;
+  note: string | null;
+  readAt: string | null;
+}
+
+export interface PriceAlertProviderOption {
+  id: string;
+  name: string;
+  supportedPriceTypes: PriceAlertPriceType[];
+  status: SourceStatus;
+  buy: number | null;
+  sell: number | null;
+  mid: number | null;
+  lastUpdated: string | null;
+}
+
+export interface PriceAlertInstrumentSnapshot {
+  id: PriceAlertInstrumentId;
+  label: string;
+  unit: "toman" | "usd";
+  unitLabel: string;
+  price: number | null;
+  priceType: PriceAlertPriceType | null;
+  lastUpdated: string | null;
+  sourceCount: number;
+  health: SourceStatus;
+  providers: PriceAlertProviderOption[];
+}
+
+export interface PriceAlertSummary {
+  active: number;
+  triggered: number;
+  unread: number;
+}
+
+export interface PriceAlertsPageResponse {
+  summary: PriceAlertSummary;
+  instruments: PriceAlertInstrumentSnapshot[];
+  alerts: PriceAlertRule[];
+  notifications: PriceAlertNotification[];
+  lastEvaluatedAt: string | null;
+}
+
 export interface DecisionCard {
   level: DecisionLevel;
   headline: string;

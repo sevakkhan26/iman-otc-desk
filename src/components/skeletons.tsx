@@ -445,27 +445,53 @@ export function ForexSkeleton() {
 
 export function AlertsSkeleton() {
   return (
-    <div className="grid page-skeleton-root" aria-busy="true" aria-live="polite">
-      <span className="sr-only">در حال بارگذاری هشدارها</span>
-      <div aria-hidden="true">
-        <SkeletonFilterBar />
-      </div>
-      <div className="grid alerts-columns" aria-hidden="true">
-        {Array.from({ length: 3 }).map((_, col) => (
-          <SkeletonPanelShell key={col} titleWidth="55%">
-            <div className="sk-alert-list">
-              {Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="sk-alert-row">
-                  <SkeletonLine width={52} height={20} />
-                  <SkeletonLine width="70%" height={13} />
-                  <SkeletonLine width="90%" height={11} />
-                  <SkeletonLine width="50%" height={11} />
-                </div>
-              ))}
-            </div>
-          </SkeletonPanelShell>
+    <div className="grid page-skeleton-root price-alerts-page" data-layout-version="price-alerts-v1" aria-busy="true" aria-live="polite">
+      <span className="sr-only">در حال بارگذاری هشدارهای قیمت</span>
+      <div className="grid metrics price-alert-summary" aria-hidden="true">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <SkeletonMetric key={i} />
         ))}
       </div>
+      <SkeletonPanelShell titleWidth="28%">
+        <div className="price-alert-instruments" aria-hidden="true">
+          {Array.from({ length: 7 }).map((_, i) => (
+            <div key={i} className="price-alert-instrument-card sk-pai">
+              <SkeletonLine width="50%" height={13} />
+              <SkeletonLine width="70%" height={18} />
+              <SkeletonLine width="40%" height={11} />
+              <SkeletonLine width="55%" height={11} />
+            </div>
+          ))}
+        </div>
+      </SkeletonPanelShell>
+      <div className="price-alert-main-grid" aria-hidden="true">
+        <SkeletonPanelShell titleWidth="36%">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="sk-field" style={{ marginBottom: 10 }}>
+              <SkeletonLine width="40%" height={11} />
+              <SkeletonLine width="100%" height={34} />
+            </div>
+          ))}
+        </SkeletonPanelShell>
+        <SkeletonPanelShell titleWidth="42%">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="price-alert-rule sk-pai" style={{ marginBottom: 10 }}>
+              <SkeletonLine width="45%" height={14} />
+              <SkeletonLine width="85%" height={12} />
+              <SkeletonLine width="70%" height={11} />
+            </div>
+          ))}
+        </SkeletonPanelShell>
+      </div>
+      <SkeletonPanelShell titleWidth="40%">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="price-alert-note sk-pai" style={{ marginBottom: 10 }}>
+            <SkeletonLine width="50%" height={13} />
+            <SkeletonLine width="90%" height={12} />
+            <SkeletonLine width="60%" height={11} />
+          </div>
+        ))}
+      </SkeletonPanelShell>
     </div>
   );
 }

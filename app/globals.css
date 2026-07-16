@@ -2435,6 +2435,218 @@ tr:last-child td {
   font-size: 11px;
 }
 
+/* ===== Price alerts center ===== */
+.price-alerts-page {
+  display: grid;
+  gap: 14px;
+}
+
+.price-alert-unread-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  margin-inline-start: 8px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--red-bg);
+  color: var(--red);
+  font-size: 12px;
+  font-weight: 800;
+  vertical-align: middle;
+}
+
+.price-alert-summary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.price-alert-instruments {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.price-alert-instrument-card {
+  display: grid;
+  gap: 4px;
+  text-align: start;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line-soft);
+  background: var(--card);
+  color: inherit;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.price-alert-instrument-card.selected {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 1px rgba(80, 140, 255, 0.35);
+}
+
+.price-alert-instrument-card .pai-name {
+  font-weight: 800;
+  font-size: 13px;
+}
+
+.price-alert-instrument-card .pai-price {
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.price-alert-instrument-card .pai-meta {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.price-alert-instrument-card .pai-health {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.price-alert-instrument-card .pai-health.available {
+  color: var(--green);
+}
+
+.price-alert-instrument-card .pai-health.degraded {
+  color: var(--yellow);
+}
+
+.price-alert-instrument-card .pai-health.unavailable {
+  color: var(--red);
+}
+
+.price-alert-main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.price-alert-form {
+  display: grid;
+  gap: 12px;
+}
+
+.price-alert-form .field {
+  display: grid;
+  gap: 6px;
+}
+
+.price-alert-form .field span:first-child {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.price-alert-form input,
+.price-alert-form select,
+.price-alert-history-filters select {
+  min-height: 38px;
+  border-radius: 8px;
+  border: 1px solid var(--line-soft);
+  background: var(--card-2);
+  color: var(--text);
+  padding: 0 10px;
+  font: inherit;
+}
+
+.price-alert-form .field-hint {
+  font-size: 11px;
+}
+
+.price-alert-rules,
+.price-alert-history {
+  display: grid;
+  gap: 10px;
+}
+
+.price-alert-rule,
+.price-alert-note {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line-soft);
+  background: var(--card);
+  border-inline-start: 4px solid var(--line);
+}
+
+.price-alert-note.unread {
+  border-inline-start-color: var(--blue);
+  background: linear-gradient(180deg, rgba(80, 140, 255, 0.08), var(--card));
+}
+
+.price-alert-rule .par-head,
+.price-alert-note .par-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.price-alert-rule .par-line,
+.price-alert-note .par-line {
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.par-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.danger-chip {
+  color: var(--red) !important;
+  border-color: rgba(255, 90, 95, 0.35) !important;
+}
+
+.danger-text {
+  color: var(--red);
+}
+
+.price-alert-history-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.nav-link .nav-badge {
+  margin-inline-start: 6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--red);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+@media (max-width: 960px) {
+  .price-alert-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .price-alert-main-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .price-alert-summary {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ===== Previous-month forex history ===== */
 .forex-hist-list {
   display: grid;

@@ -7,6 +7,7 @@ import { LogOut, Menu, ShieldAlert } from "lucide-react";
 import type { DeskRole } from "@/lib/auth";
 import { sidebarNavItems } from "@/lib/sidebarNav";
 import { formatAppVersionLabel } from "@/lib/version";
+import { PriceAlertToastBridge } from "@/components/PriceAlertToastBridge";
 
 const STORAGE_KEY = "otc-sidebar-collapsed";
 export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
@@ -15,6 +16,7 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
   const [role, setRole] = useState<DeskRole | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutError, setLogoutError] = useState<string | null>(null);
+  const [unreadAlerts, setUnreadAlerts] = useState(0);
   const logoutInFlight = useRef(false);
 
   // default open; restore the user's last choice after mount (avoids hydration mismatch)
@@ -37,6 +39,27 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const pull = () => {
+      fetch("/api/alerts/notifications?evaluate=1", { cache: "no-store", credentials: "same-origin" })
+        .then(async (response) => {
+          if (!response.ok) return null;
+          return (await response.json()) as { unread?: number };
+        })
+        .then((data) => {
+          if (!cancelled && typeof data?.unread === "number") setUnreadAlerts(data.unread);
+        })
+        .catch(() => {});
+    };
+    pull();
+    const id = window.setInterval(pull, 45_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [pathname]);
 
   const navItems = sidebarNavItems.filter((item) => !item.adminOnly || role === "admin");
 
@@ -110,6 +133,11 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
               >
                 <Icon aria-hidden="true" />
                 <span>{item.label}</span>
+                {item.href === "/alerts" && unreadAlerts > 0 ? (
+                  <span className="nav-badge" aria-label={`${unreadAlerts} اعلان خوانده‌نشده`}>
+                    {unreadAlerts > 99 ? "99+" : unreadAlerts}
+                  </span>
+                ) : null}
               </Link>
             );
           })}
@@ -144,7 +172,10 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
           </div>
         </div>
       </aside>
-      <main className="main">{children}</main>
+      <main className="main">
+        <PriceAlertToastBridge />
+        {children}
+      </main>
     </div>
   );
 }

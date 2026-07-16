@@ -1,5 +1,5 @@
-import { AlertsView } from "@/components/pages";
+import { PriceAlertsView } from "@/components/PriceAlertsView";
 
 export default function AlertsPage() {
-  return <AlertsView />;
+  return <PriceAlertsView />;
 }

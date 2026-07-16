@@ -209,10 +209,13 @@ export function DashboardSkeleton() {
         <div className="cockpit-hero-row">
           <div className="cockpit-hero">
             <SkeletonLine width="42%" height={12} />
-            <SkeletonLine width="55%" height={28} />
+            <SkeletonLine width="40%" height={28} />
             <SkeletonLine width="48%" height={11} />
           </div>
-          <SkeletonLine width={140} height={34} />
+          <div className="cockpit-hero-pills">
+            <SkeletonLine width={110} height={28} />
+            <SkeletonLine width={130} height={24} />
+          </div>
         </div>
         <div className="grid answer-grid">
           {Array.from({ length: 2 }).map((_, i) => (

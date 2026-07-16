@@ -22,6 +22,7 @@ import type {
   GoldInstrumentType,
   GoldPricesApiItem,
   GoldPricesApiResponse,
+  MedianHistoryResponse,
   QuickDecision,
   Severity,
   TetherMarketResponse
@@ -370,6 +371,96 @@ function NewsTicker() {
   );
 }
 
+/** Tolerance when picking nearest median sample to ~24h ago (must not invent points). */
+const MEDIAN_24H_TOLERANCE_MS = 2 * 60 * 60_000;
+const ONE_DAY_MS = 24 * 60 * 60_000;
+
+type Median24hDelta = {
+  current: number;
+  past: number;
+  changeAmount: number;
+  changePercent: number;
+  pastAt: string;
+};
+
+function pickMedian24hDelta(
+  currentMedian: number | null,
+  points: Array<{ t: string; v: number }>
+): Median24hDelta | null {
+  if (currentMedian === null || !Number.isFinite(currentMedian) || currentMedian <= 0) return null;
+  if (!points.length) return null;
+
+  const target = Date.now() - ONE_DAY_MS;
+  let best: { t: number; v: number; dist: number } | null = null;
+
+  for (const p of points) {
+    const t = Date.parse(p.t);
+    if (!Number.isFinite(t) || !Number.isFinite(p.v) || p.v <= 0) continue;
+    const dist = Math.abs(t - target);
+    if (dist > MEDIAN_24H_TOLERANCE_MS) continue;
+    if (!best || dist < best.dist) best = { t, v: p.v, dist };
+  }
+
+  if (!best || best.v === 0) return null;
+
+  const changeAmount = currentMedian - best.v;
+  const changePercent = (changeAmount / best.v) * 100;
+  if (!Number.isFinite(changeAmount) || !Number.isFinite(changePercent)) return null;
+
+  return {
+    current: currentMedian,
+    past: best.v,
+    changeAmount,
+    changePercent,
+    pastAt: new Date(best.t).toISOString()
+  };
+}
+
+function Median24hIndicator({ currentMedian }: { currentMedian: number | null }) {
+  // Same history store as the median chart (`/api/median-history?range=24h`).
+  const { data } = useApi<MedianHistoryResponse>("/api/median-history?range=24h", 60_000);
+
+  const delta = useMemo(
+    () => pickMedian24hDelta(currentMedian, data?.points ?? []),
+    [currentMedian, data?.points]
+  );
+
+  if (!data) {
+    return <span className="state-pill cockpit-24h-pill muted">در حال دریافت تغییر ۲۴ساعته…</span>;
+  }
+
+  if (!delta) {
+    return <span className="state-pill cockpit-24h-pill muted">تغییر ۲۴ساعته در دسترس نیست</span>;
+  }
+
+  const absPct = Math.abs(delta.changePercent);
+  const zero = absPct < 0.005; // treat sub-0.005% as flat
+  const up = delta.changePercent > 0;
+  const tone = zero ? "neutral" : up ? "good" : "danger";
+  const arrow = zero ? "" : up ? "▲ " : "▼ ";
+  const label = zero
+    ? "بدون تغییر در ۲۴ ساعت گذشته"
+    : `${arrow}${formatNumber(absPct, 2)}٪ در ۲۴ ساعت گذشته`;
+
+  const tooltip = [
+    `میانه فعلی: ${formatToman(delta.current)}`,
+    `میانه ≈۲۴س پیش: ${formatToman(delta.past)}`,
+    `اختلاف: ${formatToman(delta.changeAmount)}`,
+    `درصد: ${formatPercent(delta.changePercent)}`,
+    `نقطه مقایسه: ${formatDate(delta.pastAt)}`
+  ].join("\n");
+
+  return (
+    <span
+      className={`state-pill cockpit-24h-pill ${tone}`}
+      title={tooltip}
+      aria-label={tooltip.replace(/\n/g, " · ")}
+    >
+      {label}
+    </span>
+  );
+}
+
 function QuickDecisionCockpit({
   quickDecision,
   marketState
@@ -385,11 +476,16 @@ function QuickDecisionCockpit({
           <div className="cockpit-hero-value number">
             <PriceValue value={quickDecision.median} />
           </div>
-          <div className="cockpit-hero-sub">اختلاف بازار بین صرافی‌ها: {formatPercent(quickDecision.spreadPercent)}</div>
+          <div className="cockpit-hero-sub">
+            اختلاف بازار بین صرافی‌ها: {formatPercent(quickDecision.spreadPercent)}
+          </div>
         </div>
-        <span className={`state-pill lg ${marketStateTone(marketState)}`}>
-          وضعیت کلی بازار: {marketStateLabel(marketState)}
-        </span>
+        <div className="cockpit-hero-pills">
+          <span className={`state-pill sm ${marketStateTone(marketState)}`}>
+            وضعیت بازار: {marketStateLabel(marketState)}
+          </span>
+          <Median24hIndicator currentMedian={quickDecision.median} />
+        </div>
       </div>
 
       <div className="grid answer-grid">

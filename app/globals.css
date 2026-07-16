@@ -1084,12 +1084,88 @@ tr:last-child td {
   color: var(--muted-2);
   font-size: 12.5px;
   margin-top: 6px;
+  min-width: 0;
+}
+
+/* Market-status + 24h change pills (left column in RTL) */
+.cockpit-hero-pills {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  flex: 0 0 auto;
+  max-width: min(280px, 100%);
 }
 
 .state-pill.lg {
   min-height: 44px;
   font-size: 15px;
   padding: 0 20px;
+}
+
+/* Compact market-status badge (Dashboard cockpit) */
+.state-pill.sm {
+  min-height: 28px;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 10px;
+  line-height: 1.2;
+  justify-content: center;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* 24h change pill — same family as state-pill, slightly smaller */
+.state-pill.cockpit-24h-pill {
+  min-height: 24px;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 0 9px;
+  line-height: 1.25;
+  justify-content: center;
+  text-align: center;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.state-pill.cockpit-24h-pill.good {
+  color: var(--green);
+  background: var(--green-bg);
+  border-color: rgba(23, 201, 100, 0.4);
+}
+
+.state-pill.cockpit-24h-pill.danger {
+  color: var(--red);
+  background: var(--red-bg);
+  border-color: rgba(255, 90, 95, 0.4);
+}
+
+.state-pill.cockpit-24h-pill.neutral,
+.state-pill.cockpit-24h-pill.muted {
+  color: var(--muted-2);
+  background: var(--surface-2);
+  border-color: var(--line-soft);
+  font-weight: 500;
+}
+
+@media (max-width: 760px) {
+  .cockpit-hero-row {
+    align-items: flex-start;
+  }
+
+  .cockpit-hero-pills {
+    max-width: 100%;
+    width: 100%;
+    align-items: flex-start;
+  }
+
+  .state-pill.sm,
+  .state-pill.cockpit-24h-pill {
+    white-space: normal;
+    height: auto;
+    min-height: 24px;
+    padding: 5px 10px;
+  }
 }
 
 .cockpit-kicker {

@@ -66,30 +66,62 @@ function quoteFromPrices(
   };
 }
 
-/** Single reference mid only — do not invent paired buy/sell. */
-function quoteFromReferenceMid(
-  sourceId: SourceId,
-  sourceName: string,
-  assetType: FxStreetAssetType,
-  midPrice: number | null,
-  options?: { lastUpdated?: string | null; status?: SourceStatus }
-): FxStreetQuote | null {
-  if (midPrice === null || !Number.isFinite(midPrice) || midPrice <= 0) return null;
-  return {
-    sourceId,
-    sourceName,
-    assetType,
-    buyPrice: null,
-    sellPrice: null,
-    midPrice,
-    lastUpdated: options?.lastUpdated ?? nowIso(),
-    status: options?.status ?? "degraded"
-  };
-}
-
 function positivePrice(value: number | null): number | null {
   if (value === null || !Number.isFinite(value) || value <= 0) return null;
   return value;
+}
+
+/**
+ * Free-market USD/IRT (Toman) sanity: both legs same instrument & unit.
+ * Rejects cross-field mixes (e.g. 17k + 186k) and absurd spreads.
+ * Exported for unit tests only.
+ */
+export function isCoherentUsdIrtPair(buyPrice: number, sellPrice: number): boolean {
+  if (!Number.isFinite(buyPrice) || !Number.isFinite(sellPrice)) return false;
+  if (buyPrice <= 0 || sellPrice <= 0) return false;
+  const lo = Math.min(buyPrice, sellPrice);
+  const hi = Math.max(buyPrice, sellPrice);
+  // Live free-market USD cash in Toman (wide but excludes AFN/mis-unit garbage)
+  if (lo < 50_000 || hi > 2_000_000) return false;
+  // Must be same order of magnitude (blocks rial/toman or currency mix)
+  if (hi / lo > 1.15) return false;
+  const m = (buyPrice + sellPrice) / 2;
+  const spreadPct = (Math.abs(buyPrice - sellPrice) / m) * 100;
+  if (spreadPct > 5) return false;
+  return true;
+}
+
+type MatchedPair = { buy: number; sell: number; lastUpdated: string | null };
+
+/** Navasan: take buy/sell only from one matched key pair — never mix families via ??. */
+function matchedNavasanUsdPair(
+  rates: NavasanRates,
+  sellKey: string,
+  buyKey: string
+): MatchedPair | null {
+  const buy = positivePrice(navasanValue(rates[sellKey])); // *_sell = customer buy
+  const sell = positivePrice(navasanValue(rates[buyKey])); // *_buy = customer sell
+  if (buy === null || sell === null) return null;
+  if (!isCoherentUsdIrtPair(buy, sell)) return null;
+  return {
+    buy,
+    sell,
+    lastUpdated: navasanUpdatedAt(rates[sellKey]) ?? navasanUpdatedAt(rates[buyKey])
+  };
+}
+
+function matchedBonbastUsdPair(
+  payload: BonbastPayload,
+  sellKey: string,
+  buyKey: string
+): MatchedPair | null {
+  const buy = positivePrice(bonbastPrice(payload[buyKey])); // bonbast: *2 often buy col
+  const sell = positivePrice(bonbastPrice(payload[sellKey])); // *1 often sell col
+  // Allow both key orderings used by Bonbast USD (usd1=sell, usd2=buy)
+  if (buy !== null && sell !== null && isCoherentUsdIrtPair(buy, sell)) {
+    return { buy, sell, lastUpdated: bonbastUpdatedAt(payload) };
+  }
+  return null;
 }
 
 function latestTimestamp(values: Array<string | null>): string | null {
@@ -146,43 +178,34 @@ function mergeCookieHeader(existing: string, extra: string): string {
 }
 
 function quotesFromNavasanRates(rates: NavasanRates, sourceId: SourceId, sourceName: string): FxStreetQuote[] {
-  // Navasan symbols (official):
-  // - harat_naghdi_buy/sell → دلار هرات (also used historically as «دلار کاغذی» on this desk)
-  // - dolar_harat_buy/sell  → دلار هرات فروش/خرید نقد (alternate Harat keys)
-  // - usd_farda_*           → فردایی
-  // - usd_*                 → سبزه میدان / نقدی تهران
-  // - aed_* / dirham_dubai  → درهم
+  // Navasan symbols (official API guide):
+  // - harat_naghdi_buy / harat_naghdi_sell → دلار هرات (matched pair ONLY)
+  // - dolar_harat_buy / dolar_harat_sell   → alternate Harat cash pair (use only if BOTH present)
+  // - usd_farda_* / usd_* / aed_*          → other instruments (unchanged)
   // Iranian API convention: *_sell = desk sell / customer buy; *_buy = desk buy / customer sell.
+  //
+  // ROOT CAUSE of 17k/186k mid: dolar_harat_sell was mixed via ?? with harat_naghdi_buy
+  // (different keys / scales). Never cross-join families.
+
   const paperBuy = positivePrice(navasanValue(rates.harat_naghdi_sell));
   const paperSell = positivePrice(navasanValue(rates.harat_naghdi_buy));
 
-  // Prefer dedicated dolar_harat_* keys for explicit Harat USD; fall back to harat_naghdi_*.
-  const haratBuy =
-    positivePrice(navasanValue(rates.dolar_harat_sell)) ??
-    positivePrice(navasanValue(rates.harat_naghdi_sell));
-  const haratSell =
-    positivePrice(navasanValue(rates.dolar_harat_buy)) ??
-    positivePrice(navasanValue(rates.harat_naghdi_buy));
-  const haratUpdated =
-    navasanUpdatedAt(rates.dolar_harat_sell) ??
-    navasanUpdatedAt(rates.dolar_harat_buy) ??
-    navasanUpdatedAt(rates.harat_naghdi_sell) ??
-    navasanUpdatedAt(rates.harat_naghdi_buy);
+  // Official Harat cash USD pair first; then full dolar_harat_* pair only (no partial fallback).
+  const harat =
+    matchedNavasanUsdPair(rates, "harat_naghdi_sell", "harat_naghdi_buy") ??
+    matchedNavasanUsdPair(rates, "dolar_harat_sell", "dolar_harat_buy");
 
-  const haratPair =
-    haratBuy !== null && haratSell !== null
-      ? quoteFromPrices(sourceId, sourceName, "دلار آمریکا هرات", haratBuy, haratSell, {
-          lastUpdated: haratUpdated
-        })
-      : quoteFromReferenceMid(sourceId, sourceName, "دلار آمریکا هرات", haratBuy ?? haratSell, {
-          lastUpdated: haratUpdated
-        });
+  const haratQuote = harat
+    ? quoteFromPrices(sourceId, sourceName, "دلار آمریکا هرات", harat.buy, harat.sell, {
+        lastUpdated: harat.lastUpdated
+      })
+    : null;
 
   return [
     quoteFromPrices(sourceId, sourceName, "دلار کاغذی", paperBuy, paperSell, {
       lastUpdated: navasanUpdatedAt(rates.harat_naghdi_sell) ?? navasanUpdatedAt(rates.harat_naghdi_buy)
     }),
-    haratPair,
+    haratQuote,
     quoteFromPrices(
       sourceId,
       sourceName,
@@ -364,24 +387,18 @@ async function fetchBonbast(): Promise<SourceResult> {
   const paperBuy = positivePrice(bonbastPrice(payload.usd2));
   const paperSell = positivePrice(bonbastPrice(payload.usd1));
 
-  // Optional Harat USD keys if Bonbast ever exposes them (probe common aliases; never invent).
-  const haratSell =
-    positivePrice(bonbastPrice(payload.harat1)) ??
-    positivePrice(bonbastPrice(payload.herat1)) ??
-    positivePrice(bonbastPrice(payload.usd_harat1)) ??
-    positivePrice(bonbastPrice(payload.harat_sell));
-  const haratBuy =
-    positivePrice(bonbastPrice(payload.harat2)) ??
-    positivePrice(bonbastPrice(payload.herat2)) ??
-    positivePrice(bonbastPrice(payload.usd_harat2)) ??
-    positivePrice(bonbastPrice(payload.harat_buy));
+  // Bonbast public JSON (usd1/usd2/aed1/aed2/…) has no published «دلار آمریکا هرات» pair.
+  // Only emit Harat when a complete, coherent matched key-pair exists — never invent from USD/AFN.
+  const harat =
+    matchedBonbastUsdPair(payload, "harat1", "harat2") ??
+    matchedBonbastUsdPair(payload, "herat1", "herat2") ??
+    matchedBonbastUsdPair(payload, "usd_harat1", "usd_harat2");
 
-  const haratQuote =
-    haratBuy !== null && haratSell !== null
-      ? quoteFromPrices(sourceId, sourceName, "دلار آمریکا هرات", haratBuy, haratSell, { lastUpdated: updatedAt })
-      : quoteFromReferenceMid(sourceId, sourceName, "دلار آمریکا هرات", haratBuy ?? haratSell, {
-          lastUpdated: updatedAt
-        });
+  const haratQuote = harat
+    ? quoteFromPrices(sourceId, sourceName, "دلار آمریکا هرات", harat.buy, harat.sell, {
+        lastUpdated: harat.lastUpdated ?? updatedAt
+      })
+    : null;
 
   const quotes = [
     quoteFromPrices(sourceId, sourceName, "دلار بن‌بست", paperBuy, paperSell, {

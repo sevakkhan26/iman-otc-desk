@@ -327,6 +327,10 @@ export function GoldSkeleton() {
         <div className="gold-page-stack" aria-hidden="true">
           <div className="gold-summary-top">
             <div className="gold-summary-panel sk-gold-summary">
+              <div className="panel-header gold-summary-header" aria-hidden="true">
+                <SkeletonLine width="32%" height={14} />
+                <SkeletonLine width={148} height={28} />
+              </div>
               <div className="gold-summary-body">
                 <SkeletonLine width="28%" height={13} />
                 <div className="gold-summary-stats">
@@ -337,7 +341,6 @@ export function GoldSkeleton() {
                     </div>
                   ))}
                 </div>
-                <SkeletonLine width={120} height={24} />
               </div>
             </div>
           </div>

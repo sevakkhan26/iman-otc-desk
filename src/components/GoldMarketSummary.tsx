@@ -120,43 +120,41 @@ export function GoldMarketSummary({
 
   return (
     <section className="panel gold-summary-panel" data-gold-summary="v1">
-      <div className="panel-header">
+      <div className="panel-header gold-summary-header">
         <h3 className="panel-title">خلاصه بازار طلا</h3>
+        {summary ? (
+          <span className={`state-pill gold-summary-status-pill ${statusTone(summary.status)}`}>
+            وضعیت کلی بازار: {statusLabel(summary.status)}
+          </span>
+        ) : null}
       </div>
       <div className="panel-body gold-summary-body">
         <div className="gold-summary-instrument">{instrument}</div>
         {!summary ? (
           <div className="gold-summary-empty">داده کافی برای مقایسه وجود ندارد</div>
         ) : (
-          <>
-            <div className="gold-summary-stats">
-              <SummaryRow label="تعداد منابع فعال" value={summary.activeSources} />
-              <SummaryRow
-                label="آخرین بروزرسانی"
-                value={summary.lastUpdated ? formatGoldTehran(summary.lastUpdated) : "—"}
-              />
-              <SummaryRow
-                label="بیشترین اختلاف بین منابع"
-                value={formatPercent(summary.maxSpreadPercent)}
-              />
-              <SummaryRow
-                label="کمترین قیمت"
-                value={formatGoldValue(summary.unit, summary.minPrice)}
-                note={summary.minSource}
-              />
-              <SummaryRow
-                label="بیشترین قیمت"
-                value={formatGoldValue(summary.unit, summary.maxPrice)}
-                note={summary.maxSource}
-              />
-              <SummaryRow label="میانگین قیمت" value={formatGoldValue(summary.unit, summary.avgPrice)} />
-            </div>
-            <div className="gold-summary-status">
-              <span className={`state-pill ${statusTone(summary.status)}`}>
-                وضعیت کلی بازار: {statusLabel(summary.status)}
-              </span>
-            </div>
-          </>
+          <div className="gold-summary-stats">
+            <SummaryRow label="تعداد منابع فعال" value={summary.activeSources} />
+            <SummaryRow
+              label="آخرین بروزرسانی"
+              value={summary.lastUpdated ? formatGoldTehran(summary.lastUpdated) : "—"}
+            />
+            <SummaryRow
+              label="بیشترین اختلاف بین منابع"
+              value={formatPercent(summary.maxSpreadPercent)}
+            />
+            <SummaryRow
+              label="کمترین قیمت"
+              value={formatGoldValue(summary.unit, summary.minPrice)}
+              note={summary.minSource}
+            />
+            <SummaryRow
+              label="بیشترین قیمت"
+              value={formatGoldValue(summary.unit, summary.maxPrice)}
+              note={summary.maxSource}
+            />
+            <SummaryRow label="میانگین قیمت" value={formatGoldValue(summary.unit, summary.avgPrice)} />
+          </div>
         )}
       </div>
     </section>

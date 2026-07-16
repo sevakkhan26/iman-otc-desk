@@ -1135,8 +1135,9 @@ tr:last-child td {
   border-color: rgba(255, 90, 95, 0.4);
 }
 
+/* Dashboard cockpit: two equal summary cards across the full row */
 .answer-grid {
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .answer-stat {
@@ -1166,6 +1167,80 @@ tr:last-child td {
   color: var(--muted-2);
   font-size: 12px;
   margin-top: 7px;
+}
+
+/* Buy/sell spread cards — centered hierarchy, larger type (RTL) */
+.answer-stat-spread {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  direction: rtl;
+  gap: 0.45em;
+  min-width: 0;
+}
+
+.answer-spread-title {
+  color: var(--muted);
+  font-size: clamp(16px, 1.35vw, 20px);
+  font-weight: 600;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.answer-spread-best {
+  color: var(--text);
+  font-size: clamp(22px, 2.1vw, 28px);
+  font-weight: 800;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+}
+
+.answer-spread-worst {
+  color: var(--muted-2);
+  font-size: clamp(17px, 1.55vw, 21px);
+  font-weight: 600;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+}
+
+.answer-spread-diff {
+  color: var(--text);
+  font-size: clamp(18px, 1.75vw, 22px);
+  font-weight: 800;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+.answer-spread-empty {
+  color: var(--muted-2);
+  font-size: clamp(15px, 1.3vw, 18px);
+  line-height: 1.6;
+  text-align: center;
+}
+
+@media (max-width: 760px) {
+  .answer-stat-spread {
+    gap: 0.4em;
+  }
+
+  .answer-spread-best {
+    font-size: clamp(20px, 5.2vw, 26px);
+  }
+
+  .answer-spread-worst {
+    font-size: clamp(16px, 4.2vw, 20px);
+  }
+
+  .answer-spread-diff {
+    font-size: clamp(17px, 4.5vw, 21px);
+  }
 }
 
 /* subtle semantic indicator — color used sparingly */

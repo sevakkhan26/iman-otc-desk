@@ -247,31 +247,6 @@ const PriceValue = memo(function PriceValue({ value, className = "" }: { value: 
   );
 });
 
-function AnswerStat({
-  question,
-  value,
-  note,
-  tone = "neutral"
-}: {
-  question: string;
-  value: React.ReactNode;
-  note?: React.ReactNode;
-  tone?: "good" | "warn" | "danger" | "neutral";
-}) {
-  return (
-    <div className="answer-stat">
-      <div className="answer-question">{question}</div>
-      <div className="answer-value number">{value}</div>
-      {note ? (
-        <div className="answer-note">
-          {tone !== "neutral" ? <span className={`mini-dot ${tone}`} aria-hidden="true" /> : null}
-          {note}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 function DecisionCardView({
   question,
   card,
@@ -456,22 +431,22 @@ function QuickDecisionCockpit({
           const s = quickDecision.buySpread;
           const hasData = s.best.price != null && s.worst.price != null;
           return (
-            <div className="answer-stat">
-              <div className="answer-question">اختلاف قیمت خرید</div>
+            <div className="answer-stat answer-stat-spread">
+              <div className="answer-spread-title">اختلاف قیمت خرید</div>
               {hasData ? (
                 <>
-                  <div className="answer-value number" style={{ fontSize: "15px", lineHeight: 1.3 }}>
+                  <div className="answer-spread-best number">
                     بهترین: {s.best.exchange ?? "—"} — <PriceValue value={s.best.price} />
                   </div>
-                  <div className="answer-note" style={{ marginTop: 2 }}>
+                  <div className="answer-spread-worst number">
                     بدترین: {s.worst.exchange ?? "—"} — <PriceValue value={s.worst.price} />
                   </div>
-                  <div className="answer-note" style={{ marginTop: 1, fontWeight: 700 }}>
+                  <div className="answer-spread-diff number">
                     اختلاف: {s.percent != null ? s.percent.toFixed(2) : "—"}٪
                   </div>
                 </>
               ) : (
-                <div className="answer-note">داده کافی برای مقایسه وجود ندارد</div>
+                <div className="answer-spread-empty">داده کافی برای مقایسه وجود ندارد</div>
               )}
             </div>
           );
@@ -482,37 +457,26 @@ function QuickDecisionCockpit({
           const s = quickDecision.sellSpread;
           const hasData = s.best.price != null && s.worst.price != null;
           return (
-            <div className="answer-stat">
-              <div className="answer-question">اختلاف قیمت فروش</div>
+            <div className="answer-stat answer-stat-spread">
+              <div className="answer-spread-title">اختلاف قیمت فروش</div>
               {hasData ? (
                 <>
-                  <div className="answer-value number" style={{ fontSize: "15px", lineHeight: 1.3 }}>
+                  <div className="answer-spread-best number">
                     بهترین: {s.best.exchange ?? "—"} — <PriceValue value={s.best.price} />
                   </div>
-                  <div className="answer-note" style={{ marginTop: 2 }}>
+                  <div className="answer-spread-worst number">
                     بدترین: {s.worst.exchange ?? "—"} — <PriceValue value={s.worst.price} />
                   </div>
-                  <div className="answer-note" style={{ marginTop: 1, fontWeight: 700 }}>
+                  <div className="answer-spread-diff number">
                     اختلاف: {s.percent != null ? s.percent.toFixed(2) : "—"}٪
                   </div>
                 </>
               ) : (
-                <div className="answer-note">داده کافی برای مقایسه وجود ندارد</div>
+                <div className="answer-spread-empty">داده کافی برای مقایسه وجود ندارد</div>
               )}
             </div>
           );
         })()}
-
-        <AnswerStat
-          question="بهترین قیمت خرید"
-          value={<PriceValue value={quickDecision.bestBuy.price} />}
-          note={quickDecision.bestBuy.exchange ?? "—"}
-        />
-        <AnswerStat
-          question="بهترین قیمت فروش"
-          value={<PriceValue value={quickDecision.bestSell.price} />}
-          note={quickDecision.bestSell.exchange ?? "—"}
-        />
       </div>
 
       <div className="grid decision-grid compact">

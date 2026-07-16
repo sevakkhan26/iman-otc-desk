@@ -215,11 +215,12 @@ export function DashboardSkeleton() {
           <SkeletonLine width={140} height={34} />
         </div>
         <div className="grid answer-grid">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="answer-stat sk-answer-stat">
-              <SkeletonLine width="50%" height={11} />
-              <SkeletonLine width="75%" height={15} />
-              <SkeletonLine width="60%" height={11} />
+          {Array.from({ length: 2 }).map((_, i) => (
+            <div key={i} className="answer-stat answer-stat-spread sk-answer-stat">
+              <SkeletonLine width="42%" height={16} />
+              <SkeletonLine width="78%" height={24} />
+              <SkeletonLine width="68%" height={18} />
+              <SkeletonLine width="48%" height={20} />
             </div>
           ))}
         </div>

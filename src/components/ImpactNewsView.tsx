@@ -4,14 +4,19 @@ import { memo, useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { useApi } from "@/hooks/useApi";
 import { ThemeToggleButton } from "@/components/ThemeToggleButton";
-import { NEWS_LABEL_GROUPS, assetLabel, primaryNewsGroup } from "@/lib/assets";
-import type { ImpactNewsItem, ImpactNewsResponse } from "@/lib/types";
+import {
+  NEWS_LABEL_GROUPS,
+  newsCategoryLabel,
+  primaryNewsGroup,
+  type NewsLabelGroupKey
+} from "@/lib/assets";
+import type { AssetTag, ImpactNewsItem, ImpactNewsResponse } from "@/lib/types";
 import {
   formatNewsTehranTime,
   severityLabel,
   severityTone
 } from "@/components/format";
-import { SmartFilter, matchAsset, matchQuery, type AssetFilter } from "@/components/SmartFilter";
+import { SmartFilter, matchQuery, type AssetFilter } from "@/components/SmartFilter";
 import { ImpactNewsSkeleton } from "@/components/skeletons";
 
 type Tone = "good" | "warn" | "danger" | "neutral";
@@ -20,6 +25,9 @@ type Tone = "good" | "warn" | "danger" | "neutral";
 const NEWS_REFRESH_MS = 90_000;
 
 const EMPTY_FRESH_MESSAGE = "در حال حاضر خبر تازه و اثرگذار مرتبط با بازار ایران یافت نشد.";
+
+/** Filter chips: همه + four categories (RTL chip row order). */
+const NEWS_FILTER_OPTIONS: AssetFilter[] = ["all", "MACRO", "BTC", "ETH", "USDT"];
 
 const clockTimeFmt = new Intl.DateTimeFormat("fa-IR", {
   hour: "2-digit",
@@ -85,6 +93,16 @@ function NewsPanel({
 
 const SEVERITY_RANK: Record<string, number> = { high: 3, medium: 2, low: 1 };
 
+function sortNewsItems(items: ImpactNewsItem[]): ImpactNewsItem[] {
+  return [...items].sort((a, b) => {
+    const sr = (SEVERITY_RANK[b.severity] ?? 0) - (SEVERITY_RANK[a.severity] ?? 0);
+    if (sr !== 0) return sr;
+    const is = (b.impactScore ?? 0) - (a.impactScore ?? 0);
+    if (is !== 0) return is;
+    return new Date(b.publishedAt ?? 0).getTime() - new Date(a.publishedAt ?? 0).getTime();
+  });
+}
+
 const NewsItemCard = memo(function NewsItemCard({ item }: { item: ImpactNewsItem }) {
   return (
     <article className="news-item impact-news-card">
@@ -106,7 +124,7 @@ const NewsItemCard = memo(function NewsItemCard({ item }: { item: ImpactNewsItem
       <div className="asset-tags">
         {item.assets.map((asset) => (
           <span className="asset-tag" key={asset}>
-            {assetLabel(asset)}
+            {newsCategoryLabel(asset)}
           </span>
         ))}
       </div>
@@ -116,18 +134,12 @@ const NewsItemCard = memo(function NewsItemCard({ item }: { item: ImpactNewsItem
   );
 });
 
-function NewsGroupGrid({ items }: { items: ImpactNewsItem[] }) {
-  const sorted = useMemo(
-    () =>
-      [...items].sort((a, b) => {
-        const sr = (SEVERITY_RANK[b.severity] ?? 0) - (SEVERITY_RANK[a.severity] ?? 0);
-        if (sr !== 0) return sr;
-        const is = (b.impactScore ?? 0) - (a.impactScore ?? 0);
-        if (is !== 0) return is;
-        return new Date(b.publishedAt ?? 0).getTime() - new Date(a.publishedAt ?? 0).getTime();
-      }),
-    [items]
-  );
+function NewsColumnStack({ items }: { items: ImpactNewsItem[] }) {
+  const sorted = useMemo(() => sortNewsItems(items), [items]);
+
+  if (!sorted.length) {
+    return <div className="empty impact-news-column-empty">خبری در این دسته نیست</div>;
+  }
 
   return (
     <div className="impact-news-group-grid">
@@ -145,27 +157,37 @@ export function ImpactNewsView() {
 
   const filtered = useMemo(() => {
     if (!data) return [];
-    return data.items.filter(
-      (item) =>
-        matchAsset(item.assets, asset) &&
-        matchQuery(`${item.translatedTitle} ${item.title} ${item.source} ${item.translatedSummary}`, query)
-    );
+    return data.items.filter((item) => {
+      const primary = primaryNewsGroup(item.assets);
+      if (asset !== "all" && primary !== asset) return false;
+      return matchQuery(
+        `${item.translatedTitle} ${item.title} ${item.source} ${item.translatedSummary}`,
+        query
+      );
+    });
   }, [data, asset, query]);
 
+  /** Always four columns when «همه»; single full-width column when a category is selected. */
   const labelGroups = useMemo(() => {
-    const buckets = new Map<string, ImpactNewsItem[]>();
+    const buckets = new Map<NewsLabelGroupKey, ImpactNewsItem[]>();
     for (const item of filtered) {
       const key = primaryNewsGroup(item.assets);
       const list = buckets.get(key) ?? [];
       list.push(item);
       buckets.set(key, list);
     }
-    return NEWS_LABEL_GROUPS.map((group) => ({
+
+    const groups = NEWS_LABEL_GROUPS.map((group) => ({
       key: group.key,
       title: group.title,
       items: buckets.get(group.key) ?? []
-    })).filter((group) => group.items.length > 0);
-  }, [filtered]);
+    }));
+
+    if (asset === "all") return groups;
+    return groups.filter((group) => group.key === asset);
+  }, [filtered, asset]);
+
+  const hasAnyItems = filtered.length > 0;
 
   if (loading && !data) {
     return (
@@ -188,7 +210,7 @@ export function ImpactNewsView() {
   if (!data) return null;
 
   return (
-    <div className="impact-news-page" data-layout-version="impact-news-label-grid-v2">
+    <div className="impact-news-page" data-layout-version="impact-news-cols-v3">
       <PageHeader onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
       <div className="grid">
         <SmartFilter
@@ -198,12 +220,17 @@ export function ImpactNewsView() {
           onQuery={setQuery}
           placeholder="جستجو در خبرها..."
           resultLabel={`${filtered.length} از ${data.items.length} خبر`}
+          assetOptions={NEWS_FILTER_OPTIONS}
+          formatAssetLabel={(tag: AssetTag) => newsCategoryLabel(tag)}
         />
-        {labelGroups.length ? (
-          <div className="impact-news-groups">
+        {hasAnyItems || asset === "all" ? (
+          <div
+            className={`impact-news-groups${asset === "all" ? "" : " is-single"}`}
+            data-columns={asset === "all" ? 4 : 1}
+          >
             {labelGroups.map((group) => (
               <NewsPanel key={group.key} title={group.title} count={group.items.length}>
-                <NewsGroupGrid items={group.items} />
+                <NewsColumnStack items={group.items} />
               </NewsPanel>
             ))}
           </div>

@@ -22,6 +22,7 @@ export function newsCategoryFromAssets(assets: AssetTag[]): "macro" | "asset" {
   return assets.some((asset) => assetSpecific.includes(asset)) ? "asset" : "macro";
 }
 
+/** General UI labels (dashboard tags, alerts, etc.). */
 const assetLabels: Record<AssetTag, string> = {
   USDT: "تتر / استیبل",
   BTC: "بیت‌کوین",
@@ -29,24 +30,34 @@ const assetLabels: Record<AssetTag, string> = {
   MACRO: "کلان / مالی"
 };
 
-export type NewsLabelGroupKey = AssetTag | "OTHER";
+/**
+ * Impact-news column + filter labels.
+ * Desktop RTL visual order (right → left): اقتصادی, بیت‌کوین, ETH, تتر
+ * = array order first → last in an RTL grid.
+ */
+export type NewsLabelGroupKey = AssetTag;
 
 export const NEWS_LABEL_GROUPS: Array<{ key: NewsLabelGroupKey; title: string }> = [
-  { key: "USDT", title: assetLabels.USDT },
-  { key: "BTC", title: assetLabels.BTC },
-  { key: "ETH", title: assetLabels.ETH },
-  { key: "MACRO", title: assetLabels.MACRO },
-  { key: "OTHER", title: "سایر" }
+  { key: "MACRO", title: "اقتصادی" },
+  { key: "BTC", title: "بیت‌کوین" },
+  { key: "ETH", title: "ETH" },
+  { key: "USDT", title: "تتر" }
 ];
 
+/** Specific assets first so multi-tag articles land in one primary column. */
 const PRIMARY_LABEL_ORDER: AssetTag[] = ["USDT", "BTC", "ETH", "MACRO"];
 
 export function assetLabel(asset: AssetTag): string {
   return assetLabels[asset];
 }
 
-/** Primary label bucket for impact-news grouping (no duplicates across groups). */
+/** Impact-news display label for a category/asset tag. */
+export function newsCategoryLabel(asset: AssetTag): string {
+  return NEWS_LABEL_GROUPS.find((group) => group.key === asset)?.title ?? assetLabels[asset];
+}
+
+/** Primary column for impact-news grouping (exactly one column per article). */
 export function primaryNewsGroup(assets: AssetTag[]): NewsLabelGroupKey {
-  if (!assets.length) return "OTHER";
-  return PRIMARY_LABEL_ORDER.find((tag) => assets.includes(tag)) ?? "OTHER";
+  if (!assets.length) return "MACRO";
+  return PRIMARY_LABEL_ORDER.find((tag) => assets.includes(tag)) ?? "MACRO";
 }

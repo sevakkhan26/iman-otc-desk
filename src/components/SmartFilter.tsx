@@ -23,7 +23,9 @@ export function SmartFilter({
   onAsset,
   onQuery,
   placeholder = "جستجو: نام صرافی، دارایی یا کلمه کلیدی...",
-  resultLabel
+  resultLabel,
+  assetOptions = ASSET_OPTIONS,
+  formatAssetLabel = assetLabel
 }: {
   asset: AssetFilter;
   query: string;
@@ -31,11 +33,15 @@ export function SmartFilter({
   onQuery: (value: string) => void;
   placeholder?: string;
   resultLabel?: string;
+  /** Override chip order/set (e.g. impact-news category order). */
+  assetOptions?: AssetFilter[];
+  /** Override chip labels without changing global assetLabel. */
+  formatAssetLabel?: (tag: AssetTag) => string;
 }) {
   return (
     <div className="smart-filter" role="search" aria-label="فیلتر هوشمند">
       <div className="filter-chips">
-        {ASSET_OPTIONS.map((option) => (
+        {assetOptions.map((option) => (
           <button
             key={option}
             type="button"
@@ -43,7 +49,7 @@ export function SmartFilter({
             onClick={() => onAsset(option)}
             aria-pressed={asset === option}
           >
-            {option === "all" ? "همه" : assetLabel(option)}
+            {option === "all" ? "همه" : formatAssetLabel(option)}
           </button>
         ))}
       </div>

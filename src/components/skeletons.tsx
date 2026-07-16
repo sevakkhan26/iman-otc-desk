@@ -484,22 +484,22 @@ export function SettingsSkeleton() {
 
 export function ImpactNewsSkeleton() {
   return (
-    <div className="impact-news-page page-skeleton-root" data-layout-version="impact-news-label-grid-v2" aria-busy="true" aria-live="polite">
+    <div className="impact-news-page page-skeleton-root" data-layout-version="impact-news-cols-v3" aria-busy="true" aria-live="polite">
       <span className="sr-only">در حال بارگذاری اخبار</span>
       <div className="grid">
         <div aria-hidden="true">
           <SkeletonFilterBar />
         </div>
         <div className="impact-news-groups" aria-hidden="true">
-          {Array.from({ length: 3 }).map((_, g) => (
-            <section key={g} className="panel sk-panel">
+          {Array.from({ length: 4 }).map((_, g) => (
+            <section key={g} className="panel impact-news-group-panel sk-panel">
               <div className="panel-header">
-                <SkeletonLine width="40%" height={14} />
-                <SkeletonLine width={36} height={22} />
+                <SkeletonLine width="48%" height={14} />
+                <SkeletonLine width={32} height={22} />
               </div>
               <div className="panel-body">
-                <div className="sk-news-grid">
-                  {Array.from({ length: 4 }).map((_, i) => (
+                <div className="impact-news-group-grid sk-news-column">
+                  {Array.from({ length: 3 }).map((_, i) => (
                     <article key={i} className="sk-news-card">
                       <SkeletonLine width="30%" height={11} />
                       <SkeletonLine width="90%" height={14} />

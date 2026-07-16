@@ -131,6 +131,13 @@ export interface ImpactNewsItem {
   category: NewsCategory;
   group: NewsGroup;
   url?: string;
+  /** Extended Impact News fields (optional for backward compatibility). */
+  iranRelevanceScore?: number;
+  impactScore?: number;
+  impactReason?: string;
+  categoryLabel?: string;
+  fetchedAt?: string;
+  status?: "active" | "expired";
 }
 
 export interface AlertItem {
@@ -213,11 +220,23 @@ export interface ExchangeMonitorResponse {
   tetherSummary: TetherMarketSummary;
 }
 
+export interface ImpactNewsProviderDiag {
+  id: string;
+  name: string;
+  status: "healthy" | "degraded" | "unavailable";
+  lastSuccessAt?: string | null;
+  articleCount?: number;
+  lastError?: string | null;
+}
+
 export interface ImpactNewsResponse {
   items: ImpactNewsItem[];
   sourceStatus: SourceStatus;
   lastUpdated: string | null;
   message?: string;
+  updatedAt?: string | null;
+  nextRefreshAt?: string | null;
+  providers?: ImpactNewsProviderDiag[];
 }
 
 export interface DeskSettings {

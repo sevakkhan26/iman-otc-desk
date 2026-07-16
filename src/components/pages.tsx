@@ -95,7 +95,8 @@ type AlertsResponse = { items: AlertItem[] };
 
 // ---- Timing & display limits (single source of truth) ----
 const DASHBOARD_REFRESH_MS = 60_000;
-const NEWS_REFRESH_MS = 120_000;
+/** Impact News ticker poll (same API as impact-news page). */
+const NEWS_REFRESH_MS = 90_000;
 const CLOCK_TICK_MS = 1_000;
 const WIDGET_TICK_MS = 30_000;
 const TOAST_TTL_MS = 9_000;
@@ -379,9 +380,18 @@ function Toasts({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number
 function NewsTicker() {
   const { data } = useApi<ImpactNewsResponse>("/api/impact-news", NEWS_REFRESH_MS);
   const items = useMemo(() => {
+    // Same filtered Impact News dataset: only fresh medium/high (no low fallback).
     const all = data?.items ?? [];
-    const important = all.filter((item) => item.severity !== "low");
-    return (important.length ? important : all).slice(0, TICKER_MAX_ITEMS);
+    const important = all.filter((item) => item.severity === "high" || item.severity === "medium");
+    const seen = new Set<string>();
+    const unique: typeof important = [];
+    for (const item of important) {
+      const key = item.id || item.translatedTitle;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(item);
+    }
+    return unique.slice(0, TICKER_MAX_ITEMS);
   }, [data]);
 
   if (!items.length) return null;

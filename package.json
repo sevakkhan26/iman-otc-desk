@@ -1,13 +1,14 @@
 {
   "name": "dealing-desk-otc-dashboard",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "npx --yes tsx scripts/test-auth-cookies.mts",
+    "test": "npx --yes tsx scripts/test-auth-cookies.mts && npx --yes tsx scripts/test-impact-news.mts",
+    "test:impact-news": "npx --yes tsx scripts/test-impact-news.mts",
     "build": "next build"
   },
   "dependencies": {

@@ -16,7 +16,10 @@ import { ImpactNewsSkeleton } from "@/components/skeletons";
 
 type Tone = "good" | "warn" | "danger" | "neutral";
 
-const NEWS_REFRESH_MS = 120_000;
+/** Client poll interval for Impact News (60–120s). */
+const NEWS_REFRESH_MS = 90_000;
+
+const EMPTY_FRESH_MESSAGE = "در حال حاضر خبر تازه و اثرگذار مرتبط با بازار ایران یافت نشد.";
 
 const clockTimeFmt = new Intl.DateTimeFormat("fa-IR", {
   hour: "2-digit",
@@ -80,11 +83,14 @@ function NewsPanel({
   );
 }
 
+const SEVERITY_RANK: Record<string, number> = { high: 3, medium: 2, low: 1 };
+
 const NewsItemCard = memo(function NewsItemCard({ item }: { item: ImpactNewsItem }) {
   return (
     <article className="news-item impact-news-card">
       <div className="row-meta">
         <Badge tone={severityTone(item.severity)}>{severityLabel(item.severity)}</Badge>
+        {item.categoryLabel ? <span className="nowrap">{item.categoryLabel}</span> : null}
         <span>{item.source}</span>
         <span className="nowrap news-time">{formatNewsTehranTime(item.publishedAt)}</span>
       </div>
@@ -104,7 +110,8 @@ const NewsItemCard = memo(function NewsItemCard({ item }: { item: ImpactNewsItem
           </span>
         ))}
       </div>
-      <div className="muted news-item-impact">{item.translatedSummary}</div>
+      <div className="muted news-item-impact">{item.translatedSummary || item.impactOnUsdtIrt}</div>
+      {item.impactReason ? <div className="muted news-item-impact">{item.impactReason}</div> : null}
     </article>
   );
 });
@@ -112,9 +119,13 @@ const NewsItemCard = memo(function NewsItemCard({ item }: { item: ImpactNewsItem
 function NewsGroupGrid({ items }: { items: ImpactNewsItem[] }) {
   const sorted = useMemo(
     () =>
-      [...items].sort(
-        (a, b) => new Date(b.publishedAt ?? 0).getTime() - new Date(a.publishedAt ?? 0).getTime()
-      ),
+      [...items].sort((a, b) => {
+        const sr = (SEVERITY_RANK[b.severity] ?? 0) - (SEVERITY_RANK[a.severity] ?? 0);
+        if (sr !== 0) return sr;
+        const is = (b.impactScore ?? 0) - (a.impactScore ?? 0);
+        if (is !== 0) return is;
+        return new Date(b.publishedAt ?? 0).getTime() - new Date(a.publishedAt ?? 0).getTime();
+      }),
     [items]
   );
 
@@ -197,7 +208,7 @@ export function ImpactNewsView() {
             ))}
           </div>
         ) : (
-          <div className="empty">{data.message || "داده‌ای دریافت نشد"}</div>
+          <div className="empty">{data.message || EMPTY_FRESH_MESSAGE}</div>
         )}
       </div>
     </div>

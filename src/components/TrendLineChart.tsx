@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { TrendingDown, TrendingUp } from "lucide-react";
 import { formatPercent } from "@/components/format";
+import { SkeletonBlock } from "@/components/skeletons";
 
 const faNum = new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 0 });
 const faTime = new Intl.DateTimeFormat("fa-IR", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Tehran" });
@@ -602,7 +603,10 @@ export function MedianChartShell<T extends string>({
       </div>
       {toolbar}
       {loading && !hasData ? (
-        <div className="loading">در حال دریافت داده...</div>
+        <div className="median-chart-body" aria-busy="true" aria-live="polite">
+          <span className="sr-only">در حال دریافت داده نمودار</span>
+          <SkeletonBlock className="sk-chart-area" height={220} />
+        </div>
       ) : error ? (
         <div className="empty">داده‌ای دریافت نشد: {error}</div>
       ) : hasData ? (

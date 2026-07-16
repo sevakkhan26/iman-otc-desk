@@ -11,6 +11,7 @@ import {
   severityTone
 } from "@/components/format";
 import { SmartFilter, matchAsset, matchQuery, type AssetFilter } from "@/components/SmartFilter";
+import { ImpactNewsSkeleton } from "@/components/skeletons";
 
 type Tone = "good" | "warn" | "danger" | "neutral";
 
@@ -157,7 +158,7 @@ export function ImpactNewsView() {
     return (
       <>
         <PageHeader onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
-        <div className="loading">در حال دریافت داده...</div>
+        <ImpactNewsSkeleton />
       </>
     );
   }

@@ -52,15 +52,42 @@ import {
 import { SmartFilter, matchAsset, matchQuery, type AssetFilter } from "@/components/SmartFilter";
 import { GoldMarketSummary } from "@/components/GoldMarketSummary";
 import { assetLabel } from "@/lib/assets";
+import {
+  AlertsSkeleton,
+  DashboardSkeleton,
+  ExchangeMonitorSkeleton,
+  ForexSkeleton,
+  GoldSkeleton,
+  SectionExchangeCardsSkeleton,
+  SectionGoldPanelSkeleton,
+  SettingsSkeleton,
+  TetherMarketSkeleton
+} from "@/components/skeletons";
 
 // Heavy chart bundles — load after first paint (same UI, deferred JS)
 const MedianChart = dynamic(
   () => import("@/components/MedianChart").then((m) => ({ default: m.MedianChart })),
-  { ssr: false, loading: () => <div className="loading">بارگذاری نمودار…</div> }
+  {
+    ssr: false,
+    loading: () => (
+      <div className="sk-chart" aria-busy="true" aria-live="polite">
+        <span className="sr-only">بارگذاری نمودار</span>
+        <div className="sk-chart-area sk-block" style={{ minHeight: 220 }} aria-hidden="true" />
+      </div>
+    )
+  }
 );
 const GoldPriceChart = dynamic(
   () => import("@/components/GoldPriceChart").then((m) => ({ default: m.GoldPriceChart })),
-  { ssr: false, loading: () => <div className="loading">بارگذاری نمودار…</div> }
+  {
+    ssr: false,
+    loading: () => (
+      <div className="sk-chart" aria-busy="true" aria-live="polite">
+        <span className="sr-only">بارگذاری نمودار</span>
+        <div className="sk-chart-area sk-block" style={{ minHeight: 260 }} aria-hidden="true" />
+      </div>
+    )
+  }
 );
 
 type AlertsResponse = { items: AlertItem[] };
@@ -486,36 +513,26 @@ function QuickDecisionCockpit({
   );
 }
 
-function PageSkeleton({ rows = 3 }: { rows?: number }) {
-  return (
-    <div className="grid page-skeleton" aria-hidden="true">
-      {Array.from({ length: rows }).map((_, i) => (
-        <div key={i} className="skeleton-panel">
-          <div className="skeleton-line w40" />
-          <div className="skeleton-line w80" />
-          <div className="skeleton-line w60" />
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function LoadState({
   loading,
   error,
-  hasData = false
+  hasData = false,
+  skeleton
 }: {
   loading: boolean;
   error: string | null;
   hasData?: boolean;
+  /** Page-specific skeleton matching the loaded layout (no generic spinner page). */
+  skeleton?: React.ReactNode;
 }) {
   // Keep previous content visible while refreshing; only skeleton on first load
   if (loading && !hasData) {
-    return (
-      <>
-        <div className="loading">در حال دریافت داده...</div>
-        <PageSkeleton />
-      </>
+    return skeleton ? (
+      <>{skeleton}</>
+    ) : (
+      <div className="loading" aria-busy="true">
+        در حال دریافت داده...
+      </div>
     );
   }
   if (error && !hasData) return <div className="empty">داده‌ای دریافت نشد: {error}</div>;
@@ -838,7 +855,7 @@ export function GoldMarketView() {
         lastUpdatedDisplay={data?.lastUpdated ? formatGoldTehran(data.lastUpdated) : null}
         loading={loading}
       />
-      <LoadState loading={loading} error={error} hasData={Boolean(data)} />
+      <LoadState loading={loading} error={error} hasData={Boolean(data)} skeleton={<GoldSkeleton />} />
       {data ? (
         <div className="grid gold-page" data-layout-version="gold-cols-v2">
           {!cards.length ? (
@@ -866,19 +883,26 @@ export function GoldMarketView() {
 
 export function ForexView() {
   const { data, loading, error, reload, lastUpdated } = useApi<ForexEventsResponse>("/api/forex", 60_000);
+  if (loading && !data) {
+    return (
+      <>
+        <PageHeader title="فارکس" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+        <ForexSkeleton />
+      </>
+    );
+  }
   if (!data || !Array.isArray(data.events)) {
     return (
       <>
         <PageHeader title="فارکس" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
-        <LoadState loading={loading} error={error} hasData={false} />
-        {!loading ? <div className="empty">داده‌های فارکس در دسترس نیست</div> : null}
+        <LoadState loading={false} error={error} hasData={false} />
+        <div className="empty">داده‌های فارکس در دسترس نیست</div>
       </>
     );
   }
   return (
     <>
       <PageHeader title="فارکس" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
-      <LoadState loading={loading} error={error} hasData />
       <div className="grid">
         <Panel
           title="رویدادهای مهم فارکس (USD)"
@@ -1014,7 +1038,7 @@ function GoldMarketCards({ items }: { items: GoldPricesApiItem[] }) {
 }
 
 function GoldMarketPanel({ title = "بازار طلا" }: { title?: string }) {
-  const { data: gold } = useApi<GoldPricesApiResponse>("/api/gold-prices", 30_000);
+  const { data: gold, loading } = useApi<GoldPricesApiResponse>("/api/gold-prices", 30_000);
   const cards = useMemo(
     () =>
       (gold?.items ?? [])
@@ -1033,7 +1057,9 @@ function GoldMarketPanel({ title = "بازار طلا" }: { title?: string }) {
 
   return (
     <Panel title={title} meta={meta ? <span className="muted">{meta}</span> : undefined}>
-      {!cards.length ? (
+      {loading && !gold ? (
+        <SectionGoldPanelSkeleton />
+      ) : !cards.length ? (
         <div className="empty">فعلاً داده‌ای از بازار طلا دریافت نشد</div>
       ) : (
         <>
@@ -1046,7 +1072,7 @@ function GoldMarketPanel({ title = "بازار طلا" }: { title?: string }) {
 }
 
 function SitePrices() {
-  const { data: fx } = useApi<FxPricesApiResponse>("/api/fx-prices", 30_000);
+  const { data: fx, loading } = useApi<FxPricesApiResponse>("/api/fx-prices", 30_000);
   const cards = useMemo(
     () =>
       (fx?.items ?? [])
@@ -1061,7 +1087,9 @@ function SitePrices() {
 
   return (
     <Panel title="قیمت‌های سایت" meta={meta ? <span className="muted">{meta}</span> : undefined}>
-      {!cards.length ? (
+      {loading && !fx ? (
+        <SectionExchangeCardsSkeleton count={5} />
+      ) : !cards.length ? (
         <div className="empty">فعلاً داده‌ای از منابع سایت دریافت نشد</div>
       ) : (
         <div className="exch-grid">
@@ -1125,7 +1153,7 @@ export function DashboardView() {
       <Toasts toasts={toasts} onDismiss={dismiss} />
       <PageHeader title="داشبورد" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
       <NewsTicker />
-      <LoadState loading={loading} error={error} hasData={Boolean(data)} />
+      <LoadState loading={loading} error={error} hasData={Boolean(data)} skeleton={<DashboardSkeleton />} />
       {data ? (
         <div className="grid">
           <QuickDecisionCockpit quickDecision={data.quickDecision} marketState={data.marketState} />
@@ -1212,7 +1240,7 @@ export function TetherMarketView() {
   return (
     <>
       <PageHeader title="بازار تتر ایران" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
-      <LoadState loading={loading} error={error} hasData={Boolean(data)} />
+      <LoadState loading={loading} error={error} hasData={Boolean(data)} skeleton={<TetherMarketSkeleton />} />
       {data ? (
         <div className="grid">
           <div className="grid metrics">
@@ -1306,7 +1334,12 @@ export function ExchangeMonitorView() {
   return (
     <>
       <PageHeader title="مانیتور صرافی‌ها" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
-      <LoadState loading={loading} error={error} hasData={Boolean(data)} />
+      <LoadState
+        loading={loading}
+        error={error}
+        hasData={Boolean(data)}
+        skeleton={<ExchangeMonitorSkeleton />}
+      />
       {data ? (
         <div className="grid">
           <Panel title="صرافی‌های داخلی" meta={<span className="muted">میانه بازار: {formatToman(data.tetherSummary.median)}</span>}>
@@ -1345,7 +1378,7 @@ export function AlertsView() {
   return (
     <>
       <PageHeader title="هشدارها" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
-      <LoadState loading={loading} error={error} />
+      <LoadState loading={loading} error={error} hasData={Boolean(data)} skeleton={<AlertsSkeleton />} />
       {data ? (
         <div className="grid">
           <SmartFilter
@@ -1493,7 +1526,7 @@ export function SettingsView() {
   return (
     <>
       <PageHeader title="تنظیمات" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
-      <LoadState loading={loading} error={error} />
+      <LoadState loading={loading} error={error} hasData={Boolean(form)} skeleton={<SettingsSkeleton />} />
       {form ? (
         <div className="grid">
           <Panel title="تم نمایش (Dark / Light)">

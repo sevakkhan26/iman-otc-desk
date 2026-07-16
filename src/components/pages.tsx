@@ -1163,7 +1163,7 @@ const SITE_PRICE_SLOTS: Array<{
   { source: "navasan", asset: "دلار کاغذی", title: "دلار کاغذی · نوسان" },
   { source: "bonbast", asset: "دلار بن‌بست", title: "دلار کاغذی · بن‌بست" },
   { source: "navasan", asset: "دلار آمریکا هرات", title: "دلار آمریکا هرات · نوسان" },
-  { source: "bonbast", asset: "دلار آمریکا هرات", title: "دلار آمریکا هرات · بن‌بست" },
+  { source: "navasan", asset: "دلار نقدی", title: "دلار نقدی · نوسان" },
   { source: "navasan", asset: "درهم امارات", title: "درهم امارات · نوسان" },
   { source: "bonbast", asset: "درهم امارات", title: "درهم امارات · بن‌بست" },
   { source: "navasan", asset: "دلار فردایی", title: "دلار فردایی · نوسان" },

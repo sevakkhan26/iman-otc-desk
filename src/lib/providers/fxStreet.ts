@@ -110,20 +110,6 @@ function matchedNavasanUsdPair(
   };
 }
 
-function matchedBonbastUsdPair(
-  payload: BonbastPayload,
-  sellKey: string,
-  buyKey: string
-): MatchedPair | null {
-  const buy = positivePrice(bonbastPrice(payload[buyKey])); // bonbast: *2 often buy col
-  const sell = positivePrice(bonbastPrice(payload[sellKey])); // *1 often sell col
-  // Allow both key orderings used by Bonbast USD (usd1=sell, usd2=buy)
-  if (buy !== null && sell !== null && isCoherentUsdIrtPair(buy, sell)) {
-    return { buy, sell, lastUpdated: bonbastUpdatedAt(payload) };
-  }
-  return null;
-}
-
 function latestTimestamp(values: Array<string | null>): string | null {
   const timestamps = values
     .filter((value): value is string => Boolean(value))
@@ -201,11 +187,26 @@ function quotesFromNavasanRates(rates: NavasanRates, sourceId: SourceId, sourceN
       })
     : null;
 
+  // دلار نقدی = USD cash (Tehran) on Navasan (dayRates item=usd / usd_buy|usd_sell).
+  // Prefer dedicated usd_naghdi_* if present; else official free-market cash pair usd_sell|usd_buy.
+  // Never mix with harat_*, farda_*, aed_*, or AFN.
+  const cashNaghdi =
+    matchedNavasanUsdPair(rates, "usd_naghdi_sell", "usd_naghdi_buy") ??
+    matchedNavasanUsdPair(rates, "naghdi_sell", "naghdi_buy") ??
+    matchedNavasanUsdPair(rates, "usd_sell", "usd_buy");
+
+  const cashQuote = cashNaghdi
+    ? quoteFromPrices(sourceId, sourceName, "دلار نقدی", cashNaghdi.buy, cashNaghdi.sell, {
+        lastUpdated: cashNaghdi.lastUpdated
+      })
+    : null;
+
   return [
     quoteFromPrices(sourceId, sourceName, "دلار کاغذی", paperBuy, paperSell, {
       lastUpdated: navasanUpdatedAt(rates.harat_naghdi_sell) ?? navasanUpdatedAt(rates.harat_naghdi_buy)
     }),
     haratQuote,
+    cashQuote,
     quoteFromPrices(
       sourceId,
       sourceName,
@@ -387,24 +388,11 @@ async function fetchBonbast(): Promise<SourceResult> {
   const paperBuy = positivePrice(bonbastPrice(payload.usd2));
   const paperSell = positivePrice(bonbastPrice(payload.usd1));
 
-  // Bonbast public JSON (usd1/usd2/aed1/aed2/…) has no published «دلار آمریکا هرات» pair.
-  // Only emit Harat when a complete, coherent matched key-pair exists — never invent from USD/AFN.
-  const harat =
-    matchedBonbastUsdPair(payload, "harat1", "harat2") ??
-    matchedBonbastUsdPair(payload, "herat1", "herat2") ??
-    matchedBonbastUsdPair(payload, "usd_harat1", "usd_harat2");
-
-  const haratQuote = harat
-    ? quoteFromPrices(sourceId, sourceName, "دلار آمریکا هرات", harat.buy, harat.sell, {
-        lastUpdated: harat.lastUpdated ?? updatedAt
-      })
-    : null;
-
+  // No Bonbast «دلار آمریکا هرات» / «دلار نقدی» on this dashboard slot — paper USD only + AED.
   const quotes = [
     quoteFromPrices(sourceId, sourceName, "دلار بن‌بست", paperBuy, paperSell, {
       lastUpdated: updatedAt
     }),
-    haratQuote,
     quoteFromPrices(
       sourceId,
       sourceName,

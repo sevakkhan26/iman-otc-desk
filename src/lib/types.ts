@@ -284,6 +284,7 @@ export interface SettingsPatch {
 export type FxStreetAssetType =
   | "دلار کاغذی"
   | "دلار آمریکا هرات"
+  | "دلار نقدی"
   | "دلار فردایی"
   | "دلار سبزه میدان"
   | "دلار بن‌بست"

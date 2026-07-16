@@ -506,6 +506,45 @@ input {
 .global-metrics-row .metric {
   min-height: 104px;
   height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 0;
+}
+
+.global-metrics-row .metric-label,
+.global-metrics-row .metric-value,
+.global-metrics-row .metric-note {
+  text-align: center;
+  width: 100%;
+  max-width: 100%;
+}
+
+.global-metrics-row .metric-label {
+  margin-bottom: 10px;
+}
+
+.global-metrics-row .metric-value {
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+/* Prices stay LTR but centered in the card */
+.global-metrics-row .metric-value,
+.global-metrics-row .metric-value .number {
+  direction: ltr;
+  text-align: center;
+  unicode-bidi: isolate;
+}
+
+.global-metrics-row .metric-note {
+  margin-top: 8px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .two-col {

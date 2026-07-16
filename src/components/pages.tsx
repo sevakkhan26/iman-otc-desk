@@ -1121,8 +1121,8 @@ export function GoldMarketView() {
             </Panel>
           ) : (
             <Panel title="قیمت‌های بازار طلا" meta={meta ? <span className="muted">{meta}</span> : undefined}>
-              <div className="gold-summary-and-cards">
-                <div className="gold-summary-col">
+              <div className="gold-page-stack">
+                <div className="gold-summary-top">
                   <GoldMarketSummary items={cards} instrument={summaryInstrument} />
                 </div>
                 <div className="gold-prices-col">

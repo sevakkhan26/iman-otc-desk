@@ -324,20 +324,20 @@ export function GoldSkeleton() {
     <div className="grid gold-page page-skeleton-root" data-layout-version="gold-cols-v2" aria-busy="true" aria-live="polite">
       <span className="sr-only">در حال بارگذاری بازار طلا</span>
       <SkeletonPanelShell titleWidth="36%" className="sk-gold-panel">
-        <div className="gold-summary-and-cards" aria-hidden="true">
-          <div className="gold-summary-col">
+        <div className="gold-page-stack" aria-hidden="true">
+          <div className="gold-summary-top">
             <div className="gold-summary-panel sk-gold-summary">
               <div className="gold-summary-body">
-                <SkeletonLine width="70%" height={13} />
+                <SkeletonLine width="28%" height={13} />
                 <div className="gold-summary-stats">
-                  {Array.from({ length: 4 }).map((_, i) => (
+                  {Array.from({ length: 6 }).map((_, i) => (
                     <div key={i} className="gold-summary-row">
-                      <SkeletonLine width="50%" height={10} />
-                      <SkeletonLine width="75%" height={14} />
+                      <SkeletonLine width="55%" height={10} />
+                      <SkeletonLine width="70%" height={14} />
                     </div>
                   ))}
                 </div>
-                <SkeletonLine width="40%" height={11} />
+                <SkeletonLine width={120} height={24} />
               </div>
             </div>
           </div>

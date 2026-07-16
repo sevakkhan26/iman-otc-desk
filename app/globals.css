@@ -1212,7 +1212,8 @@ tr:last-child td {
   border-radius: 10px;
   padding: 12px;
   background: var(--card);
-  min-height: 200px;
+  min-height: 0;
+  width: 100%;
 }
 
 .sk-gold-group-title {
@@ -1770,19 +1771,21 @@ tr:last-child td {
   line-height: 1.6;
 }
 
+/* Full-width horizontal summary metrics row */
 .gold-summary-stats {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 8px;
 }
 
 .gold-summary-row {
   display: grid;
   gap: 2px;
-  padding: 6px 8px;
+  padding: 8px 10px;
   border: 1px solid var(--line-soft);
   border-radius: 8px;
   background: var(--card);
+  min-width: 0;
 }
 
 .gold-summary-label {
@@ -1803,6 +1806,10 @@ tr:last-child td {
 
 .gold-summary-status {
   padding-top: 2px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 
 .gold-summary-empty {
@@ -1812,22 +1819,17 @@ tr:last-child td {
   color: var(--muted);
 }
 
-.gold-summary-and-cards {
+/* Summary on top, instrument cards full width below */
+.gold-page-stack {
   display: grid;
-  grid-template-columns: minmax(260px, 320px) 1fr;
   gap: 18px;
-  align-items: start;
   width: 100%;
   min-width: 0;
 }
 
-.gold-summary-and-cards > * {
-  min-width: 0;
-}
-
-.gold-summary-col {
-  min-width: 0;
+.gold-summary-top {
   width: 100%;
+  min-width: 0;
 }
 
 .gold-prices-col {
@@ -2779,13 +2781,25 @@ tr:last-child td {
     grid-template-columns: 1fr;
   }
 
-  .gold-summary-and-cards {
-    grid-template-columns: 1fr;
-  }
-
   .gold-summary-panel {
     width: 100%;
     max-width: 100%;
+  }
+
+  .gold-summary-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1120px) and (min-width: 761px) {
+  .gold-summary-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .gold-summary-stats {
+    grid-template-columns: 1fr;
   }
 }
 

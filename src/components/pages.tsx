@@ -9,6 +9,7 @@ import type {
   AlertItem,
   AssetTag,
   DashboardResponse,
+  DomesticProviderHealth,
   DomesticQuote,
   ExchangeMonitorResponse,
   ExchangeOperationalStatus,
@@ -1491,6 +1492,278 @@ function ConnectionSegment({ value, onChange }: { value: ConnectionFilter; onCha
   );
 }
 
+function extractHttpStatus(error: string | null | undefined): number | null {
+  if (!error) return null;
+  const m = error.match(/\bHTTP\s*([1-5]\d{2})\b/i);
+  if (m) return Number(m[1]);
+  return null;
+}
+
+function mapLpErrorReason(
+  raw: string | null | undefined,
+  kind: "unavailable" | "degraded",
+  row: { buyPrice: number | null; sellPrice: number | null; midPrice: number | null }
+): { reason: string; operational: string; httpStatus: number | null } {
+  const msg = (raw ?? "").trim();
+  const httpStatus = extractHttpStatus(msg);
+  const lower = msg.toLowerCase();
+
+  if (httpStatus === 403) {
+    return {
+      reason: msg.includes("HTTP") ? msg : `HTTP 403 — دسترسی منبع از سمت سرور مسدود شده`,
+      operational: "دسترسی منبع از سمت سرور مسدود شده",
+      httpStatus
+    };
+  }
+  if (httpStatus === 429 || /rate.?limit|محدودیت نرخ|مکرر/i.test(msg)) {
+    return {
+      reason: msg || "HTTP 429 — محدودیت تعداد درخواست‌ها",
+      operational: "محدودیت تعداد درخواست‌ها",
+      httpStatus: httpStatus ?? 429
+    };
+  }
+  if (httpStatus && httpStatus >= 400) {
+    return {
+      reason: msg || `HTTP ${httpStatus}`,
+      operational: "منبع با خطای HTTP پاسخ داد",
+      httpStatus
+    };
+  }
+  if (/timeout|زمان پاسخ|timed?\s*out/i.test(msg) || lower.includes("etimedout")) {
+    return {
+      reason: msg || "منبع در زمان تعیین‌شده پاسخ نداد",
+      operational: "منبع در زمان تعیین‌شده پاسخ نداد",
+      httpStatus
+    };
+  }
+  if (/dns|enotfound|econnrefused|econnreset|network|شبکه|دامنه|fetch failed/i.test(msg)) {
+    return {
+      reason: msg || "خطای شبکه یا دسترسی به دامنه",
+      operational: "خطای شبکه یا دسترسی به دامنه",
+      httpStatus
+    };
+  }
+  if (/invalid|parse|json|ساختار|نامعتبر|unexpected/i.test(msg)) {
+    return {
+      reason: msg || "ساختار پاسخ منبع نامعتبر است",
+      operational: "ساختار پاسخ منبع نامعتبر است",
+      httpStatus
+    };
+  }
+  if (/stale|قدیمی|آخرین قیمت معتبر/i.test(msg)) {
+    return {
+      reason: msg || "آخرین داده معتبر قدیمی شده است",
+      operational: "آخرین داده معتبر قدیمی شده است",
+      httpStatus
+    };
+  }
+
+  const refOnly =
+    kind === "degraded" &&
+    row.midPrice !== null &&
+    Number.isFinite(row.midPrice) &&
+    row.midPrice > 0 &&
+    (row.buyPrice === null || !Number.isFinite(row.buyPrice)) &&
+    (row.sellPrice === null || !Number.isFinite(row.sellPrice));
+
+  if (refOnly || /مرجع|reference|mid.?only|خرید و فروش مجزا/i.test(msg)) {
+    return {
+      reason: msg || "قیمت خرید و فروش مجزا دریافت نشد",
+      operational: "منبع متصل است اما قیمت خرید و فروش مجزا ارائه نمی‌شود.",
+      httpStatus
+    };
+  }
+
+  if (msg) {
+    return {
+      reason: msg,
+      operational: kind === "unavailable" ? "اتصال منبع برقرار نیست" : "دادهٔ منبع ناقص است",
+      httpStatus
+    };
+  }
+
+  return {
+    reason: "علت دقیق در دسترس نیست",
+    operational: kind === "unavailable" ? "اتصال منبع برقرار نیست" : "دادهٔ منبع ناقص است",
+    httpStatus: null
+  };
+}
+
+type LpWarningItem = {
+  id: string;
+  name: string;
+  kind: "unavailable" | "degraded";
+  statusLabel: string;
+  reason: string;
+  operational: string;
+  httpStatus: number | null;
+  lastSuccessAt: string | null;
+  lastAttemptAt: string | null;
+  lastUpdated: string | null;
+};
+
+function buildLpWarnings(
+  exchanges: DomesticQuote[],
+  providers: DomesticProviderHealth[] | undefined
+): LpWarningItem[] {
+  const byId = new Map(exchanges.map((e) => [e.exchangeId, e]));
+  const sourceList: Array<{
+    id: string;
+    name: string;
+    status: DomesticQuote["sourceStatus"];
+    buyPrice: number | null;
+    sellPrice: number | null;
+    midPrice: number | null;
+    error: string | null;
+    lastSuccessAt: string | null;
+    lastAttemptAt: string | null;
+    lastUpdated: string | null;
+    order: number;
+  }> = [];
+
+  if (providers?.length) {
+    providers.forEach((p, order) => {
+      const q = byId.get(p.id);
+      const buy = q?.buyPrice ?? p.buyPrice;
+      const sell = q?.sellPrice ?? p.sellPrice;
+      const mid = q?.midPrice ?? p.midPrice;
+      const referenceOnly =
+        p.status !== "unavailable" &&
+        mid !== null &&
+        Number.isFinite(mid) &&
+        mid > 0 &&
+        (buy === null || !Number.isFinite(buy)) &&
+        (sell === null || !Number.isFinite(sell));
+      const status: DomesticQuote["sourceStatus"] =
+        p.status === "unavailable"
+          ? "unavailable"
+          : p.status === "degraded" || referenceOnly || q?.sourceStatus === "degraded"
+            ? "degraded"
+            : q?.sourceStatus === "unavailable"
+              ? "unavailable"
+              : "available";
+      sourceList.push({
+        id: p.id,
+        name: p.name,
+        status,
+        buyPrice: buy,
+        sellPrice: sell,
+        midPrice: mid,
+        error: q?.errorMessage ?? p.error,
+        lastSuccessAt: p.lastSuccessAt,
+        lastAttemptAt: p.lastAttemptAt,
+        lastUpdated: q?.lastUpdated ?? null,
+        order
+      });
+    });
+  } else {
+    exchanges.forEach((q, order) => {
+      const referenceOnly =
+        q.sourceStatus !== "unavailable" &&
+        q.midPrice !== null &&
+        Number.isFinite(q.midPrice) &&
+        q.midPrice > 0 &&
+        (q.buyPrice === null || !Number.isFinite(q.buyPrice)) &&
+        (q.sellPrice === null || !Number.isFinite(q.sellPrice));
+      sourceList.push({
+        id: q.exchangeId,
+        name: q.exchangeName,
+        status: q.sourceStatus === "unavailable" ? "unavailable" : referenceOnly || q.sourceStatus === "degraded" ? "degraded" : "available",
+        buyPrice: q.buyPrice,
+        sellPrice: q.sellPrice,
+        midPrice: q.midPrice,
+        error: q.errorMessage ?? null,
+        lastSuccessAt: q.lastUpdated,
+        lastAttemptAt: q.lastUpdated,
+        lastUpdated: q.lastUpdated,
+        order
+      });
+    });
+  }
+
+  const warnings: LpWarningItem[] = [];
+  for (const item of sourceList) {
+    if (item.status === "available") continue;
+    const kind = item.status === "unavailable" ? "unavailable" : "degraded";
+    const mapped = mapLpErrorReason(item.error, kind, item);
+    warnings.push({
+      id: item.id,
+      name: item.name,
+      kind,
+      statusLabel: kind === "unavailable" ? "قطع" : "ناقص",
+      reason: mapped.reason,
+      operational: mapped.operational,
+      httpStatus: mapped.httpStatus,
+      lastSuccessAt: item.lastSuccessAt,
+      lastAttemptAt: item.lastAttemptAt,
+      lastUpdated: item.lastUpdated,
+    });
+  }
+
+  // Disconnected first, then degraded; preserve configured order within groups
+  warnings.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "unavailable" ? -1 : 1;
+    const ao = sourceList.find((s) => s.id === a.id)?.order ?? 0;
+    const bo = sourceList.find((s) => s.id === b.id)?.order ?? 0;
+    return ao - bo;
+  });
+
+  return warnings;
+}
+
+function LpConnectionHealthPanel({
+  exchanges,
+  providers
+}: {
+  exchanges: DomesticQuote[];
+  providers?: DomesticProviderHealth[];
+}) {
+  const warnings = useMemo(() => buildLpWarnings(exchanges, providers), [exchanges, providers]);
+
+  return (
+    <Panel
+      title="هشدار وضعیت اتصال LPها"
+      meta={
+        <span className="muted">
+          {warnings.length ? `${formatNumber(warnings.length, 0)} مورد` : "سالم"}
+        </span>
+      }
+    >
+      {!warnings.length ? (
+        <div className="lp-health-empty good">
+          <span className="mini-dot good" aria-hidden="true" />
+          همه LPها متصل و سالم هستند.
+        </div>
+      ) : (
+        <div className="lp-health-grid">
+          {warnings.map((item) => (
+            <article
+              key={item.id}
+              className={`lp-health-card ${item.kind === "unavailable" ? "danger" : "warn"}`}
+            >
+              <div className="lp-health-head">
+                <strong className="lp-health-name">{item.name}</strong>
+                <Badge tone={item.kind === "unavailable" ? "danger" : "warn"}>{item.statusLabel}</Badge>
+              </div>
+              <div className="lp-health-line">
+                <span className="muted">علت:</span> {item.reason}
+              </div>
+              {item.httpStatus !== null ? (
+                <div className="lp-health-line muted">کد HTTP: {item.httpStatus}</div>
+              ) : null}
+              <div className="lp-health-line muted">{item.operational}</div>
+              <div className="lp-health-meta">
+                <span>آخرین اتصال موفق: {item.lastSuccessAt ? formatDate(item.lastSuccessAt) : "—"}</span>
+                <span>آخرین تلاش: {item.lastAttemptAt ? formatDate(item.lastAttemptAt) : "—"}</span>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 export function TetherMarketView() {
   const { data, loading, error, reload, lastUpdated } = useApi<TetherMarketResponse>("/api/tether-market", 60_000);
   const [asset, setAsset] = useState<AssetFilter>("all");
@@ -1561,6 +1834,7 @@ export function TetherMarketView() {
             </div>
             {rows.length ? <DomesticTable rows={rows} /> : <div className="empty">منبعی با این فیلتر یافت نشد</div>}
           </Panel>
+          <LpConnectionHealthPanel exchanges={data.exchanges} providers={data.providers} />
           <Panel title="روند قیمت میانه تتر (USDT/IRT)">
             <MedianChart />
           </Panel>

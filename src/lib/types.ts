@@ -66,6 +66,22 @@ export interface DomesticQuote {
   excludedFromMedian: boolean;
 }
 
+/** Domestic LP runner health snapshot (same slots as live quotes). */
+export interface DomesticProviderHealth {
+  id: string;
+  name: string;
+  status: SourceStatus;
+  endpoint: string;
+  buyPrice: number | null;
+  sellPrice: number | null;
+  midPrice: number | null;
+  lastSuccessAt: string | null;
+  lastAttemptAt: string | null;
+  staleAgeMs: number | null;
+  error: string | null;
+  rateLimitedUntil: string | null;
+}
+
 export interface TetherMarketSummary {
   median: number | null;
   highest: number | null;
@@ -93,6 +109,8 @@ export interface TetherMarketResponse {
   summary: TetherMarketSummary;
   exchanges: DomesticQuote[];
   settings: Pick<DeskSettings, "outlierThresholdPercent" | "marketSpreadAlertThresholdPercent">;
+  /** Optional LP health from domestic runner slots (same refresh as exchanges). */
+  providers?: DomesticProviderHealth[];
 }
 
 export interface GlobalPrice {

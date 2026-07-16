@@ -1,19 +1,6 @@
-import type { DomesticQuote, SourceStatus } from "@/lib/types";
+import type { DomesticProviderHealth, DomesticQuote, SourceStatus } from "@/lib/types";
 
-export type DomesticProviderHealth = {
-  id: string;
-  name: string;
-  status: SourceStatus;
-  endpoint: string;
-  buyPrice: number | null;
-  sellPrice: number | null;
-  midPrice: number | null;
-  lastSuccessAt: string | null;
-  lastAttemptAt: string | null;
-  staleAgeMs: number | null;
-  error: string | null;
-  rateLimitedUntil: string | null;
-};
+export type { DomesticProviderHealth };
 
 export type IsolatedProviderDef = {
   id: string;

@@ -1,4 +1,4 @@
-import { getDomesticQuotes } from "@/lib/providers/domestic";
+import { getDomesticProviderHealth, getDomesticQuotes } from "@/lib/providers/domestic";
 import { getGlobalExchangeStatuses } from "@/lib/providers/exchangeStatus";
 import { getForexEvents } from "@/lib/providers/forex";
 import { getGlobalPrices } from "@/lib/providers/globalMarket";
@@ -155,6 +155,33 @@ export async function getTetherMarket(): Promise<TetherMarketResponse> {
   const exchanges = await getDomesticQuotes(settings);
   const response = calculateTetherMarket(exchanges, settings.outlierThresholdPercent);
   response.settings.marketSpreadAlertThresholdPercent = settings.marketSpreadAlertThresholdPercent;
+  // Same process slots as quotes — no extra provider fetch; timestamps for LP warning panel.
+  const health = getDomesticProviderHealth();
+  response.providers = health.map((h) => {
+    const q = response.exchanges.find((e) => e.exchangeId === h.id);
+    if (!q) return h;
+    const referenceOnly =
+      q.sourceStatus !== "unavailable" &&
+      q.midPrice !== null &&
+      Number.isFinite(q.midPrice) &&
+      q.midPrice > 0 &&
+      (q.buyPrice === null || !Number.isFinite(q.buyPrice)) &&
+      (q.sellPrice === null || !Number.isFinite(q.sellPrice));
+    const status =
+      q.sourceStatus === "unavailable"
+        ? "unavailable"
+        : q.sourceStatus === "degraded" || referenceOnly
+          ? "degraded"
+          : q.sourceStatus;
+    return {
+      ...h,
+      status,
+      buyPrice: q.buyPrice,
+      sellPrice: q.sellPrice,
+      midPrice: q.midPrice,
+      error: q.errorMessage ?? h.error
+    };
+  });
   void recordMedian(response.summary.median).catch(() => {});
   return response;
 }

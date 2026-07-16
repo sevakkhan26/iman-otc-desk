@@ -849,6 +849,33 @@ const ExchangeCard = memo(function ExchangeCard({
   );
 });
 
+function isExecutableBuySell(row: DomesticQuote): boolean {
+  return (
+    row.buyPrice !== null &&
+    row.sellPrice !== null &&
+    Number.isFinite(row.buyPrice) &&
+    Number.isFinite(row.sellPrice) &&
+    row.buyPrice > 0 &&
+    row.sellPrice > 0
+  );
+}
+
+function isValidReferencePrice(row: DomesticQuote): boolean {
+  return row.midPrice !== null && Number.isFinite(row.midPrice) && row.midPrice > 0;
+}
+
+/**
+ * Display tiers for Iranian exchange cards (Dashboard only):
+ * 0 healthy (buy+sell), 1 degraded/reference-only, 2 unavailable.
+ * Within a tier, original API/config order is preserved (stable).
+ */
+function exchangeCardTier(row: DomesticQuote): 0 | 1 | 2 {
+  if (row.sourceStatus === "unavailable") return 2;
+  if (isExecutableBuySell(row)) return 0;
+  if (isValidReferencePrice(row) || row.sourceStatus === "degraded") return 1;
+  return 2;
+}
+
 function DashboardExchangeCards({
   rows,
   summary
@@ -856,23 +883,30 @@ function DashboardExchangeCards({
   rows: DomesticQuote[];
   summary: TetherMarketResponse["summary"];
 }) {
-  // connected sources with data first, disconnected/no-data last — keeps live prices front and center
   const ordered = useMemo(() => {
-    const weight = (row: DomesticQuote) =>
-      row.sourceStatus === "unavailable" ? 2 : row.midPrice === null ? 1 : 0;
-    return [...rows].sort((a, b) => weight(a) - weight(b));
+    return rows
+      .map((row, index) => ({ row, index }))
+      .sort((a, b) => {
+        const tierDiff = exchangeCardTier(a.row) - exchangeCardTier(b.row);
+        if (tierDiff !== 0) return tierDiff;
+        return a.index - b.index;
+      })
+      .map((entry) => entry.row);
   }, [rows]);
 
   return (
     <div className="exch-grid">
-      {ordered.map((row) => (
-        <ExchangeCard
-          key={row.exchangeId}
-          row={row}
-          isBestBuy={row.sourceStatus !== "unavailable" && summary.bestBuyExchange === row.exchangeName}
-          isBestSell={row.sourceStatus !== "unavailable" && summary.bestSellExchange === row.exchangeName}
-        />
-      ))}
+      {ordered.map((row) => {
+        const executable = isExecutableBuySell(row) && row.sourceStatus !== "unavailable";
+        return (
+          <ExchangeCard
+            key={row.exchangeId}
+            row={row}
+            isBestBuy={executable && summary.bestBuyExchange === row.exchangeName}
+            isBestSell={executable && summary.bestSellExchange === row.exchangeName}
+          />
+        );
+      })}
     </div>
   );
 }

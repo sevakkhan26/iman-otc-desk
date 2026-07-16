@@ -1164,10 +1164,11 @@ const SITE_PRICE_SLOTS: Array<{
   { source: "bonbast", asset: "دلار بن‌بست", title: "دلار کاغذی · بن‌بست" },
   { source: "navasan", asset: "دلار آمریکا هرات", title: "دلار آمریکا هرات · نوسان" },
   { source: "navasan", asset: "دلار نقدی", title: "دلار نقدی · نوسان" },
-  { source: "navasan", asset: "درهم امارات", title: "درهم امارات · نوسان" },
-  { source: "bonbast", asset: "درهم امارات", title: "درهم امارات · بن‌بست" },
+  // Row 2 (RTL right→left): فردایی, سبزه, درهم ن, درهم ب
   { source: "navasan", asset: "دلار فردایی", title: "دلار فردایی · نوسان" },
-  { source: "navasan", asset: "دلار سبزه میدان", title: "دلار سبزه میدان · نوسان" }
+  { source: "navasan", asset: "دلار سبزه میدان", title: "دلار سبزه میدان · نوسان" },
+  { source: "navasan", asset: "درهم امارات", title: "درهم امارات · نوسان" },
+  { source: "bonbast", asset: "درهم امارات", title: "درهم امارات · بن‌بست" }
 ];
 
 function isValidSitePrice(item: FxPricesApiItem): boolean {

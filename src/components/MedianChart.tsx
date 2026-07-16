@@ -76,7 +76,8 @@ function tooltipLabel(iso: string, range: MedianHistoryRange) {
 }
 
 const W = 720;
-const H = 280;
+const H_DEFAULT = 280;
+const H_TALL = 420;
 const PAD_X = 62;
 const PAD_TOP = 28;
 const PAD_BOTTOM = 36;
@@ -156,11 +157,17 @@ function indexFromClientX(
   return Math.min(pointCount - 1, Math.max(0, Math.round(ratio * (pointCount - 1))));
 }
 
-function overlayPercent(svg: SVGSVGElement, body: HTMLDivElement, viewX: number, viewY: number) {
+function overlayPercent(
+  svg: SVGSVGElement,
+  body: HTMLDivElement,
+  viewX: number,
+  viewY: number,
+  viewH: number = H_DEFAULT
+) {
   const bodyRect = body.getBoundingClientRect();
   const client = svgToClient(svg, viewX, viewY);
   if (bodyRect.width <= 0 || bodyRect.height <= 0) {
-    return { left: (viewX / W) * 100, top: (viewY / H) * 100 };
+    return { left: (viewX / W) * 100, top: (viewY / viewH) * 100 };
   }
   return {
     left: ((client.x - bodyRect.left) / bodyRect.width) * 100,
@@ -168,12 +175,13 @@ function overlayPercent(svg: SVGSVGElement, body: HTMLDivElement, viewX: number,
   };
 }
 
-function Chart({ data }: { data: MedianHistoryResponse }) {
+function Chart({ data, tall = false }: { data: MedianHistoryResponse; tall?: boolean }) {
   const uid = useId().replace(/:/g, "");
   const colors = useChartColors();
   const bodyRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const H = tall ? H_TALL : H_DEFAULT;
 
   const { points, range } = data;
 
@@ -219,7 +227,7 @@ function Chart({ data }: { data: MedianHistoryResponse }) {
       avg,
       change
     };
-  }, [points, data.changePercent]);
+  }, [points, data.changePercent, H]);
 
   const handlePointer = useCallback(
     (clientX: number) => {
@@ -246,11 +254,11 @@ function Chart({ data }: { data: MedianHistoryResponse }) {
   const gridFracs = [0, 0.25, 0.5, 0.75, 1];
   const overlayPos =
     svgRef.current && bodyRef.current
-      ? overlayPercent(svgRef.current, bodyRef.current, geom.xScale(activeIndex), active.y)
+      ? overlayPercent(svgRef.current, bodyRef.current, geom.xScale(activeIndex), active.y, H)
       : { left: (active.x / W) * 100, top: (active.y / H) * 100 };
   const lastOverlayPos =
     svgRef.current && bodyRef.current
-      ? overlayPercent(svgRef.current, bodyRef.current, geom.lastX, geom.lastY)
+      ? overlayPercent(svgRef.current, bodyRef.current, geom.lastX, geom.lastY, H)
       : { left: (geom.lastX / W) * 100, top: (geom.lastY / H) * 100 };
   const badgeLeft = Math.min(Math.max(lastOverlayPos.left, 8), 72);
 
@@ -428,7 +436,7 @@ function Chart({ data }: { data: MedianHistoryResponse }) {
   );
 }
 
-export function MedianChart() {
+export function MedianChart({ tall = false }: { tall?: boolean } = {}) {
   const [range, setRange] = useState<MedianHistoryRange>("24h");
   const [data, setData] = useState<MedianHistoryResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -459,7 +467,7 @@ export function MedianChart() {
   ];
 
   return (
-    <div className="median-chart">
+    <div className={tall ? "median-chart median-chart-tall" : "median-chart"}>
       <div className="median-chart-head">
         <div className="median-chart-stats">
           <span className="median-chart-value number">{formatToman(data?.last)}</span>
@@ -490,7 +498,7 @@ export function MedianChart() {
       ) : error ? (
         <div className="empty">داده‌ای دریافت نشد: {error}</div>
       ) : data ? (
-        <Chart data={data} />
+        <Chart data={data} tall={tall} />
       ) : null}
     </div>
   );

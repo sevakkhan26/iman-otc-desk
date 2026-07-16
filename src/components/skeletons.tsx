@@ -248,18 +248,17 @@ export function DashboardSkeleton() {
         <SkeletonExchangeGrid count={8} />
       </SkeletonPanelShell>
 
-      <div className="grid two-col">
-        <SkeletonPanelShell titleWidth="50%">
-          <SkeletonChart height={300} />
-        </SkeletonPanelShell>
-        <SkeletonPanelShell titleWidth="35%">
-          <div className="grid global-metrics">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <SkeletonMetric key={i} />
-            ))}
-          </div>
-        </SkeletonPanelShell>
-      </div>
+      <SkeletonPanelShell titleWidth="32%">
+        <div className="grid global-metrics global-metrics-row">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <SkeletonMetric key={i} />
+          ))}
+        </div>
+      </SkeletonPanelShell>
+
+      <SkeletonPanelShell titleWidth="48%" className="dashboard-median-panel">
+        <SkeletonChart height={460} />
+      </SkeletonPanelShell>
 
       <div className="grid metrics">
         {Array.from({ length: 4 }).map((_, i) => (

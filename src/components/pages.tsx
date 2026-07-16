@@ -76,6 +76,19 @@ const MedianChart = dynamic(
     )
   }
 );
+
+const DashboardMedianChart = dynamic(
+  () => import("@/components/MedianChart").then((m) => ({ default: m.MedianChart })),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="sk-chart" aria-busy="true" aria-live="polite">
+        <span className="sr-only">بارگذاری نمودار</span>
+        <div className="sk-chart-area sk-block" style={{ minHeight: 460 }} aria-hidden="true" />
+      </div>
+    )
+  }
+);
 const GoldPriceChart = dynamic(
   () => import("@/components/GoldPriceChart").then((m) => ({ default: m.GoldPriceChart })),
   {
@@ -169,14 +182,16 @@ const Badge = memo(function Badge({ tone, children }: { tone: Tone; children: Re
 function Panel({
   title,
   meta,
-  children
+  children,
+  className
 }: {
   title: string;
   meta?: React.ReactNode;
   children: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <section className="panel">
+    <section className={className ? `panel ${className}` : "panel"}>
       <div className="panel-header">
         <h3 className="panel-title">{title}</h3>
         {meta}
@@ -953,10 +968,20 @@ function AlertsList({
   );
 }
 
+/** Fixed RTL visual order (right → left): BTC, ETH, USDT/USD */
+const GLOBAL_SYMBOL_ORDER: GlobalPrice["symbol"][] = ["BTC/USDT", "ETH/USDT", "USDT/USD"];
+
 function GlobalMetricGrid({ rows }: { rows: GlobalPrice[] }) {
+  const ordered = useMemo(() => {
+    const bySymbol = new Map(rows.map((row) => [row.symbol, row]));
+    return GLOBAL_SYMBOL_ORDER.map((symbol) => bySymbol.get(symbol)).filter(
+      (row): row is GlobalPrice => Boolean(row)
+    );
+  }, [rows]);
+
   return (
-    <div className="grid global-metrics">
-      {rows.map((row) => (
+    <div className="grid global-metrics global-metrics-row">
+      {ordered.map((row) => (
         <Metric
           key={row.symbol}
           label={row.symbol}
@@ -1428,14 +1453,12 @@ export function DashboardView() {
             <DashboardExchangeCards rows={data.tetherMarket.exchanges} summary={data.tetherMarket.summary} />
           </Panel>
           <SitePrices />
-          <div className="grid two-col">
-            <Panel title="روند قیمت میانه تتر (USDT/IRT)">
-              <MedianChart />
-            </Panel>
-            <Panel title="بازار جهانی">
-              <GlobalMetricGrid rows={data.globalMarket} />
-            </Panel>
-          </div>
+          <Panel title="بازار جهانی">
+            <GlobalMetricGrid rows={data.globalMarket} />
+          </Panel>
+          <Panel title="روند قیمت میانه تتر (USDT/IRT)" className="dashboard-median-panel">
+            <DashboardMedianChart tall />
+          </Panel>
           <div className="grid metrics">
             <Metric label="منابع فعال" value={formatNumber(data.tetherMarket.summary.activeSources, 0)} />
             <Metric label="منابع قطع" value={formatNumber(data.tetherMarket.summary.unavailableSources, 0)} />

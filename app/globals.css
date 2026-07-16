@@ -492,13 +492,39 @@ input {
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
-/* global market cards live inside a narrow column → must shrink to fit */
+/* global market cards — full-width 3 equal columns on Dashboard */
 .global-metrics {
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
 }
 
+.global-metrics-row {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: stretch;
+}
+
+.global-metrics-row .metric {
+  min-height: 104px;
+  height: 100%;
+}
+
 .two-col {
   grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.6fr);
+}
+
+/* Full-width enlarged median chart on Dashboard */
+.dashboard-median-panel {
+  width: 100%;
+}
+
+.dashboard-median-panel .median-chart-body {
+  min-height: 460px;
+}
+
+.dashboard-median-panel .median-chart-svg,
+.median-chart-tall .median-chart-svg {
+  min-height: 440px;
+  width: 100%;
 }
 
 .panel {
@@ -2461,6 +2487,10 @@ tr:last-child td {
     grid-template-columns: 1fr;
   }
 
+  .global-metrics-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .dash-split {
     grid-template-columns: 1fr;
   }
@@ -2500,7 +2530,8 @@ tr:last-child td {
   .toggle-grid,
   .answer-grid,
   .decision-grid,
-  .forex-grid {
+  .forex-grid,
+  .global-metrics-row {
     grid-template-columns: 1fr;
   }
 

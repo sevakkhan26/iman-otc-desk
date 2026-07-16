@@ -9,7 +9,6 @@ import type {
   AlertItem,
   AssetTag,
   DashboardResponse,
-  DecisionCard,
   DomesticQuote,
   ExchangeMonitorResponse,
   ExchangeOperationalStatus,
@@ -28,8 +27,6 @@ import type {
   TetherMarketResponse
 } from "@/lib/types";
 import {
-  decisionLabel,
-  decisionTone,
   forexImpactLabel,
   forexImpactTone,
   formatCountdown,
@@ -247,36 +244,6 @@ const PriceValue = memo(function PriceValue({ value, className = "" }: { value: 
   );
 });
 
-function DecisionCardView({
-  question,
-  card,
-  compact = false
-}: {
-  question: string;
-  card: DecisionCard;
-  compact?: boolean;
-}) {
-  const tone = decisionTone(card.level);
-  if (compact) {
-    return (
-      <div className="decision-card compact" title={card.detail}>
-        <span className={`mini-dot ${tone}`} aria-hidden="true" />
-        <span className="decision-question">{question}</span>
-        <span className="decision-headline">{card.headline}</span>
-      </div>
-    );
-  }
-  return (
-    <div className={`decision-card ${tone}`}>
-      <div className="decision-top">
-        <span className="decision-question">{question}</span>
-        <Badge tone={tone}>{decisionLabel(card.level)}</Badge>
-      </div>
-      <div className="decision-headline">{card.headline}</div>
-      <p className="decision-detail">{card.detail}</p>
-    </div>
-  );
-}
 
 /* ===== Toast pop-up notifications (LP connect/disconnect + critical alerts) ===== */
 type Toast = { id: number; tone: "danger" | "good" | "warn"; title: string; detail?: string };
@@ -479,13 +446,171 @@ function QuickDecisionCockpit({
         })()}
       </div>
 
-      <div className="grid decision-grid compact">
-        <DecisionCardView question="Spread؟" card={quickDecision.spreadAction} compact />
-        <DecisionCardView question="Max Order؟" card={quickDecision.maxOrderAction} compact />
-        <DecisionCardView question="احتیاط LP؟" card={quickDecision.lpCaution} compact />
-        <DecisionCardView question="قیمت پرت؟" card={quickDecision.outlierWatch} compact />
-      </div>
+      <DashboardMarketPriceStrip />
     </section>
+  );
+}
+
+const FRESH_PRICE_MS = 15 * 60_000;
+const MAX_STALE_PRICE_MS = 6 * 60 * 60_000;
+
+type MarketPriceTone = "good" | "warn" | "danger";
+
+type MarketLowestCard = {
+  key: string;
+  title: string;
+  price: number | null;
+  sourceName: string | null;
+  tone: MarketPriceTone;
+};
+
+function comparablePositivePrice(buy: number | null, sell: number | null, mid: number | null): number | null {
+  if (mid !== null && Number.isFinite(mid) && mid > 0) return mid;
+  if (
+    buy !== null &&
+    sell !== null &&
+    Number.isFinite(buy) &&
+    Number.isFinite(sell) &&
+    buy > 0 &&
+    sell > 0
+  ) {
+    return (buy + sell) / 2;
+  }
+  const single = buy ?? sell;
+  if (single !== null && Number.isFinite(single) && single > 0) return single;
+  return null;
+}
+
+function priceAgeMs(lastUpdated: string | null | undefined): number | null {
+  if (!lastUpdated) return null;
+  const t = Date.parse(lastUpdated);
+  if (!Number.isFinite(t)) return null;
+  return Date.now() - t;
+}
+
+function isAcceptableAge(ageMs: number | null): boolean {
+  if (ageMs === null) return true; // missing timestamp: still allow if source status ok
+  if (ageMs < 0) return true;
+  return ageMs <= MAX_STALE_PRICE_MS;
+}
+
+function toneFromAge(ageMs: number | null, hasPrice: boolean): MarketPriceTone {
+  if (!hasPrice) return "danger";
+  if (ageMs === null) return "warn";
+  if (ageMs <= FRESH_PRICE_MS) return "good";
+  if (ageMs <= MAX_STALE_PRICE_MS) return "warn";
+  return "danger";
+}
+
+function pickLowestFromCandidates(
+  candidates: Array<{ price: number; sourceName: string; lastUpdated: string | null }>
+): { price: number; sourceName: string; tone: MarketPriceTone } | null {
+  const valid = candidates.filter(
+    (c) => Number.isFinite(c.price) && c.price > 0 && isAcceptableAge(priceAgeMs(c.lastUpdated))
+  );
+  if (!valid.length) return null;
+  let best = valid[0]!;
+  for (const c of valid) {
+    if (c.price < best.price) best = c;
+  }
+  const age = priceAgeMs(best.lastUpdated);
+  return { price: best.price, sourceName: best.sourceName, tone: toneFromAge(age, true) };
+}
+
+function DashboardMarketPriceStrip() {
+  // Same endpoints + interval as SitePrices / GoldMarketPanel — useApi dedupes concurrent client fetches.
+  const { data: gold } = useApi<GoldPricesApiResponse>("/api/gold-prices", 30_000);
+  const { data: fx } = useApi<FxPricesApiResponse>("/api/fx-prices", 30_000);
+
+  const cards = useMemo((): MarketLowestCard[] => {
+    const goldItems = gold?.items ?? [];
+    const fxItems = fx?.items ?? [];
+
+    const goldInstrumentCandidates = (instrument: GoldInstrumentType) =>
+      goldItems
+        .filter(
+          (item) =>
+            item.instrument === instrument &&
+            item.unit === "toman" &&
+            item.status === "ok"
+        )
+        .map((item) => {
+          const price = comparablePositivePrice(item.buy, item.sell, item.mid);
+          if (price === null) return null;
+          return {
+            price,
+            sourceName: sourceLabels[item.source] ?? item.source,
+            lastUpdated: item.lastUpdated || null
+          };
+        })
+        .filter((entry): entry is { price: number; sourceName: string; lastUpdated: string | null } => Boolean(entry));
+
+    const fxAssetCandidates = (assets: FxPricesApiItem["asset"][]) =>
+      fxItems
+        .filter((item) => assets.includes(item.asset) && item.status === "ok")
+        .map((item) => {
+          const price = comparablePositivePrice(item.buy, item.sell, item.mid);
+          if (price === null) return null;
+          return {
+            price,
+            sourceName: sourceLabels[item.source] ?? item.source,
+            lastUpdated: item.lastUpdated || null
+          };
+        })
+        .filter((entry): entry is { price: number; sourceName: string; lastUpdated: string | null } => Boolean(entry));
+
+    const specs: Array<{ key: string; title: string; pick: ReturnType<typeof pickLowestFromCandidates> }> = [
+      {
+        key: "gold18",
+        title: "قیمت طلای ۱۸ عیار",
+        pick: pickLowestFromCandidates(goldInstrumentCandidates("یک گرم طلای 18 عیار"))
+      },
+      {
+        key: "emami",
+        title: "قیمت سکه امامی",
+        pick: pickLowestFromCandidates(goldInstrumentCandidates("سکه طرح امامی"))
+      },
+      {
+        key: "usd-paper",
+        title: "قیمت دلار کاغذی",
+        // بن‌بست labels دلار کاغذی as دلار بن‌بست on the wire
+        pick: pickLowestFromCandidates(fxAssetCandidates(["دلار کاغذی", "دلار بن‌بست"]))
+      },
+      {
+        key: "aed",
+        title: "قیمت درهم امارات",
+        pick: pickLowestFromCandidates(fxAssetCandidates(["درهم امارات"]))
+      }
+    ];
+
+    return specs.map((spec) => ({
+      key: spec.key,
+      title: spec.title,
+      price: spec.pick?.price ?? null,
+      sourceName: spec.pick?.sourceName ?? null,
+      tone: spec.pick?.tone ?? "danger"
+    }));
+  }, [gold?.items, fx?.items]);
+
+  return (
+    <div className="grid decision-grid compact market-price-grid" aria-label="قیمت‌های مرجع بازار">
+      {cards.map((card) => (
+        <div className="decision-card compact market-price-card" key={card.key}>
+          <div className="market-price-card-inner">
+            <div className="market-price-title-row">
+              <span className={`mini-dot ${card.tone}`} aria-hidden="true" />
+              <span className="market-price-title">{card.title}</span>
+            </div>
+            <div className="market-price-value number">
+              {card.price !== null ? formatToman(card.price) : "داده در دسترس نیست"}
+            </div>
+            <div className="market-price-source muted">
+              {card.sourceName ? `منبع: ${card.sourceName}` : "منبع: —"}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 

@@ -224,12 +224,14 @@ export function DashboardSkeleton() {
             </div>
           ))}
         </div>
-        <div className="grid decision-grid compact">
+        <div className="grid decision-grid compact market-price-grid">
           {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="decision-card sk-decision-card">
-              <SkeletonLine width="40%" height={11} />
-              <SkeletonLine width="70%" height={14} />
-              <SkeletonLine width="90%" height={11} />
+            <div key={i} className="decision-card compact market-price-card sk-decision-card">
+              <div className="market-price-card-inner" aria-hidden="true">
+                <SkeletonLine width="55%" height={12} />
+                <SkeletonLine width="70%" height={18} />
+                <SkeletonLine width="40%" height={11} />
+              </div>
             </div>
           ))}
         </div>

@@ -42,11 +42,67 @@ export interface MedianHistoryResponse {
   changePercent: number | null;
 }
 
+export type ForexResultClass = "better" | "weaker" | "inline" | "incomplete";
+export type ForexReactionDirection = "up" | "down" | "flat";
+export type ForexReactionWindow = "15m" | "1h" | "eod";
+
+/** Observed price reaction window for a historical forex release (real samples only). */
+export interface ForexMarketReaction {
+  symbol: string;
+  label: string;
+  window: ForexReactionWindow;
+  windowLabel: string;
+  before: number | null;
+  after: number | null;
+  absoluteChange: number | null;
+  percentChange: number | null;
+  direction: ForexReactionDirection;
+  directionLabel: string;
+}
+
+export interface ForexHistoricalEvent {
+  id: string;
+  title: string;
+  titleFa: string;
+  category: string;
+  country: string;
+  date: string;
+  impact: ForexImpact;
+  previous: string | null;
+  forecast: string | null;
+  actual: string | null;
+  complete: boolean;
+  surprise: number | null;
+  surpriseDisplay: string | null;
+  resultClass: ForexResultClass;
+  resultLabel: string;
+  summaryFa: string;
+  reactionAvailable: boolean;
+  reactionNote: string;
+  reactions: ForexMarketReaction[];
+  link?: string | null;
+}
+
+export interface ForexPreviousMonthSection {
+  monthKey: string;
+  monthLabelFa: string;
+  /** Inclusive UTC start (first moment of previous calendar month). */
+  rangeStart: string;
+  /** Exclusive UTC end (first moment of current calendar month). */
+  rangeEnd: string;
+  events: ForexHistoricalEvent[];
+  sourceStatus: SourceStatus;
+  lastUpdated: string | null;
+  message?: string;
+}
+
 export interface ForexEventsResponse {
   events: ForexEvent[];
   sourceStatus: SourceStatus;
   lastUpdated: string | null;
   message?: string;
+  /** Important completed USD events for the immediately previous calendar month. */
+  previousMonth?: ForexPreviousMonthSection;
 }
 
 export interface DomesticQuote {

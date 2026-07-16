@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { buildPreviousMonthSection, recordCompletedForexEvents } from "@/lib/forexHistory";
 import { fetchJson } from "@/lib/http";
 import type { DeskSettings, ForexEvent, ForexEventsResponse, ForexImpact, PremiumImpact } from "@/lib/types";
 
@@ -23,13 +24,16 @@ type RawEvent = {
 // Only the high-impact event types the desk cares about.
 const categoryMatchers: Array<{ category: string; pattern: RegExp }> = [
   { category: "FOMC", pattern: /\bfomc\b|federal funds rate|fomc statement|fed (?:chair|press|interest rate)|rate decision/i },
+  { category: "Fed Speaks", pattern: /\bpowell\b|fed chair|federal reserve/i },
   { category: "NFP", pattern: /non[\s-]?farm(?: employment| payrolls?)?|\bnfp\b/i },
   { category: "Core PCE", pattern: /core pce|pce price index/i },
   { category: "CPI", pattern: /\bcpi\b|consumer price index/i },
   { category: "PPI", pattern: /\bppi\b|producer price index/i },
   { category: "GDP", pattern: /\bgdp\b|gross domestic product/i },
   { category: "Unemployment Rate", pattern: /unemployment rate/i },
+  { category: "Jobless Claims", pattern: /jobless claims|initial claims|unemployment claims/i },
   { category: "Retail Sales", pattern: /retail sales/i },
+  { category: "ISM", pattern: /\bism\b/i },
   { category: "PMI", pattern: /\bpmi\b|purchasing managers/i }
 ];
 
@@ -57,7 +61,7 @@ function parseNumeric(value: string | null): number | null {
 }
 
 // Categories where a HIGHER reading signals a WEAKER economy / softer USD (inverse direction).
-const inverseCategories = new Set(["Unemployment Rate"]);
+const inverseCategories = new Set(["Unemployment Rate", "Jobless Claims"]);
 
 // Likely effect of a USD macro release on the USDT/IRT premium.
 // Hotter US data → stronger USD + risk-off → more demand for dollar-proxy in Iran → premium up.
@@ -217,9 +221,26 @@ async function fetchFresh(): Promise<ForexEventsResponse> {
   };
 }
 
+async function withPreviousMonth(data: ForexEventsResponse): Promise<ForexEventsResponse> {
+  // Persist completed events on every response path; then attach previous-month panel data.
+  void recordCompletedForexEvents(data.events).catch(() => {});
+  try {
+    const previousMonth = await buildPreviousMonthSection(data.events, data.sourceStatus, data.lastUpdated);
+    return { ...data, previousMonth };
+  } catch {
+    return data;
+  }
+}
+
 export async function getForexEvents(settings: DeskSettings): Promise<ForexEventsResponse> {
   if (settings.enabledSources.forex === false) {
-    return { events: [], sourceStatus: "unavailable", lastUpdated: null, message: "منبع تقویم فارکس در تنظیمات غیرفعال است" };
+    const empty: ForexEventsResponse = {
+      events: [],
+      sourceStatus: "unavailable",
+      lastUpdated: null,
+      message: "منبع تقویم فارکس در تنظیمات غیرفعال است"
+    };
+    return withPreviousMonth(empty);
   }
 
   const cached = await getCachedEntry();
@@ -234,7 +255,8 @@ export async function getForexEvents(settings: DeskSettings): Promise<ForexEvent
     });
     effectiveTtl = hasNearRelease ? HOT_TTL_MS : FRESH_TTL_MS;
     if (Date.now() - cached.at < effectiveTtl) {
-      return cached.data; // still fresh — no network call
+      // Recompute previous-month from durable store even when weekly calendar cache is fresh.
+      return withPreviousMonth(cached.data);
     }
   }
 
@@ -247,20 +269,20 @@ export async function getForexEvents(settings: DeskSettings): Promise<ForexEvent
           const entry: CacheEntry = { at: Date.now(), data: fresh };
           memCache = entry;
           await writeDiskCache(entry);
-          return fresh;
+          return withPreviousMonth(fresh);
         }
         // Upstream failed/empty: serve the last good data if still within the stale window.
         const fallback = await getCachedEntry();
         if (fallback && fallback.data.events.length && Date.now() - fallback.at < STALE_TTL_MS) {
-          return {
+          return withPreviousMonth({
             ...fallback.data,
             sourceStatus: "degraded",
             message: `آخرین داده معتبر نمایش داده شد (به‌روزرسانی موقتاً ناموفق${
               fresh.message ? `: ${fresh.message}` : ""
             })`
-          };
+          });
         }
-        return fresh;
+        return withPreviousMonth(fresh);
       } finally {
         inflight = null;
       }

@@ -14,6 +14,8 @@ import type {
   ExchangeOperationalStatus,
   ForexEvent,
   ForexEventsResponse,
+  ForexHistoricalEvent,
+  ForexPreviousMonthSection,
   GlobalPrice,
   ImpactNewsResponse,
   PublicSettings,
@@ -1141,6 +1143,147 @@ export function GoldMarketView() {
   );
 }
 
+const FOREX_HISTORY_INITIAL = 6;
+
+function forexResultTone(resultClass: ForexHistoricalEvent["resultClass"]): Tone {
+  if (resultClass === "better") return "good";
+  if (resultClass === "weaker") return "danger";
+  if (resultClass === "incomplete") return "warn";
+  return "neutral";
+}
+
+function ForexHistoricalEventCard({ event }: { event: ForexHistoricalEvent }) {
+  const impactTone = forexImpactTone(event.impact);
+  const resultTone = forexResultTone(event.resultClass);
+  const byWindow = useMemo(() => {
+    const map = new Map<string, ForexHistoricalEvent["reactions"]>();
+    for (const reaction of event.reactions) {
+      const list = map.get(reaction.window) ?? [];
+      list.push(reaction);
+      map.set(reaction.window, list);
+    }
+    return map;
+  }, [event.reactions]);
+
+  return (
+    <article className={`forex-hist-card result-${event.resultClass}`}>
+      <div className="forex-hist-head">
+        <div className="forex-hist-titles">
+          <h4 className="forex-hist-title-fa">{event.titleFa}</h4>
+          <div className="forex-hist-title-en muted">{event.title}</div>
+        </div>
+        <div className="forex-hist-badges">
+          <Badge tone={impactTone}>{forexImpactLabel(event.impact)}</Badge>
+          <Badge tone={resultTone}>{event.resultLabel}</Badge>
+        </div>
+      </div>
+      <div className="forex-hist-meta muted">
+        تاریخ انتشار: {formatTehran(event.date)} — به وقت ایران
+        {event.link ? (
+          <>
+            {" · "}
+            <a href={event.link} target="_blank" rel="noopener noreferrer">
+              منبع
+            </a>
+          </>
+        ) : null}
+      </div>
+      <div className="forex-hist-values">
+        <div>
+          <span className="muted">واقعی</span>
+          <strong className={event.actual ? "forex-actual" : ""}>{event.actual ?? "—"}</strong>
+        </div>
+        <div>
+          <span className="muted">پیش‌بینی</span>
+          <strong>{event.forecast ?? "—"}</strong>
+        </div>
+        <div>
+          <span className="muted">قبلی</span>
+          <strong>{event.previous ?? "—"}</strong>
+        </div>
+        <div>
+          <span className="muted">غافلگیری</span>
+          <strong className={event.complete ? undefined : "muted"}>
+            {event.surpriseDisplay ?? "—"}
+          </strong>
+        </div>
+      </div>
+      <div className="forex-hist-summary">{event.summaryFa}</div>
+      <div className="forex-hist-reaction">
+        <div className="forex-hist-reaction-title muted">واکنش مشاهده‌شده پس از انتشار</div>
+        {!event.reactionAvailable ? (
+          <div className="forex-hist-reaction-empty muted">{event.reactionNote}</div>
+        ) : (
+          <div className="forex-hist-reaction-grid">
+            {[...byWindow.entries()].map(([window, rows]) => (
+              <div key={window} className="forex-hist-reaction-window">
+                <div className="forex-hist-window-label">{rows[0]?.windowLabel}</div>
+                {rows.map((row) => (
+                  <div key={`${row.symbol}-${row.window}`} className={`forex-hist-reaction-row dir-${row.direction}`}>
+                    <span className="forex-hist-symbol">{row.label}</span>
+                    <span className="number muted">
+                      {row.before != null ? formatNumber(row.before, 2) : "—"} →{" "}
+                      {row.after != null ? formatNumber(row.after, 2) : "—"}
+                    </span>
+                    <span className="number">
+                      {row.percentChange != null ? formatPercent(row.percentChange) : "—"}
+                    </span>
+                    <span>{row.directionLabel}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function ForexPreviousMonthPanel({ section }: { section: ForexPreviousMonthSection }) {
+  const [expanded, setExpanded] = useState(false);
+  const events = section.events;
+  const visible = expanded ? events : events.slice(0, FOREX_HISTORY_INITIAL);
+  const title = `رویدادهای مهم ${section.monthLabelFa} و واکنش بازار`;
+
+  return (
+    <Panel
+      title={title}
+      meta={
+        <span className="panel-meta-icon muted">
+          <CalendarClock aria-hidden="true" size={15} />
+          {events.length
+            ? `${formatNumber(events.length, 0)} رویداد · ماه گذشته`
+            : "ماه گذشته"}
+        </span>
+      }
+    >
+      {!events.length ? (
+        <div className="empty">{section.message || "برای ماه گذشته رویداد مهم تکمیل‌شده‌ای یافت نشد."}</div>
+      ) : (
+        <>
+          <div className="forex-hist-list">
+            {visible.map((event) => (
+              <ForexHistoricalEventCard key={event.id} event={event} />
+            ))}
+          </div>
+          {events.length > FOREX_HISTORY_INITIAL ? (
+            <button
+              type="button"
+              className="forex-hist-more"
+              onClick={() => setExpanded((v) => !v)}
+            >
+              {expanded
+                ? "نمایش کمتر"
+                : `نمایش همه رویدادهای ماه گذشته (${formatNumber(events.length, 0)})`}
+            </button>
+          ) : null}
+        </>
+      )}
+    </Panel>
+  );
+}
+
 export function ForexView() {
   const { data, loading, error, reload, lastUpdated } = useApi<ForexEventsResponse>("/api/forex", 60_000);
   if (loading && !data) {
@@ -1178,6 +1321,7 @@ export function ForexView() {
         <div className="forex-note muted">
           تأثیر هر رویداد روی «پرمیوم تتر ایران» بر اساس نوع داده و مقایسه واقعی با پیش‌بینی برآورد می‌شود؛ صرفاً جنبه راهنما دارد.
         </div>
+        {data.previousMonth ? <ForexPreviousMonthPanel section={data.previousMonth} /> : null}
       </div>
     </>
   );

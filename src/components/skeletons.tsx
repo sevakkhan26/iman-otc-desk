@@ -413,6 +413,32 @@ export function ForexSkeleton() {
         </div>
       </SkeletonPanelShell>
       <SkeletonLine className="sk-forex-note" width="70%" height={12} />
+      <SkeletonPanelShell titleWidth="52%">
+        <div className="forex-hist-list" aria-hidden="true">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <article key={i} className="forex-hist-card sk-forex-hist">
+              <div className="forex-hist-head">
+                <div style={{ display: "grid", gap: 6, width: "55%" }}>
+                  <SkeletonLine width="90%" height={14} />
+                  <SkeletonLine width="60%" height={11} />
+                </div>
+                <SkeletonLine width={88} height={24} />
+              </div>
+              <SkeletonLine width="45%" height={11} />
+              <div className="forex-hist-values">
+                {Array.from({ length: 4 }).map((_, j) => (
+                  <div key={j}>
+                    <SkeletonLine width="50%" height={10} />
+                    <SkeletonLine width="70%" height={14} />
+                  </div>
+                ))}
+              </div>
+              <SkeletonLine width="95%" height={12} />
+              <SkeletonLine width="80%" height={11} />
+            </article>
+          ))}
+        </div>
+      </SkeletonPanelShell>
     </div>
   );
 }

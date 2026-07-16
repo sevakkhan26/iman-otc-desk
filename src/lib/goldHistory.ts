@@ -103,6 +103,17 @@ function downsample(samples: Sample[], max: number): Sample[] {
   return out;
 }
 
+/** Raw gold price samples for a single instrument (reaction measurement, read-only). */
+export async function getGoldPriceSamples(
+  instrument: GoldInstrumentType
+): Promise<Array<{ t: number; v: number; unit: GoldPriceUnit }>> {
+  const samples = await readSamples();
+  return samples
+    .filter((sample) => sample.instrument === instrument)
+    .map((sample) => ({ t: sample.t, v: sample.v, unit: sample.unit }))
+    .sort((a, b) => a.t - b.t);
+}
+
 export async function getGoldHistory(range: GoldHistoryRange, instrument: GoldInstrumentType): Promise<GoldHistoryResponse> {
   const samples = await readSamples();
   const now = Date.now();

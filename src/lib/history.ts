@@ -24,6 +24,12 @@ async function readSamples(): Promise<Sample[]> {
   }
 }
 
+/** Raw median samples for reaction measurement (read-only). */
+export async function getMedianPriceSamples(): Promise<Array<{ t: number; v: number }>> {
+  const samples = await readSamples();
+  return samples.map((s) => ({ t: s.t, v: s.v })).sort((a, b) => a.t - b.t);
+}
+
 // Append a Median snapshot. Best-effort: never throws into the request path.
 export async function recordMedian(median: number | null): Promise<void> {
   if (median === null || !Number.isFinite(median)) return;

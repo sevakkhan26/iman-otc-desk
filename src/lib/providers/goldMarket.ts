@@ -8,7 +8,15 @@ import {
   toUtcIso
 } from "@/lib/tehranTime";
 import { BROWSER_UA, fetchJson, fetchPageWithCookies, fetchPostForm, fetchText, numeric } from "@/lib/http";
-import type { DeskSettings, GoldInstrumentType, GoldMarketQuote, GoldMarketResponse, GoldPriceUnit, SourceStatus } from "@/lib/types";
+import type {
+  DeskSettings,
+  GoldInstrumentType,
+  GoldMarketQuote,
+  GoldMarketResponse,
+  GoldPriceUnit,
+  GoldProviderHealth,
+  SourceStatus
+} from "@/lib/types";
 
 const FRESH_TTL_MS = 3 * 60_000;
 const STALE_TTL_MS = 30 * 60_000;
@@ -38,6 +46,16 @@ const SOURCE_LABELS: Record<SourceId, string> = {
   bonbast: "بن‌بست",
   talavest: "Talavest"
 };
+
+/** Instruments each gold source is expected to cover (same set parsers attempt). */
+const EXPECTED_INSTRUMENTS: GoldInstrumentType[] = [
+  "اونس طلا به دلار",
+  "یک گرم طلای 18 عیار",
+  "سکه طرح امامی",
+  "مثقال طلای آبشده"
+];
+
+const SOURCE_ORDER: SourceId[] = ["navasan", "bonbast", "talavest"];
 
 /** Navasan lastrates uses thousands for sekkeh and abshodeh; 18ayar is already in tomans. */
 const NAVASAN_THOUSANDS_KEYS = new Set(["sekkeh", "abshodeh"]);
@@ -445,29 +463,120 @@ function validCachedQuotes(entry: SourceCacheEntry | undefined): GoldMarketQuote
   return entry.quotes.filter(quoteHasValidPrice);
 }
 
+function instrumentsFromQuotes(quotes: GoldMarketQuote[]): GoldInstrumentType[] {
+  const present = new Set(quotes.filter(quoteHasValidPrice).map((q) => q.instrument));
+  return EXPECTED_INSTRUMENTS.filter((instrument) => present.has(instrument));
+}
+
+function missingFromQuotes(quotes: GoldMarketQuote[]): GoldInstrumentType[] {
+  const present = new Set(quotes.filter(quoteHasValidPrice).map((q) => q.instrument));
+  return EXPECTED_INSTRUMENTS.filter((instrument) => !present.has(instrument));
+}
+
+function missingInstrumentsMessage(present: GoldInstrumentType[], missing: GoldInstrumentType[]): string {
+  if (!missing.length) return "";
+  if (!present.length) return "قیمت این ابزار دریافت نشد";
+  if (missing.length === 1 && present.length >= 1) {
+    return `قیمت برخی ابزارها دریافت شد، اما «${missing[0]}» در دسترس نیست.`;
+  }
+  return `قیمت برخی ابزارها دریافت شد، اما این ابزارها در دسترس نیست: ${missing.join("، ")}`;
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message.trim();
+  return "علت دقیق در دسترس نیست";
+}
+
+function cacheSuccessIso(entry: SourceCacheEntry | undefined): string | null {
+  if (!entry?.at || !Number.isFinite(entry.at)) return null;
+  return new Date(entry.at).toISOString();
+}
+
+type SourceResolveResult = {
+  quotes: GoldMarketQuote[];
+  usedStale: boolean;
+  health: GoldProviderHealth | null;
+};
+
 async function resolveSource(
   sourceId: SourceId,
   enabled: boolean,
   fetcher: () => Promise<{ quotes: GoldMarketQuote[]; live: boolean }>,
   sourceCache: SourceCacheFile
-): Promise<{ quotes: GoldMarketQuote[]; notes: string[]; usedStale: boolean }> {
+): Promise<SourceResolveResult> {
   if (!enabled) {
-    return { quotes: [], notes: [], usedStale: false };
+    return { quotes: [], usedStale: false, health: null };
   }
+
+  const name = SOURCE_LABELS[sourceId];
+  const lastAttemptAt = nowIso();
 
   try {
     const live = await fetcher();
-    if (live.quotes.some(quoteHasValidPrice)) {
-      sourceCache[sourceId] = { at: Date.now(), quotes: live.quotes.filter(quoteHasValidPrice) };
-      return { quotes: live.quotes, notes: [], usedStale: false };
+    const valid = live.quotes.filter(quoteHasValidPrice);
+    if (valid.length) {
+      sourceCache[sourceId] = { at: Date.now(), quotes: valid };
+      const instruments = instrumentsFromQuotes(valid);
+      const missingInstruments = missingFromQuotes(valid);
+      const partial = missingInstruments.length > 0;
+      return {
+        quotes: live.quotes,
+        usedStale: false,
+        health: {
+          id: sourceId,
+          name,
+          status: partial ? "degraded" : "available",
+          instruments,
+          missingInstruments,
+          lastSuccessAt: lastAttemptAt,
+          lastAttemptAt,
+          error: partial ? missingInstrumentsMessage(instruments, missingInstruments) : null,
+          stale: false
+        }
+      };
     }
     throw new Error("داده معتبری دریافت نشد");
-  } catch {
+  } catch (error) {
+    const rawError = errorMessage(error);
     const cached = validCachedQuotes(sourceCache[sourceId]);
     if (cached.length) {
-      return { quotes: cached, notes: [], usedStale: true };
+      const instruments = instrumentsFromQuotes(cached);
+      const missingInstruments = missingFromQuotes(cached);
+      const staleError =
+        missingInstruments.length > 0
+          ? `${rawError} · ${missingInstrumentsMessage(instruments, missingInstruments)}`
+          : rawError || "آخرین داده معتبر قدیمی شده است";
+      return {
+        quotes: cached,
+        usedStale: true,
+        health: {
+          id: sourceId,
+          name,
+          status: "degraded",
+          instruments,
+          missingInstruments,
+          lastSuccessAt: cacheSuccessIso(sourceCache[sourceId]),
+          lastAttemptAt,
+          error: staleError,
+          stale: true
+        }
+      };
     }
-    return { quotes: [], notes: [], usedStale: false };
+    return {
+      quotes: [],
+      usedStale: false,
+      health: {
+        id: sourceId,
+        name,
+        status: "unavailable",
+        instruments: [],
+        missingInstruments: [...EXPECTED_INSTRUMENTS],
+        lastSuccessAt: cacheSuccessIso(sourceCache[sourceId]),
+        lastAttemptAt,
+        error: rawError,
+        stale: false
+      }
+    };
   }
 }
 
@@ -475,26 +584,37 @@ async function fetchFresh(settings: DeskSettings): Promise<GoldMarketResponse> {
   const sourceCache = await readSourceCache();
   const notes: string[] = [];
 
+  const enabled: Record<SourceId, boolean> = {
+    navasan: settings.enabledSources.navasan !== false,
+    bonbast: settings.enabledSources.bonbast !== false,
+    talavest: settings.enabledSources.talavest !== false
+  };
+
   const [navasan, bonbast, talavest] = await Promise.all([
-    resolveSource("navasan", settings.enabledSources.navasan !== false, fetchNavasan, sourceCache),
-    resolveSource("bonbast", settings.enabledSources.bonbast !== false, fetchBonbast, sourceCache),
-    resolveSource("talavest", settings.enabledSources.talavest !== false, fetchTalavest, sourceCache)
+    resolveSource("navasan", enabled.navasan, fetchNavasan, sourceCache),
+    resolveSource("bonbast", enabled.bonbast, fetchBonbast, sourceCache),
+    resolveSource("talavest", enabled.talavest, fetchTalavest, sourceCache)
   ]);
 
   await writeSourceCache(sourceCache);
 
-  const quotes = [...navasan.quotes, ...bonbast.quotes, ...talavest.quotes].filter(quoteHasValidPrice);
-  const usedStale = navasan.usedStale || bonbast.usedStale || talavest.usedStale;
+  const results: Array<{ id: SourceId; result: SourceResolveResult }> = [
+    { id: "navasan", result: navasan },
+    { id: "bonbast", result: bonbast },
+    { id: "talavest", result: talavest }
+  ];
+
+  const quotes = results.flatMap(({ result }) => result.quotes).filter(quoteHasValidPrice);
+  const usedStale = results.some(({ result }) => result.usedStale);
+  const providers = SOURCE_ORDER.map((id) => results.find((r) => r.id === id)?.result.health).filter(
+    (health): health is GoldProviderHealth => health !== null && health !== undefined
+  );
 
   if (!quotes.length) {
-    if (settings.enabledSources.navasan !== false && !navasan.quotes.length) {
-      notes.push("نوسان: در دسترس نیست");
-    }
-    if (settings.enabledSources.bonbast !== false && !bonbast.quotes.length) {
-      notes.push("بن‌بست: در دسترس نیست");
-    }
-    if (settings.enabledSources.talavest !== false && !talavest.quotes.length) {
-      notes.push("Talavest: در دسترس نیست");
+    for (const { id, result } of results) {
+      if (enabled[id] && !result.quotes.length) {
+        notes.push(`${SOURCE_LABELS[id]}: در دسترس نیست`);
+      }
     }
   } else if (usedStale) {
     notes.push("برخی قیمت‌های طلا از آخرین به‌روزرسانی موفق نمایش داده می‌شوند");
@@ -505,7 +625,8 @@ async function fetchFresh(settings: DeskSettings): Promise<GoldMarketResponse> {
     sourceStatus: aggregateStatus(quotes),
     lastUpdated: latestTimestamp(quotes.map((quote) => quote.lastUpdated)),
     notes: notes.length ? notes : undefined,
-    stale: usedStale || undefined
+    stale: usedStale || undefined,
+    providers
   };
 }
 
@@ -534,7 +655,9 @@ export async function getGoldMarketPrices(settings: DeskSettings): Promise<GoldM
             ...memCache,
             sourceStatus: "degraded",
             stale: true,
-            notes: fresh.notes ?? memCache.notes
+            notes: fresh.notes ?? memCache.notes,
+            // Prefer fresh health so disconnected/degraded reasons stay current.
+            providers: fresh.providers ?? memCache.providers
           };
         }
 

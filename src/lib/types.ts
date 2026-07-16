@@ -378,12 +378,29 @@ export interface GoldMarketQuote {
   status: SourceStatus;
 }
 
+/** Per-source health from the same gold fetch cycle (no extra polling). */
+export interface GoldProviderHealth {
+  id: GoldPricesApiSource;
+  name: string;
+  status: SourceStatus;
+  /** Instruments with a valid live/stale price this cycle. */
+  instruments: GoldInstrumentType[];
+  /** Expected instruments missing a valid price. */
+  missingInstruments: GoldInstrumentType[];
+  lastSuccessAt: string | null;
+  lastAttemptAt: string | null;
+  error: string | null;
+  stale: boolean;
+}
+
 export interface GoldMarketResponse {
   quotes: GoldMarketQuote[];
   sourceStatus: SourceStatus;
   lastUpdated: string | null;
   notes?: string[];
   stale?: boolean;
+  /** Same-cycle provider health for the Gold LP warning panel. */
+  providers?: GoldProviderHealth[];
 }
 
 export interface GoldPricesApiItem {
@@ -401,6 +418,8 @@ export interface GoldPricesApiResponse {
   items: GoldPricesApiItem[];
   lastUpdated?: string;
   notes?: string[];
+  /** Same-cycle provider health for the Gold LP warning panel. */
+  providers?: GoldProviderHealth[];
 }
 
 export interface GoldHistoryPoint {

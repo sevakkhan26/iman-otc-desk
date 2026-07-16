@@ -23,6 +23,7 @@ import type {
   GoldInstrumentType,
   GoldPricesApiItem,
   GoldPricesApiResponse,
+  GoldProviderHealth,
   MedianHistoryResponse,
   QuickDecision,
   Severity,
@@ -1115,12 +1116,10 @@ export function GoldMarketView() {
       <LoadState loading={loading} error={error} hasData={Boolean(data)} skeleton={<GoldSkeleton />} />
       {data ? (
         <div className="grid gold-page" data-layout-version="gold-cols-v2">
-          {!cards.length ? (
-            <Panel title="قیمت‌های بازار طلا" meta={meta ? <span className="muted">{meta}</span> : undefined}>
+          <Panel title="قیمت‌های بازار طلا" meta={meta ? <span className="muted">{meta}</span> : undefined}>
+            {!cards.length ? (
               <div className="empty">فعلاً داده‌ای از بازار طلا دریافت نشد</div>
-            </Panel>
-          ) : (
-            <Panel title="قیمت‌های بازار طلا" meta={meta ? <span className="muted">{meta}</span> : undefined}>
+            ) : (
               <div className="gold-page-stack">
                 <div className="gold-summary-top">
                   <GoldMarketSummary items={cards} instrument={summaryInstrument} />
@@ -1129,9 +1128,16 @@ export function GoldMarketView() {
                   <GoldMarketCards items={cards} />
                 </div>
               </div>
-              <GoldPriceChart instrument={summaryInstrument} onInstrumentChange={setInstrument} />
-            </Panel>
-          )}
+            )}
+          </Panel>
+          <GoldConnectionHealthPanel providers={data.providers} />
+          {cards.length ? (
+            <section className="panel gold-chart-host">
+              <div className="panel-body">
+                <GoldPriceChart instrument={summaryInstrument} onInstrumentChange={setInstrument} />
+              </div>
+            </section>
+          ) : null}
         </div>
       ) : null}
     </>
@@ -1755,6 +1761,213 @@ function LpConnectionHealthPanel({
               <div className="lp-health-meta">
                 <span>آخرین اتصال موفق: {item.lastSuccessAt ? formatDate(item.lastSuccessAt) : "—"}</span>
                 <span>آخرین تلاش: {item.lastAttemptAt ? formatDate(item.lastAttemptAt) : "—"}</span>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+type GoldWarningItem = {
+  id: string;
+  name: string;
+  kind: "unavailable" | "degraded";
+  statusLabel: string;
+  reason: string;
+  operational: string;
+  httpStatus: number | null;
+  affectedInstruments: string[];
+  lastSuccessAt: string | null;
+  lastAttemptAt: string | null;
+};
+
+function mapGoldErrorReason(
+  raw: string | null | undefined,
+  kind: "unavailable" | "degraded",
+  options: { stale?: boolean; missingInstruments?: string[] }
+): { reason: string; operational: string; httpStatus: number | null } {
+  const msg = (raw ?? "").trim();
+  const httpStatus = extractHttpStatus(msg);
+  const lower = msg.toLowerCase();
+
+  if (httpStatus === 403) {
+    return {
+      reason: msg.includes("HTTP") ? msg : "HTTP 403 — دسترسی منبع از سمت سرور مسدود شده",
+      operational: "دسترسی منبع از سمت سرور مسدود شده",
+      httpStatus
+    };
+  }
+  if (httpStatus === 429 || /rate.?limit|محدودیت نرخ|مکرر/i.test(msg)) {
+    return {
+      reason: msg || "HTTP 429 — محدودیت تعداد درخواست‌ها",
+      operational: "محدودیت تعداد درخواست‌ها",
+      httpStatus: httpStatus ?? 429
+    };
+  }
+  if (httpStatus && httpStatus >= 400) {
+    return {
+      reason: msg || `HTTP ${httpStatus}`,
+      operational: "منبع با خطای HTTP پاسخ داد",
+      httpStatus
+    };
+  }
+  if (/timeout|زمان پاسخ|timed?\s*out|تمام شد/i.test(msg) || lower.includes("etimedout")) {
+    return {
+      reason: msg || "منبع در زمان تعیین‌شده پاسخ نداد",
+      operational: "منبع در زمان تعیین‌شده پاسخ نداد",
+      httpStatus
+    };
+  }
+  if (/dns|enotfound|econnrefused|econnreset|network|شبکه|دامنه|fetch failed|قابل resolve/i.test(msg)) {
+    return {
+      reason: msg || "خطای شبکه یا دسترسی به دامنه",
+      operational: "خطای شبکه یا دسترسی به دامنه",
+      httpStatus
+    };
+  }
+  if (/invalid|parse|json|ساختار|نامعتبر|unexpected|کلید درخواست/i.test(msg)) {
+    return {
+      reason: msg || "ساختار پاسخ منبع نامعتبر است",
+      operational: "ساختار پاسخ منبع نامعتبر است",
+      httpStatus
+    };
+  }
+  if (/ریال|تومان|normalize|واحد|مقدار قیمت/i.test(msg)) {
+    return {
+      reason: msg || "واحد یا مقدار قیمت نامعتبر است",
+      operational: "واحد یا مقدار قیمت نامعتبر است",
+      httpStatus
+    };
+  }
+  if (options.stale || /stale|قدیمی|آخرین داده معتبر|آخرین به‌روزرسانی موفق/i.test(msg)) {
+    return {
+      reason: msg || "آخرین داده معتبر قدیمی شده است",
+      operational: "آخرین داده معتبر قدیمی شده است",
+      httpStatus
+    };
+  }
+  if (/خرید و فروش مجزا|reference|mid.?only|مرجع/i.test(msg)) {
+    return {
+      reason: msg || "قیمت خرید و فروش مجزا ارائه نمی‌شود.",
+      operational: "قیمت خرید و فروش مجزا ارائه نمی‌شود.",
+      httpStatus
+    };
+  }
+  if (options.missingInstruments?.length || /در دسترس نیست|قیمت این ابزار|دریافت نشد/i.test(msg)) {
+    return {
+      reason: msg || "قیمت این ابزار دریافت نشد",
+      operational: "قیمت این ابزار دریافت نشد",
+      httpStatus
+    };
+  }
+  if (msg) {
+    return {
+      reason: msg,
+      operational: kind === "unavailable" ? "اتصال منبع برقرار نیست" : "دادهٔ منبع ناقص است",
+      httpStatus
+    };
+  }
+  return {
+    reason: "علت دقیق در دسترس نیست",
+    operational: kind === "unavailable" ? "اتصال منبع برقرار نیست" : "دادهٔ منبع ناقص است",
+    httpStatus: null
+  };
+}
+
+function buildGoldWarnings(providers: GoldProviderHealth[] | undefined): GoldWarningItem[] {
+  if (!providers?.length) return [];
+
+  const warnings: GoldWarningItem[] = [];
+  for (const p of providers) {
+    if (p.status === "available") continue;
+    const kind = p.status === "unavailable" ? "unavailable" : "degraded";
+    // For disconnected: all expected instruments; for degraded: only missing (or all if stale-only).
+    const affected =
+      kind === "unavailable"
+        ? p.missingInstruments.length
+          ? p.missingInstruments
+          : p.instruments
+        : p.missingInstruments.length
+          ? p.missingInstruments
+          : p.stale
+            ? p.instruments
+            : [];
+    const mapped = mapGoldErrorReason(p.error, kind, {
+      stale: p.stale,
+      missingInstruments: p.missingInstruments
+    });
+    warnings.push({
+      id: p.id,
+      name: p.name,
+      kind,
+      statusLabel: kind === "unavailable" ? "قطع" : "ناقص",
+      reason: mapped.reason,
+      operational: mapped.operational,
+      httpStatus: mapped.httpStatus,
+      affectedInstruments: affected,
+      lastSuccessAt: p.lastSuccessAt,
+      lastAttemptAt: p.lastAttemptAt
+    });
+  }
+
+  warnings.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "unavailable" ? -1 : 1;
+    const ao = providers.findIndex((p) => p.id === a.id);
+    const bo = providers.findIndex((p) => p.id === b.id);
+    return ao - bo;
+  });
+
+  return warnings;
+}
+
+function GoldConnectionHealthPanel({ providers }: { providers?: GoldProviderHealth[] }) {
+  const warnings = useMemo(() => buildGoldWarnings(providers), [providers]);
+  const hasSnapshot = Array.isArray(providers);
+
+  return (
+    <Panel
+      title="هشدار وضعیت اتصال منابع طلا"
+      meta={
+        <span className="muted">
+          {!hasSnapshot ? "—" : warnings.length ? `${formatNumber(warnings.length, 0)} مورد` : "سالم"}
+        </span>
+      }
+    >
+      {!hasSnapshot ? (
+        <div className="lp-health-empty muted">وضعیت منابع در این پاسخ موجود نیست</div>
+      ) : !warnings.length ? (
+        <div className="lp-health-empty good">
+          <span className="mini-dot good" aria-hidden="true" />
+          همه منابع بازار طلا متصل و سالم هستند.
+        </div>
+      ) : (
+        <div className="lp-health-grid">
+          {warnings.map((item) => (
+            <article
+              key={item.id}
+              className={`lp-health-card ${item.kind === "unavailable" ? "danger" : "warn"}`}
+            >
+              <div className="lp-health-head">
+                <strong className="lp-health-name">{item.name}</strong>
+                <Badge tone={item.kind === "unavailable" ? "danger" : "warn"}>{item.statusLabel}</Badge>
+              </div>
+              {item.affectedInstruments.length ? (
+                <div className="lp-health-line">
+                  <span className="muted">ابزارهای تحت تأثیر:</span> {item.affectedInstruments.join("، ")}
+                </div>
+              ) : null}
+              <div className="lp-health-line">
+                <span className="muted">علت:</span> {item.reason}
+              </div>
+              {item.httpStatus !== null ? (
+                <div className="lp-health-line muted">کد HTTP: {item.httpStatus}</div>
+              ) : null}
+              <div className="lp-health-line muted">{item.operational}</div>
+              <div className="lp-health-meta">
+                <span>آخرین اتصال موفق: {item.lastSuccessAt ? formatGoldTehran(item.lastSuccessAt) : "—"}</span>
+                <span>آخرین تلاش: {item.lastAttemptAt ? formatGoldTehran(item.lastAttemptAt) : "—"}</span>
               </div>
             </article>
           ))}

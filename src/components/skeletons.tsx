@@ -356,7 +356,21 @@ export function GoldSkeleton() {
             </div>
           </div>
         </div>
-        <div className="sk-gold-chart-wrap">
+      </SkeletonPanelShell>
+      <SkeletonPanelShell titleWidth="42%">
+        <div className="lp-health-grid" aria-hidden="true">
+          {Array.from({ length: 2 }).map((_, i) => (
+            <div key={i} className="lp-health-card">
+              <SkeletonLine width="45%" height={14} />
+              <SkeletonLine width="85%" height={12} />
+              <SkeletonLine width="70%" height={11} />
+              <SkeletonLine width="55%" height={11} />
+            </div>
+          ))}
+        </div>
+      </SkeletonPanelShell>
+      <SkeletonPanelShell titleWidth="28%" className="gold-chart-host">
+        <div className="sk-gold-chart-wrap" aria-hidden="true">
           <SkeletonChart height={340} />
         </div>
       </SkeletonPanelShell>

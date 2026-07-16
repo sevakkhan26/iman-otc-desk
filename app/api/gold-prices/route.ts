@@ -31,7 +31,8 @@ export async function GET() {
     const response: GoldPricesApiResponse = {
       items,
       lastUpdated: data.lastUpdated ?? undefined,
-      notes: items.length ? (data.stale ? data.notes : undefined) : data.notes
+      notes: items.length ? (data.stale ? data.notes : undefined) : data.notes,
+      providers: data.providers
     };
     return jsonUtf8(response);
   } catch (error) {

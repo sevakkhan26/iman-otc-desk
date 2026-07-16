@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LogOut, Menu, ShieldAlert } from "lucide-react";
 import type { DeskRole } from "@/lib/auth";
 import { sidebarNavItems } from "@/lib/sidebarNav";
@@ -13,6 +13,9 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [role, setRole] = useState<DeskRole | null>(null);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
+  const logoutInFlight = useRef(false);
 
   // default open; restore the user's last choice after mount (avoids hydration mismatch)
   useEffect(() => {
@@ -24,7 +27,7 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
   }, []);
 
   useEffect(() => {
-    fetch("/api/auth/me", { cache: "no-store" })
+    fetch("/api/auth/me", { cache: "no-store", credentials: "same-origin" })
       .then(async (response) => {
         if (!response.ok) return null;
         return (await response.json()) as { role?: DeskRole };
@@ -48,6 +51,32 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
       return next;
     });
   };
+
+  async function handleLogout() {
+    if (logoutInFlight.current || loggingOut) return;
+    logoutInFlight.current = true;
+    setLoggingOut(true);
+    setLogoutError(null);
+    try {
+      const response = await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store"
+      });
+      if (!response.ok) {
+        setLogoutError("خروج ناموفق بود. دوباره تلاش کنید.");
+        setLoggingOut(false);
+        logoutInFlight.current = false;
+        return;
+      }
+      // Only redirect after the server confirms cookie clear
+      window.location.replace("/login");
+    } catch {
+      setLogoutError("خروج ناموفق بود. دوباره تلاش کنید.");
+      setLoggingOut(false);
+      logoutInFlight.current = false;
+    }
+  }
 
   return (
     <div className={`shell ${collapsed ? "collapsed" : ""}`}>
@@ -91,18 +120,23 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
               نسخه: <span className="sidebar-version-value">{formatAppVersionLabel()}</span>
             </div>
           </div>
+          {logoutError ? (
+            <div className="sidebar-logout-error" role="alert">
+              {logoutError}
+            </div>
+          ) : null}
           <button
             type="button"
             className="nav-link logout-link"
             title="خروج"
+            disabled={loggingOut}
+            aria-busy={loggingOut}
             onClick={() => {
-              fetch("/api/auth/logout", { method: "POST" })
-                .catch(() => {})
-                .finally(() => window.location.replace("/login"));
+              void handleLogout();
             }}
           >
             <LogOut aria-hidden="true" />
-            <span>خروج</span>
+            <span>{loggingOut ? "در حال خروج..." : "خروج"}</span>
           </button>
           <div className="sidebar-foot">
             <ShieldAlert aria-hidden="true" size={17} />

@@ -492,6 +492,125 @@ input {
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
+/* Tether market: combined active/disconnected sources card */
+.tether-sources-split {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  padding: 0;
+  overflow: hidden;
+}
+
+.tether-sources-half {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 10px 12px;
+  min-height: 0;
+}
+
+.tether-sources-half .metric-label {
+  margin-bottom: 4px;
+}
+
+.tether-sources-half .metric-value {
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.tether-sources-half.good .metric-value {
+  color: var(--green);
+}
+
+.tether-sources-half.danger .metric-value {
+  color: var(--red);
+}
+
+.tether-sources-divider {
+  height: 1px;
+  margin: 0 12px;
+  background: var(--line-soft);
+  flex: 0 0 auto;
+}
+
+/* Tether market: full-width horizontal market-difference bar */
+.tether-spread-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 20px;
+  width: 100%;
+  min-height: 72px;
+  padding: 12px 18px;
+  box-sizing: border-box;
+}
+
+.tether-spread-title {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.tether-spread-value {
+  font-size: clamp(20px, 2.2vw, 26px);
+  font-weight: 800;
+  line-height: 1.2;
+  flex: 1 1 auto;
+  text-align: center;
+  min-width: 0;
+}
+
+.tether-spread-details {
+  display: grid;
+  gap: 3px;
+  text-align: start;
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--muted-2);
+  line-height: 1.45;
+}
+
+.tether-spread-line {
+  overflow-wrap: anywhere;
+}
+
+.tether-spread-pct {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.tether-spread-empty {
+  flex: 1 1 auto;
+  text-align: center;
+  font-size: 13px;
+}
+
+@media (max-width: 760px) {
+  .tether-spread-bar {
+    flex-direction: column;
+    align-items: stretch;
+    text-align: center;
+    min-height: 0;
+    gap: 10px;
+  }
+
+  .tether-spread-value {
+    text-align: center;
+  }
+
+  .tether-spread-details {
+    text-align: center;
+  }
+}
+
 /* global market cards — full-width 3 equal columns on Dashboard */
 .global-metrics {
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));

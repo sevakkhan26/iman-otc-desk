@@ -267,10 +267,30 @@ export function TetherMarketSkeleton() {
   return (
     <div className="grid page-skeleton-root" aria-busy="true" aria-live="polite">
       <span className="sr-only">در حال بارگذاری بازار تتر</span>
-      <div className="grid metrics" aria-hidden="true">
-        {Array.from({ length: 8 }).map((_, i) => (
+      <div className="grid metrics tether-summary-metrics" aria-hidden="true">
+        {Array.from({ length: 5 }).map((_, i) => (
           <SkeletonMetric key={i} />
         ))}
+        <div className="metric tether-sources-split sk-metric">
+          <div className="tether-sources-half">
+            <SkeletonLine width="50%" height={11} />
+            <SkeletonLine width="40%" height={18} />
+          </div>
+          <div className="tether-sources-divider" />
+          <div className="tether-sources-half">
+            <SkeletonLine width="50%" height={11} />
+            <SkeletonLine width="40%" height={18} />
+          </div>
+        </div>
+      </div>
+      <div className="metric tether-spread-bar sk-metric" aria-hidden="true">
+        <SkeletonLine width={120} height={12} />
+        <SkeletonLine width="28%" height={22} />
+        <div style={{ display: "grid", gap: 4, width: "30%" }}>
+          <SkeletonLine width="100%" height={11} />
+          <SkeletonLine width="90%" height={11} />
+          <SkeletonLine width="70%" height={11} />
+        </div>
       </div>
       <SkeletonPanelShell titleWidth="38%">
         <SkeletonFilterBar />

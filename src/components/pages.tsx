@@ -1794,28 +1794,54 @@ export function TetherMarketView() {
       <LoadState loading={loading} error={error} hasData={Boolean(data)} skeleton={<TetherMarketSkeleton />} />
       {data ? (
         <div className="grid">
-          <div className="grid metrics">
+          <div className="grid metrics tether-summary-metrics">
             <Metric label="Median بازار" value={formatToman(data.summary.median)} />
             <Metric label="بیشترین قیمت" value={formatToman(data.summary.highest)} note={data.summary.highestExchange ?? undefined} />
             <Metric label="کمترین قیمت" value={formatToman(data.summary.lowest)} note={data.summary.lowestExchange ?? undefined} />
-            {hasEnoughMarketData ? (
-              <div className="metric">
-                <div className="metric-label">اختلاف تومانی بازار</div>
-                <div className="metric-value">{formatToman(marketDiffToman)}</div>
-                <div className="metric-note">{marketHighEx} ↔ {marketLowEx}</div>
-                <div className="metric-note">بالاترین: {marketHighEx} — {formatToman(marketHighest)}</div>
-                <div className="metric-note">پایین‌ترین: {marketLowEx} — {formatToman(marketLowest)}</div>
-              </div>
-            ) : (
-              <div className="metric">
-                <div className="metric-label">اختلاف تومانی بازار</div>
-                <div className="metric-note">داده کافی برای مقایسه وجود ندارد</div>
-              </div>
-            )}
             <Metric label="بهترین قیمت خرید" value={formatToman(data.summary.bestBuy)} note={data.summary.bestBuyExchange ?? undefined} />
             <Metric label="بهترین قیمت فروش" value={formatToman(data.summary.bestSell)} note={data.summary.bestSellExchange ?? undefined} />
-            <Metric label="منابع فعال" value={formatNumber(data.summary.activeSources, 0)} />
-            <Metric label="منابع قطع" value={formatNumber(data.summary.unavailableSources, 0)} />
+            <div className="metric tether-sources-split" aria-label="وضعیت منابع">
+              <div className="tether-sources-half good">
+                <div className="metric-label">منابع فعال</div>
+                <div className="metric-value number">{formatNumber(data.summary.activeSources, 0)}</div>
+              </div>
+              <div className="tether-sources-divider" aria-hidden="true" />
+              <div
+                className={`tether-sources-half ${data.summary.unavailableSources > 0 ? "danger" : "good"}`}
+              >
+                <div className="metric-label">منابع قطع</div>
+                <div className="metric-value number">{formatNumber(data.summary.unavailableSources, 0)}</div>
+              </div>
+            </div>
+          </div>
+          <div
+            className={`metric tether-spread-bar ${hasEnoughMarketData ? "" : "is-empty"}`}
+            aria-label="اختلاف تومانی بازار"
+          >
+            {hasEnoughMarketData ? (
+              <>
+                <div className="tether-spread-title">اختلاف تومانی بازار</div>
+                <div className="tether-spread-value number">{formatToman(marketDiffToman)}</div>
+                <div className="tether-spread-details">
+                  <div className="tether-spread-line">
+                    بالاترین: {marketHighEx} — {formatToman(marketHighest)}
+                  </div>
+                  <div className="tether-spread-line">
+                    پایین‌ترین: {marketLowEx} — {formatToman(marketLowest)}
+                  </div>
+                  {data.summary.marketSpreadPercent != null ? (
+                    <div className="tether-spread-line tether-spread-pct number">
+                      اختلاف درصدی: {formatPercent(data.summary.marketSpreadPercent)}
+                    </div>
+                  ) : null}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="tether-spread-title">اختلاف تومانی بازار</div>
+                <div className="tether-spread-empty muted">داده کافی برای مقایسه وجود ندارد</div>
+              </>
+            )}
           </div>
           <Panel
             title="قیمت صرافی‌های داخلی"

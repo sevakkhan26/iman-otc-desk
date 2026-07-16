@@ -417,26 +417,6 @@ export function ForexSkeleton() {
   );
 }
 
-export function ExchangeMonitorSkeleton() {
-  return (
-    <div className="grid page-skeleton-root" aria-busy="true" aria-live="polite">
-      <span className="sr-only">در حال بارگذاری مانیتور صرافی‌ها</span>
-      <SkeletonPanelShell titleWidth="32%">
-        <SkeletonTable columns={8} rows={10} />
-      </SkeletonPanelShell>
-      <SkeletonPanelShell titleWidth="30%">
-        <SkeletonTable columns={7} rows={6} />
-      </SkeletonPanelShell>
-      <SkeletonPanelShell titleWidth="22%">
-        <SkeletonExchangeGrid count={6} />
-        <div className="sk-gold-chart-wrap">
-          <SkeletonChart height={280} />
-        </div>
-      </SkeletonPanelShell>
-    </div>
-  );
-}
-
 export function AlertsSkeleton() {
   return (
     <div className="grid page-skeleton-root" aria-busy="true" aria-live="polite">
@@ -547,18 +527,6 @@ export function SectionExchangeCardsSkeleton({ count = 5 }: { count?: number }) 
     <div aria-busy="true" aria-live="polite">
       <span className="sr-only">در حال بارگذاری</span>
       <SkeletonExchangeGrid count={count} />
-    </div>
-  );
-}
-
-export function SectionGoldPanelSkeleton() {
-  return (
-    <div aria-busy="true" aria-live="polite">
-      <span className="sr-only">در حال بارگذاری بازار طلا</span>
-      <SkeletonExchangeGrid count={4} />
-      <div className="sk-gold-chart-wrap">
-        <SkeletonChart height={260} />
-      </div>
     </div>
   );
 }

@@ -11,7 +11,6 @@ import type {
   DashboardResponse,
   DomesticProviderHealth,
   DomesticQuote,
-  ExchangeMonitorResponse,
   ExchangeOperationalStatus,
   ForexEvent,
   ForexEventsResponse,
@@ -56,11 +55,9 @@ import { assetLabel } from "@/lib/assets";
 import {
   AlertsSkeleton,
   DashboardSkeleton,
-  ExchangeMonitorSkeleton,
   ForexSkeleton,
   GoldSkeleton,
   SectionExchangeCardsSkeleton,
-  SectionGoldPanelSkeleton,
   SettingsSkeleton,
   TetherMarketSkeleton
 } from "@/components/skeletons";
@@ -631,7 +628,7 @@ function pickLowestFromCandidates(
 }
 
 function DashboardMarketPriceStrip() {
-  // Same endpoints + interval as SitePrices / GoldMarketPanel — useApi dedupes concurrent client fetches.
+  // Same endpoints + interval as SitePrices — useApi dedupes concurrent client fetches.
   const { data: gold } = useApi<GoldPricesApiResponse>("/api/gold-prices", 30_000);
   const { data: fx } = useApi<FxPricesApiResponse>("/api/fx-prices", 30_000);
 
@@ -1304,40 +1301,6 @@ function GoldMarketCards({ items }: { items: GoldPricesApiItem[] }) {
         </section>
       ))}
     </div>
-  );
-}
-
-function GoldMarketPanel({ title = "بازار طلا" }: { title?: string }) {
-  const { data: gold, loading } = useApi<GoldPricesApiResponse>("/api/gold-prices", 30_000);
-  const cards = useMemo(
-    () =>
-      (gold?.items ?? [])
-        .filter(isValidGoldPrice)
-        .sort(
-          (a, b) =>
-            goldInstrumentOrder[a.instrument] - goldInstrumentOrder[b.instrument] ||
-            goldSourceOrder[a.source] - goldSourceOrder[b.source]
-        ),
-    [gold?.items]
-  );
-  const metaParts = cards.length
-    ? [gold?.lastUpdated ? `به‌روزرسانی: ${formatGoldTehran(gold.lastUpdated)}` : "", ...(gold?.notes ?? [])].filter(Boolean)
-    : [];
-  const meta = metaParts.join(" · ");
-
-  return (
-    <Panel title={title} meta={meta ? <span className="muted">{meta}</span> : undefined}>
-      {loading && !gold ? (
-        <SectionGoldPanelSkeleton />
-      ) : !cards.length ? (
-        <div className="empty">فعلاً داده‌ای از بازار طلا دریافت نشد</div>
-      ) : (
-        <>
-          <GoldMarketCards items={cards} />
-          <GoldPriceChart />
-        </>
-      )}
-    </Panel>
   );
 }
 
@@ -2077,69 +2040,6 @@ export function TetherMarketView() {
           <Panel title="روند قیمت میانه تتر (USDT/IRT)">
             <MedianChart />
           </Panel>
-        </div>
-      ) : null}
-    </>
-  );
-}
-
-function GlobalExchangeTable({ rows }: { rows: ExchangeOperationalStatus[] }) {
-  return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>صرافی</th>
-            <th>وضعیت API</th>
-            <th>واریز</th>
-            <th>برداشت</th>
-            <th>Maintenance</th>
-            <th>آخرین Incident</th>
-            <th>اثر روی Dealing Desk</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.exchangeName}>
-              <td>
-                <strong>{row.exchangeName}</strong>
-              </td>
-              <td>
-                <SourceStatusBadge status={row.apiStatus} title={row.errorMessage} />
-              </td>
-              <td>{statusLabel(row.depositStatus)}</td>
-              <td>{statusLabel(row.withdrawalStatus)}</td>
-              <td>{row.maintenance === null ? "—" : row.maintenance ? "بله" : "خیر"}</td>
-              <td>{row.lastIncident || "—"}</td>
-              <td>{row.impactOnDesk}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-export function ExchangeMonitorView() {
-  const { data, loading, error, reload, lastUpdated } = useApi<ExchangeMonitorResponse>("/api/exchange-monitor");
-  return (
-    <>
-      <PageHeader title="مانیتور صرافی‌ها" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
-      <LoadState
-        loading={loading}
-        error={error}
-        hasData={Boolean(data)}
-        skeleton={<ExchangeMonitorSkeleton />}
-      />
-      {data ? (
-        <div className="grid">
-          <Panel title="صرافی‌های داخلی" meta={<span className="muted">میانه بازار: {formatToman(data.tetherSummary.median)}</span>}>
-            <DomesticTable rows={data.domestic} />
-          </Panel>
-          <Panel title="صرافی‌های جهانی">
-            <GlobalExchangeTable rows={data.global} />
-          </Panel>
-          <GoldMarketPanel title="بازار طلا" />
         </div>
       ) : null}
     </>

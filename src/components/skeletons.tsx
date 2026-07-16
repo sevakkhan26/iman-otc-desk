@@ -259,24 +259,6 @@ export function DashboardSkeleton() {
       <SkeletonPanelShell titleWidth="48%" className="dashboard-median-panel">
         <SkeletonChart height={460} />
       </SkeletonPanelShell>
-
-      <div className="grid metrics">
-        {Array.from({ length: 4 }).map((_, i) => (
-          <SkeletonMetric key={i} />
-        ))}
-      </div>
-
-      <SkeletonPanelShell titleWidth="45%">
-        <div className="sk-alert-list">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="sk-alert-row">
-              <SkeletonLine width={64} height={22} />
-              <SkeletonLine width="55%" height={13} />
-              <SkeletonLine width="80%" height={11} />
-            </div>
-          ))}
-        </div>
-      </SkeletonPanelShell>
     </div>
   );
 }

@@ -1459,15 +1459,6 @@ export function DashboardView() {
           <Panel title="روند قیمت میانه تتر (USDT/IRT)" className="dashboard-median-panel">
             <DashboardMedianChart tall />
           </Panel>
-          <div className="grid metrics">
-            <Metric label="منابع فعال" value={formatNumber(data.tetherMarket.summary.activeSources, 0)} />
-            <Metric label="منابع قطع" value={formatNumber(data.tetherMarket.summary.unavailableSources, 0)} />
-            <Metric label="تعداد قیمت پرت" value={formatNumber(data.tetherMarket.summary.outlierCount, 0)} />
-            <Metric label="آخرین بروزرسانی" value={formatDate(data.tetherMarket.summary.lastUpdated)} />
-          </div>
-          <Panel title="هشدارهای اتصال/قطع LP ایرانی">
-            <AlertsList items={data.alerts} emptyMessage="همه LPهای ایرانی متصل‌اند؛ هشدار قطعی وجود ندارد." />
-          </Panel>
         </div>
       ) : null}
     </>

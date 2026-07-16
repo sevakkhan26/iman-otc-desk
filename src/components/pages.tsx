@@ -1154,21 +1154,27 @@ export function ForexView() {
   );
 }
 
-const sitePriceOrder: Record<FxPricesApiItem["asset"], number> = {
-  "دلار کاغذی": 0,
-  "دلار فردایی": 1,
-  "دلار سبزه میدان": 2,
-  "دلار بن‌بست": 3,
-  "درهم امارات": 4
-};
+/** Fixed Dashboard «قیمت‌های سایت» order — never sort by price/status/time. */
+const SITE_PRICE_SLOTS: Array<{
+  source: FxPricesApiItem["source"];
+  asset: FxPricesApiItem["asset"];
+  title: string;
+}> = [
+  { source: "navasan", asset: "دلار کاغذی", title: "دلار کاغذی · نوسان" },
+  { source: "bonbast", asset: "دلار بن‌بست", title: "دلار کاغذی · بن‌بست" },
+  { source: "navasan", asset: "دلار آمریکا هرات", title: "دلار آمریکا هرات · نوسان" },
+  { source: "bonbast", asset: "دلار آمریکا هرات", title: "دلار آمریکا هرات · بن‌بست" },
+  { source: "navasan", asset: "درهم امارات", title: "درهم امارات · نوسان" },
+  { source: "bonbast", asset: "درهم امارات", title: "درهم امارات · بن‌بست" },
+  { source: "navasan", asset: "دلار فردایی", title: "دلار فردایی · نوسان" },
+  { source: "navasan", asset: "دلار سبزه میدان", title: "دلار سبزه میدان · نوسان" }
+];
 
 function isValidSitePrice(item: FxPricesApiItem): boolean {
-  return item.status === "ok" && (item.buy !== null || item.sell !== null || item.mid !== null);
-}
-
-function sitePriceAssetLabel(quote: FxPricesApiItem): string {
-  if (quote.source === "bonbast" && quote.asset === "دلار بن‌بست") return "دلار کاغذی";
-  return quote.asset;
+  const buyOk = item.buy !== null && Number.isFinite(item.buy) && item.buy > 0;
+  const sellOk = item.sell !== null && Number.isFinite(item.sell) && item.sell > 0;
+  const midOk = item.mid !== null && Number.isFinite(item.mid) && item.mid > 0;
+  return item.status === "ok" && (buyOk || sellOk || midOk);
 }
 
 const goldInstrumentOrder: Record<GoldInstrumentType, number> = {
@@ -1304,14 +1310,21 @@ function GoldMarketPanel({ title = "بازار طلا" }: { title?: string }) {
 
 function SitePrices() {
   const { data: fx, loading } = useApi<FxPricesApiResponse>("/api/fx-prices", 30_000);
-  const cards = useMemo(
-    () =>
-      (fx?.items ?? [])
-        .filter(isValidSitePrice)
-        .sort((a, b) => sitePriceOrder[a.asset] - sitePriceOrder[b.asset] || a.source.localeCompare(b.source)),
-    [fx?.items]
-  );
-  const metaParts = cards.length
+
+  const slotCards = useMemo(() => {
+    const byKey = new Map<string, FxPricesApiItem>();
+    for (const item of fx?.items ?? []) {
+      if (!isValidSitePrice(item)) continue;
+      byKey.set(`${item.source}:${item.asset}`, item);
+    }
+    return SITE_PRICE_SLOTS.map((slot) => ({
+      slot,
+      quote: byKey.get(`${slot.source}:${slot.asset}`) ?? null
+    }));
+  }, [fx?.items]);
+
+  const hasAny = slotCards.some((entry) => entry.quote);
+  const metaParts = hasAny
     ? [fx?.lastUpdated ? `به‌روزرسانی: ${formatDate(fx.lastUpdated)}` : "", ...(fx?.notes ?? [])].filter(Boolean)
     : [];
   const meta = metaParts.join(" · ");
@@ -1319,39 +1332,58 @@ function SitePrices() {
   return (
     <Panel title="قیمت‌های سایت" meta={meta ? <span className="muted">{meta}</span> : undefined}>
       {loading && !fx ? (
-        <SectionExchangeCardsSkeleton count={5} />
-      ) : !cards.length ? (
+        <SectionExchangeCardsSkeleton count={8} />
+      ) : !hasAny ? (
         <div className="empty">فعلاً داده‌ای از منابع سایت دریافت نشد</div>
       ) : (
         <div className="exch-grid">
-          {cards.map((quote) => {
-            const sourceLabel = sourceLabels[quote.source] ?? quote.source;
+          {slotCards.map(({ slot, quote }) => {
+            const hasBuy = quote?.buy != null && Number.isFinite(quote.buy) && quote.buy > 0;
+            const hasSell = quote?.sell != null && Number.isFinite(quote.sell) && quote.sell > 0;
+            const hasMid = quote?.mid != null && Number.isFinite(quote.mid) && quote.mid > 0;
+            const referenceOnly = Boolean(quote && hasMid && !hasBuy && !hasSell);
+            const down = !quote;
+
             return (
-              <article className="exch-card" key={`${quote.source}-${quote.asset}`}>
+              <article
+                className={`exch-card ${down ? "is-empty" : ""}`}
+                key={`${slot.source}-${slot.asset}`}
+              >
                 <header className="exch-card-head">
-                  <span className="exch-name">
-                    {sitePriceAssetLabel(quote)}
-                    <span className="muted"> · {sourceLabel}</span>
-                  </span>
-                  <Badge tone="good">فعال</Badge>
+                  <span className="exch-name">{slot.title}</span>
+                  <Badge tone={down ? "danger" : "good"}>{down ? "قطع" : "فعال"}</Badge>
                 </header>
-                <div className="exch-prices">
-                  <div className="exch-row">
-                    <span className="exch-k">خرید</span>
-                    <PriceValue value={quote.buy} className="exch-v number" />
+                {down ? (
+                  <div className="exch-empty-label">داده ندارد</div>
+                ) : referenceOnly ? (
+                  <div className="exch-prices">
+                    <div className="exch-row mid">
+                      <span className="exch-k">قیمت مرجع</span>
+                      <PriceValue value={quote!.mid} className="exch-v number" />
+                    </div>
+                    {quote!.lastUpdated ? (
+                      <div className="tg-meta muted">{formatDate(quote!.lastUpdated)}</div>
+                    ) : null}
                   </div>
-                  <div className="exch-row">
-                    <span className="exch-k">فروش</span>
-                    <PriceValue value={quote.sell} className="exch-v number" />
+                ) : (
+                  <div className="exch-prices">
+                    <div className="exch-row">
+                      <span className="exch-k">خرید</span>
+                      <PriceValue value={hasBuy ? quote!.buy : null} className="exch-v number" />
+                    </div>
+                    <div className="exch-row">
+                      <span className="exch-k">فروش</span>
+                      <PriceValue value={hasSell ? quote!.sell : null} className="exch-v number" />
+                    </div>
+                    <div className="exch-row mid">
+                      <span className="exch-k">قیمت وسط</span>
+                      <PriceValue value={hasMid ? quote!.mid : null} className="exch-v number" />
+                    </div>
+                    {quote!.lastUpdated ? (
+                      <div className="tg-meta muted">{formatDate(quote!.lastUpdated)}</div>
+                    ) : null}
                   </div>
-                  <div className="exch-row mid">
-                    <span className="exch-k">قیمت وسط</span>
-                    <PriceValue value={quote.mid} className="exch-v number" />
-                  </div>
-                  {quote.lastUpdated ? (
-                    <div className="tg-meta muted">{formatDate(quote.lastUpdated)}</div>
-                  ) : null}
-                </div>
+                )}
               </article>
             );
           })}

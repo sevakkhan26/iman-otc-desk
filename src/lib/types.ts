@@ -281,7 +281,13 @@ export interface SettingsPatch {
   enabledSources?: Record<string, boolean>;
 }
 
-export type FxStreetAssetType = "دلار کاغذی" | "دلار فردایی" | "دلار سبزه میدان" | "دلار بن‌بست" | "درهم امارات";
+export type FxStreetAssetType =
+  | "دلار کاغذی"
+  | "دلار آمریکا هرات"
+  | "دلار فردایی"
+  | "دلار سبزه میدان"
+  | "دلار بن‌بست"
+  | "درهم امارات";
 
 export type TelegramPriceType = "دلار کاغذی" | "دلار سبزه میدان" | "درهم امارات" | "دلار خروجی";
 

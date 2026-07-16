@@ -66,6 +66,32 @@ function quoteFromPrices(
   };
 }
 
+/** Single reference mid only — do not invent paired buy/sell. */
+function quoteFromReferenceMid(
+  sourceId: SourceId,
+  sourceName: string,
+  assetType: FxStreetAssetType,
+  midPrice: number | null,
+  options?: { lastUpdated?: string | null; status?: SourceStatus }
+): FxStreetQuote | null {
+  if (midPrice === null || !Number.isFinite(midPrice) || midPrice <= 0) return null;
+  return {
+    sourceId,
+    sourceName,
+    assetType,
+    buyPrice: null,
+    sellPrice: null,
+    midPrice,
+    lastUpdated: options?.lastUpdated ?? nowIso(),
+    status: options?.status ?? "degraded"
+  };
+}
+
+function positivePrice(value: number | null): number | null {
+  if (value === null || !Number.isFinite(value) || value <= 0) return null;
+  return value;
+}
+
 function latestTimestamp(values: Array<string | null>): string | null {
   const timestamps = values
     .filter((value): value is string => Boolean(value))
@@ -120,40 +146,68 @@ function mergeCookieHeader(existing: string, extra: string): string {
 }
 
 function quotesFromNavasanRates(rates: NavasanRates, sourceId: SourceId, sourceName: string): FxStreetQuote[] {
+  // Navasan symbols (official):
+  // - harat_naghdi_buy/sell → دلار هرات (also used historically as «دلار کاغذی» on this desk)
+  // - dolar_harat_buy/sell  → دلار هرات فروش/خرید نقد (alternate Harat keys)
+  // - usd_farda_*           → فردایی
+  // - usd_*                 → سبزه میدان / نقدی تهران
+  // - aed_* / dirham_dubai  → درهم
+  // Iranian API convention: *_sell = desk sell / customer buy; *_buy = desk buy / customer sell.
+  const paperBuy = positivePrice(navasanValue(rates.harat_naghdi_sell));
+  const paperSell = positivePrice(navasanValue(rates.harat_naghdi_buy));
+
+  // Prefer dedicated dolar_harat_* keys for explicit Harat USD; fall back to harat_naghdi_*.
+  const haratBuy =
+    positivePrice(navasanValue(rates.dolar_harat_sell)) ??
+    positivePrice(navasanValue(rates.harat_naghdi_sell));
+  const haratSell =
+    positivePrice(navasanValue(rates.dolar_harat_buy)) ??
+    positivePrice(navasanValue(rates.harat_naghdi_buy));
+  const haratUpdated =
+    navasanUpdatedAt(rates.dolar_harat_sell) ??
+    navasanUpdatedAt(rates.dolar_harat_buy) ??
+    navasanUpdatedAt(rates.harat_naghdi_sell) ??
+    navasanUpdatedAt(rates.harat_naghdi_buy);
+
+  const haratPair =
+    haratBuy !== null && haratSell !== null
+      ? quoteFromPrices(sourceId, sourceName, "دلار آمریکا هرات", haratBuy, haratSell, {
+          lastUpdated: haratUpdated
+        })
+      : quoteFromReferenceMid(sourceId, sourceName, "دلار آمریکا هرات", haratBuy ?? haratSell, {
+          lastUpdated: haratUpdated
+        });
+
   return [
-    quoteFromPrices(
-      sourceId,
-      sourceName,
-      "دلار کاغذی",
-      navasanValue(rates.harat_naghdi_sell),
-      navasanValue(rates.harat_naghdi_buy),
-      { lastUpdated: navasanUpdatedAt(rates.harat_naghdi_sell) ?? navasanUpdatedAt(rates.harat_naghdi_buy) }
-    ),
+    quoteFromPrices(sourceId, sourceName, "دلار کاغذی", paperBuy, paperSell, {
+      lastUpdated: navasanUpdatedAt(rates.harat_naghdi_sell) ?? navasanUpdatedAt(rates.harat_naghdi_buy)
+    }),
+    haratPair,
     quoteFromPrices(
       sourceId,
       sourceName,
       "دلار فردایی",
-      navasanValue(rates.usd_farda_sell),
-      navasanValue(rates.usd_farda_buy),
+      positivePrice(navasanValue(rates.usd_farda_sell)),
+      positivePrice(navasanValue(rates.usd_farda_buy)),
       { lastUpdated: navasanUpdatedAt(rates.usd_farda_sell) ?? navasanUpdatedAt(rates.usd_farda_buy) }
     ),
     quoteFromPrices(
       sourceId,
       sourceName,
       "دلار سبزه میدان",
-      navasanValue(rates.usd_sell),
-      navasanValue(rates.usd_buy),
+      positivePrice(navasanValue(rates.usd_sell)),
+      positivePrice(navasanValue(rates.usd_buy)),
       { lastUpdated: navasanUpdatedAt(rates.usd_sell) ?? navasanUpdatedAt(rates.usd_buy) }
     ),
     quoteFromPrices(
       sourceId,
       sourceName,
       "درهم امارات",
-      navasanValue(rates.aed_sell) ?? navasanValue(rates.dirham_dubai),
-      navasanValue(rates.aed_buy),
+      positivePrice(navasanValue(rates.aed_sell) ?? navasanValue(rates.dirham_dubai)),
+      positivePrice(navasanValue(rates.aed_buy)),
       {
         lastUpdated: navasanUpdatedAt(rates.aed_sell) ?? navasanUpdatedAt(rates.dirham_dubai) ?? navasanUpdatedAt(rates.aed_buy),
-        status: navasanValue(rates.aed_buy) === null ? "degraded" : "available"
+        status: positivePrice(navasanValue(rates.aed_buy)) === null ? "degraded" : "available"
       }
     )
   ].filter((quote): quote is FxStreetQuote => quote !== null);
@@ -305,15 +359,43 @@ async function fetchBonbast(): Promise<SourceResult> {
   }
 
   const updatedAt = bonbastUpdatedAt(payload);
-  // Bonbast's "USD / US Dollar" row: usd1 = Sell column, usd2 = Buy column.
-  // This is Bonbast's own USD quote — a separate instrument from کاغذی/فردایی/سبزه میدان.
+  // Bonbast free-market USD row: usd1 = Sell column, usd2 = Buy column (Toman; already normalized).
+  // Displayed as «دلار کاغذی · بن‌بست» on the Dashboard site-prices grid.
+  const paperBuy = positivePrice(bonbastPrice(payload.usd2));
+  const paperSell = positivePrice(bonbastPrice(payload.usd1));
+
+  // Optional Harat USD keys if Bonbast ever exposes them (probe common aliases; never invent).
+  const haratSell =
+    positivePrice(bonbastPrice(payload.harat1)) ??
+    positivePrice(bonbastPrice(payload.herat1)) ??
+    positivePrice(bonbastPrice(payload.usd_harat1)) ??
+    positivePrice(bonbastPrice(payload.harat_sell));
+  const haratBuy =
+    positivePrice(bonbastPrice(payload.harat2)) ??
+    positivePrice(bonbastPrice(payload.herat2)) ??
+    positivePrice(bonbastPrice(payload.usd_harat2)) ??
+    positivePrice(bonbastPrice(payload.harat_buy));
+
+  const haratQuote =
+    haratBuy !== null && haratSell !== null
+      ? quoteFromPrices(sourceId, sourceName, "دلار آمریکا هرات", haratBuy, haratSell, { lastUpdated: updatedAt })
+      : quoteFromReferenceMid(sourceId, sourceName, "دلار آمریکا هرات", haratBuy ?? haratSell, {
+          lastUpdated: updatedAt
+        });
+
   const quotes = [
-    quoteFromPrices(sourceId, sourceName, "دلار بن‌بست", bonbastPrice(payload.usd2), bonbastPrice(payload.usd1), {
+    quoteFromPrices(sourceId, sourceName, "دلار بن‌بست", paperBuy, paperSell, {
       lastUpdated: updatedAt
     }),
-    quoteFromPrices(sourceId, sourceName, "درهم امارات", bonbastPrice(payload.aed1), bonbastPrice(payload.aed2), {
-      lastUpdated: updatedAt
-    })
+    haratQuote,
+    quoteFromPrices(
+      sourceId,
+      sourceName,
+      "درهم امارات",
+      positivePrice(bonbastPrice(payload.aed1)),
+      positivePrice(bonbastPrice(payload.aed2)),
+      { lastUpdated: updatedAt }
+    )
   ].filter((quote): quote is FxStreetQuote => quote !== null);
 
   if (!quotes.length) {

@@ -245,7 +245,7 @@ export function DashboardSkeleton() {
       </SkeletonPanelShell>
 
       <SkeletonPanelShell titleWidth="28%">
-        <SkeletonExchangeGrid count={5} />
+        <SkeletonExchangeGrid count={8} />
       </SkeletonPanelShell>
 
       <div className="grid two-col">

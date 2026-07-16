@@ -3,6 +3,7 @@
 import { memo, useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { useApi } from "@/hooks/useApi";
+import { ThemeToggleButton } from "@/components/ThemeToggleButton";
 import { NEWS_LABEL_GROUPS, assetLabel, primaryNewsGroup } from "@/lib/assets";
 import type { ImpactNewsItem, ImpactNewsResponse } from "@/lib/types";
 import {
@@ -49,6 +50,7 @@ function PageHeader({
         >
           <RefreshCw aria-hidden="true" className={loading ? "spinning" : undefined} />
         </button>
+        <ThemeToggleButton />
       </div>
     </div>
   );

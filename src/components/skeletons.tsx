@@ -432,13 +432,6 @@ export function SettingsSkeleton() {
   return (
     <div className="grid page-skeleton-root" aria-busy="true" aria-live="polite">
       <span className="sr-only">در حال بارگذاری تنظیمات</span>
-      <SkeletonPanelShell titleWidth="40%">
-        <div className="sk-settings-row" aria-hidden="true">
-          <SkeletonLine width={120} height={34} />
-          <SkeletonLine width={120} height={34} />
-          <SkeletonLine width="40%" height={12} />
-        </div>
-      </SkeletonPanelShell>
       <SkeletonPanelShell titleWidth="36%">
         <div className="grid settings-grid" aria-hidden="true">
           {Array.from({ length: 6 }).map((_, i) => (

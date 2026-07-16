@@ -4,6 +4,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useApi } from "@/hooks/useApi";
 import { CalendarClock, Clock, RefreshCw, Save, X } from "lucide-react";
+import { ThemeToggleButton } from "@/components/ThemeToggleButton";
 import type {
   AlertItem,
   AssetTag,
@@ -154,6 +155,7 @@ function PageHeader({
             <RefreshCw aria-hidden="true" className={loading ? "spinning" : undefined} />
           </button>
         ) : null}
+        <ThemeToggleButton />
       </div>
     </div>
   );
@@ -1431,56 +1433,6 @@ const sourceLabels: Record<string, string> = {
   forex: "تقویم فارکس"
 };
 
-type ThemeMode = "dark" | "light";
-
-function useTheme(): { theme: ThemeMode; setTheme: (mode: ThemeMode) => void } {
-  const [theme, setThemeState] = useState<ThemeMode>("dark");
-
-  useEffect(() => {
-    const current = document.documentElement.getAttribute("data-theme");
-    setThemeState(current === "light" ? "light" : "dark");
-  }, []);
-
-  const setTheme = (mode: ThemeMode) => {
-    document.documentElement.setAttribute("data-theme", mode);
-    try {
-      window.localStorage.setItem("otc-theme", mode);
-    } catch {
-      /* ignore storage errors */
-    }
-    setThemeState(mode);
-  };
-
-  return { theme, setTheme };
-}
-
-function ThemeToggle() {
-  const { theme, setTheme } = useTheme();
-  const options: Array<{ key: ThemeMode; label: string }> = [
-    { key: "dark", label: "تیره (Dark)" },
-    { key: "light", label: "روشن (Light)" }
-  ];
-  return (
-    <div className="theme-row">
-      <div className="segment" role="tablist" aria-label="انتخاب تم">
-        {options.map((option) => (
-          <button
-            key={option.key}
-            type="button"
-            role="tab"
-            aria-selected={theme === option.key}
-            className={`segment-item ${theme === option.key ? "active" : ""}`}
-            onClick={() => setTheme(option.key)}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
-      <span className="muted">حالت پیش‌فرض: تیره (Blue Bank). انتخاب شما ذخیره می‌شود.</span>
-    </div>
-  );
-}
-
 export function SettingsView() {
   const { data, loading, error, reload, lastUpdated } = useApi<PublicSettings>("/api/settings");
   const [saving, setSaving] = useState(false);
@@ -1529,9 +1481,6 @@ export function SettingsView() {
       <LoadState loading={loading} error={error} hasData={Boolean(form)} skeleton={<SettingsSkeleton />} />
       {form ? (
         <div className="grid">
-          <Panel title="تم نمایش (Dark / Light)">
-            <ThemeToggle />
-          </Panel>
           <Panel title="بازه‌های بروزرسانی">
             <div className="grid settings-grid">
               <Field label="قیمت‌های ایران / دقیقه" value={form.priceRefreshMinutes} onChange={(value) => setNumber("priceRefreshMinutes", value)} />

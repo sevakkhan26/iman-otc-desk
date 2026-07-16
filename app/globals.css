@@ -2568,12 +2568,20 @@ tr:last-child td {
   white-space: nowrap;
 }
 
+/* Track travels left → right (Persian ticker); seamless loop via 2× duplicated items */
 @keyframes ticker-scroll {
   from {
-    transform: translateX(0);
+    transform: translateX(-50%);
   }
   to {
-    transform: translateX(-50%);
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ticker-track {
+    animation: none;
+    transform: translateX(0);
   }
 }
 

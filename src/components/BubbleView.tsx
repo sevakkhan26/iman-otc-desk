@@ -187,17 +187,17 @@ function GoldDetailMetrics({ detail }: { detail: GoldBubbleDetail }) {
       <Metric label="دلار محاسباتی" value={formatToman(detail.realDollarToman)} />
       <Metric label="مظنه" value={formatToman(detail.mazaneToman)} />
       <Metric label="یک گرم طلای ۱۸ عیار" value={formatToman(detail.gram18Toman)} />
-      <Metric label="ارزش جهانی هر کیلو (دلار)" value={formatUsd(detail.globalGoldKgUsd)} />
-      <Metric label="ارزش جهانی هر کیلو (تومان)" value={formatToman(detail.globalGoldKgToman)} />
+      <Metric label="هر کیلو طلا (دلار)" value={formatUsd(detail.globalGoldKgUsd)} />
+      <Metric label="هر کیلو طلا (تومان)" value={formatToman(detail.globalGoldKgToman)} />
       <Metric label="ارزش داخلی هر کیلو طلا" value={formatToman(detail.localPureGoldKgToman)} />
-      <Metric label="ارزش داخلی هر کیلو (دلار)" value={formatUsd(detail.impliedLocalGoldKgUsd)} />
+      <Metric label="ارزش داخلی هر کیلو طلا (دلار)" value={formatUsd(detail.impliedLocalGoldKgUsd)} />
       <Metric
-        label="حباب تومانی هر کیلو"
+        label="حباب هر کیلو طلا (تومان)"
         value={formatToman(detail.goldBubbleTomanPerKg)}
         tone={signToneClass(detail.sign)}
       />
       <Metric
-        label="حباب دلاری هر کیلو"
+        label="حباب هر کیلو طلا (دلار)"
         value={formatUsd(detail.goldBubbleUsdPerKg)}
         tone={signToneClass(detail.sign)}
       />
@@ -238,12 +238,12 @@ function GoldSummaryCard({
         ) : (
           <div className="grid metrics-grid bubble-metrics">
             <Metric
-              label="حباب تومانی هر کیلو"
+              label="حباب هر کیلو طلا (تومان)"
               value={formatToman(summary.goldBubbleTomanPerKg)}
               tone={signToneClass(summary.sign)}
             />
             <Metric
-              label="حباب دلاری هر کیلو"
+              label="حباب هر کیلو طلا (دلار)"
               value={formatUsd(summary.goldBubbleUsdPerKg)}
               tone={signToneClass(summary.sign)}
             />
@@ -314,13 +314,13 @@ function FormulaSection() {
           <h4 className="bubble-formula-h">طلا</h4>
           <ul className="bubble-formula-list">
             <li>دلار محاسباتی = درهم × ۳٫۶۷۲۵</li>
-            <li>ارزش جهانی هر کیلو (دلار) = (اونس × ۱۰۰۰) ÷ ۳۱٫۱۰۴</li>
-            <li>ارزش جهانی هر کیلو (تومان) = ارزش دلاری کیلو × دلار محاسباتی</li>
+            <li>هر کیلو طلا (دلار) = (اونس × ۱۰۰۰) ÷ ۳۱٫۱۰۴</li>
+            <li>هر کیلو طلا (تومان) = هر کیلو طلا (دلار) × دلار محاسباتی</li>
             <li>یک گرم ۱۸ عیار = مظنه ÷ ۴٫۳۳۱۸</li>
             <li>ارزش داخلی هر کیلو طلا = یک گرم ۱۸ عیار × ۱۳۳۳٫۲</li>
-            <li>حباب تومانی هر کیلو = ارزش داخلی − ارزش جهانی</li>
-            <li>حباب دلاری هر کیلو = حباب تومانی ÷ دلار محاسباتی</li>
-            <li>حباب درصدی = (حباب تومانی ÷ ارزش جهانی تومانی) × ۱۰۰</li>
+            <li>حباب هر کیلو طلا (تومان) = ارزش داخلی هر کیلو طلا − هر کیلو طلا (تومان)</li>
+            <li>حباب هر کیلو طلا (دلار) = حباب هر کیلو طلا (تومان) ÷ دلار محاسباتی</li>
+            <li>حباب درصدی = (حباب هر کیلو طلا (تومان) ÷ هر کیلو طلا (تومان)) × ۱۰۰</li>
           </ul>
         </div>
       ) : null}

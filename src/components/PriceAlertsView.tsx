@@ -653,11 +653,13 @@ export function PriceAlertsView() {
 
   if (!data) return null;
 
+  // Only warn when storage is explicitly unavailable (e.g. Vercel without Upstash).
+  // Docker file mode has storageConfigured=true and must not show a banner.
   const storageWarn =
-    data.diagnostics && !data.diagnostics.storageConfigured
-      ? "ذخیره‌سازی هشدارها در این محیط پیکربندی نشده است. برای production باید Upstash Redis REST تنظیم شود."
-      : data.diagnostics?.lastErrorCode
-        ? `وضعیت ذخیره‌سازی: ${data.diagnostics.lastErrorCode}`
+    data.diagnostics && data.diagnostics.storageType === "none"
+      ? "ذخیره‌سازی هشدارها در این محیط پیکربندی نشده است."
+      : data.diagnostics?.storageConfigured === false
+        ? "ذخیره‌سازی هشدارها در این محیط پیکربندی نشده است."
         : null;
 
   return (

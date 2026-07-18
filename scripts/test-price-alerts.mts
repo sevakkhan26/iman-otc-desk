@@ -2,7 +2,8 @@
  * Price-alert engine & store unit tests (no live network required).
  */
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { evaluateCondition } from "../src/lib/priceAlerts/engine.ts";
 import {
@@ -11,17 +12,49 @@ import {
   type LivePriceBundle
 } from "../src/lib/priceAlerts/instruments.ts";
 import {
+  __resetStoreMemoryForTests,
   __setStoreForTests,
+  appendNotification,
   createAlert,
+  getConfiguredDataFile,
+  getStorageDiagnostics,
   listAlerts,
   listNotifications,
   markAllNotificationsRead,
   markNotificationRead,
   newId,
+  PriceAlertStorageError,
+  reloadPriceAlertStore,
+  resolveStorageBackend,
   unreadCount
 } from "../src/lib/priceAlerts/store.ts";
 import { evaluatePriceAlerts } from "../src/lib/priceAlerts/engine.ts";
-import type { PriceAlertRule } from "../src/lib/types.ts";
+import type { PriceAlertNotification, PriceAlertRule } from "../src/lib/types.ts";
+
+type EnvSnapshot = Record<string, string | undefined>;
+
+function snapEnv(keys: string[]): EnvSnapshot {
+  const out: EnvSnapshot = {};
+  for (const k of keys) out[k] = process.env[k];
+  return out;
+}
+
+function restoreEnv(snap: EnvSnapshot) {
+  for (const [k, v] of Object.entries(snap)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+}
+
+const STORAGE_ENV_KEYS = [
+  "VERCEL",
+  "UPSTASH_REDIS_REST_URL",
+  "UPSTASH_REDIS_REST_TOKEN",
+  "PRICE_ALERTS_STORAGE",
+  "PRICE_ALERTS_DATA_DIR",
+  "PRICE_ALERTS_DATA_FILE",
+  "PRICE_ALERTS_FORCE_MEMORY"
+];
 
 let passed = 0;
 let failed = 0;
@@ -515,73 +548,51 @@ async function main() {
   });
 
   await test("21. production mode without Upstash does not use file backend", async () => {
-    const prevVercel = process.env.VERCEL;
-    const prevUrl = process.env.UPSTASH_REDIS_REST_URL;
-    const prevToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+    const prev = snapEnv(STORAGE_ENV_KEYS);
     process.env.VERCEL = "1";
     delete process.env.UPSTASH_REDIS_REST_URL;
     delete process.env.UPSTASH_REDIS_REST_TOKEN;
-    const { resolveStorageBackend, getStorageDiagnostics, __resetStoreMemoryForTests } = await import(
-      "../src/lib/priceAlerts/store.ts"
-    );
+    delete process.env.PRICE_ALERTS_STORAGE;
     await __resetStoreMemoryForTests();
     assert.equal(resolveStorageBackend(), "none");
     const diag = getStorageDiagnostics();
     assert.equal(diag.storageConfigured, false);
     assert.equal(diag.vercel, true);
-    if (prevVercel === undefined) delete process.env.VERCEL;
-    else process.env.VERCEL = prevVercel;
-    if (prevUrl === undefined) delete process.env.UPSTASH_REDIS_REST_URL;
-    else process.env.UPSTASH_REDIS_REST_URL = prevUrl;
-    if (prevToken === undefined) delete process.env.UPSTASH_REDIS_REST_TOKEN;
-    else process.env.UPSTASH_REDIS_REST_TOKEN = prevToken;
+    restoreEnv(prev);
     await __resetStoreMemoryForTests();
   });
 
   await test("22. upstash env selects upstash backend", async () => {
-    const prevVercel = process.env.VERCEL;
-    const prevUrl = process.env.UPSTASH_REDIS_REST_URL;
-    const prevToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+    const prev = snapEnv(STORAGE_ENV_KEYS);
     process.env.VERCEL = "1";
     process.env.UPSTASH_REDIS_REST_URL = "https://example.upstash.io";
     process.env.UPSTASH_REDIS_REST_TOKEN = "test-token";
-    const { resolveStorageBackend, __resetStoreMemoryForTests } = await import("../src/lib/priceAlerts/store.ts");
+    delete process.env.PRICE_ALERTS_STORAGE;
     await __resetStoreMemoryForTests();
     assert.equal(resolveStorageBackend(), "upstash");
-    if (prevVercel === undefined) delete process.env.VERCEL;
-    else process.env.VERCEL = prevVercel;
-    if (prevUrl === undefined) delete process.env.UPSTASH_REDIS_REST_URL;
-    else process.env.UPSTASH_REDIS_REST_URL = prevUrl;
-    if (prevToken === undefined) delete process.env.UPSTASH_REDIS_REST_TOKEN;
-    else process.env.UPSTASH_REDIS_REST_TOKEN = prevToken;
+    restoreEnv(prev);
     await __resetStoreMemoryForTests();
   });
 
   await test("23. local non-vercel defaults to file storage", async () => {
-    const prevVercel = process.env.VERCEL;
+    const prev = snapEnv(STORAGE_ENV_KEYS);
     delete process.env.VERCEL;
     delete process.env.UPSTASH_REDIS_REST_URL;
     delete process.env.UPSTASH_REDIS_REST_TOKEN;
-    const { resolveStorageBackend, __resetStoreMemoryForTests } = await import("../src/lib/priceAlerts/store.ts");
+    delete process.env.PRICE_ALERTS_STORAGE;
     await __resetStoreMemoryForTests();
     assert.equal(resolveStorageBackend(), "file");
-    if (prevVercel !== undefined) process.env.VERCEL = prevVercel;
+    restoreEnv(prev);
     await __resetStoreMemoryForTests();
   });
 
   await test("24. VERCEL=1 never selects file and forbids file write before mkdir", async () => {
-    const prevVercel = process.env.VERCEL;
-    const prevUrl = process.env.UPSTASH_REDIS_REST_URL;
-    const prevToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+    const prev = snapEnv(STORAGE_ENV_KEYS);
     process.env.VERCEL = "1";
     delete process.env.UPSTASH_REDIS_REST_URL;
     delete process.env.UPSTASH_REDIS_REST_TOKEN;
-    const {
-      resolveStorageBackend,
-      __tryWriteFileStoreForTests,
-      __resetStoreMemoryForTests,
-      PriceAlertStorageError
-    } = await import("../src/lib/priceAlerts/store.ts");
+    delete process.env.PRICE_ALERTS_STORAGE;
+    const { __tryWriteFileStoreForTests } = await import("../src/lib/priceAlerts/store.ts");
     await __resetStoreMemoryForTests();
     assert.equal(resolveStorageBackend(), "none");
     let threw = false;
@@ -593,23 +604,16 @@ async function main() {
       assert.equal((error as { code: string }).code, "FILE_STORAGE_FORBIDDEN_ON_VERCEL");
     }
     assert.equal(threw, true);
-    if (prevVercel === undefined) delete process.env.VERCEL;
-    else process.env.VERCEL = prevVercel;
-    if (prevUrl === undefined) delete process.env.UPSTASH_REDIS_REST_URL;
-    else process.env.UPSTASH_REDIS_REST_URL = prevUrl;
-    if (prevToken === undefined) delete process.env.UPSTASH_REDIS_REST_TOKEN;
-    else process.env.UPSTASH_REDIS_REST_TOKEN = prevToken;
+    restoreEnv(prev);
     await __resetStoreMemoryForTests();
   });
 
   await test("25. createPriceAlert on Vercel without Upstash throws STORAGE_NOT_CONFIGURED", async () => {
-    const prevVercel = process.env.VERCEL;
-    const prevUrl = process.env.UPSTASH_REDIS_REST_URL;
-    const prevToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+    const prev = snapEnv(STORAGE_ENV_KEYS);
     process.env.VERCEL = "1";
     delete process.env.UPSTASH_REDIS_REST_URL;
     delete process.env.UPSTASH_REDIS_REST_TOKEN;
-    const { __resetStoreMemoryForTests, PriceAlertStorageError } = await import("../src/lib/priceAlerts/store.ts");
+    delete process.env.PRICE_ALERTS_STORAGE;
     const { createPriceAlert } = await import("../src/lib/priceAlerts/service.ts");
     await __resetStoreMemoryForTests();
     let threw = false;
@@ -629,13 +633,255 @@ async function main() {
       assert.equal((error as { code: string }).code, "STORAGE_NOT_CONFIGURED");
     }
     assert.equal(threw, true);
-    if (prevVercel === undefined) delete process.env.VERCEL;
-    else process.env.VERCEL = prevVercel;
-    if (prevUrl === undefined) delete process.env.UPSTASH_REDIS_REST_URL;
-    else process.env.UPSTASH_REDIS_REST_URL = prevUrl;
-    if (prevToken === undefined) delete process.env.UPSTASH_REDIS_REST_TOKEN;
-    else process.env.UPSTASH_REDIS_REST_TOKEN = prevToken;
+    restoreEnv(prev);
     await __resetStoreMemoryForTests();
+  });
+
+  await test("26. Docker PRICE_ALERTS_STORAGE=file selects file without Upstash", async () => {
+    const prev = snapEnv(STORAGE_ENV_KEYS);
+    delete process.env.VERCEL;
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    process.env.PRICE_ALERTS_STORAGE = "file";
+    process.env.PRICE_ALERTS_DATA_DIR = path.join(os.tmpdir(), "pa-docker-diag");
+    await __resetStoreMemoryForTests();
+    assert.equal(resolveStorageBackend(), "file");
+    const diag = getStorageDiagnostics();
+    assert.equal(diag.storageType, "file");
+    assert.equal(diag.storageConfigured, true);
+    assert.equal(diag.persistent, true);
+    assert.notEqual(diag.storageType, "none");
+    restoreEnv(prev);
+    await __resetStoreMemoryForTests();
+  });
+
+  await test("27. Docker file mode creates data dir and initializes empty store", async () => {
+    const prev = snapEnv(STORAGE_ENV_KEYS);
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "pa-file-"));
+    delete process.env.VERCEL;
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    process.env.PRICE_ALERTS_STORAGE = "file";
+    process.env.PRICE_ALERTS_DATA_DIR = path.join(tmp, "nested", "price-alerts");
+    process.env.PRICE_ALERTS_DATA_FILE = path.join(tmp, "nested", "price-alerts", "price-alerts.json");
+    await __resetStoreMemoryForTests();
+    const rule = baseRule({ id: "docker-init-1", note: "init" });
+    await createAlert(rule);
+    const file = getConfiguredDataFile();
+    const raw = await readFile(file, "utf8");
+    const parsed = JSON.parse(raw) as { alerts: PriceAlertRule[] };
+    assert.equal(parsed.alerts.length, 1);
+    assert.equal(parsed.alerts[0]?.id, "docker-init-1");
+    restoreEnv(prev);
+    await __resetStoreMemoryForTests();
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  await test("28. notification history persists and reloads from file", async () => {
+    const prev = snapEnv(STORAGE_ENV_KEYS);
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "pa-notif-"));
+    delete process.env.VERCEL;
+    process.env.PRICE_ALERTS_STORAGE = "file";
+    process.env.PRICE_ALERTS_DATA_DIR = tmp;
+    process.env.PRICE_ALERTS_DATA_FILE = path.join(tmp, "price-alerts.json");
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    await __resetStoreMemoryForTests();
+    await createAlert(baseRule({ id: "a-persist" }));
+    const note: PriceAlertNotification = {
+      id: "n-persist",
+      alertId: "a-persist",
+      instrument: "usdt_irt",
+      providerId: "bitpin",
+      providerName: "بیت‌پین",
+      priceType: "sell",
+      targetPrice: 1,
+      actualPrice: 2,
+      condition: "gte",
+      triggeredAt: new Date().toISOString(),
+      note: null,
+      readAt: null
+    };
+    await appendNotification(note);
+    await reloadPriceAlertStore();
+    const alerts = await listAlerts();
+    const notes = await listNotifications();
+    assert.equal(alerts.some((a) => a.id === "a-persist"), true);
+    assert.equal(notes.some((n) => n.id === "n-persist"), true);
+    restoreEnv(prev);
+    await __resetStoreMemoryForTests();
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  await test("29. atomic write leaves valid JSON (no truncated final file)", async () => {
+    const prev = snapEnv(STORAGE_ENV_KEYS);
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "pa-atomic-"));
+    delete process.env.VERCEL;
+    process.env.PRICE_ALERTS_STORAGE = "file";
+    process.env.PRICE_ALERTS_DATA_DIR = tmp;
+    process.env.PRICE_ALERTS_DATA_FILE = path.join(tmp, "price-alerts.json");
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    await __resetStoreMemoryForTests();
+    for (let i = 0; i < 5; i++) {
+      await createAlert(baseRule({ id: `atomic-${i}`, note: `n-${i}` }));
+    }
+    const raw = await readFile(getConfiguredDataFile(), "utf8");
+    const parsed = JSON.parse(raw) as { alerts: unknown[] };
+    assert.ok(Array.isArray(parsed.alerts));
+    assert.equal(parsed.alerts.length, 5);
+    restoreEnv(prev);
+    await __resetStoreMemoryForTests();
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  await test("30. concurrent writes serialize without data loss", async () => {
+    const prev = snapEnv(STORAGE_ENV_KEYS);
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "pa-conc-"));
+    delete process.env.VERCEL;
+    process.env.PRICE_ALERTS_STORAGE = "file";
+    process.env.PRICE_ALERTS_DATA_DIR = tmp;
+    process.env.PRICE_ALERTS_DATA_FILE = path.join(tmp, "price-alerts.json");
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    await __resetStoreMemoryForTests();
+    await __setStoreForTests({ alerts: [], notifications: [], updatedAt: null });
+    const jobs = Array.from({ length: 12 }, (_, i) =>
+      createAlert(baseRule({ id: `c-${i}`, note: `concurrent-${i}` }))
+    );
+    await Promise.all(jobs);
+    await reloadPriceAlertStore();
+    const alerts = await listAlerts();
+    assert.equal(alerts.length, 12);
+    const raw = await readFile(getConfiguredDataFile(), "utf8");
+    JSON.parse(raw); // must be valid
+    restoreEnv(prev);
+    await __resetStoreMemoryForTests();
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  await test("31. invalid JSON recovers via backup path without throw on read", async () => {
+    const prev = snapEnv(STORAGE_ENV_KEYS);
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "pa-bad-"));
+    delete process.env.VERCEL;
+    process.env.PRICE_ALERTS_STORAGE = "file";
+    process.env.PRICE_ALERTS_DATA_DIR = tmp;
+    const file = path.join(tmp, "price-alerts.json");
+    process.env.PRICE_ALERTS_DATA_FILE = file;
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    await writeFile(file, "{not-valid-json", "utf8");
+    await __resetStoreMemoryForTests();
+    const alerts = await listAlerts();
+    assert.deepEqual(alerts, []);
+    const raw = await readFile(file, "utf8");
+    const parsed = JSON.parse(raw) as { alerts: unknown[] };
+    assert.deepEqual(parsed.alerts, []);
+    restoreEnv(prev);
+    await __resetStoreMemoryForTests();
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  await test("32. Vercel never uses file even when PRICE_ALERTS_STORAGE=file", async () => {
+    const prev = snapEnv(STORAGE_ENV_KEYS);
+    process.env.VERCEL = "1";
+    process.env.PRICE_ALERTS_STORAGE = "file";
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    await __resetStoreMemoryForTests();
+    assert.equal(resolveStorageBackend(), "none");
+    const diag = getStorageDiagnostics();
+    assert.equal(diag.storageType, "none");
+    assert.equal(diag.storageConfigured, false);
+    restoreEnv(prev);
+    await __resetStoreMemoryForTests();
+  });
+
+  await test("33. Docker file mode diagnostics are not STORAGE_NOT_CONFIGURED", async () => {
+    const prev = snapEnv(STORAGE_ENV_KEYS);
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "pa-diag-"));
+    delete process.env.VERCEL;
+    process.env.PRICE_ALERTS_STORAGE = "file";
+    process.env.PRICE_ALERTS_DATA_DIR = tmp;
+    process.env.PRICE_ALERTS_DATA_FILE = path.join(tmp, "price-alerts.json");
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    await __resetStoreMemoryForTests();
+    const diag = getStorageDiagnostics();
+    assert.equal(diag.storageType, "file");
+    assert.equal(diag.storageConfigured, true);
+    assert.equal(diag.persistent, true);
+    assert.notEqual(diag.lastErrorCode, "STORAGE_NOT_CONFIGURED");
+    // UI banner key: storageType must not be none
+    assert.notEqual(diag.storageType, "none");
+    restoreEnv(prev);
+    await __resetStoreMemoryForTests();
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  await test("34. explicit PRICE_ALERTS_STORAGE=none returns 503 path on write", async () => {
+    const prev = snapEnv(STORAGE_ENV_KEYS);
+    process.env.PRICE_ALERTS_STORAGE = "none";
+    delete process.env.VERCEL;
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    await __resetStoreMemoryForTests();
+    assert.equal(resolveStorageBackend(), "none");
+    const { createPriceAlert } = await import("../src/lib/priceAlerts/service.ts");
+    let code: string | null = null;
+    try {
+      await createPriceAlert({
+        instrument: "usdt_irt",
+        targetPrice: 100000,
+        condition: "gte",
+        priceType: "mid",
+        providerMode: "any",
+        repeatMode: "once",
+        createdBy: "admin"
+      });
+    } catch (error) {
+      code = error instanceof PriceAlertStorageError ? error.code : "other";
+    }
+    assert.equal(code, "STORAGE_NOT_CONFIGURED");
+    restoreEnv(prev);
+    await __resetStoreMemoryForTests();
+  });
+
+  await test("35. all alert mutations go through shared adapter (create + notify)", async () => {
+    const prev = snapEnv(STORAGE_ENV_KEYS);
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "pa-shared-"));
+    delete process.env.VERCEL;
+    process.env.PRICE_ALERTS_STORAGE = "file";
+    process.env.PRICE_ALERTS_DATA_DIR = tmp;
+    process.env.PRICE_ALERTS_DATA_FILE = path.join(tmp, "price-alerts.json");
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    await __resetStoreMemoryForTests();
+    await createAlert(baseRule({ id: "shared-1" }));
+    await appendNotification({
+      id: "shared-n1",
+      alertId: "shared-1",
+      instrument: "usdt_irt",
+      providerId: "bitpin",
+      providerName: "بیت‌پین",
+      priceType: "sell",
+      targetPrice: 1,
+      actualPrice: 2,
+      condition: "gte",
+      triggeredAt: new Date().toISOString(),
+      note: null,
+      readAt: null
+    });
+    await reloadPriceAlertStore();
+    const file = JSON.parse(await readFile(getConfiguredDataFile(), "utf8")) as {
+      alerts: { id: string }[];
+      notifications: { id: string }[];
+    };
+    assert.equal(file.alerts.some((a) => a.id === "shared-1"), true);
+    assert.equal(file.notifications.some((n) => n.id === "shared-n1"), true);
+    restoreEnv(prev);
+    await __resetStoreMemoryForTests();
+    await rm(tmp, { recursive: true, force: true });
   });
 
   console.log(`\nResult: ${passed} passed, ${failed} failed`);

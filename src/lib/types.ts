@@ -325,6 +325,9 @@ export interface PriceAlertSummary {
 export interface PriceAlertsStorageDiagnostics {
   storageType: "file" | "upstash" | "none";
   storageConfigured: boolean;
+  persistent: boolean;
+  readable?: boolean | null;
+  writable?: boolean | null;
   /** Same as vercel — explicit for production clients. */
   isVercel?: boolean;
   vercel: boolean;

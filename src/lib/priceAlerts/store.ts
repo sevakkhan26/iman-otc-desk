@@ -1,5 +1,15 @@
+/**
+ * Price Alerts persistence adapter.
+ *
+ * Backends:
+ * - file: Docker production + local (writable PRICE_ALERTS_DATA_DIR). Single writer instance only.
+ * - upstash: optional Redis REST (e.g. Vercel)
+ * - none: no durable store
+ *
+ * Do not horizontally scale multiple app replicas against the same JSON file backend.
+ */
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, constants, copyFile, mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { PriceAlertNotification, PriceAlertRule } from "@/lib/types";
 
@@ -12,6 +22,10 @@ export type StorageBackendType = "file" | "upstash" | "none";
 export type StorageDiagnostics = {
   storageType: StorageBackendType;
   storageConfigured: boolean;
+  persistent: boolean;
+  readable: boolean | null;
+  writable: boolean | null;
+  isVercel?: boolean;
   vercel: boolean;
   runtime: string;
   commit: string | null;
@@ -39,13 +53,13 @@ export class PriceAlertStorageError extends Error {
 let mem: StoreFile | null = null;
 let writeChain: Promise<void> = Promise.resolve();
 let lastErrorCode: string | null = null;
+let migrationAttempted = false;
 
 function emptyStore(): StoreFile {
   return { alerts: [], notifications: [], updatedAt: null };
 }
 
 function isVercel(): boolean {
-  // Explicit Vercel marker (do not use NODE_ENV alone).
   return process.env.VERCEL === "1";
 }
 
@@ -55,31 +69,88 @@ function hasUpstash(): boolean {
   return url.length > 0 && token.length > 0;
 }
 
+function explicitStorageMode(): StorageBackendType | null {
+  const raw = (process.env.PRICE_ALERTS_STORAGE ?? "").trim().toLowerCase();
+  if (raw === "file" || raw === "upstash" || raw === "none") return raw;
+  return null;
+}
+
 /**
- * Storage selection (strict order):
- * 1. Upstash REST configured → upstash
- * 2. Vercel without Upstash → none (never file)
- * 3. Non-Vercel local → file
+ * Storage selection:
+ * 1. Explicit PRICE_ALERTS_STORAGE when set
+ * 2. Else Upstash if both REST vars set
+ * 3. Else Vercel → none (never file)
+ * 4. Else local/dev → file
  */
 export function resolveStorageBackend(): StorageBackendType {
+  const explicit = explicitStorageMode();
+  if (explicit === "file") {
+    // Never use file on Vercel even if misconfigured — no silent local writes.
+    if (isVercel()) return hasUpstash() ? "upstash" : "none";
+    return "file";
+  }
+  if (explicit === "upstash") {
+    // Explicit upstash never falls back to file; missing credentials fail at read/write.
+    return "upstash";
+  }
+  if (explicit === "none") return "none";
+
+  // Implicit selection (no PRICE_ALERTS_STORAGE):
   if (hasUpstash()) return "upstash";
   if (isVercel()) return "none";
   if (process.env.PRICE_ALERTS_FORCE_MEMORY === "1") return "none";
+  // Local development default — file store under .data/
   return "file";
 }
 
-export function getStorageDiagnostics(): StorageDiagnostics {
+/** Configured data directory for file backend (absolute when possible). */
+export function getConfiguredDataDir(): string {
+  const fromEnv = process.env.PRICE_ALERTS_DATA_DIR?.trim();
+  if (fromEnv) return path.resolve(fromEnv);
+  // Local default (gitignored)
+  return path.resolve(process.cwd(), ".data", "price-alerts");
+}
+
+export function getConfiguredDataFile(): string {
+  const fromEnv = process.env.PRICE_ALERTS_DATA_FILE?.trim();
+  if (fromEnv) return path.resolve(fromEnv);
+  return path.join(getConfiguredDataDir(), "price-alerts.json");
+}
+
+function legacyCandidatePaths(): string[] {
+  const cwd = process.cwd();
+  return [
+    path.join(cwd, ".data", "price-alerts.json"),
+    path.join(cwd, ".data", "price-alerts", "price-alerts.json"),
+    "/app/.data/price-alerts.json"
+  ];
+}
+
+export function getStorageDiagnostics(extra?: {
+  readable?: boolean | null;
+  writable?: boolean | null;
+}): StorageDiagnostics {
   const type = resolveStorageBackend();
+  const configured =
+    type === "file" || (type === "upstash" && hasUpstash());
   return {
     storageType: type,
-    storageConfigured: type === "upstash" || type === "file",
+    storageConfigured: configured,
+    persistent: type === "upstash" || type === "file",
+    readable: extra?.readable ?? (type === "none" || !configured ? false : null),
+    writable: extra?.writable ?? (type === "none" || !configured ? false : null),
+    isVercel: isVercel(),
     vercel: isVercel(),
     runtime: "nodejs",
-    commit: process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA ?? null,
+    commit:
+      process.env.GIT_COMMIT_SHA ??
+      process.env.VERCEL_GIT_COMMIT_SHA ??
+      process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA ??
+      null,
     region: process.env.VERCEL_REGION ?? null,
     databaseReachable:
       type === "upstash"
-        ? lastErrorCode === null || lastErrorCode !== "UPSTASH_UNREACHABLE"
+        ? hasUpstash() && (lastErrorCode === null || lastErrorCode !== "UPSTASH_UNREACHABLE")
         : type === "file"
           ? true
           : false,
@@ -88,7 +159,48 @@ export function getStorageDiagnostics(): StorageDiagnostics {
   };
 }
 
-/** Hard guard: never touch the project filesystem on Vercel. */
+/** Probe file storage health without mutating user data. */
+export async function probeFileStorageHealth(): Promise<{
+  readable: boolean;
+  writable: boolean;
+  ok: boolean;
+  code: string | null;
+}> {
+  if (resolveStorageBackend() !== "file") {
+    return { readable: false, writable: false, ok: false, code: "NOT_FILE_BACKEND" };
+  }
+  if (isVercel()) {
+    return { readable: false, writable: false, ok: false, code: "FILE_STORAGE_FORBIDDEN_ON_VERCEL" };
+  }
+  const dir = getConfiguredDataDir();
+  const file = getConfiguredDataFile();
+  try {
+    await mkdir(dir, { recursive: true });
+    await access(dir, constants.R_OK | constants.W_OK);
+    // Write probe in same dir, then remove
+    const probe = path.join(dir, `.write-probe-${process.pid}`);
+    await writeFile(probe, "ok", "utf8");
+    await access(probe, constants.R_OK);
+    const { unlink } = await import("node:fs/promises");
+    await unlink(probe).catch(() => {});
+    // Ensure data file path is accessible
+    try {
+      await access(file, constants.R_OK);
+    } catch {
+      // missing file is OK — will be created on first write
+    }
+    lastErrorCode = null;
+    return { readable: true, writable: true, ok: true, code: null };
+  } catch (error) {
+    const code =
+      error instanceof Error && "code" in error
+        ? String((error as NodeJS.ErrnoException).code)
+        : "FILE_HEALTH_FAILED";
+    lastErrorCode = code;
+    return { readable: false, writable: false, ok: false, code };
+  }
+}
+
 function assertFileStoreAllowed(): void {
   if (isVercel()) {
     lastErrorCode = "FILE_STORAGE_FORBIDDEN_ON_VERCEL";
@@ -99,52 +211,142 @@ function assertFileStoreAllowed(): void {
   }
 }
 
-function dataDir(): string {
-  assertFileStoreAllowed();
-  return path.join(process.cwd(), ".data");
+function parseStoreJson(raw: string): StoreFile {
+  const trimmed = raw.trim();
+  if (!trimmed) return emptyStore();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    throw new PriceAlertStorageError("INVALID_JSON", "فایل ذخیره‌سازی هشدارها نامعتبر است");
+  }
+  if (!parsed || typeof parsed !== "object") {
+    throw new PriceAlertStorageError("INVALID_JSON", "فایل ذخیره‌سازی هشدارها نامعتبر است");
+  }
+  const obj = parsed as StoreFile;
+  if (!Array.isArray(obj.alerts) || !Array.isArray(obj.notifications)) {
+    throw new PriceAlertStorageError("INVALID_JSON", "ساختار فایل ذخیره‌سازی هشدارها نامعتبر است");
+  }
+  return {
+    alerts: obj.alerts,
+    notifications: obj.notifications,
+    updatedAt: typeof obj.updatedAt === "string" ? obj.updatedAt : null
+  };
 }
 
-function storePath(): string {
-  return path.join(dataDir(), "price-alerts.json");
+async function migrateLegacyIfNeeded(targetFile: string): Promise<void> {
+  if (migrationAttempted) return;
+  migrationAttempted = true;
+  try {
+    await access(targetFile, constants.F_OK);
+    // target exists — never overwrite
+    return;
+  } catch {
+    // continue
+  }
+  for (const legacy of legacyCandidatePaths()) {
+    if (path.resolve(legacy) === path.resolve(targetFile)) continue;
+    try {
+      const raw = await readFile(legacy, "utf8");
+      parseStoreJson(raw); // validate
+      await mkdir(path.dirname(targetFile), { recursive: true });
+      await copyFile(legacy, targetFile);
+      console.info("[priceAlerts] migrated legacy store to persistent data file");
+      return;
+    } catch {
+      // try next legacy path
+    }
+  }
+}
+
+async function ensureStoreFile(): Promise<string> {
+  assertFileStoreAllowed();
+  const dir = getConfiguredDataDir();
+  const file = getConfiguredDataFile();
+  await mkdir(dir, { recursive: true });
+  await migrateLegacyIfNeeded(file);
+  try {
+    await access(file, constants.F_OK);
+  } catch {
+    const empty = JSON.stringify(emptyStore());
+    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(tmp, empty, "utf8");
+    await rename(tmp, file);
+  }
+  return file;
 }
 
 async function readFileStore(): Promise<StoreFile> {
   assertFileStoreAllowed();
   try {
-    const raw = await readFile(storePath(), "utf8");
-    const parsed = JSON.parse(raw) as StoreFile;
-    if (!parsed || !Array.isArray(parsed.alerts) || !Array.isArray(parsed.notifications)) {
-      return emptyStore();
+    const file = await ensureStoreFile();
+    const raw = await readFile(file, "utf8");
+    try {
+      return parseStoreJson(raw);
+    } catch (error) {
+      if (error instanceof PriceAlertStorageError && error.code === "INVALID_JSON") {
+        // Backup corrupt file once and re-init empty
+        try {
+          const backup = `${file}.corrupt.${Date.now()}.bak`;
+          await copyFile(file, backup);
+          console.error("[priceAlerts] corrupt store backed up; reinitializing empty store");
+        } catch {
+          console.error("[priceAlerts] corrupt store; could not create backup");
+        }
+        const empty = emptyStore();
+        await atomicWriteFileStore(empty);
+        lastErrorCode = "INVALID_JSON_RECOVERED";
+        return empty;
+      }
+      throw error;
     }
-    return {
-      alerts: parsed.alerts,
-      notifications: parsed.notifications,
-      updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null
-    };
-  } catch {
-    return emptyStore();
+  } catch (error) {
+    if (error instanceof PriceAlertStorageError) throw error;
+    lastErrorCode = "FILE_READ_FAILED";
+    throw new PriceAlertStorageError("FILE_READ_FAILED", "خواندن ذخیره‌سازی فایل ناموفق بود");
   }
 }
 
-async function writeFileStore(file: StoreFile): Promise<void> {
-  // Must throw before any mkdir/writeFile on Vercel.
+async function atomicWriteFileStore(fileData: StoreFile): Promise<void> {
   assertFileStoreAllowed();
+  const dir = getConfiguredDataDir();
+  const file = getConfiguredDataFile();
+  await mkdir(dir, { recursive: true });
+  const tmp = path.join(dir, `.price-alerts.${process.pid}.${Date.now()}.tmp`);
+  const payload = JSON.stringify(fileData);
   try {
-    await mkdir(dataDir(), { recursive: true });
-    await writeFile(storePath(), JSON.stringify(file, null, 0), "utf8");
+    const handle = await open(tmp, "w");
+    try {
+      await handle.writeFile(payload, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(tmp, file);
     lastErrorCode = null;
   } catch (error) {
     if (error instanceof PriceAlertStorageError) throw error;
+    try {
+      const { unlink } = await import("node:fs/promises");
+      await unlink(tmp).catch(() => {});
+    } catch {
+      /* ignore */
+    }
     const code =
       error instanceof Error && "code" in error
         ? String((error as NodeJS.ErrnoException).code)
         : "FILE_WRITE_FAILED";
-    lastErrorCode = code === "EROFS" || code === "EACCES" ? "FILESYSTEM_READONLY" : "FILE_WRITE_FAILED";
+    lastErrorCode =
+      code === "EROFS" || code === "EACCES" ? "FILESYSTEM_READONLY" : "FILE_WRITE_FAILED";
     throw new PriceAlertStorageError(
       lastErrorCode,
       "ذخیره‌سازی فایل برای هشدارها در این محیط در دسترس نیست"
     );
   }
+}
+
+async function writeFileStore(file: StoreFile): Promise<void> {
+  await atomicWriteFileStore(file);
 }
 
 async function upstashCommand(command: unknown[]): Promise<unknown> {
@@ -184,15 +386,7 @@ async function readUpstashStore(): Promise<StoreFile> {
     const result = await upstashCommand(["GET", REDIS_KEY]);
     if (result == null || result === "") return emptyStore();
     const raw = typeof result === "string" ? result : JSON.stringify(result);
-    const parsed = JSON.parse(raw) as StoreFile;
-    if (!parsed || !Array.isArray(parsed.alerts) || !Array.isArray(parsed.notifications)) {
-      return emptyStore();
-    }
-    return {
-      alerts: parsed.alerts,
-      notifications: parsed.notifications,
-      updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null
-    };
+    return parseStoreJson(raw);
   } catch (error) {
     if (error instanceof PriceAlertStorageError) throw error;
     lastErrorCode = "UPSTASH_UNREACHABLE";
@@ -208,7 +402,6 @@ async function readBackend(): Promise<StoreFile> {
   const backend = resolveStorageBackend();
   if (backend === "upstash") return readUpstashStore();
   if (backend === "file") return readFileStore();
-  // none — empty durable store (no silent tmp persistence)
   lastErrorCode = isVercel() ? "STORAGE_NOT_CONFIGURED" : "STORAGE_DISABLED";
   return emptyStore();
 }
@@ -227,7 +420,7 @@ async function writeBackend(file: StoreFile): Promise<void> {
   throw new PriceAlertStorageError(
     lastErrorCode,
     isVercel()
-      ? "در Vercel باید UPSTASH_REDIS_REST_URL و UPSTASH_REDIS_REST_TOKEN تنظیم شود"
+      ? "ذخیره‌سازی هشدارها در محیط اصلی تنظیم نشده است."
       : "ذخیره‌سازی هشدارها غیرفعال است"
   );
 }
@@ -238,7 +431,6 @@ export async function loadPriceAlertStore(): Promise<StoreFile> {
   return mem;
 }
 
-/** Force re-read from durable backend (clears process memory). */
 export async function reloadPriceAlertStore(): Promise<StoreFile> {
   mem = null;
   return loadPriceAlertStore();
@@ -246,10 +438,9 @@ export async function reloadPriceAlertStore(): Promise<StoreFile> {
 
 async function mutate(mutator: (store: StoreFile) => void): Promise<StoreFile> {
   const run = writeChain.then(async () => {
-    // Always reload from durable store before write on serverless (fresh instance memory is empty,
-    // but also avoids stale cross-request memory when backend is shared).
     const backend = resolveStorageBackend();
-    if (backend === "upstash" || !mem) {
+    // Always re-read file/upstash before write so concurrent mutate chain is consistent.
+    if (backend === "upstash" || backend === "file" || !mem) {
       mem = await readBackend();
     }
     const store = mem ?? emptyStore();
@@ -387,7 +578,6 @@ export async function unreadCount(): Promise<number> {
   return store.notifications.filter((n) => !n.readAt).length;
 }
 
-/** Soft update used during evaluation: never throws on storage failure (logs via lastErrorCode). */
 export async function updateAlertSoft(
   id: string,
   patch: Partial<PriceAlertRule>
@@ -410,20 +600,17 @@ export async function appendNotificationSoft(n: PriceAlertNotification): Promise
   }
 }
 
-/** Test helper: replace store contents (used by unit tests). */
 export async function __setStoreForTests(file: StoreFile): Promise<void> {
   mem = {
     alerts: [...file.alerts],
     notifications: [...file.notifications],
     updatedAt: file.updatedAt
   };
-  // Never write files on Vercel; only persist to disk for local file-backend tests.
   if (!isVercel() && resolveStorageBackend() === "file") {
     await writeFileStore(mem);
   }
 }
 
-/** Exported for regression tests — must throw on Vercel before mkdir. */
 export async function __tryWriteFileStoreForTests(file: StoreFile): Promise<void> {
   await writeFileStore(file);
 }
@@ -431,4 +618,5 @@ export async function __tryWriteFileStoreForTests(file: StoreFile): Promise<void
 export async function __resetStoreMemoryForTests(): Promise<void> {
   mem = null;
   lastErrorCode = null;
+  migrationAttempted = false;
 }

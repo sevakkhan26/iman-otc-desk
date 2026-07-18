@@ -1,0 +1,53 @@
+# Version-controlled production compose for iman-otc-desk.
+#
+# Deploy from this repository (preferred):
+#   docker compose up -d --build --force-recreate iman-otc-desk
+#
+# Or from /home/server/docker-projects after one-time alignment (see docs/DOCKER-DEPLOYMENT.md).
+#
+# IMPORTANT: never run `docker compose down -v` in normal deploy — it deletes
+# the iman-otc-alerts-data volume and destroys alert history.
+#
+# Scaling: file backend supports ONE active writer. Do not run multiple replicas
+# against the same JSON file; switch PRICE_ALERTS_STORAGE=upstash for multi-replica.
+
+services:
+  iman-otc-desk:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: iman-otc-desk:latest
+    container_name: iman-otc-desk
+    restart: unless-stopped
+    ports:
+      - "${IMAN_OTC_PORT:-3000}:3000"
+    # Provide secrets via host environment or a local .env (never committed).
+    # Compose auto-loads .env for ${VAR} substitution; app secrets should be
+    # injected with environment: / env_file on the server without committing them.
+    environment:
+      NODE_ENV: production
+      # Explicit file storage for Docker — no Upstash required.
+      PRICE_ALERTS_STORAGE: file
+      PRICE_ALERTS_DATA_DIR: /app/data/price-alerts
+      PRICE_ALERTS_DATA_FILE: /app/data/price-alerts/price-alerts.json
+      # Optional: surface git SHA in diagnostics (set by deploy script when available)
+      GIT_COMMIT_SHA: ${GIT_COMMIT_SHA:-}
+    volumes:
+      # Named volume survives restart, rebuild, force-recreate, and git pull.
+      - iman-otc-alerts-data:/app/data/price-alerts
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/auth/me').then(r=>process.exit(r.status===401||r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+volumes:
+  iman-otc-alerts-data:
+    name: iman-otc-alerts-data

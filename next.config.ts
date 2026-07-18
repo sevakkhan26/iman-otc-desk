@@ -3,6 +3,8 @@ import packageJson from "./package.json";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // Required for production Docker image (copies server.js + traced deps).
+  output: "standalone",
   env: {
     NEXT_PUBLIC_APP_VERSION: packageJson.version
   }

@@ -13,6 +13,7 @@ import {
   listNotifications,
   newId,
   PriceAlertStorageError,
+  probeFileStorageHealth,
   resolveStorageBackend,
   unreadCount,
   updateAlert
@@ -51,14 +52,27 @@ export async function loadLivePriceBundle(): Promise<LivePriceBundle> {
   };
 }
 
-function buildDiagnostics(
+async function buildDiagnostics(
   role: string | null,
   alertOk: boolean,
   notifOk: boolean
-): PriceAlertsStorageDiagnostics {
+): Promise<PriceAlertsStorageDiagnostics> {
   const base = getStorageDiagnostics();
+  let readable = base.readable;
+  let writable = base.writable;
+  if (base.storageType === "file") {
+    const health = await probeFileStorageHealth();
+    readable = health.readable;
+    writable = health.writable;
+  } else if (base.storageType === "upstash") {
+    readable = alertOk && notifOk;
+    writable = alertOk;
+  }
   return {
     ...base,
+    persistent: base.storageType === "file" || base.storageType === "upstash",
+    readable,
+    writable,
     isVercel: base.vercel,
     alertQuerySucceeded: alertOk,
     notificationQuerySucceeded: notifOk,
@@ -115,15 +129,13 @@ export async function getPriceAlertsPage(role: string | null = null): Promise<Pr
   let lastEvaluatedAt: string | null = null;
 
   if (backend === "none") {
-    // Do not fake success with silent empty durable state on Vercel without config —
-    // still return instrument snapshots so the UI can render, plus explicit diagnostics.
     return jsonSafePage({
       summary: { active: 0, triggered: 0, unread: 0 },
       instruments: buildInstrumentSnapshots(live),
       alerts: [],
       notifications: [],
       lastEvaluatedAt: null,
-      diagnostics: buildDiagnostics(role, false, false)
+      diagnostics: await buildDiagnostics(role, false, false)
     });
   }
 
@@ -163,7 +175,7 @@ export async function getPriceAlertsPage(role: string | null = null): Promise<Pr
     alerts,
     notifications,
     lastEvaluatedAt,
-    diagnostics: buildDiagnostics(role, alertOk, notifOk)
+    diagnostics: await buildDiagnostics(role, alertOk, notifOk)
   });
 }
 
@@ -197,7 +209,7 @@ export async function createPriceAlert(input: CreateAlertInput): Promise<PriceAl
   if (resolveStorageBackend() === "none") {
     throw new PriceAlertStorageError(
       "STORAGE_NOT_CONFIGURED",
-      "ذخیره‌سازی production پیکربندی نشده است (Upstash Redis REST)"
+      "ذخیره‌سازی هشدارها در این محیط پیکربندی نشده است"
     );
   }
   const now = new Date().toISOString();
@@ -237,7 +249,7 @@ export async function patchPriceAlert(
   if (resolveStorageBackend() === "none") {
     throw new PriceAlertStorageError(
       "STORAGE_NOT_CONFIGURED",
-      "ذخیره‌سازی production پیکربندی نشده است (Upstash Redis REST)"
+      "ذخیره‌سازی هشدارها در این محیط پیکربندی نشده است"
     );
   }
   const existing = (await listAlerts()).find((a) => a.id === id);
@@ -283,7 +295,7 @@ export async function removePriceAlert(id: string): Promise<boolean> {
   if (resolveStorageBackend() === "none") {
     throw new PriceAlertStorageError(
       "STORAGE_NOT_CONFIGURED",
-      "ذخیره‌سازی production پیکربندی نشده است (Upstash Redis REST)"
+      "ذخیره‌سازی هشدارها در این محیط پیکربندی نشده است"
     );
   }
   return deleteAlert(id);

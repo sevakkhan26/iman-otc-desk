@@ -1,0 +1,18 @@
+# Optional override when this repo is composed from an external parent directory.
+# Example (from /home/server/docker-projects):
+#   docker compose -f docker-compose.yml -f /path/to/iman-otc-desk/docker-compose.production.yml up -d --build
+#
+# Prefer using this repository's docker-compose.yml directly after one-time alignment.
+
+services:
+  iman-otc-desk:
+    environment:
+      PRICE_ALERTS_STORAGE: file
+      PRICE_ALERTS_DATA_DIR: /app/data/price-alerts
+      PRICE_ALERTS_DATA_FILE: /app/data/price-alerts/price-alerts.json
+    volumes:
+      - iman-otc-alerts-data:/app/data/price-alerts
+
+volumes:
+  iman-otc-alerts-data:
+    name: iman-otc-alerts-data

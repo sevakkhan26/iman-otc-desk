@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/authSession";
-import { clearNotifications, listNotifications, unreadCount } from "@/lib/priceAlerts/store";
+import {
+  clearNotifications,
+  getStorageDiagnostics,
+  listNotifications,
+  PriceAlertStorageError,
+  resolveStorageBackend,
+  unreadCount
+} from "@/lib/priceAlerts/store";
 import { evaluatePriceAlerts } from "@/lib/priceAlerts/engine";
 import { loadLivePriceBundle } from "@/lib/priceAlerts/service";
 
@@ -22,6 +29,20 @@ export async function GET(request: Request) {
 
   const url = new URL(request.url);
   const evaluate = url.searchParams.get("evaluate") !== "0";
+
+  if (resolveStorageBackend() === "none") {
+    return json({
+      items: [],
+      unread: 0,
+      diagnostics: {
+        ...getStorageDiagnostics(),
+        alertQuerySucceeded: false,
+        notificationQuerySucceeded: false,
+        authenticatedRole: session.r
+      }
+    });
+  }
+
   if (evaluate) {
     try {
       const live = await loadLivePriceBundle();
@@ -31,9 +52,33 @@ export async function GET(request: Request) {
     }
   }
 
-  const items = await listNotifications();
-  const unread = await unreadCount();
-  return json({ items, unread });
+  try {
+    const items = await listNotifications();
+    const unread = await unreadCount();
+    return json({
+      items,
+      unread,
+      diagnostics: {
+        ...getStorageDiagnostics(),
+        alertQuerySucceeded: true,
+        notificationQuerySucceeded: true,
+        authenticatedRole: session.r
+      }
+    });
+  } catch (error) {
+    if (error instanceof PriceAlertStorageError) {
+      return json(
+        {
+          error: error.code,
+          message: error.message,
+          diagnostics: getStorageDiagnostics()
+        },
+        error.code.includes("NOT_CONFIGURED") ? 503 : 500
+      );
+    }
+    console.error("[api/alerts/notifications]", error instanceof Error ? error.stack : error);
+    return json({ error: "failed", message: "خطای سرور هنگام بارگذاری اعلان‌ها" }, 500);
+  }
 }
 
 export async function DELETE() {
@@ -42,6 +87,13 @@ export async function DELETE() {
   if (session.r !== "admin") {
     return json({ error: "forbidden", message: "فقط ادمین می‌تواند تاریخچه را پاک کند" }, 403);
   }
-  const count = await clearNotifications();
-  return json({ ok: true, cleared: count });
+  try {
+    const count = await clearNotifications();
+    return json({ ok: true, cleared: count });
+  } catch (error) {
+    if (error instanceof PriceAlertStorageError) {
+      return json({ error: error.code, message: error.message }, 503);
+    }
+    return json({ error: "failed", message: "پاک‌کردن تاریخچه ناموفق بود" }, 500);
+  }
 }

@@ -514,6 +514,130 @@ async function main() {
     assert.equal(notes[0]?.providerId, "nobitex");
   });
 
+  await test("21. production mode without Upstash does not use file backend", async () => {
+    const prevVercel = process.env.VERCEL;
+    const prevUrl = process.env.UPSTASH_REDIS_REST_URL;
+    const prevToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+    process.env.VERCEL = "1";
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    const { resolveStorageBackend, getStorageDiagnostics, __resetStoreMemoryForTests } = await import(
+      "../src/lib/priceAlerts/store.ts"
+    );
+    await __resetStoreMemoryForTests();
+    assert.equal(resolveStorageBackend(), "none");
+    const diag = getStorageDiagnostics();
+    assert.equal(diag.storageConfigured, false);
+    assert.equal(diag.vercel, true);
+    if (prevVercel === undefined) delete process.env.VERCEL;
+    else process.env.VERCEL = prevVercel;
+    if (prevUrl === undefined) delete process.env.UPSTASH_REDIS_REST_URL;
+    else process.env.UPSTASH_REDIS_REST_URL = prevUrl;
+    if (prevToken === undefined) delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    else process.env.UPSTASH_REDIS_REST_TOKEN = prevToken;
+    await __resetStoreMemoryForTests();
+  });
+
+  await test("22. upstash env selects upstash backend", async () => {
+    const prevVercel = process.env.VERCEL;
+    const prevUrl = process.env.UPSTASH_REDIS_REST_URL;
+    const prevToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+    process.env.VERCEL = "1";
+    process.env.UPSTASH_REDIS_REST_URL = "https://example.upstash.io";
+    process.env.UPSTASH_REDIS_REST_TOKEN = "test-token";
+    const { resolveStorageBackend, __resetStoreMemoryForTests } = await import("../src/lib/priceAlerts/store.ts");
+    await __resetStoreMemoryForTests();
+    assert.equal(resolveStorageBackend(), "upstash");
+    if (prevVercel === undefined) delete process.env.VERCEL;
+    else process.env.VERCEL = prevVercel;
+    if (prevUrl === undefined) delete process.env.UPSTASH_REDIS_REST_URL;
+    else process.env.UPSTASH_REDIS_REST_URL = prevUrl;
+    if (prevToken === undefined) delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    else process.env.UPSTASH_REDIS_REST_TOKEN = prevToken;
+    await __resetStoreMemoryForTests();
+  });
+
+  await test("23. local non-vercel defaults to file storage", async () => {
+    const prevVercel = process.env.VERCEL;
+    delete process.env.VERCEL;
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    const { resolveStorageBackend, __resetStoreMemoryForTests } = await import("../src/lib/priceAlerts/store.ts");
+    await __resetStoreMemoryForTests();
+    assert.equal(resolveStorageBackend(), "file");
+    if (prevVercel !== undefined) process.env.VERCEL = prevVercel;
+    await __resetStoreMemoryForTests();
+  });
+
+  await test("24. VERCEL=1 never selects file and forbids file write before mkdir", async () => {
+    const prevVercel = process.env.VERCEL;
+    const prevUrl = process.env.UPSTASH_REDIS_REST_URL;
+    const prevToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+    process.env.VERCEL = "1";
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    const {
+      resolveStorageBackend,
+      __tryWriteFileStoreForTests,
+      __resetStoreMemoryForTests,
+      PriceAlertStorageError
+    } = await import("../src/lib/priceAlerts/store.ts");
+    await __resetStoreMemoryForTests();
+    assert.equal(resolveStorageBackend(), "none");
+    let threw = false;
+    try {
+      await __tryWriteFileStoreForTests({ alerts: [], notifications: [], updatedAt: null });
+    } catch (error) {
+      threw = true;
+      assert.ok(error instanceof PriceAlertStorageError);
+      assert.equal((error as { code: string }).code, "FILE_STORAGE_FORBIDDEN_ON_VERCEL");
+    }
+    assert.equal(threw, true);
+    if (prevVercel === undefined) delete process.env.VERCEL;
+    else process.env.VERCEL = prevVercel;
+    if (prevUrl === undefined) delete process.env.UPSTASH_REDIS_REST_URL;
+    else process.env.UPSTASH_REDIS_REST_URL = prevUrl;
+    if (prevToken === undefined) delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    else process.env.UPSTASH_REDIS_REST_TOKEN = prevToken;
+    await __resetStoreMemoryForTests();
+  });
+
+  await test("25. createPriceAlert on Vercel without Upstash throws STORAGE_NOT_CONFIGURED", async () => {
+    const prevVercel = process.env.VERCEL;
+    const prevUrl = process.env.UPSTASH_REDIS_REST_URL;
+    const prevToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+    process.env.VERCEL = "1";
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    const { __resetStoreMemoryForTests, PriceAlertStorageError } = await import("../src/lib/priceAlerts/store.ts");
+    const { createPriceAlert } = await import("../src/lib/priceAlerts/service.ts");
+    await __resetStoreMemoryForTests();
+    let threw = false;
+    try {
+      await createPriceAlert({
+        instrument: "usdt_irt",
+        targetPrice: 100000,
+        condition: "gte",
+        priceType: "mid",
+        providerMode: "any",
+        repeatMode: "once",
+        createdBy: "admin"
+      });
+    } catch (error) {
+      threw = true;
+      assert.ok(error instanceof PriceAlertStorageError);
+      assert.equal((error as { code: string }).code, "STORAGE_NOT_CONFIGURED");
+    }
+    assert.equal(threw, true);
+    if (prevVercel === undefined) delete process.env.VERCEL;
+    else process.env.VERCEL = prevVercel;
+    if (prevUrl === undefined) delete process.env.UPSTASH_REDIS_REST_URL;
+    else process.env.UPSTASH_REDIS_REST_URL = prevUrl;
+    if (prevToken === undefined) delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    else process.env.UPSTASH_REDIS_REST_TOKEN = prevToken;
+    await __resetStoreMemoryForTests();
+  });
+
   console.log(`\nResult: ${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);
 }

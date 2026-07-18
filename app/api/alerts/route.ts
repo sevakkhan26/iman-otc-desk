@@ -2,7 +2,14 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/authSession";
 import { createPriceAlert, getPriceAlertsPage } from "@/lib/priceAlerts/service";
 import type { CreateAlertInput } from "@/lib/priceAlerts/service";
-import type { PriceAlertCondition, PriceAlertInstrumentId, PriceAlertPriceType, PriceAlertProviderMode, PriceAlertRepeatMode } from "@/lib/types";
+import { getStorageDiagnostics, PriceAlertStorageError } from "@/lib/priceAlerts/store";
+import type {
+  PriceAlertCondition,
+  PriceAlertInstrumentId,
+  PriceAlertPriceType,
+  PriceAlertProviderMode,
+  PriceAlertRepeatMode
+} from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -18,15 +25,37 @@ function json(body: unknown, status = 200) {
   return new NextResponse(JSON.stringify(body), { status, headers: NO_STORE });
 }
 
+function storageErrorResponse(error: unknown) {
+  if (error instanceof PriceAlertStorageError) {
+    const status = error.code === "STORAGE_NOT_CONFIGURED" || error.code === "UPSTASH_NOT_CONFIGURED" ? 503 : 500;
+    return json(
+      {
+        error: error.code,
+        message: error.message,
+        diagnostics: getStorageDiagnostics()
+      },
+      status
+    );
+  }
+  console.error("[api/alerts]", error instanceof Error ? error.stack ?? error.message : error);
+  return json(
+    {
+      error: "failed",
+      message: "خطای سرور هنگام بارگذاری هشدارها",
+      diagnostics: getStorageDiagnostics()
+    },
+    500
+  );
+}
+
 export async function GET() {
   const session = await getSession();
   if (!session) return json({ error: "unauthorized", message: "ابتدا وارد شوید" }, 401);
   try {
-    const page = await getPriceAlertsPage();
+    const page = await getPriceAlertsPage(session.r);
     return json(page);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "خطای نامشخص";
-    return json({ error: "failed", message }, 500);
+    return storageErrorResponse(error);
   }
 }
 
@@ -62,6 +91,7 @@ export async function POST(request: Request) {
     const alert = await createPriceAlert(input);
     return json({ alert }, 201);
   } catch (error) {
+    if (error instanceof PriceAlertStorageError) return storageErrorResponse(error);
     const message = error instanceof Error ? error.message : "ایجاد هشدار ناموفق بود";
     return json({ error: "validation", message }, 400);
   }

@@ -322,12 +322,30 @@ export interface PriceAlertSummary {
   unread: number;
 }
 
+export interface PriceAlertsStorageDiagnostics {
+  storageType: "file" | "upstash" | "none";
+  storageConfigured: boolean;
+  /** Same as vercel — explicit for production clients. */
+  isVercel?: boolean;
+  vercel: boolean;
+  runtime: string;
+  commit: string | null;
+  region: string | null;
+  databaseReachable: boolean | null;
+  schemaAvailable: boolean;
+  lastErrorCode: string | null;
+  alertQuerySucceeded: boolean;
+  notificationQuerySucceeded: boolean;
+  authenticatedRole: string | null;
+}
+
 export interface PriceAlertsPageResponse {
   summary: PriceAlertSummary;
   instruments: PriceAlertInstrumentSnapshot[];
   alerts: PriceAlertRule[];
   notifications: PriceAlertNotification[];
   lastEvaluatedAt: string | null;
+  diagnostics?: PriceAlertsStorageDiagnostics;
 }
 
 export interface DecisionCard {

@@ -5,10 +5,10 @@ import {
   resolveObservedQuotes
 } from "@/lib/priceAlerts/instruments";
 import {
-  appendNotification,
+  appendNotificationSoft,
   listAlerts,
   newId,
-  updateAlert
+  updateAlertSoft
 } from "@/lib/priceAlerts/store";
 
 export function evaluateCondition(
@@ -83,13 +83,13 @@ export async function evaluatePriceAlerts(live: LivePriceBundle): Promise<Evalua
 
     if (status === "disabled" || status === "triggered") {
       if (rule.status !== status) {
-        await updateAlert(rule.id, { status });
+        await updateAlertSoft(rule.id, { status });
       }
       continue;
     }
 
     if (status === "disconnected" || status === "degraded") {
-      await updateAlert(rule.id, {
+      await updateAlertSoft(rule.id, {
         status,
         lastEvaluatedAt: nowIso,
         lastEvaluatedPrice: sample?.price ?? rule.lastEvaluatedPrice
@@ -138,7 +138,7 @@ export async function evaluatePriceAlerts(live: LivePriceBundle): Promise<Evalua
       triggered += 1;
       const notificationId = newId("pn");
       notificationIds.push(notificationId);
-      await appendNotification({
+      await appendNotificationSoft({
         id: notificationId,
         alertId: rule.id,
         instrument: rule.instrument,
@@ -161,7 +161,7 @@ export async function evaluatePriceAlerts(live: LivePriceBundle): Promise<Evalua
       patch.lastEvaluatedPrice = triggerQuote.price;
     }
 
-    await updateAlert(rule.id, patch);
+    await updateAlertSoft(rule.id, patch);
   }
 
   return {

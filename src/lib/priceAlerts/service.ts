@@ -8,9 +8,12 @@ import {
 import {
   createAlert,
   deleteAlert,
+  getStorageDiagnostics,
   listAlerts,
   listNotifications,
   newId,
+  PriceAlertStorageError,
+  resolveStorageBackend,
   unreadCount,
   updateAlert
 } from "@/lib/priceAlerts/store";
@@ -26,33 +29,127 @@ import type {
   PriceAlertProviderMode,
   PriceAlertRepeatMode,
   PriceAlertRule,
-  PriceAlertsPageResponse
+  PriceAlertsPageResponse,
+  PriceAlertsStorageDiagnostics
 } from "@/lib/types";
 
 export async function loadLivePriceBundle(): Promise<LivePriceBundle> {
   const settings = await getSettings();
-  const [domestic, goldRes, fxRes, global] = await Promise.all([
+  // Isolate each source family — one failure must not 500 the alerts page.
+  const [domesticR, goldR, fxR, globalR] = await Promise.allSettled([
     getDomesticQuotes(settings),
     getGoldMarketPrices(settings),
     getFxStreetPrices(settings),
     getGlobalPrices(settings.globalMarketRefreshMinutes)
   ]);
+
   return {
-    domestic,
-    gold: goldRes.quotes,
-    fx: fxRes.quotes,
-    global
+    domestic: domesticR.status === "fulfilled" ? domesticR.value : [],
+    gold: goldR.status === "fulfilled" ? goldR.value.quotes : [],
+    fx: fxR.status === "fulfilled" ? fxR.value.quotes : [],
+    global: globalR.status === "fulfilled" ? globalR.value : []
   };
 }
 
-export async function getPriceAlertsPage(): Promise<PriceAlertsPageResponse> {
+function buildDiagnostics(
+  role: string | null,
+  alertOk: boolean,
+  notifOk: boolean
+): PriceAlertsStorageDiagnostics {
+  const base = getStorageDiagnostics();
+  return {
+    ...base,
+    isVercel: base.vercel,
+    alertQuerySucceeded: alertOk,
+    notificationQuerySucceeded: notifOk,
+    authenticatedRole: role
+  };
+}
+
+function jsonSafePage(page: PriceAlertsPageResponse): PriceAlertsPageResponse {
+  // Ensure JSON-serializable plain data (no NaN/Infinity).
+  const sanitizeNum = (n: number | null | undefined): number | null =>
+    n == null || !Number.isFinite(n) ? null : n;
+
+  return {
+    summary: {
+      active: page.summary.active,
+      triggered: page.summary.triggered,
+      unread: page.summary.unread
+    },
+    instruments: page.instruments.map((inst) => ({
+      ...inst,
+      price: sanitizeNum(inst.price),
+      providers: inst.providers.map((p) => ({
+        ...p,
+        buy: sanitizeNum(p.buy),
+        sell: sanitizeNum(p.sell),
+        mid: sanitizeNum(p.mid)
+      }))
+    })),
+    alerts: page.alerts.map((a) => ({
+      ...a,
+      targetPrice: Number.isFinite(a.targetPrice) ? a.targetPrice : 0,
+      previousObservedPrice: sanitizeNum(a.previousObservedPrice),
+      lastEvaluatedPrice: sanitizeNum(a.lastEvaluatedPrice)
+    })),
+    notifications: page.notifications.map((n) => ({
+      ...n,
+      targetPrice: Number.isFinite(n.targetPrice) ? n.targetPrice : 0,
+      actualPrice: Number.isFinite(n.actualPrice) ? n.actualPrice : 0
+    })),
+    lastEvaluatedAt: page.lastEvaluatedAt,
+    diagnostics: page.diagnostics
+  };
+}
+
+export async function getPriceAlertsPage(role: string | null = null): Promise<PriceAlertsPageResponse> {
+  const backend = resolveStorageBackend();
   const live = await loadLivePriceBundle();
-  const evaluation = await evaluatePriceAlerts(live);
-  const [alerts, notifications, unread] = await Promise.all([
-    listAlerts(),
-    listNotifications(),
-    unreadCount()
-  ]);
+
+  let alertOk = true;
+  let notifOk = true;
+  let alerts: PriceAlertRule[] = [];
+  let notifications: Awaited<ReturnType<typeof listNotifications>> = [];
+  let unread = 0;
+  let lastEvaluatedAt: string | null = null;
+
+  if (backend === "none") {
+    // Do not fake success with silent empty durable state on Vercel without config —
+    // still return instrument snapshots so the UI can render, plus explicit diagnostics.
+    return jsonSafePage({
+      summary: { active: 0, triggered: 0, unread: 0 },
+      instruments: buildInstrumentSnapshots(live),
+      alerts: [],
+      notifications: [],
+      lastEvaluatedAt: null,
+      diagnostics: buildDiagnostics(role, false, false)
+    });
+  }
+
+  try {
+    const evaluation = await evaluatePriceAlerts(live);
+    lastEvaluatedAt = evaluation.lastEvaluatedAt;
+  } catch {
+    // evaluation is best-effort; page still loads rules
+    lastEvaluatedAt = null;
+  }
+
+  try {
+    alerts = await listAlerts();
+  } catch {
+    alertOk = false;
+    alerts = [];
+  }
+
+  try {
+    notifications = await listNotifications();
+    unread = await unreadCount();
+  } catch {
+    notifOk = false;
+    notifications = [];
+    unread = 0;
+  }
 
   const summary = {
     active: alerts.filter((a) => a.enabled && a.status === "active").length,
@@ -60,13 +157,14 @@ export async function getPriceAlertsPage(): Promise<PriceAlertsPageResponse> {
     unread
   };
 
-  return {
+  return jsonSafePage({
     summary,
     instruments: buildInstrumentSnapshots(live),
     alerts,
     notifications,
-    lastEvaluatedAt: evaluation.lastEvaluatedAt
-  };
+    lastEvaluatedAt,
+    diagnostics: buildDiagnostics(role, alertOk, notifOk)
+  });
 }
 
 export type CreateAlertInput = {
@@ -96,6 +194,12 @@ export function validateCreateInput(input: CreateAlertInput): string | null {
 export async function createPriceAlert(input: CreateAlertInput): Promise<PriceAlertRule> {
   const err = validateCreateInput(input);
   if (err) throw new Error(err);
+  if (resolveStorageBackend() === "none") {
+    throw new PriceAlertStorageError(
+      "STORAGE_NOT_CONFIGURED",
+      "ذخیره‌سازی production پیکربندی نشده است (Upstash Redis REST)"
+    );
+  }
   const now = new Date().toISOString();
   const rule: PriceAlertRule = {
     id: newId("pa"),
@@ -130,6 +234,12 @@ export async function patchPriceAlert(
   patch: Partial<CreateAlertInput> & { enabled?: boolean },
   actor: string
 ): Promise<PriceAlertRule | null> {
+  if (resolveStorageBackend() === "none") {
+    throw new PriceAlertStorageError(
+      "STORAGE_NOT_CONFIGURED",
+      "ذخیره‌سازی production پیکربندی نشده است (Upstash Redis REST)"
+    );
+  }
   const existing = (await listAlerts()).find((a) => a.id === id);
   if (!existing) return null;
 
@@ -170,5 +280,11 @@ export async function patchPriceAlert(
 }
 
 export async function removePriceAlert(id: string): Promise<boolean> {
+  if (resolveStorageBackend() === "none") {
+    throw new PriceAlertStorageError(
+      "STORAGE_NOT_CONFIGURED",
+      "ذخیره‌سازی production پیکربندی نشده است (Upstash Redis REST)"
+    );
+  }
   return deleteAlert(id);
 }

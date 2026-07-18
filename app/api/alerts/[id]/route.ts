@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/authSession";
 import { patchPriceAlert, removePriceAlert } from "@/lib/priceAlerts/service";
 import type { CreateAlertInput } from "@/lib/priceAlerts/service";
+import { getStorageDiagnostics, PriceAlertStorageError } from "@/lib/priceAlerts/store";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -16,6 +17,17 @@ function json(body: unknown, status = 200) {
 }
 
 type Ctx = { params: Promise<{ id: string }> };
+
+function mapError(error: unknown, fallback: string) {
+  if (error instanceof PriceAlertStorageError) {
+    return json(
+      { error: error.code, message: error.message, diagnostics: getStorageDiagnostics() },
+      error.code.includes("NOT_CONFIGURED") ? 503 : 500
+    );
+  }
+  const message = error instanceof Error ? error.message : fallback;
+  return json({ error: "validation", message }, 400);
+}
 
 export async function PATCH(request: Request, ctx: Ctx) {
   const session = await getSession();
@@ -38,8 +50,7 @@ export async function PATCH(request: Request, ctx: Ctx) {
     if (!alert) return json({ error: "not_found", message: "هشدار پیدا نشد" }, 404);
     return json({ alert });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "ویرایش ناموفق بود";
-    return json({ error: "validation", message }, 400);
+    return mapError(error, "ویرایش ناموفق بود");
   }
 }
 
@@ -51,7 +62,11 @@ export async function DELETE(_request: Request, ctx: Ctx) {
   }
 
   const { id } = await ctx.params;
-  const ok = await removePriceAlert(id);
-  if (!ok) return json({ error: "not_found", message: "هشدار پیدا نشد" }, 404);
-  return json({ ok: true });
+  try {
+    const ok = await removePriceAlert(id);
+    if (!ok) return json({ error: "not_found", message: "هشدار پیدا نشد" }, 404);
+    return json({ ok: true });
+  } catch (error) {
+    return mapError(error, "حذف ناموفق بود");
+  }
 }

@@ -639,12 +639,26 @@ export function PriceAlertsView() {
     return (
       <>
         <PageHeader onRefresh={reload} lastUpdated={lastUpdated} loading={loading} unread={0} />
-        <div className="empty">داده‌ای دریافت نشد: {error}</div>
+        <div className="empty">
+          داده‌ای دریافت نشد: {error}
+          <div style={{ marginTop: 10 }}>
+            <button type="button" className="chip" onClick={() => reload()}>
+              تلاش مجدد
+            </button>
+          </div>
+        </div>
       </>
     );
   }
 
   if (!data) return null;
+
+  const storageWarn =
+    data.diagnostics && !data.diagnostics.storageConfigured
+      ? "ذخیره‌سازی هشدارها در این محیط پیکربندی نشده است. برای production باید Upstash Redis REST تنظیم شود."
+      : data.diagnostics?.lastErrorCode
+        ? `وضعیت ذخیره‌سازی: ${data.diagnostics.lastErrorCode}`
+        : null;
 
   return (
     <div className="price-alerts-page" data-layout-version="price-alerts-v1">
@@ -655,6 +669,11 @@ export function PriceAlertsView() {
         unread={data.summary.unread}
       />
       <div className="grid">
+        {storageWarn ? (
+          <div className="empty danger-text" role="status">
+            {storageWarn}
+          </div>
+        ) : null}
         <SummaryCards summary={data.summary} />
         <section className="panel">
           <div className="panel-header">

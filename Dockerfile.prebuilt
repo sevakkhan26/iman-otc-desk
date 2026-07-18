@@ -1,0 +1,41 @@
+# Runtime-only image: build Next.js ON THE HOST, then package the standalone output.
+# Avoids npm/pnpm inside Docker and minimizes image pulls (one Node Alpine layer).
+#
+# Build:
+#   ./scripts/docker-build-prebuilt.sh
+# Or manually after `pnpm build`:
+#   docker build -f Dockerfile.prebuilt \
+#     --build-arg NODE_IMAGE=public.ecr.aws/docker/library/node:20-alpine \
+#     -t iman-otc-desk:latest \
+#     .docker-export
+#
+# Context must be the staged export (server.js at root) — see the script.
+
+ARG NODE_IMAGE=public.ecr.aws/docker/library/node:20-alpine
+FROM ${NODE_IMAGE}
+
+WORKDIR /app
+
+RUN apk add --no-cache su-exec \
+  && addgroup -S -g 1001 nodejs \
+  && adduser -S -u 1001 -G nodejs nextjs
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+ENV PRICE_ALERTS_STORAGE=file
+ENV PRICE_ALERTS_DATA_DIR=/app/data/price-alerts
+ENV PRICE_ALERTS_DATA_FILE=/app/data/price-alerts/price-alerts.json
+
+RUN mkdir -p /app/data/price-alerts \
+  && chown -R nextjs:nodejs /app/data
+
+# Staged by scripts/docker-build-prebuilt.sh (server.js + .next/static + public + entrypoint)
+COPY --chown=nextjs:nodejs . ./
+RUN cp /app/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh \
+  && chmod 755 /usr/local/bin/docker-entrypoint.sh
+
+EXPOSE 3000
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["node", "server.js"]

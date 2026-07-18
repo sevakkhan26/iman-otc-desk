@@ -1,5 +1,6 @@
 node_modules
 .next
+.docker-export
 .git
 .data
 app/data

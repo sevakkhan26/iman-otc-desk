@@ -254,23 +254,121 @@ async function liveOmpFinex(): Promise<DomesticQuote> {
 }
 
 /**
- * Tetherland public API: GET https://api.tetherland.com/currencies
- * USDT row exposes price / buy_price / sell_price — all the same single reference (no order book).
- * No public bid/ask depth found. Treat as reference-only: mid only, buy/sell null.
+ * Tetherland official public market board (used by tetherland.com homepage JS):
+ *   GET https://market.tetherland.com/prices → data.markets.USDTTMN.{bids,asks}[{price,amount}]
+ *
+ * Field names are inverted vs standard CLOB (verified against live book + mid ≈ domestic median):
+ *   API.asks  → bid side (buy USDT interest), best bid = max(price)
+ *   API.bids  → ask side (sell USDT interest), best ask = min(price)
+ * Junk far levels exist; filter with absolute toman sanity + optional anchor band.
+ *
+ * Fallback: GET https://api.tetherland.com/currencies (single reference price only —
+ * buy_price === sell_price === price). Never duplicate that into fake bid/ask.
  */
-async function liveTetherland(): Promise<DomesticQuote> {
+const TETHERLAND_MARKET_PRICES_URL = "https://market.tetherland.com/prices";
+const TETHERLAND_CURRENCIES_URL = "https://api.tetherland.com/currencies";
+
+const TETHERLAND_HEADERS = {
+  "user-agent": BROWSER_UA,
+  accept: "application/json, text/plain, */*",
+  "accept-language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
+  origin: "https://tetherland.com",
+  referer: "https://tetherland.com/"
+} as const;
+
+type TetherlandLevel = { price?: number | string; amount?: number | string };
+
+/** Pure parser for tests + live path. Returns null when no valid executable book. */
+export function parseTetherlandUsdtBook(
+  payload: unknown,
+  anchorToman: number | null = null
+): { buyPrice: number; sellPrice: number } | null {
+  if (!payload || typeof payload !== "object") return null;
+  const root = payload as {
+    status?: boolean | number | string;
+    data?: { markets?: Record<string, { bids?: TetherlandLevel[]; asks?: TetherlandLevel[] }> };
+  };
+  const market =
+    root.data?.markets?.USDTTMN ??
+    root.data?.markets?.USDTIRT ??
+    root.data?.markets?.USDT_TMN ??
+    null;
+  if (!market) return null;
+
+  const toPrices = (levels: TetherlandLevel[] | undefined): number[] => {
+    const out: number[] = [];
+    for (const row of levels ?? []) {
+      const p = toToman(row.price);
+      if (p !== null && p >= 20_000 && p <= 1_000_000) out.push(p);
+    }
+    return out;
+  };
+
+  // API field names are inverted relative to standard bid/ask (see comment above).
+  const bidCandidates = toPrices(market.asks);
+  const askCandidates = toPrices(market.bids);
+  if (!bidCandidates.length || !askCandidates.length) return null;
+
+  const bandFilter = (prices: number[], anchor: number, band: number): number[] =>
+    prices.filter((p) => Math.abs(p - anchor) / anchor <= band);
+
+  const tryPick = (bids: number[], asks: number[]): { buyPrice: number; sellPrice: number } | null => {
+    if (!bids.length || !asks.length) return null;
+    const buyPrice = Math.max(...bids);
+    const sellPrice = Math.min(...asks);
+    if (!(buyPrice > 0 && sellPrice > 0)) return null;
+    if (buyPrice > sellPrice) return null;
+    if (buyPrice > sellPrice * 1.05) return null;
+    return { buyPrice, sellPrice };
+  };
+
+  // Prefer levels near anchor (reference or mid of near-market levels).
+  const all = [...bidCandidates, ...askCandidates];
+  const coarseMid =
+    anchorToman && Number.isFinite(anchorToman)
+      ? anchorToman
+      : all.reduce((a, b) => a + b, 0) / all.length;
+
+  for (const band of [0.02, 0.035, 0.05, 0.08]) {
+    const picked = tryPick(bandFilter(bidCandidates, coarseMid, band), bandFilter(askCandidates, coarseMid, band));
+    if (picked) {
+      try {
+        assertRealisticUsdtIrt(picked.buyPrice, picked.sellPrice, null);
+        return picked;
+      } catch {
+        /* try wider band */
+      }
+    }
+  }
+
+  // Website top-of-book style: first 7 asks (desc bids) + reverse(bids) first 7 (near asks)
+  const topBids = bidCandidates.slice(0, 12);
+  const topAsks = [...askCandidates].reverse().slice(0, 12);
+  const topPick = tryPick(topBids, topAsks);
+  if (topPick) {
+    try {
+      assertRealisticUsdtIrt(topPick.buyPrice, topPick.sellPrice, null);
+      return topPick;
+    } catch {
+      /* fall through */
+    }
+  }
+  return null;
+}
+
+async function liveTetherlandReferenceOnly(): Promise<DomesticQuote> {
   const id = "tetherland";
   const name = "تترلند";
   const data = await fetchJson<{
     data?: { currencies?: { USDT?: { buy_price?: number; sell_price?: number; price?: number } } };
-  }>("https://api.tetherland.com/currencies", 9_000);
+  }>(TETHERLAND_CURRENCIES_URL, 9_000, { headers: { ...TETHERLAND_HEADERS } });
 
   const usdt = data.data?.currencies?.USDT;
   const ref = toToman(usdt?.price ?? usdt?.buy_price ?? usdt?.sell_price);
   if (ref === null) {
     throw new ProviderError("داده قیمت تتر در پاسخ منبع پیدا نشد");
   }
-  // Official fields are identical (last/reference only) — never duplicate into fake bid/ask
+  // Official currencies fields are identical (last/reference only) — never duplicate into fake bid/ask
   const buyField = toToman(usdt?.buy_price);
   const sellField = toToman(usdt?.sell_price);
   if (
@@ -279,7 +377,6 @@ async function liveTetherland(): Promise<DomesticQuote> {
     buyField !== sellField &&
     Math.abs(buyField - sellField) / Math.max(buyField, sellField) > 0.0001
   ) {
-    // Real spread appeared in public API — use as executable
     const buyPrice = Math.min(buyField, sellField);
     const sellPrice = Math.max(buyField, sellField);
     assertRealisticUsdtIrt(buyPrice, sellPrice, null);
@@ -290,8 +387,52 @@ async function liveTetherland(): Promise<DomesticQuote> {
   return buildQuote(id, name, null, null, {
     midPrice: ref,
     status: "degraded",
-    errorMessage: "فقط قیمت مرجع عمومی؛ bid/ask جدا در API نیست"
+    errorMessage: "فقط قیمت مرجع عمومی؛ bid/ask اجرایی جدا در دسترس نیست"
   });
+}
+
+async function liveTetherland(): Promise<DomesticQuote> {
+  const id = "tetherland";
+  const name = "تترلند";
+
+  // Optional anchor from currencies API (single reference — not used as fake bid/ask).
+  let anchor: number | null = null;
+  try {
+    const refData = await fetchJson<{
+      data?: { currencies?: { USDT?: { price?: number; buy_price?: number; sell_price?: number } } };
+    }>(TETHERLAND_CURRENCIES_URL, 6_000, { headers: { ...TETHERLAND_HEADERS } });
+    anchor = toToman(
+      refData.data?.currencies?.USDT?.price ??
+        refData.data?.currencies?.USDT?.buy_price ??
+        refData.data?.currencies?.USDT?.sell_price
+    );
+  } catch {
+    // anchor optional
+  }
+
+  try {
+    const book = await fetchJson<unknown>(TETHERLAND_MARKET_PRICES_URL, 9_000, {
+      headers: { ...TETHERLAND_HEADERS }
+    });
+    const parsed = parseTetherlandUsdtBook(book, anchor);
+    if (parsed) {
+      assertRealisticUsdtIrt(parsed.buyPrice, parsed.sellPrice, null);
+      return buildQuote(id, name, parsed.buyPrice, parsed.sellPrice);
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "";
+    // 429 → let runner backoff; still try reference
+    if (/HTTP 429|rate/i.test(msg)) {
+      try {
+        return await liveTetherlandReferenceOnly();
+      } catch {
+        throw error instanceof ProviderError ? error : new ProviderError(msg || "محدودیت نرخ تترلند");
+      }
+    }
+    // other book errors fall through to reference
+  }
+
+  return liveTetherlandReferenceOnly();
 }
 
 const EXIR_ORDERBOOK_URL = "https://api.exir.io/v1/orderbook?symbol=usdt-irt";
@@ -365,30 +506,94 @@ async function liveBit24(): Promise<DomesticQuote> {
 }
 
 /**
- * OK-EX public OTC: GET https://azapi.ok-ex.io/api/v1/asset/otc/tickers
- * USDT: buyAmt / sellAmt / priceDollar — typically identical; no public order book endpoint found.
- * Reference-only when buyAmt === sellAmt; never invent separate bid/ask from last.
+ * OK-EX (اوکی اکسچنج) — official public SPOT market API (docs.ok-ex.io):
+ *   GET https://api.ok-ex.io/api/v1/spot/public/books?symbol=USDT-IRT&limit=20
+ * Alternate host: https://sapi.ok-ex.io/... (same path)
+ * Pair list confirms symbol "USDT-IRT", quote IRT, prices in Toman (not Rial).
+ *
+ * Mapping: bids[0] = best bid → buyPrice; asks[0] = best ask → sellPrice.
+ *
+ * Legacy OTC tickers (azapi.ok-ex.io/.../otc/tickers) often return identical buyAmt/sellAmt
+ * (reference only) and may be CF-blocked (HTTP 403) from some server IPs.
  */
+const OKEX_IR_BOOK_URLS = [
+  "https://api.ok-ex.io/api/v1/spot/public/books?symbol=USDT-IRT&limit=20",
+  "https://sapi.ok-ex.io/api/v1/spot/public/books?symbol=USDT-IRT&limit=20"
+] as const;
 const OKEX_IR_TICKERS_URL = "https://azapi.ok-ex.io/api/v1/asset/otc/tickers";
 
-async function liveOkexIr(): Promise<DomesticQuote> {
+const OKEX_IR_HEADERS = {
+  "user-agent": BROWSER_UA,
+  accept: "application/json, text/plain, */*",
+  "accept-language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
+  origin: "https://ok-ex.io",
+  referer: "https://ok-ex.io/trade/USDT-IRT"
+} as const;
+
+/** Pure parser for OK-EX spot books JSON. */
+export function parseOkexIrSpotBook(payload: unknown): { buyPrice: number; sellPrice: number } | null {
+  if (!payload || typeof payload !== "object") return null;
+  const book = payload as {
+    bids?: Array<[number | string, number | string] | (number | string)[]>;
+    asks?: Array<[number | string, number | string] | (number | string)[]>;
+  };
+  let buyPrice: number | null = null;
+  for (const row of book.bids ?? []) {
+    const p = toToman(Array.isArray(row) ? row[0] : null);
+    if (p !== null && p > 0) {
+      buyPrice = p;
+      break;
+    }
+  }
+  let sellPrice: number | null = null;
+  for (const row of book.asks ?? []) {
+    const p = toToman(Array.isArray(row) ? row[0] : null);
+    if (p !== null && p > 0) {
+      sellPrice = p;
+      break;
+    }
+  }
+  if (buyPrice === null || sellPrice === null) return null;
+  if (buyPrice > sellPrice) return null;
+  return { buyPrice, sellPrice };
+}
+
+async function fetchOkexJsonWithRetry<T>(url: string, timeoutMs: number, attempts = 2): Promise<T> {
+  let lastError: ProviderError | null = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (attempt > 1) await new Promise((r) => setTimeout(r, 300 * attempt));
+    try {
+      return await fetchJson<T>(url, timeoutMs, { headers: { ...OKEX_IR_HEADERS } });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      lastError = error instanceof ProviderError ? error : new ProviderError(msg);
+      // Honor rate limit — surface 429 to isolation runner backoff
+      if (/HTTP 429/.test(msg)) throw lastError;
+      // Retry 403/5xx once (WAF blips); final 403 still throws
+      if (!/HTTP 403|HTTP 5\d\d|زمان پاسخ/.test(msg) || attempt === attempts) {
+        if (attempt === attempts) throw lastError;
+      }
+    }
+  }
+  throw lastError ?? new ProviderError("اتصال به اوکی اکسچنج برقرار نشد");
+}
+
+async function liveOkexIrFromOtcTickers(): Promise<DomesticQuote> {
   const id = "okex_ir";
   const name = "اوکی اکسچنج";
-  const data = await fetchJson<
+  const data = await fetchOkexJsonWithRetry<
     Array<{
       asset?: string;
       buyAmt?: string | number;
       sellAmt?: string | number;
       priceDollar?: string | number;
     }>
-  >(OKEX_IR_TICKERS_URL, 8_000, {
-    headers: { "user-agent": BROWSER_UA, accept: "application/json" }
-  });
+  >(OKEX_IR_TICKERS_URL, 8_000, 1);
   const usdt = data.find((row) => (row.asset ?? "").toUpperCase() === "USDT");
   if (!usdt) throw new ProviderError("ردیف USDT در تیکر OTC اوکی اکسچنج پیدا نشد");
 
-  const userBuy = toToman(usdt.buyAmt); // user-facing buy (ask when distinct)
-  const userSell = toToman(usdt.sellAmt); // user-facing sell (bid when distinct)
+  const userBuy = toToman(usdt.buyAmt);
+  const userSell = toToman(usdt.sellAmt);
   const last = toToman(usdt.priceDollar ?? usdt.buyAmt ?? usdt.sellAmt);
 
   if (
@@ -400,13 +605,10 @@ async function liveOkexIr(): Promise<DomesticQuote> {
     // Distinct OTC sides: desk buyPrice = bid = user sell, sellPrice = ask = user buy
     const buyPrice = userSell;
     const sellPrice = userBuy;
-    if (buyPrice > sellPrice) {
-      // keep natural bid<=ask if fields flipped in a future API change
-      assertRealisticUsdtIrt(Math.min(buyPrice, sellPrice), Math.max(buyPrice, sellPrice), null);
-      return buildQuote(id, name, Math.min(buyPrice, sellPrice), Math.max(buyPrice, sellPrice));
-    }
-    assertRealisticUsdtIrt(buyPrice, sellPrice, null);
-    return buildQuote(id, name, buyPrice, sellPrice);
+    const bid = Math.min(buyPrice, sellPrice);
+    const ask = Math.max(buyPrice, sellPrice);
+    assertRealisticUsdtIrt(bid, ask, null);
+    return buildQuote(id, name, bid, ask);
   }
 
   const ref = last ?? userBuy ?? userSell;
@@ -417,8 +619,45 @@ async function liveOkexIr(): Promise<DomesticQuote> {
   return buildQuote(id, name, null, null, {
     midPrice: ref,
     status: "degraded",
-    errorMessage: "فقط قیمت مرجع OTC؛ bid/ask جدا در API عمومی نیست"
+    errorMessage: "فقط قیمت مرجع OTC؛ دفتر سفارش اسپات در دسترس نبود"
   });
+}
+
+async function liveOkexIr(): Promise<DomesticQuote> {
+  const id = "okex_ir";
+  const name = "اوکی اکسچنج";
+  let lastBookError: string | null = null;
+
+  for (const url of OKEX_IR_BOOK_URLS) {
+    try {
+      const data = await fetchOkexJsonWithRetry<unknown>(url, 8_000, 2);
+      const parsed = parseOkexIrSpotBook(data);
+      if (!parsed) {
+        lastBookError = "دفتر سفارش USDT-IRT خالی یا نامعتبر";
+        continue;
+      }
+      assertRealisticUsdtIrt(parsed.buyPrice, parsed.sellPrice, null);
+      // Successful recovery clears any previous HTTP 403 / stale error via fresh quote.
+      return buildQuote(id, name, parsed.buyPrice, parsed.sellPrice);
+    } catch (error) {
+      lastBookError = error instanceof Error ? error.message : "خطای شبکه";
+      // try next host
+    }
+  }
+
+  // Spot book blocked/failed — try OTC tickers as reference-only or distinct OTC sides.
+  try {
+    return await liveOkexIrFromOtcTickers();
+  } catch (error) {
+    const otcMsg = error instanceof Error ? error.message : "OTC failed";
+    const combined = lastBookError ?? otcMsg;
+    if (/HTTP 403/.test(combined) || /HTTP 403/.test(otcMsg)) {
+      throw new ProviderError(
+        "HTTP 403 — دسترسی سرور به API اوکی اکسچنج مسدود است (احتمالاً IP/WAF)"
+      );
+    }
+    throw new ProviderError(combined || "اوکی اکسچنج در دسترس نیست");
+  }
 }
 
 const ARZINJA_API_HEADERS = {
@@ -686,7 +925,7 @@ const providerDefs: IsolatedProviderDef[] = [
   {
     id: "tetherland",
     name: "تترلند",
-    endpoint: "https://api.tetherland.com/currencies",
+    endpoint: TETHERLAND_MARKET_PRICES_URL,
     timeoutMs: 9_000,
     minFetchMs: MIN_FETCH,
     staleTtlMs: STALE_TTL,
@@ -708,7 +947,7 @@ const providerDefs: IsolatedProviderDef[] = [
   {
     id: "okex_ir",
     name: "اوکی اکسچنج",
-    endpoint: OKEX_IR_TICKERS_URL,
+    endpoint: OKEX_IR_BOOK_URLS[0],
     timeoutMs: 8_000,
     minFetchMs: MIN_FETCH,
     staleTtlMs: STALE_TTL,

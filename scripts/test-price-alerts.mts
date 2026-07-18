@@ -53,7 +53,8 @@ const STORAGE_ENV_KEYS = [
   "PRICE_ALERTS_STORAGE",
   "PRICE_ALERTS_DATA_DIR",
   "PRICE_ALERTS_DATA_FILE",
-  "PRICE_ALERTS_FORCE_MEMORY"
+  "PRICE_ALERTS_FORCE_MEMORY",
+  "PRICE_ALERTS_SKIP_LEGACY_MIGRATION"
 ];
 
 let passed = 0;
@@ -664,6 +665,7 @@ async function main() {
     process.env.PRICE_ALERTS_STORAGE = "file";
     process.env.PRICE_ALERTS_DATA_DIR = path.join(tmp, "nested", "price-alerts");
     process.env.PRICE_ALERTS_DATA_FILE = path.join(tmp, "nested", "price-alerts", "price-alerts.json");
+    process.env.PRICE_ALERTS_SKIP_LEGACY_MIGRATION = "1";
     await __resetStoreMemoryForTests();
     const rule = baseRule({ id: "docker-init-1", note: "init" });
     await createAlert(rule);
@@ -684,6 +686,7 @@ async function main() {
     process.env.PRICE_ALERTS_STORAGE = "file";
     process.env.PRICE_ALERTS_DATA_DIR = tmp;
     process.env.PRICE_ALERTS_DATA_FILE = path.join(tmp, "price-alerts.json");
+    process.env.PRICE_ALERTS_SKIP_LEGACY_MIGRATION = "1";
     delete process.env.UPSTASH_REDIS_REST_URL;
     delete process.env.UPSTASH_REDIS_REST_TOKEN;
     await __resetStoreMemoryForTests();
@@ -720,6 +723,7 @@ async function main() {
     process.env.PRICE_ALERTS_STORAGE = "file";
     process.env.PRICE_ALERTS_DATA_DIR = tmp;
     process.env.PRICE_ALERTS_DATA_FILE = path.join(tmp, "price-alerts.json");
+    process.env.PRICE_ALERTS_SKIP_LEGACY_MIGRATION = "1";
     delete process.env.UPSTASH_REDIS_REST_URL;
     delete process.env.UPSTASH_REDIS_REST_TOKEN;
     await __resetStoreMemoryForTests();
@@ -742,6 +746,7 @@ async function main() {
     process.env.PRICE_ALERTS_STORAGE = "file";
     process.env.PRICE_ALERTS_DATA_DIR = tmp;
     process.env.PRICE_ALERTS_DATA_FILE = path.join(tmp, "price-alerts.json");
+    process.env.PRICE_ALERTS_SKIP_LEGACY_MIGRATION = "1";
     delete process.env.UPSTASH_REDIS_REST_URL;
     delete process.env.UPSTASH_REDIS_REST_TOKEN;
     await __resetStoreMemoryForTests();
@@ -804,6 +809,7 @@ async function main() {
     process.env.PRICE_ALERTS_STORAGE = "file";
     process.env.PRICE_ALERTS_DATA_DIR = tmp;
     process.env.PRICE_ALERTS_DATA_FILE = path.join(tmp, "price-alerts.json");
+    process.env.PRICE_ALERTS_SKIP_LEGACY_MIGRATION = "1";
     delete process.env.UPSTASH_REDIS_REST_URL;
     delete process.env.UPSTASH_REDIS_REST_TOKEN;
     await __resetStoreMemoryForTests();
@@ -854,6 +860,7 @@ async function main() {
     process.env.PRICE_ALERTS_STORAGE = "file";
     process.env.PRICE_ALERTS_DATA_DIR = tmp;
     process.env.PRICE_ALERTS_DATA_FILE = path.join(tmp, "price-alerts.json");
+    process.env.PRICE_ALERTS_SKIP_LEGACY_MIGRATION = "1";
     delete process.env.UPSTASH_REDIS_REST_URL;
     delete process.env.UPSTASH_REDIS_REST_TOKEN;
     await __resetStoreMemoryForTests();

@@ -1,60 +1,63 @@
-# syntax=docker/dockerfile:1
 # Production image for iman-otc-desk (Next.js standalone).
-# Price Alerts persist on a Docker named volume at /app/data/price-alerts.
+# Price Alerts: named volume at /app/data/price-alerts (see docker-compose.yml).
+#
+# Rate-limit notes:
+# - Default base image is the AWS Public ECR mirror of official Node (not Docker Hub).
+# - Override if needed:  --build-arg NODE_IMAGE=node:20-alpine
+# - Prefer Dockerfile.prebuilt + scripts/docker-build-prebuilt.sh when Hub/npm in Docker is painful.
+#
+# Do NOT use "# syntax=docker/dockerfile:1" — that pulls an extra image from Docker Hub.
 
-FROM node:22-alpine AS base
-RUN apk add --no-cache libc6-compat
+ARG NODE_IMAGE=public.ecr.aws/docker/library/node:20-alpine
+FROM ${NODE_IMAGE} AS builder
+
 WORKDIR /app
 
-# --- dependencies ---
-FROM base AS deps
+# One apk layer for build (libc for some native Next deps on Alpine)
 RUN apk add --no-cache libc6-compat
-# Prefer pnpm when lockfile present
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml* ./
-RUN corepack enable && corepack prepare pnpm@latest --activate \
+
+# Install deps only when lockfiles change (layer cache)
+COPY package.json pnpm-lock.yaml ./
+# Pin pnpm — avoid "pnpm@latest" (extra registry traffic every build)
+RUN corepack enable \
+  && corepack prepare pnpm@9.15.9 --activate \
   && pnpm install --frozen-lockfile
 
-# --- build ---
-FROM base AS builder
-RUN corepack enable && corepack prepare pnpm@latest --activate
-COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 RUN pnpm build
 
-# --- runner ---
-FROM node:22-alpine AS runner
+# --- runtime (single official/mirrored Node Alpine pull + tiny apk) ---
+ARG NODE_IMAGE=public.ecr.aws/docker/library/node:20-alpine
+FROM ${NODE_IMAGE} AS runner
+
 WORKDIR /app
 
-# su-exec: drop root after volume chown (tiny, no gosu needed)
+# su-exec: drop root after volume chown (small; no gosu)
 RUN apk add --no-cache su-exec \
-  && addgroup --system --gid 1001 nodejs \
-  && adduser --system --uid 1001 nextjs
+  && addgroup -S -g 1001 nodejs \
+  && adduser -S -u 1001 -G nodejs nextjs
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
-
-# Explicit Price Alerts file backend for Docker production.
-# Override only if you intentionally switch to Upstash.
 ENV PRICE_ALERTS_STORAGE=file
 ENV PRICE_ALERTS_DATA_DIR=/app/data/price-alerts
 ENV PRICE_ALERTS_DATA_FILE=/app/data/price-alerts/price-alerts.json
 
-# Placeholder data dir (real volume mounts over this at runtime)
 RUN mkdir -p /app/data/price-alerts \
   && chown -R nextjs:nodejs /app/data
 
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod 755 /usr/local/bin/docker-entrypoint.sh
 
-# Do NOT set USER nextjs here — entrypoint must start as root to chown the volume,
-# then exec su-exec nextjs for the Node process.
+# Entrypoint starts as root to chown the volume, then su-exec nextjs.
 EXPOSE 3000
-
-ENTRYPOINT ["docker-entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["node", "server.js"]

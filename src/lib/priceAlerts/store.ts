@@ -237,6 +237,8 @@ function parseStoreJson(raw: string): StoreFile {
 async function migrateLegacyIfNeeded(targetFile: string): Promise<void> {
   if (migrationAttempted) return;
   migrationAttempted = true;
+  // Tests / explicit empty volumes may opt out of one-time legacy import.
+  if (process.env.PRICE_ALERTS_SKIP_LEGACY_MIGRATION === "1") return;
   try {
     await access(targetFile, constants.F_OK);
     // target exists — never overwrite

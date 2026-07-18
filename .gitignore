@@ -22,3 +22,5 @@ app/data/
 **/price-alerts.json
 **/price-alerts.json.corrupt.*.bak
 *.tmp
+
+.docker-export/

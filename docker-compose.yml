@@ -15,7 +15,13 @@ services:
   iman-otc-desk:
     build:
       context: .
-      dockerfile: Dockerfile
+      # Default: multi-stage Dockerfile. Override with Dockerfile.prebuilt only via
+      # scripts/docker-build-prebuilt.sh (different build context).
+      dockerfile: ${DOCKERFILE:-Dockerfile}
+      args:
+        # Default avoids Docker Hub anonymous rate limits (AWS Public ECR library mirror).
+        # Fallback examples: node:20-alpine | mirror.gcr.io/library/node:20-alpine
+        NODE_IMAGE: ${NODE_IMAGE:-public.ecr.aws/docker/library/node:20-alpine}
     image: iman-otc-desk:latest
     container_name: iman-otc-desk
     restart: unless-stopped

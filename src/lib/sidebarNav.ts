@@ -6,6 +6,7 @@ import {
   Coins,
   Gauge,
   Newspaper,
+  Percent,
   Settings,
   type LucideIcon
 } from "lucide-react";
@@ -22,6 +23,7 @@ export const sidebarNavItems: SidebarNavItem[] = [
   { href: "/dashboard", label: "مانیتورینگ", icon: Gauge },
   { href: "/tether-market", label: "بازار تتر ایران", icon: ChartCandlestick },
   { href: "/gold", label: "بازار طلا", icon: Coins },
+  { href: "/bubble", label: "حباب", icon: Percent },
   { href: "/impact-news", label: "خبرهای اثرگذار", icon: Newspaper },
   { href: "/forex", label: "اخبار فارکس", icon: CalendarClock },
   { href: "/alerts", label: "هشدارها", icon: Bell },

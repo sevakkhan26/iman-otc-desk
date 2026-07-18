@@ -1,15 +1,16 @@
 {
   "name": "dealing-desk-otc-dashboard",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "npx --yes tsx scripts/test-auth-cookies.mts && npx --yes tsx scripts/test-impact-news.mts && npx --yes tsx scripts/test-price-alerts.mts && npx --yes tsx scripts/test-okex-tetherland.mts",
+    "test": "npx --yes tsx scripts/test-auth-cookies.mts && npx --yes tsx scripts/test-impact-news.mts && npx --yes tsx scripts/test-price-alerts.mts && npx --yes tsx scripts/test-okex-tetherland.mts && npx --yes tsx scripts/test-bubble.mts",
     "test:impact-news": "npx --yes tsx scripts/test-impact-news.mts",
     "test:okex-tetherland": "npx --yes tsx scripts/test-okex-tetherland.mts",
+    "test:bubble": "npx --yes tsx scripts/test-bubble.mts",
     "build": "next build"
   },
   "dependencies": {

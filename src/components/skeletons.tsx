@@ -534,6 +534,50 @@ export function SettingsSkeleton() {
   );
 }
 
+export function BubbleSkeleton() {
+  return (
+    <div className="bubble-page page-skeleton-root" data-layout-version="bubble-v1" aria-busy="true" aria-live="polite">
+      <span className="sr-only">در حال بارگذاری حباب بازار</span>
+      <SkeletonPanelShell titleWidth="42%">
+        <div className="grid metrics-grid bubble-metrics" aria-hidden="true">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <SkeletonMetric key={i} />
+          ))}
+        </div>
+      </SkeletonPanelShell>
+      <div className="grid bubble-source-grid" aria-hidden="true">
+        {Array.from({ length: 2 }).map((_, i) => (
+          <SkeletonPanelShell key={i} titleWidth="48%">
+            <div className="grid metrics-grid bubble-metrics">
+              {Array.from({ length: 4 }).map((_, j) => (
+                <SkeletonMetric key={j} />
+              ))}
+            </div>
+          </SkeletonPanelShell>
+        ))}
+      </div>
+      <SkeletonPanelShell titleWidth="38%">
+        <div className="grid metrics-grid bubble-metrics" aria-hidden="true">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <SkeletonMetric key={i} />
+          ))}
+        </div>
+      </SkeletonPanelShell>
+      <SkeletonPanelShell titleWidth="44%">
+        <div className="grid metrics-grid bubble-metrics" aria-hidden="true">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <SkeletonMetric key={i} />
+          ))}
+        </div>
+      </SkeletonPanelShell>
+      <SkeletonPanelShell titleWidth="28%">
+        <SkeletonLine width="70%" height={14} />
+        <SkeletonLine width="55%" height={12} />
+      </SkeletonPanelShell>
+    </div>
+  );
+}
+
 export function ImpactNewsSkeleton() {
   return (
     <div className="impact-news-page page-skeleton-root" data-layout-version="impact-news-cols-v3" aria-busy="true" aria-live="polite">

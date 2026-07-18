@@ -4156,3 +4156,132 @@ table th {
   border-top: 1px solid var(--line-soft);
   padding-top: 10px;
 }
+
+/* ===== Market bubble page ===== */
+.bubble-page {
+  display: grid;
+  gap: 14px;
+}
+
+.bubble-source-grid {
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.bubble-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.bubble-metric.tone-danger .metric-value {
+  color: var(--danger, #dc2f3a);
+}
+
+.bubble-metric.tone-good .metric-value {
+  color: var(--good, #1a9b5c);
+}
+
+.bubble-metric.tone-warn .metric-value {
+  color: var(--warn, #c48a00);
+}
+
+.bubble-metric.tone-muted .metric-value {
+  color: var(--muted);
+}
+
+.bubble-side-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.bubble-side-block {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+}
+
+.bubble-side-title {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.bubble-source-meta {
+  margin-top: 10px;
+}
+
+.bubble-note {
+  margin-top: 10px;
+}
+
+.bubble-formula-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: start;
+}
+
+.bubble-formula-body {
+  border-top: 1px solid var(--line-soft);
+  padding-top: 10px;
+}
+
+.bubble-formula-h {
+  margin: 8px 0 6px;
+  font-size: 14px;
+}
+
+.bubble-formula-list {
+  margin: 0 0 10px;
+  padding-inline-start: 18px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.bubble-health-list {
+  display: grid;
+  gap: 8px;
+}
+
+.bubble-health-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.bubble-notes {
+  margin: 12px 0 0;
+  padding-inline-start: 18px;
+}
+
+.warn-inline {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.small {
+  font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .bubble-side-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .bubble-health-row {
+    grid-template-columns: 1fr auto;
+  }
+}

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { LogOut, Menu, ShieldAlert, X } from "lucide-react";
+import { LogOut, Menu, X } from "lucide-react";
 import type { DeskRole } from "@/lib/auth";
 import { sidebarNavItems } from "@/lib/sidebarNav";
 import { formatAppVersionLabel } from "@/lib/version";
@@ -241,8 +241,9 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
             <Menu aria-hidden="true" />
           </button>
           <div className="brand sidebar-brand">
-            <h1 className="brand-title">OTC Desk</h1>
-            <div className="brand-subtitle">داشبورد عملیاتی Dealing Desk</div>
+            <h1 className="brand-title" style={{ marginBottom: 0 }}>
+              OTC Desk
+            </h1>
           </div>
           <button
             ref={closeButtonRef}
@@ -282,8 +283,8 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
         </nav>
         <div className="sidebar-bottom">
           <div className="sidebar-meta-bottom">
-            <div className="sidebar-version" title={`نسخه: ${formatAppVersionLabel()}`}>
-              نسخه: <span className="sidebar-version-value">{formatAppVersionLabel()}</span>
+            <div className="sidebar-version" title={formatAppVersionLabel()}>
+              <span className="sidebar-version-value">{formatAppVersionLabel()}</span>
             </div>
           </div>
           {logoutError ? (
@@ -304,10 +305,6 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
             <LogOut aria-hidden="true" />
             <span>{loggingOut ? "در حال خروج..." : "خروج"}</span>
           </button>
-          <div className="sidebar-foot">
-            <ShieldAlert aria-hidden="true" size={17} />
-            <div className="sidebar-foot-text">منابع واقعی؛ منبع قطع باشد، عددی نمایش داده نمی‌شود.</div>
-          </div>
         </div>
       </aside>
       <main className="main">

@@ -143,10 +143,14 @@ function ConsolidatedGoldCard({
   consolidated: ConsolidatedGoldBubble | null;
   reason: string | null;
 }) {
+  const headerUpdated = formatBubbleHeaderUpdated(consolidated?.lastUpdated);
   return (
     <section className="panel bubble-panel">
-      <div className="panel-header">
+      <div className="panel-header bubble-section-header">
         <h3 className="panel-title">حباب طلا</h3>
+        {headerUpdated ? (
+          <span className="bubble-section-updated muted small number">{headerUpdated}</span>
+        ) : null}
       </div>
       <div className="panel-body">
         {!consolidated ? (
@@ -181,9 +185,6 @@ function ConsolidatedGoldCard({
                 value={formatPercent(consolidated.goldBubblePercent)}
                 tone={signToneClass(consolidated.sign)}
               />
-            </div>
-            <div className="bubble-source-meta muted small">
-              به‌روزرسانی: {formatDate(consolidated.lastUpdated)}
             </div>
           </>
         )}

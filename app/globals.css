@@ -1,4 +1,4 @@
-/* ===== IRANYekan (self-hosted webfont) ===== */
+/* ===== IRANYekan (self-hosted webfont; full Farsi+Latin fanum faces) ===== */
 @font-face {
   font-family: "IRANYekan";
   font-style: normal;
@@ -10,7 +10,7 @@
 @font-face {
   font-family: "IRANYekan";
   font-style: normal;
-  font-weight: 400 600;
+  font-weight: 400;
   font-display: swap;
   src: url("/fonts/iranyekanwebregular.woff2") format("woff2");
 }
@@ -18,7 +18,39 @@
 @font-face {
   font-family: "IRANYekan";
   font-style: normal;
-  font-weight: 700 900;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/iranyekanwebmedium.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IRANYekan";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/iranyekanwebmedium.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IRANYekan";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/iranyekanwebbold.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IRANYekan";
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url("/fonts/iranyekanwebbold.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IRANYekan";
+  font-style: normal;
+  font-weight: 900;
   font-display: swap;
   src: url("/fonts/iranyekanwebbold.woff2") format("woff2");
 }

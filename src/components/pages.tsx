@@ -440,11 +440,17 @@ function QuickDecisionCockpit({
               <div className="answer-spread-title">اختلاف قیمت خرید</div>
               {hasData ? (
                 <>
-                  <div className="answer-spread-best number">
-                    بهترین: {s.best.exchange ?? "—"} — <PriceValue value={s.best.price} />
+                  <div className="answer-spread-line answer-spread-best" dir="rtl">
+                    <span className="answer-spread-label">بهترین:</span>{" "}
+                    <span className="answer-spread-provider">{s.best.exchange ?? "—"}</span>
+                    {" — "}
+                    <PriceValue value={s.best.price} />
                   </div>
-                  <div className="answer-spread-worst number">
-                    بدترین: {s.worst.exchange ?? "—"} — <PriceValue value={s.worst.price} />
+                  <div className="answer-spread-line answer-spread-worst" dir="rtl">
+                    <span className="answer-spread-label">بدترین:</span>{" "}
+                    <span className="answer-spread-provider">{s.worst.exchange ?? "—"}</span>
+                    {" — "}
+                    <PriceValue value={s.worst.price} />
                   </div>
                   <div className="answer-spread-diff number">
                     اختلاف: {s.percent != null ? s.percent.toFixed(2) : "—"}٪
@@ -466,11 +472,17 @@ function QuickDecisionCockpit({
               <div className="answer-spread-title">اختلاف قیمت فروش</div>
               {hasData ? (
                 <>
-                  <div className="answer-spread-best number">
-                    بهترین: {s.best.exchange ?? "—"} — <PriceValue value={s.best.price} />
+                  <div className="answer-spread-line answer-spread-best" dir="rtl">
+                    <span className="answer-spread-label">بهترین:</span>{" "}
+                    <span className="answer-spread-provider">{s.best.exchange ?? "—"}</span>
+                    {" — "}
+                    <PriceValue value={s.best.price} />
                   </div>
-                  <div className="answer-spread-worst number">
-                    بدترین: {s.worst.exchange ?? "—"} — <PriceValue value={s.worst.price} />
+                  <div className="answer-spread-line answer-spread-worst" dir="rtl">
+                    <span className="answer-spread-label">بدترین:</span>{" "}
+                    <span className="answer-spread-provider">{s.worst.exchange ?? "—"}</span>
+                    {" — "}
+                    <PriceValue value={s.worst.price} />
                   </div>
                   <div className="answer-spread-diff number">
                     اختلاف: {s.percent != null ? s.percent.toFixed(2) : "—"}٪

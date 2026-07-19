@@ -1985,24 +1985,33 @@ tr:last-child td {
   margin: 0;
 }
 
+/* بهترین/بدترین rows: full RTL sentence, right-aligned; only Toman digits are LTR-isolated. */
+.answer-spread-line {
+  direction: rtl;
+  text-align: start;
+  unicode-bidi: isolate;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.55;
+}
+
 .answer-spread-best {
   color: var(--text);
   font-size: clamp(22px, 2.1vw, 28px);
   font-weight: 800;
-  line-height: 1.55;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  max-width: 100%;
 }
 
 .answer-spread-worst {
   color: var(--muted-2);
   font-size: clamp(17px, 1.55vw, 21px);
   font-weight: 600;
-  line-height: 1.55;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  max-width: 100%;
+}
+
+.answer-spread-line .price-value,
+.answer-spread-line .toman-amount {
+  display: inline;
+  white-space: nowrap;
 }
 
 .answer-spread-diff {

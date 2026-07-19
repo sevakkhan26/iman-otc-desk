@@ -3566,23 +3566,36 @@ tr:last-child td {
     position: static;
   }
 
-  .shell.collapsed .sidebar .sidebar-top {
-    display: grid;
-    grid-template-columns: 40px minmax(0, 1fr) 40px;
-    justify-content: initial;
+  /* Drawer header: brand + close (no empty desktop-toggle column) */
+  .shell.collapsed .sidebar .sidebar-top,
+  .sidebar-top {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
     min-height: auto;
     padding-bottom: 8px;
     border-bottom: 1px solid var(--line-soft);
-  }
-
-  .shell.collapsed .sidebar .sidebar-brand {
-    display: block;
-    grid-column: 2;
-  }
-
-  .sidebar-top {
     flex: 0 0 auto;
-    gap: 6px;
+  }
+
+  .shell.collapsed .sidebar .sidebar-brand,
+  .shell.collapsed .sidebar .brand.sidebar-brand {
+    display: block;
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: start;
+    grid-column: auto;
+  }
+
+  .shell.collapsed .sidebar .sidebar-brand .brand-title {
+    font-size: 17px;
+  }
+
+  .mobile-drawer-close {
+    flex: 0 0 auto;
+    margin-inline-start: 0;
   }
 
   .sidebar .nav {
@@ -3656,40 +3669,61 @@ tr:last-child td {
     max-width: 100%;
   }
 
-  /* Unified header: stack title → centered clock line → actions */
+  /*
+   * Unified header on mobile:
+   * row1: title | refresh+theme
+   * row2: clock + last-update (centered, wraps)
+   */
   .page-header--desk,
   .page-header--centered-clock {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "title actions"
+      "center center";
     justify-items: stretch;
+    align-items: center;
+    column-gap: 10px;
+    row-gap: 10px;
   }
 
   .page-header--desk .page-title,
   .page-header--centered-clock .page-title {
+    grid-area: title;
     justify-self: start;
-    grid-column: 1;
+    align-self: center;
   }
 
   .page-header--desk .header-center,
   .page-header--centered-clock .header-center {
-    grid-column: 1;
+    grid-area: center;
     max-width: 100%;
     width: 100%;
   }
 
   .page-header--desk .header-actions,
   .page-header--centered-clock .header-actions {
-    grid-column: 1;
+    grid-area: actions;
     justify-self: end;
     width: auto;
+    flex-wrap: nowrap;
   }
 
   .header-center--inline {
+    flex-direction: column;
+    align-items: center;
     justify-content: center;
-    gap: 8px 12px;
+    gap: 6px;
   }
 
   .header-center--inline .last-update {
     white-space: normal;
+    text-align: center;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .header-center--inline .clock {
+    justify-content: center;
   }
 
   .icon-button,
@@ -3764,6 +3798,14 @@ tr:last-child td {
 
   .price-alert-main-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Narrow phones: avoid cramped 2-col instrument cards */
+  @media (max-width: 420px) {
+    .price-alert-instruments,
+    .gold-summary-stats {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 
   .exch-card,

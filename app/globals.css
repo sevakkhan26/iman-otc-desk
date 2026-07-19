@@ -1163,14 +1163,38 @@ a.icon-button.header-alerts-button.is-active {
   overflow-wrap: anywhere;
 }
 
-/* Only the Toman number token is LTR-isolated; unit + parents stay RTL. */
+/*
+ * Atomic Toman amount: LTR isolate on this node only.
+ * Children: unit then number → visual L→R «تومان» | amount.
+ * Unit slightly smaller than the number; gap between them.
+ */
 .toman-amount {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 0.25em;
+  direction: ltr;
+  unicode-bidi: isolate;
   white-space: nowrap;
+  flex-wrap: nowrap;
+}
+
+.toman-amount-unit {
+  direction: rtl;
+  unicode-bidi: isolate;
+  font-size: 0.78em;
+  line-height: 1;
+  flex: 0 0 auto;
 }
 
 .toman-amount-num {
   direction: ltr;
   unicode-bidi: isolate;
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+  /* Number keeps parent font-size; unit is 0.78em relative to this root. */
+  font-size: 1em;
+  line-height: 1;
 }
 
 .metric-note {
@@ -2008,10 +2032,15 @@ tr:last-child td {
   font-weight: 600;
 }
 
-.answer-spread-line .price-value,
-.answer-spread-line .toman-amount {
+.answer-spread-line .price-value {
   display: inline;
+}
+
+/* Keep atomic Toman flex + nowrap inside RTL sentences */
+.answer-spread-line .toman-amount {
+  display: inline-flex;
   white-space: nowrap;
+  vertical-align: baseline;
 }
 
 .answer-spread-diff {

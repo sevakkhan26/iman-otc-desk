@@ -652,7 +652,7 @@ function DashboardMarketPriceStrip() {
               <span className="market-price-title">{card.title}</span>
             </div>
             <div className="market-price-value number">
-              {card.price !== null ? formatToman(card.price) : "داده در دسترس نیست"}
+              {card.price !== null ? <TomanAmount value={card.price} /> : "داده در دسترس نیست"}
             </div>
             <div className="market-price-source muted">
               {card.sourceName ? `منبع: ${card.sourceName}` : "منبع: —"}
@@ -730,10 +730,18 @@ function DomesticTable({ rows }: { rows: DomesticQuote[] }) {
                   {row.isOutlier ? <Badge tone="danger">قیمت پرت</Badge> : null}
                 </div>
               </td>
-              <td className="number">{row.sourceStatus === "unavailable" ? "—" : formatToman(row.buyPrice)}</td>
-              <td className="number">{row.sourceStatus === "unavailable" ? "—" : formatToman(row.sellPrice)}</td>
-              <td className="number">{row.sourceStatus === "unavailable" ? "—" : formatToman(row.midPrice)}</td>
-              <td className="number">{row.spread === null ? "—" : formatToman(row.spread)}</td>
+              <td className="number">
+                {row.sourceStatus === "unavailable" ? "—" : <TomanAmount value={row.buyPrice} />}
+              </td>
+              <td className="number">
+                {row.sourceStatus === "unavailable" ? "—" : <TomanAmount value={row.sellPrice} />}
+              </td>
+              <td className="number">
+                {row.sourceStatus === "unavailable" ? "—" : <TomanAmount value={row.midPrice} />}
+              </td>
+              <td className="number">
+                {row.spread === null ? "—" : <TomanAmount value={row.spread} />}
+              </td>
               <td className="number">{row.deviationFromMedianPercent === null ? "—" : formatPercent(row.deviationFromMedianPercent)}</td>
               <td>
                 <SourceStatusBadge status={row.sourceStatus} title={row.errorMessage} />
@@ -1268,7 +1276,10 @@ function GoldPriceValue({ item, value, className }: { item: GoldPricesApiItem; v
   if (value === null || !Number.isFinite(value)) {
     return <span className={className}>—</span>;
   }
-  return <span className={className}>{item.unit === "usd_oz" ? formatUsd(value) : formatToman(value)}</span>;
+  if (item.unit === "usd_oz") {
+    return <span className={className}>{formatUsd(value)}</span>;
+  }
+  return <TomanAmount value={value} className={className} />;
 }
 
 function GoldMarketCard({ quote }: { quote: GoldPricesApiItem }) {
@@ -2026,11 +2037,27 @@ export function TetherMarketView() {
       {data ? (
         <div className="grid">
           <div className="grid metrics tether-summary-metrics">
-            <Metric label="Median بازار" value={formatToman(data.summary.median)} />
-            <Metric label="بیشترین قیمت" value={formatToman(data.summary.highest)} note={data.summary.highestExchange ?? undefined} />
-            <Metric label="کمترین قیمت" value={formatToman(data.summary.lowest)} note={data.summary.lowestExchange ?? undefined} />
-            <Metric label="بهترین قیمت خرید" value={formatToman(data.summary.bestBuy)} note={data.summary.bestBuyExchange ?? undefined} />
-            <Metric label="بهترین قیمت فروش" value={formatToman(data.summary.bestSell)} note={data.summary.bestSellExchange ?? undefined} />
+            <Metric label="Median بازار" value={<TomanAmount value={data.summary.median} />} />
+            <Metric
+              label="بیشترین قیمت"
+              value={<TomanAmount value={data.summary.highest} />}
+              note={data.summary.highestExchange ?? undefined}
+            />
+            <Metric
+              label="کمترین قیمت"
+              value={<TomanAmount value={data.summary.lowest} />}
+              note={data.summary.lowestExchange ?? undefined}
+            />
+            <Metric
+              label="بهترین قیمت خرید"
+              value={<TomanAmount value={data.summary.bestBuy} />}
+              note={data.summary.bestBuyExchange ?? undefined}
+            />
+            <Metric
+              label="بهترین قیمت فروش"
+              value={<TomanAmount value={data.summary.bestSell} />}
+              note={data.summary.bestSellExchange ?? undefined}
+            />
             <div className="metric tether-sources-split" aria-label="وضعیت منابع">
               <div className="tether-sources-half good">
                 <div className="metric-label">منابع فعال</div>
@@ -2052,13 +2079,15 @@ export function TetherMarketView() {
             {hasEnoughMarketData ? (
               <>
                 <div className="tether-spread-title">اختلاف تومانی بازار</div>
-                <div className="tether-spread-value number">{formatToman(marketDiffToman)}</div>
+                <div className="tether-spread-value number">
+                  <TomanAmount value={marketDiffToman} />
+                </div>
                 <div className="tether-spread-details">
                   <div className="tether-spread-line">
-                    بالاترین قیمت فروش: {highestSellEx} — {formatToman(highestSell)}
+                    بالاترین قیمت فروش: {highestSellEx} — <TomanAmount value={highestSell} />
                   </div>
                   <div className="tether-spread-line">
-                    پایین‌ترین قیمت خرید: {lowestBuyEx} — {formatToman(lowestBuy)}
+                    پایین‌ترین قیمت خرید: {lowestBuyEx} — <TomanAmount value={lowestBuy} />
                   </div>
                   <div className="tether-spread-line tether-spread-pct number">
                     اختلاف درصدی: {formatPercent(marketDiffPercent)}

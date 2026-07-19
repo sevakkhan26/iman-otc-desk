@@ -17,12 +17,13 @@ const NBSP = "\u00A0";
 
 /**
  * Toman amount for strings (tables, titles, tooltips).
- * Numeric token is LTR-isolated; unit stays outside so RTL sentences keep order:
- * visual RIGHT → number → تومان → LEFT.
+ * Whole fragment is one LTR isolate so visual L→R is: تومان then number
+ * (unit left, amount right). Parent RTL sentences keep their own order.
  */
 export function formatToman(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "داده‌ای دریافت نشد";
-  return `${LRI}${tomanFormatter.format(value)}${PDI}${NBSP}تومان`;
+  // LTR isolate: first تومان (left), then fa-IR digits (right).
+  return `${LRI}تومان${NBSP}${tomanFormatter.format(value)}${PDI}`;
 }
 
 /** Digits only (fa-IR), for <bdi> children. */

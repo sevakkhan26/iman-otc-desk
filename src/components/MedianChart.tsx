@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { TrendingDown, TrendingUp } from "lucide-react";
 import type { MedianHistoryRange, MedianHistoryResponse } from "@/lib/types";
-import { formatPercent, formatToman } from "@/components/format";
+import { formatPercent } from "@/components/format";
+import { TomanAmount } from "@/components/TomanAmount";
 
 const faNum = new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 0 });
 const faTime = new Intl.DateTimeFormat("fa-IR", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Tehran" });
@@ -267,19 +268,27 @@ function Chart({ data, tall = false }: { data: MedianHistoryResponse; tall?: boo
       <div className="median-chart-mini-stats" aria-label="خلاصه بازه نمودار">
         <div className="median-mini-stat">
           <span className="median-mini-stat-label">آخرین</span>
-          <span className="median-mini-stat-value number">{formatToman(geom.lastV)}</span>
+          <span className="median-mini-stat-value number">
+            <TomanAmount value={geom.lastV} />
+          </span>
         </div>
         <div className="median-mini-stat">
           <span className="median-mini-stat-label">کمترین</span>
-          <span className="median-mini-stat-value number">{formatToman(geom.minV)}</span>
+          <span className="median-mini-stat-value number">
+            <TomanAmount value={geom.minV} />
+          </span>
         </div>
         <div className="median-mini-stat">
           <span className="median-mini-stat-label">بیشترین</span>
-          <span className="median-mini-stat-value number">{formatToman(geom.maxV)}</span>
+          <span className="median-mini-stat-value number">
+            <TomanAmount value={geom.maxV} />
+          </span>
         </div>
         <div className="median-mini-stat">
           <span className="median-mini-stat-label">میانگین</span>
-          <span className="median-mini-stat-value number">{formatToman(Math.round(geom.avg))}</span>
+          <span className="median-mini-stat-value number">
+            <TomanAmount value={Math.round(geom.avg)} />
+          </span>
         </div>
         <div className="median-mini-stat">
           <span className="median-mini-stat-label">تغییر</span>
@@ -417,7 +426,9 @@ function Chart({ data, tall = false }: { data: MedianHistoryResponse; tall?: boo
             }}
           >
             <span className="median-chart-live-badge-label">آخرین قیمت</span>
-            <span className="median-chart-live-badge-value number">{formatToman(geom.lastV)}</span>
+            <span className="median-chart-live-badge-value number">
+              <TomanAmount value={geom.lastV} />
+            </span>
           </div>
         ) : null}
 
@@ -429,7 +440,9 @@ function Chart({ data, tall = false }: { data: MedianHistoryResponse; tall?: boo
           }}
         >
           <span className="median-chart-tooltip-time">{tooltipLabel(active.t, range)}</span>
-          <span className="median-chart-tooltip-value number">{formatToman(active.v)}</span>
+          <span className="median-chart-tooltip-value number">
+            <TomanAmount value={active.v} />
+          </span>
         </div>
       </div>
     </div>
@@ -470,7 +483,9 @@ export function MedianChart({ tall = false }: { tall?: boolean } = {}) {
     <div className={tall ? "median-chart median-chart-tall" : "median-chart"}>
       <div className="median-chart-head">
         <div className="median-chart-stats">
-          <span className="median-chart-value number">{formatToman(data?.last)}</span>
+          <span className="median-chart-value number">
+            <TomanAmount value={data?.last} />
+          </span>
           {data && data.changePercent !== null ? (
             <span className={`median-chart-change ${up ? "good" : "danger"}`}>
               {up ? <TrendingUp aria-hidden="true" size={15} /> : <TrendingDown aria-hidden="true" size={15} />}

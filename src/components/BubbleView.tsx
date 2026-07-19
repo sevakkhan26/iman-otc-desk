@@ -14,9 +14,11 @@ import {
   type MarketBubbleResponse
 } from "@/lib/bubble/compute";
 import { DIRHAM_TO_USD_MULTIPLIER } from "@/lib/bubble/formulas";
-import { formatDate, formatNumber, formatPercent, formatToman, formatUsd } from "@/components/format";
+import { formatDate, formatNumber, formatPercent, formatUsd } from "@/components/format";
 import { DeskPageHeader } from "@/components/DeskPageHeader";
+import { TomanAmount } from "@/components/TomanAmount";
 import { BubbleSkeleton } from "@/components/skeletons";
+import type { ReactNode } from "react";
 
 function Metric({
   label,
@@ -24,7 +26,7 @@ function Metric({
   tone
 }: {
   label: string;
-  value: string;
+  value: ReactNode;
   tone?: "danger" | "good" | "warn" | "muted";
 }) {
   return (
@@ -79,13 +81,13 @@ function ConsolidatedDollarCard({
               </p>
             </div>
             <div className="grid metrics-grid bubble-metrics bubble-dollar-metrics">
-              <Metric label="میانگین قیمت درهم" value={formatToman(consolidated.averageDirhamToman)} />
+              <Metric label="میانگین قیمت درهم" value={<TomanAmount value={consolidated.averageDirhamToman} />} />
               <Metric label="ضریب تبدیل" value={formatNumber(DIRHAM_TO_USD_MULTIPLIER, 4)} />
-              <Metric label="دلار محاسباتی" value={formatToman(consolidated.calculatedDollarToman)} />
-              <Metric label="میانگین دلار بازار" value={formatToman(consolidated.averageMarketDollarToman)} />
+              <Metric label="دلار محاسباتی" value={<TomanAmount value={consolidated.calculatedDollarToman} />} />
+              <Metric label="میانگین دلار بازار" value={<TomanAmount value={consolidated.averageMarketDollarToman} />} />
               <Metric
                 label="اختلاف تومانی (بازار − محاسباتی)"
-                value={formatToman(consolidated.bubbleToman)}
+                value={<TomanAmount value={consolidated.bubbleToman} />}
                 tone={signToneClass(consolidated.sign)}
               />
               <Metric
@@ -132,12 +134,12 @@ function ConsolidatedGoldCard({
             </div>
             <div className="grid metrics-grid bubble-metrics bubble-gold-metrics">
               <Metric label="میانگین اونس" value={formatUsd(consolidated.averageOunceUsd)} />
-              <Metric label="میانگین درهم" value={formatToman(consolidated.averageDirhamToman)} />
-              <Metric label="میانگین مظنه" value={formatToman(consolidated.averageMazaneToman)} />
-              <Metric label="دلار محاسباتی" value={formatToman(consolidated.realDollarToman)} />
+              <Metric label="میانگین درهم" value={<TomanAmount value={consolidated.averageDirhamToman} />} />
+              <Metric label="میانگین مظنه" value={<TomanAmount value={consolidated.averageMazaneToman} />} />
+              <Metric label="دلار محاسباتی" value={<TomanAmount value={consolidated.realDollarToman} />} />
               <Metric
                 label="اختلاف هر کیلو طلای ایران با ارزش جهانی (تومان)"
-                value={formatToman(consolidated.goldBubbleTomanPerKg)}
+                value={<TomanAmount value={consolidated.goldBubbleTomanPerKg} />}
                 tone={signToneClass(consolidated.sign)}
               />
               <Metric

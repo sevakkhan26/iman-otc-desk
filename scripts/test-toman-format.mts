@@ -1,6 +1,5 @@
 /**
- * Surgical Toman order: isolated number + unit outside (RTL parent).
- * String: LRI + digits + PDI + NBSP + تومان
+ * Toman visual L→R: تومان then number (unit left, amount right).
  */
 import assert from "node:assert/strict";
 import { formatToman, formatTomanDigits } from "../src/components/format.ts";
@@ -21,23 +20,24 @@ function main() {
     }
   };
 
-  console.log("Toman surgical bidi tests\n");
+  console.log("Toman amount-order tests\n");
 
-  test("1. number is LTR-isolated; تومان is outside isolate", () => {
-    const s = formatToman(193_414);
-    assert.ok(s.startsWith(LRI));
-    assert.ok(s.includes(PDI));
-    const pdi = s.indexOf(PDI);
-    assert.ok(s.slice(pdi + 1).includes("تومان"));
-    assert.ok(!s.slice(0, pdi + 1).includes("تومان"));
-    assert.ok(s.includes("۱۹۳"));
+  test("1. unit first inside LTR isolate, then digits", () => {
+    const s = formatToman(193_995);
+    assert.ok(s.startsWith(LRI) && s.endsWith(PDI));
+    const inner = s.slice(1, -1);
+    assert.ok(inner.startsWith("تومان"));
+    const unitIdx = inner.indexOf("تومان");
+    const digitIdx = inner.search(/[۰-۹]/);
+    assert.ok(unitIdx === 0 && digitIdx > unitIdx);
   });
 
-  test("2. digits helper is plain fa-IR", () => {
-    const d = formatTomanDigits(-2976);
-    assert.ok(!d.includes(LRI) && !d.includes(PDI));
-    assert.ok(!d.includes("تومان"));
-    assert.ok(/[۰-۹]/.test(d));
+  test("2. negative keeps sign with digits after unit", () => {
+    const s = formatToman(-2976);
+    const inner = s.slice(1, -1);
+    assert.ok(inner.startsWith("تومان"));
+    const after = inner.slice("تومان".length);
+    assert.ok(/[۰-۹]/.test(after));
   });
 
   test("3. zero / large / invalid", () => {
@@ -46,11 +46,10 @@ function main() {
     assert.equal(formatToman(null), "داده‌ای دریافت نشد");
   });
 
-  test("4. negative sign stays with number inside isolate", () => {
-    const s = formatToman(-2976);
-    const inner = s.slice(s.indexOf(LRI) + 1, s.indexOf(PDI));
-    assert.ok(/[۰-۹]/.test(inner));
-    assert.ok(!inner.includes("تومان"));
+  test("4. digits helper has no unit", () => {
+    const d = formatTomanDigits(1000);
+    assert.ok(!d.includes("تومان"));
+    assert.ok(!d.includes(LRI));
   });
 
   console.log(failed ? `\nResult: FAILED (${failed})` : "\nResult: all passed");

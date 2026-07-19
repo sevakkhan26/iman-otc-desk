@@ -1,6 +1,6 @@
 {
   "name": "dealing-desk-otc-dashboard",
-  "version": "2.3.8",
+  "version": "2.3.9",
   "private": true,
   "type": "module",
   "scripts": {
@@ -21,8 +21,7 @@
     "next": "^15.1.6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "server-only": "^0.0.1",
-    "undici": "^8.7.0"
+    "server-only": "^0.0.1"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",

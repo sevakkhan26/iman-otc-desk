@@ -11,6 +11,7 @@
 import { randomUUID } from "node:crypto";
 import { access, constants, copyFile, mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { outboundFetch } from "@/lib/http";
 import type { PriceAlertNotification, PriceAlertRule } from "@/lib/types";
 
 const MAX_NOTIFICATIONS = 500;
@@ -359,7 +360,7 @@ async function upstashCommand(command: unknown[]): Promise<unknown> {
     throw new PriceAlertStorageError("UPSTASH_NOT_CONFIGURED", "ذخیره‌سازی Upstash پیکربندی نشده است");
   }
 
-  const res = await fetch(base, {
+  const res = await outboundFetch(base, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,

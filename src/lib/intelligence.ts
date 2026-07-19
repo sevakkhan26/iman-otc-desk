@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { outboundFetch } from "@/lib/http";
 import type {
   AlertItem,
   DeskSettings,
@@ -147,7 +148,7 @@ function responseText(payload: unknown) {
 async function generateWithOpenAI(input: IntelligenceInput): Promise<IntelligenceReport> {
   const apiKey = input.settings.openAiApiKey;
   const model = process.env.OPENAI_MODEL || "gpt-5";
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const response = await outboundFetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
       authorization: `Bearer ${apiKey}`,

@@ -1,8 +1,8 @@
 import dns from "node:dns/promises";
+import http from "node:http";
 import https from "node:https";
 import type { Agent as HttpsAgent } from "node:https";
 import { HttpsProxyAgent } from "https-proxy-agent";
-import { fetch as undiciFetch, ProxyAgent } from "undici";
 
 export class ProviderError extends Error {
   constructor(message: string) {
@@ -47,7 +47,6 @@ const ipCache = new Map<string, { ips: string[]; at: number }>();
 const IP_CACHE_TTL_MS = 10 * 60_000;
 
 let cachedProxyAgent: HttpsAgent | null | undefined;
-let cachedUndiciProxy: ProxyAgent | null | undefined;
 
 function readOutboundProxyUrl(): string | null {
   const raw =
@@ -78,24 +77,6 @@ function getOutboundProxyAgent(): HttpsAgent | undefined {
   }
 }
 
-function getUndiciProxyAgent(): ProxyAgent | undefined {
-  if (cachedUndiciProxy !== undefined) {
-    return cachedUndiciProxy ?? undefined;
-  }
-  const url = readOutboundProxyUrl();
-  if (!url) {
-    cachedUndiciProxy = null;
-    return undefined;
-  }
-  try {
-    cachedUndiciProxy = new ProxyAgent(url);
-    return cachedUndiciProxy;
-  } catch {
-    cachedUndiciProxy = null;
-    return undefined;
-  }
-}
-
 function proxyHostList(): string[] {
   const raw = process.env.PROXY_HOSTS?.trim();
   if (!raw) return DEFAULT_PROXY_HOSTS;
@@ -107,26 +88,145 @@ function proxyHostList(): string[] {
 
 /** Whether this hostname should use the configured outbound HTTP(S) proxy. */
 export function shouldUseOutboundProxy(hostname: string): boolean {
-  if (!getOutboundProxyAgent() && !getUndiciProxyAgent()) return false;
+  if (!getOutboundProxyAgent()) return false;
   const host = hostname.toLowerCase();
   const list = proxyHostList();
   if (list.includes("*")) return true;
   return list.some((entry) => host === entry || host.endsWith(`.${entry}`));
 }
 
-/** fetch that honors OUTBOUND_HTTPS_PROXY for matching hosts (HTTP + HTTPS). */
-async function proxiedFetch(url: string, init?: RequestInit): Promise<Response> {
-  let hostname = "";
+function headersToRecord(headers?: HeadersInit): Record<string, string> {
+  if (!headers) return {};
+  if (headers instanceof Headers) {
+    const out: Record<string, string> = {};
+    headers.forEach((value, key) => {
+      out[key] = value;
+    });
+    return out;
+  }
+  if (Array.isArray(headers)) {
+    return Object.fromEntries(headers);
+  }
+  return { ...headers };
+}
+
+/**
+ * fetch that honors OUTBOUND_HTTPS_PROXY for matching hosts.
+ * HTTPS uses HttpsProxyAgent; plain HTTP uses classic proxy request path.
+ * Use this (or fetchJson/fetchText/…) for all server-side outbound HTTP.
+ */
+export async function outboundFetch(url: string, init?: RequestInit): Promise<Response> {
+  let target: URL;
   try {
-    hostname = new URL(url).hostname;
+    target = new URL(url);
   } catch {
     return fetch(url, init);
   }
-  const dispatcher = shouldUseOutboundProxy(hostname) ? getUndiciProxyAgent() : undefined;
-  if (dispatcher) {
-    return undiciFetch(url, { ...(init as object), dispatcher }) as unknown as Promise<Response>;
+
+  if (!shouldUseOutboundProxy(target.hostname)) {
+    return fetch(url, init);
   }
-  return fetch(url, init);
+
+  const proxyUrl = readOutboundProxyUrl();
+  if (!proxyUrl) {
+    return fetch(url, init);
+  }
+
+  const method = (init?.method ?? "GET").toUpperCase();
+  const headers = headersToRecord(init?.headers);
+  const body =
+    typeof init?.body === "string"
+      ? init.body
+      : init?.body instanceof URLSearchParams
+        ? init.body.toString()
+        : undefined;
+
+  if (target.protocol === "https:") {
+    const agent = getOutboundProxyAgent();
+    if (!agent) return fetch(url, init);
+    const result = await httpsRequestOnce(
+      target.hostname,
+      target.hostname,
+      {
+        url,
+        timeoutMs: 30_000,
+        headers,
+        method: method === "POST" ? "POST" : "GET",
+        body
+      },
+      agent
+    );
+    const responseHeaders = new Headers();
+    for (const cookie of result.setCookie) {
+      responseHeaders.append("set-cookie", cookie);
+    }
+    return new Response(result.text, { status: result.status, headers: responseHeaders });
+  }
+
+  // HTTP via proxy: request absolute URL to the proxy host.
+  const proxy = new URL(proxyUrl);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      req.destroy();
+      reject(new ProviderError("زمان پاسخ‌دهی منبع تمام شد"));
+    }, 30_000);
+
+    const auth =
+      proxy.username || proxy.password
+        ? Buffer.from(
+            `${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`
+          ).toString("base64")
+        : null;
+
+    const req = http.request(
+      {
+        host: proxy.hostname,
+        port: Number(proxy.port || 80),
+        method,
+        path: url,
+        headers: {
+          ...headers,
+          Host: target.host,
+          ...(auth ? { "Proxy-Authorization": `Basic ${auth}` } : {}),
+          ...(body
+            ? {
+                "content-type": headers["content-type"] ?? "application/x-www-form-urlencoded",
+                "content-length": Buffer.byteLength(body)
+              }
+            : {})
+        }
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on("end", () => {
+          clearTimeout(timer);
+          const responseHeaders = new Headers();
+          for (const [key, value] of Object.entries(res.headers)) {
+            if (value == null) continue;
+            if (Array.isArray(value)) {
+              for (const item of value) responseHeaders.append(key, item);
+            } else {
+              responseHeaders.set(key, value);
+            }
+          }
+          resolve(
+            new Response(Buffer.concat(chunks).toString("utf8"), {
+              status: res.statusCode ?? 0,
+              headers: responseHeaders
+            })
+          );
+        });
+      }
+    );
+
+    req.on("error", (error) => {
+      clearTimeout(timer);
+      reject(new ProviderError(error.message || "خطای شبکه proxy"));
+    });
+    if (body) req.write(body);
+    req.end();
+  });
 }
 
 function shouldRetryWithHttps(error: unknown): boolean {
@@ -296,7 +396,13 @@ function httpsRequestOnce(
           host: hostname,
           ...(options.method === "POST"
             ? {
-                "content-type": "application/x-www-form-urlencoded",
+                // Keep caller content-type (e.g. application/json); default form for POST bodies.
+                ...(!(
+                  options.headers["content-type"] ||
+                  options.headers["Content-Type"]
+                )
+                  ? { "content-type": "application/x-www-form-urlencoded" }
+                  : {}),
                 "content-length": Buffer.byteLength(payload)
               }
             : {})
@@ -447,7 +553,7 @@ export async function fetchJson<T>(url: string, timeoutMs = 10_000, init?: Reque
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await proxiedFetch(url, {
+    const response = await outboundFetch(url, {
       ...init,
       cache: "no-store",
       headers,
@@ -498,7 +604,7 @@ export async function fetchText(url: string, timeoutMs = 10_000, init?: RequestI
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await proxiedFetch(url, {
+    const response = await outboundFetch(url, {
       ...init,
       cache: "no-store",
       headers,
@@ -568,7 +674,7 @@ export async function fetchPostForm<T>(
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await proxiedFetch(url, {
+    const response = await outboundFetch(url, {
       ...init,
       method: "POST",
       cache: "no-store",
@@ -625,7 +731,7 @@ export async function fetchPageWithCookies(
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await proxiedFetch(url, {
+    const response = await outboundFetch(url, {
       cache: "no-store",
       headers,
       signal: controller.signal

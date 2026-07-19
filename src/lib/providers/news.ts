@@ -4,7 +4,7 @@
  */
 
 import { XMLParser } from "fast-xml-parser";
-import { BROWSER_UA, ProviderError } from "@/lib/http";
+import { BROWSER_UA, outboundFetch, ProviderError } from "@/lib/http";
 import { applyNewsTranslations } from "@/lib/newsTranslation";
 import {
   dedupeArticles,
@@ -81,7 +81,7 @@ async function fetchFeedText(url: string, timeoutMs: number): Promise<{ status: 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, {
+    const res = await outboundFetch(url, {
       signal: controller.signal,
       headers: {
         accept: "application/rss+xml, application/xml, text/xml, */*",

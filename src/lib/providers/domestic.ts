@@ -1,4 +1,4 @@
-import { BROWSER_UA, fetchJson, numeric, ProviderError } from "@/lib/http";
+import { BROWSER_UA, fetchJson, numeric, outboundFetch, ProviderError } from "@/lib/http";
 import { createProviderCache, ttlFromMinutes } from "@/lib/providerCache";
 import {
   clearProviderSlot,
@@ -682,7 +682,7 @@ async function arzinjaHttpGetJson(url: string, timeoutMs: number): Promise<unkno
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetch(url, {
+      const response = await outboundFetch(url, {
         cache: "no-store",
         signal: controller.signal,
         headers: { ...ARZINJA_API_HEADERS }

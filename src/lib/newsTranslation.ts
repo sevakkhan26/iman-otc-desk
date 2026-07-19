@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { outboundFetch } from "@/lib/http";
 import type { DeskSettings, ImpactNewsItem } from "@/lib/types";
 
 const dataDir = path.join(process.cwd(), ".data");
@@ -158,7 +159,7 @@ async function translateWithMyMemory(text: string): Promise<string | null> {
   url.searchParams.set("langpair", "en|fa");
 
   try {
-    const response = await fetch(url.toString(), { signal: AbortSignal.timeout(8_000) });
+    const response = await outboundFetch(url.toString(), { signal: AbortSignal.timeout(8_000) });
     if (!response.ok) return null;
     const payload = (await response.json()) as { responseData?: { translatedText?: string } };
     const translated = payload.responseData?.translatedText?.trim();
@@ -177,7 +178,7 @@ async function translateWithOpenAI(items: TranslationRequestItem[], apiKey: stri
 
   try {
     const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await outboundFetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         authorization: `Bearer ${apiKey}`,

@@ -1,6 +1,5 @@
 "use client";
 
-import { ExternalLink } from "lucide-react";
 import { getExchangePublicUsdtUrl } from "@/lib/exchangePublicUrls";
 
 type Props = {
@@ -38,7 +37,6 @@ export function ExchangeNameLink({
       title={`${exchangeName} — صفحه عمومی تتر (تب جدید)`}
     >
       <Tag className="exch-name-link-text">{exchangeName}</Tag>
-      <ExternalLink className="exch-name-ext-icon" aria-hidden="true" size={12} strokeWidth={2.25} />
       <span className="sr-only"> (باز شدن در تب جدید)</span>
     </a>
   );

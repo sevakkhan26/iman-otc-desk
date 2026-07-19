@@ -2599,9 +2599,7 @@ tr:last-child td {
 
 /* Exchange name → official public USDT page (name only, not whole card) */
 a.exch-name-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.28em;
+  display: inline;
   max-width: 100%;
   color: inherit;
   text-decoration: none;
@@ -2616,31 +2614,16 @@ a.exch-name-link .exch-name-link-text {
   color: inherit;
 }
 
-a.exch-name-link .exch-name-ext-icon {
-  flex: 0 0 auto;
-  opacity: 0.38;
-  transition: opacity 0.15s ease;
-  color: currentColor;
-}
-
 a.exch-name-link:hover {
   color: var(--blue);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
-a.exch-name-link:hover .exch-name-ext-icon {
-  opacity: 0.75;
-}
-
 a.exch-name-link:focus-visible {
   color: var(--blue);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue) 45%, transparent);
   background: color-mix(in srgb, var(--blue) 8%, transparent);
-}
-
-a.exch-name-link:focus-visible .exch-name-ext-icon {
-  opacity: 0.85;
 }
 
 /* Table cells: keep strong weight without forcing card header size */

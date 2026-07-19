@@ -1449,7 +1449,7 @@ tr:last-child td {
     minmax(140px, 1fr)
     auto;
   gap: 12px;
-  align-items: end;
+  align-items: flex-end;
 }
 
 .user-create-row .field {
@@ -1500,7 +1500,7 @@ tr:last-child td {
 
 .user-create-actions {
   display: flex;
-  align-items: end;
+  align-items: flex-end;
   padding-bottom: 0;
 }
 

@@ -7,6 +7,7 @@ import { CalendarClock, Save, X } from "lucide-react";
 import { DeskPageHeader } from "@/components/DeskPageHeader";
 import { TomanAmount } from "@/components/TomanAmount";
 import { UserManagementPanel } from "@/components/UserManagementPanel";
+import { ExchangeNameLink } from "@/components/ExchangeNameLink";
 import type {
   DashboardResponse,
   DomesticProviderHealth,
@@ -727,7 +728,11 @@ function DomesticTable({ rows }: { rows: DomesticQuote[] }) {
             <tr key={row.exchangeId}>
               <td>
                 <div className="stack">
-                  <strong>{row.exchangeName}</strong>
+                  <ExchangeNameLink
+                    exchangeId={row.exchangeId}
+                    exchangeName={row.exchangeName}
+                    as="strong"
+                  />
                   {row.isOutlier ? <Badge tone="danger">قیمت پرت</Badge> : null}
                 </div>
               </td>
@@ -780,7 +785,7 @@ const ExchangeCard = memo(function ExchangeCard({
   return (
     <article className={className}>
       <header className="exch-card-head">
-        <span className="exch-name">{row.exchangeName}</span>
+        <ExchangeNameLink exchangeId={row.exchangeId} exchangeName={row.exchangeName} />
         <span className={`status-dot ${statusTone(row.sourceStatus)}`} title={statusLabel(row.sourceStatus)} />
       </header>
       {down || noData ? (
@@ -1463,7 +1468,7 @@ export function DashboardView() {
     <>
       <Toasts toasts={toasts} onDismiss={dismiss} />
       <DeskPageHeader
-        title="داشبورد"
+        title="مانیتورینگ"
         onRefresh={reload}
         lastUpdated={lastUpdated}
         loading={loading}

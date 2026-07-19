@@ -36,7 +36,11 @@ export async function middleware(request: NextRequest) {
       return NextResponse.redirect(new URL("/dashboard", request.url));
     }
 
+    // Admin-only APIs (even GET must not leak user list / password endpoints)
     if (pathname === "/api/settings" || pathname.startsWith("/api/settings/")) {
+      return NextResponse.json({ error: "forbidden", message: "دسترسی مجاز نیست" }, { status: 403 });
+    }
+    if (pathname === "/api/users" || pathname.startsWith("/api/users/")) {
       return NextResponse.json({ error: "forbidden", message: "دسترسی مجاز نیست" }, { status: 403 });
     }
 

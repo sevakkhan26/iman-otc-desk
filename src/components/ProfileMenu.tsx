@@ -130,15 +130,17 @@ export function ProfileMenu() {
               {roleText ? <div className="profile-menu-role muted small">{roleText}</div> : null}
             </div>
           ) : null}
-          <Link
-            href="/settings"
-            className="profile-menu-item"
-            role="menuitem"
-            onClick={close}
-          >
-            <Settings aria-hidden="true" size={16} />
-            <span>تنظیمات</span>
-          </Link>
+          {role === "admin" ? (
+            <Link
+              href="/settings"
+              className="profile-menu-item"
+              role="menuitem"
+              onClick={close}
+            >
+              <Settings aria-hidden="true" size={16} />
+              <span>تنظیمات</span>
+            </Link>
+          ) : null}
           <Link href="/help" className="profile-menu-item" role="menuitem" onClick={close}>
             <CircleHelp aria-hidden="true" size={16} />
             <span>راهنما</span>

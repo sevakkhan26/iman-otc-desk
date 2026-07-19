@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronDown, ChevronUp, RefreshCw } from "lucide-react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import { useApi } from "@/hooks/useApi";
 import {
   bubbleSignTone,
@@ -15,43 +15,8 @@ import {
 } from "@/lib/bubble/compute";
 import { DIRHAM_TO_USD_MULTIPLIER } from "@/lib/bubble/formulas";
 import { formatDate, formatNumber, formatPercent, formatToman, formatUsd } from "@/components/format";
+import { DeskPageHeader } from "@/components/DeskPageHeader";
 import { BubbleSkeleton } from "@/components/skeletons";
-import { ThemeToggleButton } from "@/components/ThemeToggleButton";
-
-function PageHeader({
-  onRefresh,
-  lastUpdated,
-  loading
-}: {
-  onRefresh: () => void;
-  lastUpdated: number | null;
-  loading: boolean;
-}) {
-  return (
-    <div className="page-header">
-      <h2 className="page-title">محاسبه حباب بازار</h2>
-      <div className="header-meta">
-        <div className="last-update">
-          آخرین بروزرسانی:{" "}
-          <span className="number">
-            {lastUpdated ? new Date(lastUpdated).toLocaleTimeString("fa-IR") : "—"}
-          </span>
-        </div>
-        <button
-          type="button"
-          className="icon-button"
-          onClick={onRefresh}
-          disabled={loading}
-          title="بروزرسانی"
-          aria-label="بروزرسانی"
-        >
-          <RefreshCw aria-hidden="true" className={loading ? "spinning" : undefined} />
-        </button>
-        <ThemeToggleButton />
-      </div>
-    </div>
-  );
-}
 
 function Metric({
   label,
@@ -285,7 +250,7 @@ export function BubbleView() {
   if (loading && !content) {
     return (
       <>
-        <PageHeader onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+        <DeskPageHeader title="محاسبه حباب بازار" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
         <BubbleSkeleton />
       </>
     );
@@ -294,7 +259,7 @@ export function BubbleView() {
   if (error && !content) {
     return (
       <>
-        <PageHeader onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+        <DeskPageHeader title="محاسبه حباب بازار" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
         <div className="empty">داده‌ای دریافت نشد: {error}</div>
       </>
     );
@@ -304,7 +269,7 @@ export function BubbleView() {
 
   return (
     <div className="bubble-page" data-layout-version="bubble-v1">
-      <PageHeader onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+      <DeskPageHeader title="محاسبه حباب بازار" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
       {error ? <div className="empty warn-inline muted">خطای تازه: {error} — آخرین داده معتبر نمایش داده می‌شود.</div> : null}
 
       <ConsolidatedDollarCard

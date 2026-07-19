@@ -525,6 +525,35 @@ input {
   flex-wrap: wrap;
 }
 
+/* Unified desk header: title | centered clock+last-update (one line) | actions */
+.page-header--desk {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 8px;
+  flex-wrap: unset;
+}
+
+.page-header--desk .page-title {
+  justify-self: start;
+  min-width: 0;
+}
+
+.page-header--desk .header-center {
+  grid-column: 2;
+  min-width: 0;
+  max-width: min(100%, 42rem);
+}
+
+.page-header--desk .header-actions {
+  justify-self: end;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  gap: 10px;
+  min-width: 0;
+}
+
 .page-title {
   margin: 0;
   font-size: 23px;
@@ -550,6 +579,7 @@ input {
   background: var(--surface-2);
   color: var(--muted);
   font-size: 13px;
+  flex: 0 0 auto;
 }
 
 .clock svg {
@@ -572,6 +602,11 @@ input {
   color: var(--muted-2);
   font-size: 12.5px;
   white-space: nowrap;
+  line-height: 1.35;
+}
+
+.last-update-label {
+  color: var(--muted-2);
 }
 
 .last-update .number {
@@ -579,7 +614,24 @@ input {
   font-weight: 600;
 }
 
-/* Dashboard: title | truly centered clock stack | actions (equal side tracks). */
+/* Clock pill + last-update on one centered horizontal line */
+.header-center--inline {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px 14px;
+  text-align: center;
+  width: 100%;
+}
+
+.header-center--inline .last-update {
+  white-space: nowrap;
+  text-align: center;
+}
+
+/* Back-compat alias (older dashboard class) */
 .page-header--centered-clock {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
@@ -596,25 +648,6 @@ input {
 
 .page-header--centered-clock .header-center {
   grid-column: 2;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  text-align: center;
-  min-width: 0;
-  max-width: min(100%, 28rem);
-}
-
-.page-header--centered-clock .header-center .clock {
-  justify-content: center;
-}
-
-.page-header--centered-clock .header-center .last-update {
-  white-space: normal;
-  line-height: 1.45;
-  text-align: center;
-  max-width: 100%;
 }
 
 .page-header--centered-clock .header-actions {
@@ -3623,27 +3656,40 @@ tr:last-child td {
     max-width: 100%;
   }
 
-  /* Dashboard header: stack title → centered clock → actions without overlap */
+  /* Unified header: stack title → centered clock line → actions */
+  .page-header--desk,
   .page-header--centered-clock {
     grid-template-columns: 1fr;
     justify-items: stretch;
   }
 
+  .page-header--desk .page-title,
   .page-header--centered-clock .page-title {
     justify-self: start;
     grid-column: 1;
   }
 
+  .page-header--desk .header-center,
   .page-header--centered-clock .header-center {
     grid-column: 1;
     max-width: 100%;
     width: 100%;
   }
 
+  .page-header--desk .header-actions,
   .page-header--centered-clock .header-actions {
     grid-column: 1;
     justify-self: end;
     width: auto;
+  }
+
+  .header-center--inline {
+    justify-content: center;
+    gap: 8px 12px;
+  }
+
+  .header-center--inline .last-update {
+    white-space: normal;
   }
 
   .icon-button,

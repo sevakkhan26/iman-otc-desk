@@ -1,9 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshCw } from "lucide-react";
 import { useApi } from "@/hooks/useApi";
-import { ThemeToggleButton } from "@/components/ThemeToggleButton";
+import { DeskPageHeader } from "@/components/DeskPageHeader";
 import {
   conditionLabel,
   instrumentMeta,
@@ -32,46 +31,6 @@ import {
   formatUsd
 } from "@/components/format";
 import { AlertsSkeleton } from "@/components/skeletons";
-
-function PageHeader({
-  onRefresh,
-  lastUpdated,
-  loading,
-  unread
-}: {
-  onRefresh: () => void;
-  lastUpdated: number | null;
-  loading: boolean;
-  unread: number;
-}) {
-  return (
-    <div className="page-header">
-      <h2 className="page-title">
-        هشدارها
-        {unread > 0 ? <span className="price-alert-unread-pill">{formatNumber(unread, 0)}</span> : null}
-      </h2>
-      <div className="header-meta">
-        <div className="last-update">
-          آخرین بروزرسانی:{" "}
-          <span className="number">
-            {lastUpdated
-              ? new Intl.DateTimeFormat("fa-IR", {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  second: "2-digit",
-                  timeZone: "Asia/Tehran"
-                }).format(lastUpdated)
-              : "—"}
-          </span>
-        </div>
-        <button className="icon-button" onClick={onRefresh} title="بروزرسانی" aria-label="بروزرسانی" disabled={loading}>
-          <RefreshCw aria-hidden="true" className={loading ? "spinning" : undefined} />
-        </button>
-        <ThemeToggleButton />
-      </div>
-    </div>
-  );
-}
 
 function formatPrice(unit: "toman" | "usd", value: number | null): string {
   if (value == null || !Number.isFinite(value)) return "—";
@@ -629,7 +588,12 @@ export function PriceAlertsView() {
   if (loading && !data) {
     return (
       <>
-        <PageHeader onRefresh={reload} lastUpdated={lastUpdated} loading={loading} unread={0} />
+        <DeskPageHeader
+          title="هشدارها"
+          onRefresh={reload}
+          lastUpdated={lastUpdated}
+          loading={loading}
+        />
         <AlertsSkeleton />
       </>
     );
@@ -638,7 +602,12 @@ export function PriceAlertsView() {
   if (error && !data) {
     return (
       <>
-        <PageHeader onRefresh={reload} lastUpdated={lastUpdated} loading={loading} unread={0} />
+        <DeskPageHeader
+          title="هشدارها"
+          onRefresh={reload}
+          lastUpdated={lastUpdated}
+          loading={loading}
+        />
         <div className="empty">
           داده‌ای دریافت نشد: {error}
           <div style={{ marginTop: 10 }}>
@@ -664,11 +633,18 @@ export function PriceAlertsView() {
 
   return (
     <div className="price-alerts-page" data-layout-version="price-alerts-v1">
-      <PageHeader
+      <DeskPageHeader
+        title={
+          <>
+            هشدارها
+            {data.summary.unread > 0 ? (
+              <span className="price-alert-unread-pill">{formatNumber(data.summary.unread, 0)}</span>
+            ) : null}
+          </>
+        }
         onRefresh={reload}
         lastUpdated={lastUpdated}
         loading={loading}
-        unread={data.summary.unread}
       />
       <div className="grid">
         {storageWarn ? (

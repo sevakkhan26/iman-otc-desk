@@ -3,8 +3,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useApi } from "@/hooks/useApi";
-import { CalendarClock, Clock, RefreshCw, Save, X } from "lucide-react";
-import { ThemeToggleButton } from "@/components/ThemeToggleButton";
+import { CalendarClock, Save, X } from "lucide-react";
+import { DeskPageHeader } from "@/components/DeskPageHeader";
 import type {
   DashboardResponse,
   DomesticProviderHealth,
@@ -103,123 +103,15 @@ const GoldPriceChart = dynamic(
 const DASHBOARD_REFRESH_MS = 60_000;
 /** Impact News ticker poll (same API as impact-news page). */
 const NEWS_REFRESH_MS = 90_000;
-const CLOCK_TICK_MS = 1_000;
 const WIDGET_TICK_MS = 30_000;
 const TOAST_TTL_MS = 9_000;
 const MAX_TOASTS = 5;
 const TICKER_MAX_ITEMS = 12;
 const FOREX_LOOKBACK_MS = 2 * 60 * 60 * 1_000;
 
-const clockDateFmt = new Intl.DateTimeFormat("fa-IR", { weekday: "short", year: "numeric", month: "2-digit", day: "2-digit" });
-const clockTimeFmt = new Intl.DateTimeFormat("fa-IR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-
-function formatLastUpdatedDateTime(ts: number): string {
-  return `${clockDateFmt.format(ts)}، ${clockTimeFmt.format(ts)}`;
-}
-
 /* ============================================================
  * Reusable primitives
  * ========================================================== */
-function PageHeader({
-  title,
-  onRefresh,
-  lastUpdated,
-  lastUpdatedDisplay,
-  loading = false,
-  centerClock = false
-}: {
-  title: string;
-  onRefresh?: () => void;
-  lastUpdated?: number | null;
-  lastUpdatedDisplay?: string | null;
-  loading?: boolean;
-  /** Dashboard: live clock + last-update stacked and truly centered in the header. */
-  centerClock?: boolean;
-}) {
-  // mount-guarded so the server render (null) matches the first client render, then ticks every second
-  const [now, setNow] = useState<number | null>(null);
-  useEffect(() => {
-    setNow(Date.now());
-    const id = setInterval(() => setNow(Date.now()), CLOCK_TICK_MS);
-    return () => clearInterval(id);
-  }, []);
-
-  const lastUpdateText =
-    lastUpdatedDisplay ??
-    (lastUpdated != null
-      ? centerClock
-        ? formatLastUpdatedDateTime(lastUpdated)
-        : clockTimeFmt.format(lastUpdated)
-      : "—");
-
-  const clockBlock = (
-    <div className="clock" title="تاریخ و ساعت جاری">
-      <Clock aria-hidden="true" size={15} />
-      <span className="clock-date">{now ? clockDateFmt.format(now) : "—"}</span>
-      <span className="clock-time number">{now ? clockTimeFmt.format(now) : "—"}</span>
-    </div>
-  );
-
-  const lastUpdateBlock = (
-    <div className="last-update">
-      {centerClock ? "آخرین به‌روزرسانی" : "آخرین بروزرسانی"}:{" "}
-      <span className="number">{lastUpdateText}</span>
-    </div>
-  );
-
-  const actions = (
-    <div className="header-meta header-actions">
-      {onRefresh ? (
-        <button
-          className="icon-button"
-          onClick={onRefresh}
-          title="بروزرسانی"
-          aria-label="بروزرسانی"
-          disabled={loading}
-        >
-          <RefreshCw aria-hidden="true" className={loading ? "spinning" : undefined} />
-        </button>
-      ) : null}
-      <ThemeToggleButton />
-    </div>
-  );
-
-  if (centerClock) {
-    return (
-      <div className="page-header page-header--centered-clock">
-        <h2 className="page-title">{title}</h2>
-        <div className="header-center">
-          {clockBlock}
-          {lastUpdateBlock}
-        </div>
-        {actions}
-      </div>
-    );
-  }
-
-  return (
-    <div className="page-header">
-      <h2 className="page-title">{title}</h2>
-      <div className="header-meta">
-        {clockBlock}
-        {lastUpdateBlock}
-        {onRefresh ? (
-          <button
-            className="icon-button"
-            onClick={onRefresh}
-            title="بروزرسانی"
-            aria-label="بروزرسانی"
-            disabled={loading}
-          >
-            <RefreshCw aria-hidden="true" className={loading ? "spinning" : undefined} />
-          </button>
-        ) : null}
-        <ThemeToggleButton />
-      </div>
-    </div>
-  );
-}
-
 type Tone = "good" | "warn" | "danger" | "neutral";
 
 const Badge = memo(function Badge({ tone, children }: { tone: Tone; children: React.ReactNode }) {
@@ -1096,7 +988,7 @@ export function GoldMarketView() {
 
   return (
     <>
-      <PageHeader
+      <DeskPageHeader
         title="بازار طلا"
         onRefresh={reload}
         lastUpdated={lastUpdated}
@@ -1280,7 +1172,7 @@ export function ForexView() {
   if (loading && !data) {
     return (
       <>
-        <PageHeader title="فارکس" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+        <DeskPageHeader title="فارکس" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
         <ForexSkeleton />
       </>
     );
@@ -1288,7 +1180,7 @@ export function ForexView() {
   if (!data || !Array.isArray(data.events)) {
     return (
       <>
-        <PageHeader title="فارکس" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+        <DeskPageHeader title="فارکس" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
         <LoadState loading={false} error={error} hasData={false} />
         <div className="empty">داده‌های فارکس در دسترس نیست</div>
       </>
@@ -1296,7 +1188,7 @@ export function ForexView() {
   }
   return (
     <>
-      <PageHeader title="فارکس" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+      <DeskPageHeader title="فارکس" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
       <div className="grid">
         <Panel
           title="رویدادهای مهم فارکس (USD)"
@@ -1545,12 +1437,11 @@ export function DashboardView() {
   return (
     <>
       <Toasts toasts={toasts} onDismiss={dismiss} />
-      <PageHeader
+      <DeskPageHeader
         title="داشبورد"
         onRefresh={reload}
         lastUpdated={lastUpdated}
         loading={loading}
-        centerClock
       />
       <NewsTicker />
       <LoadState loading={loading} error={error} hasData={Boolean(data)} skeleton={<DashboardSkeleton />} />
@@ -2117,7 +2008,7 @@ export function TetherMarketView() {
 
   return (
     <>
-      <PageHeader title="بازار تتر ایران" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+      <DeskPageHeader title="بازار تتر ایران" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
       <LoadState loading={loading} error={error} hasData={Boolean(data)} skeleton={<TetherMarketSkeleton />} />
       {data ? (
         <div className="grid">
@@ -2314,7 +2205,7 @@ export function SettingsView() {
 
   return (
     <>
-      <PageHeader title="تنظیمات" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+      <DeskPageHeader title="تنظیمات" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
       <LoadState loading={loading} error={error} hasData={Boolean(form)} skeleton={<SettingsSkeleton />} />
       {form ? (
         <div className="grid">

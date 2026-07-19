@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { DeskPageHeader } from "@/components/DeskPageHeader";
 
 type HelpSection = {
   id: string;
@@ -271,10 +272,8 @@ const sections: HelpSection[] = [
 export function HelpView() {
   return (
     <div className="help-page">
-      <div className="page-header">
-        <h2 className="page-title">راهنمای داشبورد</h2>
-        <p className="help-lead muted">راهنمای استفاده از داشبورد عملیاتی OTC Desk</p>
-      </div>
+      <DeskPageHeader title="راهنمای داشبورد" showLastUpdate={false} />
+      <p className="help-lead muted">راهنمای استفاده از داشبورد عملیاتی OTC Desk</p>
       <div className="stack help-sections">
         {sections.map((section) => (
           <HelpPanel key={section.id} title={section.title}>

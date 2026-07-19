@@ -38,10 +38,10 @@ const FALLBACK_HOST_IPS: Record<string, string[]> = {
 
 /**
  * Hosts forced through OUTBOUND_HTTPS_PROXY.
- * Default `*` = all outbound provider traffic when a proxy URL is set.
- * Override with PROXY_HOSTS=bonbast.com,www.navasan.net for a allow-list.
+ * Default: only Bonbast + Navasan (Iran-filtered sources).
+ * Override with PROXY_HOSTS=* for all hosts, or a custom comma-list.
  */
-const DEFAULT_PROXY_HOSTS = ["*"];
+const DEFAULT_PROXY_HOSTS = ["bonbast.com", "navasan.net"];
 
 const ipCache = new Map<string, { ips: string[]; at: number }>();
 const IP_CACHE_TTL_MS = 10 * 60_000;

@@ -26,8 +26,10 @@ try {
 }
 
 console.log("shouldUseOutboundProxy(bonbast.com) =", shouldUseOutboundProxy("bonbast.com"));
+console.log("shouldUseOutboundProxy(www.navasan.net) =", shouldUseOutboundProxy("www.navasan.net"));
 console.log("shouldUseOutboundProxy(example.com) =", shouldUseOutboundProxy("example.com"));
 console.log("shouldUseOutboundProxy(api.nobitex.ir) =", shouldUseOutboundProxy("api.nobitex.ir"));
+// Expect: bonbast/navasan true; others false (unless PROXY_HOSTS=*)
 
 const { fetchPageWithCookies } = await import("../src/lib/http.ts");
 

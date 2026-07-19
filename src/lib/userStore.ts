@@ -395,7 +395,7 @@ export async function resetUserPassword(
   if (id === ENV_ADMIN_ID) {
     return {
       ok: false,
-      message: "رمز admin سیستم فقط از طریق سرور (.env) قابل تغییر است",
+      message: "رمز admin سیستم فقط از طریق سرور قابل تغییر است",
       status: 400
     };
   }

@@ -20,7 +20,7 @@ function roleLabel(role: UserAccountPublic["role"]): string {
 }
 
 function sourceLabel(source: UserAccountPublic["source"]): string {
-  return source === "env" ? "سیستمی (.env)" : "ساخته‌شده در پنل";
+  return source === "env" ? "سیستمی" : "ساخته‌شده در پنل";
 }
 
 export function UserManagementPanel() {
@@ -220,7 +220,7 @@ export function UserManagementPanel() {
     <div className="grid" style={{ gap: 16 }}>
       <p className="muted" style={{ marginTop: 0 }}>
         از اینجا می‌توانید کاربر جدید بسازید، برایشان رمز بگذارید، رمز را ریست کنید یا کاربر
-        ساخته‌شده در پنل را حذف کنید. رمز admin سیستمی فقط از سرور (.env) عوض می‌شود. بعد از ریست
+        ساخته‌شده در پنل را حذف کنید. رمز admin سیستمی فقط از سرور عوض می‌شود. بعد از ریست
         رمز، نشست‌های قبلی همان کاربر باطل می‌شود.
       </p>
 
@@ -286,7 +286,7 @@ export function UserManagementPanel() {
                           ریست رمز
                         </button>
                       ) : (
-                        <span className="muted">رمز فقط از .env</span>
+                        <span className="muted">رمز فقط از سرور</span>
                       )}
                       {user.source === "managed" ? (
                         <button

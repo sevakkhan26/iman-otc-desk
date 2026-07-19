@@ -186,8 +186,17 @@ a {
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
+  font-family: inherit;
+}
+
+/* Native dropdown options: force app font where the browser allows it */
+select option,
+select optgroup {
+  font-family: "IRANYekan", ui-sans-serif, system-ui, sans-serif;
 }
 
 .shell {
@@ -1426,6 +1435,8 @@ tr:last-child td {
   border-radius: 8px;
   padding: 8px 10px;
   outline: none;
+  font: inherit;
+  font-family: inherit;
 }
 
 .user-mgmt-actions {
@@ -3072,6 +3083,7 @@ tr:last-child td {
   color: var(--text);
   padding: 0 10px;
   font: inherit;
+  font-family: inherit;
 }
 
 .price-alert-form .field-hint {

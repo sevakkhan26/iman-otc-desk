@@ -4,6 +4,7 @@
  */
 import assert from "node:assert/strict";
 import {
+  OKEX_IR_HTTP_403_MESSAGE,
   parseOkexIrSpotBook,
   parseTetherlandUsdtBook
 } from "../src/lib/providers/domestic.ts";
@@ -48,9 +49,11 @@ async function main() {
   console.log("OK-EX / Tetherland provider tests\n");
 
   await test("1. OK-EX HTTP 403 is a safe provider error message pattern", () => {
-    const msg = "HTTP 403 — دسترسی سرور به API اوکی اکسچنج مسدود است (احتمالاً IP/WAF)";
+    const msg = OKEX_IR_HTTP_403_MESSAGE;
     assert.match(msg, /HTTP 403/);
+    assert.match(msg, /allowlist|WAF|Cloudflare/i);
     assert.ok(!msg.toLowerCase().includes("stack"));
+    assert.ok(!msg.toLowerCase().includes("bypass"));
   });
 
   await test("2. successful OK-EX order-book parse clears 403 path (valid bid/ask)", () => {
@@ -89,6 +92,25 @@ async function main() {
     assert.equal(parseOkexIrSpotBook({ bids: [], asks: [] }), null);
     assert.equal(parseOkexIrSpotBook({ bids: [[200_000, 1]], asks: [[190_000, 1]] }), null);
     assert.equal(parseOkexIrSpotBook(null), null);
+  });
+
+  await test("5b. OK-EX rejects zero/stale malformed levels and unwraps data wrapper", () => {
+    assert.equal(parseOkexIrSpotBook({ bids: [[0, 1], ["", 2]], asks: [[192_000, 1]] }), null);
+    assert.equal(
+      parseOkexIrSpotBook({
+        bids: [[0, 1], [192_500, 2]],
+        asks: [[0, 1], [192_700, 2]]
+      })!.buyPrice,
+      192_500
+    );
+    const wrapped = parseOkexIrSpotBook({
+      data: { bids: [[191_000, 1]], asks: [[191_200, 1]] }
+    });
+    assert.ok(wrapped);
+    assert.equal(wrapped!.buyPrice, 191_000);
+    assert.equal(wrapped!.sellPrice, 191_200);
+    // Buy and sell must stay separate (not equal mid duplicated)
+    assert.notEqual(wrapped!.buyPrice, wrapped!.sellPrice);
   });
 
   await test("6. Tetherland real Bid/Ask from market board (API fields inverted)", () => {

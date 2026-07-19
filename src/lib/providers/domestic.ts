@@ -510,11 +510,13 @@ async function liveBit24(): Promise<DomesticQuote> {
  *   GET https://api.ok-ex.io/api/v1/spot/public/books?symbol=USDT-IRT&limit=20
  * Alternate host: https://sapi.ok-ex.io/... (same path)
  * Pair list confirms symbol "USDT-IRT", quote IRT, prices in Toman (not Rial).
+ * Public market endpoints do NOT require an API key (trading APIs under /hapi do).
  *
- * Mapping: bids[0] = best bid → buyPrice; asks[0] = best ask → sellPrice.
+ * Mapping: best bid → buyPrice; best ask → sellPrice (separate fields).
  *
  * Legacy OTC tickers (azapi.ok-ex.io/.../otc/tickers) often return identical buyAmt/sellAmt
- * (reference only) and may be CF-blocked (HTTP 403) from some server IPs.
+ * (reference only). Some production server IPs receive HTTP 403 from Cloudflare WAF —
+ * that requires official IP allowlisting; do not invent prices or bypass WAF.
  */
 const OKEX_IR_BOOK_URLS = [
   "https://api.ok-ex.io/api/v1/spot/public/books?symbol=USDT-IRT&limit=20",
@@ -530,32 +532,105 @@ const OKEX_IR_HEADERS = {
   referer: "https://ok-ex.io/trade/USDT-IRT"
 } as const;
 
-/** Pure parser for OK-EX spot books JSON. */
+/** Surfaced when Cloudflare/WAF blocks the server egress IP (common in production Docker). */
+export const OKEX_IR_HTTP_403_MESSAGE =
+  "HTTP 403 — Cloudflare/WAF دسترسی IP سرور به API عمومی اوکی اکسچنج را مسدود کرده است. " +
+  "endpoint عمومی books نیاز به API key ندارد؛ برای production باید IP سرور allowlist شود " +
+  "(api.ok-ex.io / sapi.ok-ex.io / azapi.ok-ex.io).";
+
+function firstPositiveBookPrice(
+  levels: Array<[number | string, number | string] | (number | string)[]> | undefined
+): number | null {
+  for (const row of levels ?? []) {
+    if (!Array.isArray(row) || row.length < 1) continue;
+    const p = toToman(row[0]);
+    // Reject zero / negative / non-finite; prices are already Toman (no /10).
+    if (p !== null && Number.isFinite(p) && p > 0) return p;
+  }
+  return null;
+}
+
+/** Pure parser for OK-EX spot books JSON (public /books payload). */
 export function parseOkexIrSpotBook(payload: unknown): { buyPrice: number; sellPrice: number } | null {
   if (!payload || typeof payload !== "object") return null;
-  const book = payload as {
+  const root = payload as Record<string, unknown>;
+  // Official shape is top-level { bids, asks }; tolerate rare wrappers.
+  const nested =
+    root.data && typeof root.data === "object"
+      ? (root.data as Record<string, unknown>)
+      : root.result && typeof root.result === "object"
+        ? (root.result as Record<string, unknown>)
+        : root;
+  const book = nested as {
     bids?: Array<[number | string, number | string] | (number | string)[]>;
     asks?: Array<[number | string, number | string] | (number | string)[]>;
   };
-  let buyPrice: number | null = null;
-  for (const row of book.bids ?? []) {
-    const p = toToman(Array.isArray(row) ? row[0] : null);
-    if (p !== null && p > 0) {
-      buyPrice = p;
-      break;
-    }
-  }
-  let sellPrice: number | null = null;
-  for (const row of book.asks ?? []) {
-    const p = toToman(Array.isArray(row) ? row[0] : null);
-    if (p !== null && p > 0) {
-      sellPrice = p;
-      break;
-    }
-  }
+  const buyPrice = firstPositiveBookPrice(book.bids);
+  const sellPrice = firstPositiveBookPrice(book.asks);
   if (buyPrice === null || sellPrice === null) return null;
+  // Crossed book is invalid — never invent or swap.
   if (buyPrice > sellPrice) return null;
   return { buyPrice, sellPrice };
+}
+
+function normalizeOkexHttpError(error: unknown): ProviderError {
+  const msg = error instanceof Error ? error.message : String(error);
+  if (/HTTP 403/.test(msg)) return new ProviderError(OKEX_IR_HTTP_403_MESSAGE);
+  return error instanceof ProviderError ? error : new ProviderError(msg);
+}
+
+/**
+ * Hostname-first fetch for OK-EX (SNI/Host as browser), then shared fetchJson (IP-resolved).
+ * Does not spoof cookies, solve challenges, or route through unauthorized proxies.
+ */
+async function fetchOkexJsonOnce<T>(url: string, timeoutMs: number): Promise<T> {
+  const headers = { ...OKEX_IR_HEADERS };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await outboundFetch(url, {
+      cache: "no-store",
+      headers,
+      signal: controller.signal
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      const snippet = text.replace(/\s+/g, " ").slice(0, 120);
+      if (response.status === 403) {
+        console.info(
+          "[okex-fetch]",
+          JSON.stringify({
+            status: 403,
+            url,
+            bodySnippet: snippet || null,
+            note: "WAF/IP block — public books need no API key"
+          })
+        );
+        throw new ProviderError(OKEX_IR_HTTP_403_MESSAGE);
+      }
+      throw new ProviderError(`HTTP ${response.status}${snippet ? ` — ${snippet}` : ""}`);
+    }
+    if (!text.trim()) throw new ProviderError("پاسخ خالی بود");
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      throw new ProviderError("پاسخ JSON معتبر نبود");
+    }
+  } catch (error) {
+    if (error instanceof ProviderError) throw error;
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new ProviderError("زمان پاسخ‌دهی منبع تمام شد");
+    }
+    // Fall through to IP-resolved path used by other providers.
+  } finally {
+    clearTimeout(timer);
+  }
+
+  try {
+    return await fetchJson<T>(url, timeoutMs, { headers });
+  } catch (error) {
+    throw normalizeOkexHttpError(error);
+  }
 }
 
 async function fetchOkexJsonWithRetry<T>(url: string, timeoutMs: number, attempts = 2): Promise<T> {
@@ -563,13 +638,13 @@ async function fetchOkexJsonWithRetry<T>(url: string, timeoutMs: number, attempt
   for (let attempt = 1; attempt <= attempts; attempt++) {
     if (attempt > 1) await new Promise((r) => setTimeout(r, 300 * attempt));
     try {
-      return await fetchJson<T>(url, timeoutMs, { headers: { ...OKEX_IR_HEADERS } });
+      return await fetchOkexJsonOnce<T>(url, timeoutMs);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       lastError = error instanceof ProviderError ? error : new ProviderError(msg);
       // Honor rate limit — surface 429 to isolation runner backoff
       if (/HTTP 429/.test(msg)) throw lastError;
-      // Retry 403/5xx once (WAF blips); final 403 still throws
+      // Retry 403/5xx once (WAF blips); final 403 still throws (allowlist, not bypass)
       if (!/HTTP 403|HTTP 5\d\d|زمان پاسخ/.test(msg) || attempt === attempts) {
         if (attempt === attempts) throw lastError;
       }
@@ -589,6 +664,9 @@ async function liveOkexIrFromOtcTickers(): Promise<DomesticQuote> {
       priceDollar?: string | number;
     }>
   >(OKEX_IR_TICKERS_URL, 8_000, 1);
+  if (!Array.isArray(data)) {
+    throw new ProviderError("فرمت تیکر OTC اوکی اکسچنج نامعتبر است");
+  }
   const usdt = data.find((row) => (row.asset ?? "").toUpperCase() === "USDT");
   if (!usdt) throw new ProviderError("ردیف USDT در تیکر OTC اوکی اکسچنج پیدا نشد");
 
@@ -596,22 +674,28 @@ async function liveOkexIrFromOtcTickers(): Promise<DomesticQuote> {
   const userSell = toToman(usdt.sellAmt);
   const last = toToman(usdt.priceDollar ?? usdt.buyAmt ?? usdt.sellAmt);
 
+  // Reject zero / non-positive OTC levels
+  const validUserBuy = userBuy !== null && userBuy > 0 ? userBuy : null;
+  const validUserSell = userSell !== null && userSell > 0 ? userSell : null;
+  const validLast = last !== null && last > 0 ? last : null;
+
   if (
-    userBuy !== null &&
-    userSell !== null &&
-    userBuy !== userSell &&
-    Math.abs(userBuy - userSell) / Math.max(userBuy, userSell) > 0.0001
+    validUserBuy !== null &&
+    validUserSell !== null &&
+    validUserBuy !== validUserSell &&
+    Math.abs(validUserBuy - validUserSell) / Math.max(validUserBuy, validUserSell) > 0.0001
   ) {
     // Distinct OTC sides: desk buyPrice = bid = user sell, sellPrice = ask = user buy
-    const buyPrice = userSell;
-    const sellPrice = userBuy;
+    const buyPrice = validUserSell;
+    const sellPrice = validUserBuy;
     const bid = Math.min(buyPrice, sellPrice);
     const ask = Math.max(buyPrice, sellPrice);
     assertRealisticUsdtIrt(bid, ask, null);
     return buildQuote(id, name, bid, ask);
   }
 
-  const ref = last ?? userBuy ?? userSell;
+  // Identical buyAmt/sellAmt (observed live) = reference-only — never duplicate into fake bid/ask.
+  const ref = validLast ?? validUserBuy ?? validUserSell;
   if (ref === null) {
     throw new ProviderError("قیمت خرید/فروش USDT اوکی اکسچنج معتبر نیست");
   }
@@ -652,9 +736,7 @@ async function liveOkexIr(): Promise<DomesticQuote> {
     const otcMsg = error instanceof Error ? error.message : "OTC failed";
     const combined = lastBookError ?? otcMsg;
     if (/HTTP 403/.test(combined) || /HTTP 403/.test(otcMsg)) {
-      throw new ProviderError(
-        "HTTP 403 — دسترسی سرور به API اوکی اکسچنج مسدود است (احتمالاً IP/WAF)"
-      );
+      throw new ProviderError(OKEX_IR_HTTP_403_MESSAGE);
     }
     throw new ProviderError(combined || "اوکی اکسچنج در دسترس نیست");
   }
@@ -1091,6 +1173,34 @@ export async function probeArzinjaQuote(): Promise<{
     region: process.env.VERCEL_REGION ?? null,
     vercel: Boolean(process.env.VERCEL),
     endpoint: ARZINJA_ORDERBOOK_URL
+  };
+}
+
+/** Public diagnostic: OK-EX only (clears slot then live-fetches). */
+export async function probeOkexIrQuote(): Promise<{
+  exchangeId: string;
+  buyPrice: number | null;
+  sellPrice: number | null;
+  midPrice: number | null;
+  sourceStatus: SourceStatus;
+  errorMessage?: string;
+  region: string | null;
+  vercel: boolean;
+  endpoint: string;
+}> {
+  clearProviderSlot("okex_ir");
+  const def = providerDefs.find((p) => p.id === "okex_ir")!;
+  const quote = await runIsolatedProvider(def);
+  return {
+    exchangeId: quote.exchangeId,
+    buyPrice: quote.buyPrice,
+    sellPrice: quote.sellPrice,
+    midPrice: quote.midPrice,
+    sourceStatus: quote.sourceStatus,
+    errorMessage: quote.errorMessage,
+    region: process.env.VERCEL_REGION ?? null,
+    vercel: Boolean(process.env.VERCEL),
+    endpoint: OKEX_IR_BOOK_URLS[0]
   };
 }
 

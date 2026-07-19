@@ -74,11 +74,14 @@ function signToneClass(sign: string | null | undefined): "danger" | "good" | "wa
   return bubbleSignTone(sign as "positive" | "negative" | "near_zero" | null);
 }
 
-function sourceNamesLine(members: Array<{ sourceName: string }>, count: number): string {
-  if (count === 0) return "—";
-  const names = members.map((m) => m.sourceName).join("، ");
-  if (count === 1) return `بر اساس ۱ منبع: ${names}`;
-  return `بر اساس ${new Intl.NumberFormat("fa-IR").format(count)} منبع: ${names}`;
+/** Header line: «آخرین به‌روزرسانی: {date}، {time}» from live ISO (never hardcoded). */
+function formatBubbleHeaderUpdated(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const datePart = new Intl.DateTimeFormat("fa-IR", { dateStyle: "short" }).format(date);
+  const timePart = new Intl.DateTimeFormat("fa-IR", { timeStyle: "short" }).format(date);
+  return `آخرین به‌روزرسانی: ${datePart}، ${timePart}`;
 }
 
 function ConsolidatedDollarCard({
@@ -88,10 +91,14 @@ function ConsolidatedDollarCard({
   consolidated: ConsolidatedDollarBubble | null;
   reason: string | null;
 }) {
+  const headerUpdated = formatBubbleHeaderUpdated(consolidated?.lastUpdated);
   return (
     <section className="panel bubble-panel">
-      <div className="panel-header">
+      <div className="panel-header bubble-section-header">
         <h3 className="panel-title">حباب دلار</h3>
+        {headerUpdated ? (
+          <span className="bubble-section-updated muted small number">{headerUpdated}</span>
+        ) : null}
       </div>
       <div className="panel-body">
         {!consolidated ? (
@@ -121,16 +128,6 @@ function ConsolidatedDollarCard({
                 value={formatPercent(consolidated.bubblePercent)}
                 tone={signToneClass(consolidated.sign)}
               />
-            </div>
-            <div className="bubble-source-meta muted small">
-              درهم: {sourceNamesLine(consolidated.dirhamSources, consolidated.dirhamSourceCount)}
-            </div>
-            <div className="bubble-source-meta muted small">
-              دلار بازار:{" "}
-              {sourceNamesLine(consolidated.marketDollarSources, consolidated.marketDollarSourceCount)}
-            </div>
-            <div className="bubble-source-meta muted small">
-              به‌روزرسانی: {formatDate(consolidated.lastUpdated)}
             </div>
           </>
         )}

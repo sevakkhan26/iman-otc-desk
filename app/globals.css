@@ -4212,6 +4212,31 @@ table th {
   margin-top: 10px;
 }
 
+/* Section header: title (start/right in RTL) + live timestamp (end/left). */
+.bubble-section-header {
+  flex-wrap: wrap;
+  row-gap: 6px;
+  column-gap: 12px;
+}
+
+.bubble-section-updated {
+  margin: 0;
+  line-height: 1.5;
+  white-space: normal;
+  text-align: start;
+  max-width: 100%;
+}
+
+@media (max-width: 560px) {
+  .bubble-section-header {
+    align-items: flex-start;
+  }
+
+  .bubble-section-updated {
+    flex: 1 1 100%;
+  }
+}
+
 .bubble-note {
   margin-top: 10px;
 }

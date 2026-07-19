@@ -399,10 +399,11 @@ export function UserManagementPanel() {
           <UserPlus aria-hidden="true" size={18} />
           کاربر جدید
         </h3>
-        <div className="grid settings-grid">
+        <div className="user-create-row">
           <div className="field">
-            <label>نام کاربری</label>
+            <label htmlFor="new-user-username">نام کاربری</label>
             <input
+              id="new-user-username"
               type="text"
               autoComplete="off"
               value={newUsername}
@@ -410,19 +411,41 @@ export function UserManagementPanel() {
               placeholder="مثلاً trader01"
             />
           </div>
-          <div className="field">
-            <label>نقش</label>
-            <select
-              value={newRole}
-              onChange={(event) => setNewRole(event.target.value === "admin" ? "admin" : "viewer")}
+          <div className="field user-create-role">
+            <span className="user-create-role-label" id="new-user-role-label">
+              نقش
+            </span>
+            <div
+              className="user-role-radios"
+              role="radiogroup"
+              aria-labelledby="new-user-role-label"
             >
-              <option value="viewer">بیننده (viewer)</option>
-              <option value="admin">ادمین (admin)</option>
-            </select>
+              <label className={`user-role-option${newRole === "viewer" ? " is-selected" : ""}`}>
+                <input
+                  type="radio"
+                  name="new-user-role"
+                  value="viewer"
+                  checked={newRole === "viewer"}
+                  onChange={() => setNewRole("viewer")}
+                />
+                <span>بیننده</span>
+              </label>
+              <label className={`user-role-option${newRole === "admin" ? " is-selected" : ""}`}>
+                <input
+                  type="radio"
+                  name="new-user-role"
+                  value="admin"
+                  checked={newRole === "admin"}
+                  onChange={() => setNewRole("admin")}
+                />
+                <span>ادمین</span>
+              </label>
+            </div>
           </div>
           <div className="field">
-            <label>رمز عبور</label>
+            <label htmlFor="new-user-password">رمز عبور</label>
             <input
+              id="new-user-password"
               type="password"
               autoComplete="new-password"
               value={newPassword}
@@ -431,8 +454,9 @@ export function UserManagementPanel() {
             />
           </div>
           <div className="field">
-            <label>تکرار رمز</label>
+            <label htmlFor="new-user-password-confirm">تکرار رمز</label>
             <input
+              id="new-user-password-confirm"
               type="password"
               autoComplete="new-password"
               value={newPasswordConfirm}
@@ -440,24 +464,28 @@ export function UserManagementPanel() {
               placeholder="تکرار رمز"
             />
           </div>
+          <div className="user-create-actions">
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => {
+                void createUser();
+              }}
+              disabled={
+                creating || !newUsername.trim() || !newPassword || !newPasswordConfirm
+              }
+            >
+              <Plus aria-hidden="true" />
+              {creating ? "در حال ایجاد…" : "ایجاد کاربر"}
+            </button>
+          </div>
         </div>
-        <div className="row-meta" style={{ marginTop: 12, gap: 8, flexWrap: "wrap" }}>
-          <button
-            type="button"
-            className="primary-button"
-            onClick={() => {
-              void createUser();
-            }}
-            disabled={
-              creating || !newUsername.trim() || !newPassword || !newPasswordConfirm
-            }
-          >
-            <Plus aria-hidden="true" />
-            {creating ? "در حال ایجاد…" : "ایجاد کاربر"}
-          </button>
-          {createMessage ? <Badge tone="good">{createMessage}</Badge> : null}
-          {createError ? <Badge tone="danger">{createError}</Badge> : null}
-        </div>
+        {(createMessage || createError) && (
+          <div className="row-meta" style={{ marginTop: 10, gap: 8, flexWrap: "wrap" }}>
+            {createMessage ? <Badge tone="good">{createMessage}</Badge> : null}
+            {createError ? <Badge tone="danger">{createError}</Badge> : null}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1439,6 +1439,75 @@ tr:last-child td {
   font-family: inherit;
 }
 
+/* Create-user form: one horizontal row (RTL: username → role → passwords → button) */
+.user-create-row {
+  display: grid;
+  grid-template-columns:
+    minmax(140px, 1.1fr)
+    minmax(150px, auto)
+    minmax(140px, 1fr)
+    minmax(140px, 1fr)
+    auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.user-create-row .field {
+  min-width: 0;
+}
+
+.user-create-role-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.user-role-radios {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  min-height: 40px;
+  align-items: center;
+}
+
+.user-role-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.user-role-option input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent, #6ea8fe);
+  cursor: pointer;
+}
+
+.user-role-option.is-selected {
+  border-color: var(--accent, #6ea8fe);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent, #6ea8fe) 35%, transparent);
+}
+
+.user-create-actions {
+  display: flex;
+  align-items: end;
+  padding-bottom: 0;
+}
+
+.user-create-actions .primary-button {
+  white-space: nowrap;
+}
+
 .user-mgmt-actions {
   display: flex;
   flex-wrap: wrap;
@@ -3676,6 +3745,16 @@ tr:last-child td {
     grid-template-columns: repeat(2, minmax(170px, 1fr));
   }
 
+  .user-create-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+
+  .user-create-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
   .answer-grid,
   .decision-grid,
   .forex-grid {
@@ -4069,8 +4148,13 @@ tr:last-child td {
   .answer-grid,
   .decision-grid,
   .forex-grid,
-  .global-metrics-row {
+  .global-metrics-row,
+  .user-create-row {
     grid-template-columns: 1fr;
+  }
+
+  .user-create-actions {
+    grid-column: auto;
   }
 
   .filter-bar {

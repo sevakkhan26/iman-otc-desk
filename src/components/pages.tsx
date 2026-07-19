@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { useApi } from "@/hooks/useApi";
 import { CalendarClock, Save, X } from "lucide-react";
 import { DeskPageHeader } from "@/components/DeskPageHeader";
+import { TomanAmount } from "@/components/TomanAmount";
 import type {
   DashboardResponse,
   DomesticProviderHealth,
@@ -181,7 +182,7 @@ const PriceValue = memo(function PriceValue({ value, className = "" }: { value: 
   const direction = usePriceDirection(value);
   return (
     <span className={`price-value ${direction ? `flash-${direction}` : ""} ${className}`.trim()}>
-      {value === null ? "—" : formatToman(value)}
+      {value === null ? "—" : <TomanAmount value={value} />}
     </span>
   );
 });

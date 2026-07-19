@@ -10,9 +10,27 @@ const decimalFormatter = new Intl.NumberFormat("fa-IR", {
   maximumFractionDigits: 2
 });
 
-export function formatToman(value: number | null | undefined) {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "داده‌ای دریافت نشد";
-  return `${tomanFormatter.format(value)} تومان`;
+/** Left-to-Right Isolate / Pop Directional Isolate — keep «number تومان» one LTR unit in RTL UI. */
+const LRI = "\u2066";
+const PDI = "\u2069";
+/** Non-breaking space between amount and unit. */
+const NBSP = "\u00A0";
+
+const TOMAN_UNAVAILABLE = "داده‌ای دریافت نشد";
+
+/**
+ * Format a Toman amount as one isolated LTR unit: «۱۹۳٬۶۵۶ تومان» / «−۲٬۹۷۶ تومان».
+ * Safe inside RTL layouts (Safari, mobile). Does not change rounding or digits.
+ */
+export function formatToman(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return TOMAN_UNAVAILABLE;
+  // Whole unit isolated: number first, then تومان; minus stays before digits.
+  return `${LRI}${tomanFormatter.format(value)}${NBSP}تومان${PDI}`;
+}
+
+/** Core number+unit without bidi marks (for tests / composing custom markup). */
+export function formatTomanCore(value: number): string {
+  return `${tomanFormatter.format(value)}${NBSP}تومان`;
 }
 
 export function formatNumber(value: number | null | undefined, digits = 2) {

@@ -3,22 +3,21 @@ import "server-only";
 import { cookies } from "next/headers";
 import { AUTH_COOKIE, type DeskRole, type SessionClaims } from "@/lib/auth";
 import { getSessionRoleFromClaims, verifySessionToken } from "@/lib/authToken";
-import { getViewerSessionEpoch } from "@/lib/viewerAuthStore";
+import { isIdentityStillValid } from "@/lib/userStore";
 
 /**
- * Verify cookie signature + viewer password epoch (file/env override).
- * Admin sessions ignore epoch. Old viewer cookies after panel password change return null.
+ * Verify cookie signature + password/session epoch for the identity.
+ * Env admin tokens always use pv=0. Env viewer + managed users check store epoch.
+ * Deleted / disabled / rotated-password users return null.
  */
 export async function getSession(): Promise<SessionClaims | null> {
   const jar = await cookies();
   const claims = await verifySessionToken(jar.get(AUTH_COOKIE)?.value);
   if (!claims) return null;
 
-  if (claims.r === "viewer") {
-    const epoch = await getViewerSessionEpoch();
-    const pv = typeof claims.pv === "number" && Number.isFinite(claims.pv) ? claims.pv : 0;
-    if (pv !== epoch) return null;
-  }
+  const pv = typeof claims.pv === "number" && Number.isFinite(claims.pv) ? claims.pv : 0;
+  const stillValid = await isIdentityStillValid(claims.u, claims.r, pv);
+  if (!stillValid) return null;
 
   return claims;
 }

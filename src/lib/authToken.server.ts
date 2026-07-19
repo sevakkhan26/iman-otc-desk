@@ -21,8 +21,8 @@ export function createSessionToken(
   if (!secret) return null;
 
   const now = Math.floor(Date.now() / 1000);
-  const pv =
-    role === "viewer" && Number.isFinite(passwordVersion) ? Math.floor(passwordVersion) : 0;
+  // Env admin uses 0; viewers + managed users embed sessionEpoch for invalidate-on-reset.
+  const pv = Number.isFinite(passwordVersion) ? Math.max(0, Math.floor(passwordVersion)) : 0;
   const payload: SessionClaims = {
     u: username,
     r: role,

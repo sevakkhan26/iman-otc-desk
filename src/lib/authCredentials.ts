@@ -2,12 +2,17 @@ import "server-only";
 
 import type { DeskRole } from "@/lib/auth";
 import { verifyPassword } from "@/lib/passwordHash";
+import {
+  findManagedUserByUsername,
+  getEnvAdminUsername,
+  getEnvViewerUsername
+} from "@/lib/userStore";
 import { getViewerPasswordHash, getViewerSessionEpoch } from "@/lib/viewerAuthStore";
 
 export type VerifiedIdentity = {
   username: string;
   role: DeskRole;
-  /** Embedded in session cookie; invalidates old viewer sessions after password rotate. */
+  /** Embedded in session cookie; invalidates sessions after password rotate. */
   passwordVersion: number;
 };
 
@@ -45,7 +50,7 @@ function authEnvReady(): boolean {
 
 /**
  * Server-only credential check; never import from client or middleware.
- * Viewer hash: file override (admin panel) → VIEWER_PASSWORD_HASH env bootstrap.
+ * Order: env admin → env viewer (file override hash) → managed users file.
  */
 export async function verifyCredentials(
   username: unknown,
@@ -57,22 +62,31 @@ export async function verifyCredentials(
   const pass = typeof password === "string" ? password : "";
   if (!user || !pass) return null;
 
-  const adminUsername = readUsername(process.env.ADMIN_USERNAME);
+  const adminUsername = getEnvAdminUsername() ?? readUsername(process.env.ADMIN_USERNAME);
   const adminHash = readPasswordHash(process.env.ADMIN_PASSWORD_HASH);
-  const viewerUsername = readUsername(process.env.VIEWER_USERNAME);
+  const viewerUsername = getEnvViewerUsername() ?? readUsername(process.env.VIEWER_USERNAME);
 
   if (!adminUsername || !adminHash || !viewerUsername) return null;
 
-  if (user === adminUsername && verifyPassword(pass, adminHash)) {
+  if (user.toLowerCase() === adminUsername.toLowerCase() && verifyPassword(pass, adminHash)) {
     return { username: adminUsername, role: "admin", passwordVersion: 0 };
   }
 
-  if (user === viewerUsername) {
+  if (user.toLowerCase() === viewerUsername.toLowerCase()) {
     const viewerHash = await getViewerPasswordHash();
     if (!viewerHash) return null;
     if (!verifyPassword(pass, viewerHash)) return null;
     const passwordVersion = await getViewerSessionEpoch();
     return { username: viewerUsername, role: "viewer", passwordVersion };
+  }
+
+  const managed = await findManagedUserByUsername(user);
+  if (managed && managed.enabled && verifyPassword(pass, managed.passwordHash)) {
+    return {
+      username: managed.username,
+      role: managed.role,
+      passwordVersion: managed.sessionEpoch
+    };
   }
 
   return null;

@@ -459,6 +459,21 @@ export interface ViewerAuthPublicMeta {
   passwordConfigured: boolean;
 }
 
+/** Admin panel user list item (no secrets). */
+export interface UserAccountPublic {
+  id: string;
+  username: string;
+  role: "admin" | "viewer";
+  source: "env" | "managed";
+  enabled: boolean;
+  canDelete: boolean;
+  canResetPassword: boolean;
+  passwordConfigured: boolean;
+  createdAt: string | null;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
 export interface PublicSettings {
   providerApiKeysConfigured: Record<string, boolean>;
   openAiApiKeyConfigured: boolean;

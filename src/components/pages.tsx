@@ -6,6 +6,7 @@ import { useApi } from "@/hooks/useApi";
 import { CalendarClock, Save, X } from "lucide-react";
 import { DeskPageHeader } from "@/components/DeskPageHeader";
 import { TomanAmount } from "@/components/TomanAmount";
+import { UserManagementPanel } from "@/components/UserManagementPanel";
 import type {
   DashboardResponse,
   DomesticProviderHealth,
@@ -2160,11 +2161,6 @@ export function SettingsView() {
   const [form, setForm] = useState<PublicSettings | null>(null);
   const [openAiApiKey, setOpenAiApiKey] = useState("");
   const [providerKeys, setProviderKeys] = useState<Record<string, string>>({});
-  const [viewerPassword, setViewerPassword] = useState("");
-  const [viewerPasswordConfirm, setViewerPasswordConfirm] = useState("");
-  const [viewerPasswordSaving, setViewerPasswordSaving] = useState(false);
-  const [viewerPasswordMessage, setViewerPasswordMessage] = useState<string | null>(null);
-  const [viewerPasswordError, setViewerPasswordError] = useState<string | null>(null);
 
   useEffect(() => {
     if (data) setForm(data);
@@ -2194,56 +2190,11 @@ export function SettingsView() {
     setSaved("تنظیمات ذخیره شد");
   }
 
-  async function saveViewerPassword() {
-    setViewerPasswordSaving(true);
-    setViewerPasswordMessage(null);
-    setViewerPasswordError(null);
-    try {
-      const response = await fetch("/api/settings/viewer-password", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({
-          newPassword: viewerPassword,
-          confirmPassword: viewerPasswordConfirm
-        })
-      });
-      const payload = (await response.json()) as {
-        ok?: boolean;
-        message?: string;
-        viewerAuth?: PublicSettings["viewerAuth"];
-      };
-      if (!response.ok || !payload.ok) {
-        setViewerPasswordError(payload.message ?? "ذخیره رمز viewer ناموفق بود");
-        return;
-      }
-      setViewerPassword("");
-      setViewerPasswordConfirm("");
-      setViewerPasswordMessage(payload.message ?? "رمز viewer ذخیره شد");
-      if (payload.viewerAuth && form) {
-        setForm({ ...form, viewerAuth: payload.viewerAuth });
-      } else {
-        reload();
-      }
-    } catch {
-      setViewerPasswordError("ذخیره رمز viewer ناموفق بود");
-    } finally {
-      setViewerPasswordSaving(false);
-    }
-  }
-
   const setNumber = (key: keyof PublicSettings, value: string) => {
     const parsed = Number(value);
     if (!form || !Number.isFinite(parsed)) return;
     setForm({ ...form, [key]: parsed });
   };
-
-  const viewerAuthSourceLabel =
-    form?.viewerAuth?.source === "override"
-      ? "رمز از پنل (ذخیره محلی)"
-      : form?.viewerAuth?.source === "env"
-        ? "رمز اولیه از سرور (.env)"
-        : "پیکربندی نشده";
 
   return (
     <>
@@ -2251,62 +2202,8 @@ export function SettingsView() {
       <LoadState loading={loading} error={error} hasData={Boolean(form)} skeleton={<SettingsSkeleton />} />
       {form ? (
         <div className="grid">
-          <Panel title="دسترسی Viewer">
-            <p className="muted" style={{ marginTop: 0 }}>
-              رمز admin فقط روی سرور (.env) است و از این پنل عوض نمی‌شود. رمز viewer را می‌توانید از اینجا عوض کنید؛
-              نشست‌های قبلی viewer بلافاصله باطل می‌شوند.
-            </p>
-            <div className="row-meta" style={{ marginBottom: 12, gap: 8, flexWrap: "wrap" }}>
-              <Badge tone={form.viewerAuth?.passwordConfigured ? "good" : "warn"}>
-                {form.viewerAuth?.passwordConfigured ? "رمز viewer فعال است" : "رمز viewer تنظیم نشده"}
-              </Badge>
-              <span className="muted">{viewerAuthSourceLabel}</span>
-              {form.viewerAuth?.updatedAt ? (
-                <span className="muted">
-                  آخرین تغییر: {formatDate(form.viewerAuth.updatedAt)}
-                  {form.viewerAuth.updatedBy ? ` — ${form.viewerAuth.updatedBy}` : ""}
-                </span>
-              ) : null}
-            </div>
-            <div className="grid settings-grid">
-              <div className="field">
-                <label>رمز جدید viewer</label>
-                <input
-                  type="password"
-                  autoComplete="new-password"
-                  value={viewerPassword}
-                  onChange={(event) => setViewerPassword(event.target.value)}
-                  placeholder="حداقل ۱۰ کاراکتر"
-                />
-              </div>
-              <div className="field">
-                <label>تکرار رمز جدید</label>
-                <input
-                  type="password"
-                  autoComplete="new-password"
-                  value={viewerPasswordConfirm}
-                  onChange={(event) => setViewerPasswordConfirm(event.target.value)}
-                  placeholder="تکرار رمز"
-                />
-              </div>
-            </div>
-            <div className="row-meta" style={{ marginTop: 12 }}>
-              <button
-                type="button"
-                className="primary-button"
-                onClick={() => {
-                  void saveViewerPassword();
-                }}
-                disabled={
-                  viewerPasswordSaving || !viewerPassword || !viewerPasswordConfirm
-                }
-              >
-                <Save aria-hidden="true" />
-                {viewerPasswordSaving ? "در حال ذخیره…" : "ذخیره رمز viewer"}
-              </button>
-              {viewerPasswordMessage ? <Badge tone="good">{viewerPasswordMessage}</Badge> : null}
-              {viewerPasswordError ? <Badge tone="danger">{viewerPasswordError}</Badge> : null}
-            </div>
+          <Panel title="مدیریت کاربران">
+            <UserManagementPanel />
           </Panel>
           <Panel title="بازه‌های بروزرسانی">
             <div className="grid settings-grid">

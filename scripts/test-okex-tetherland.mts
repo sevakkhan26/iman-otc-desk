@@ -239,6 +239,59 @@ async function main() {
     assert.equal(market.summary.bestBuyExchange, "تترلند");
   });
 
+  await test("12. market difference uses highest Sell − lowest Buy (not mid extremes)", () => {
+    const exchanges: DomesticQuote[] = [
+      quote({
+        exchangeId: "a",
+        exchangeName: "صرافی-الف",
+        buyPrice: 190_146,
+        sellPrice: 190_500,
+        midPrice: 190_323,
+        sourceStatus: "available"
+      }),
+      quote({
+        exchangeId: "b",
+        exchangeName: "صرافی-ب",
+        buyPrice: 191_000,
+        sellPrice: 193_900,
+        midPrice: 192_450,
+        sourceStatus: "available"
+      }),
+      // reference-only mid must not enter buy/sell extremes
+      quote({
+        exchangeId: "ref",
+        exchangeName: "مرجع",
+        buyPrice: null,
+        sellPrice: null,
+        midPrice: 200_000,
+        sourceStatus: "degraded",
+        errorMessage: "فقط قیمت مرجع"
+      }),
+      // zero book incomplete
+      quote({
+        exchangeId: "z",
+        exchangeName: "ناقص",
+        buyPrice: 0,
+        sellPrice: 0,
+        midPrice: 191_000,
+        sourceStatus: "available"
+      })
+    ];
+    const market = calculateTetherMarket(exchanges, 50);
+    assert.equal(market.summary.bestSell, 193_900);
+    assert.equal(market.summary.bestSellExchange, "صرافی-ب");
+    assert.equal(market.summary.bestBuy, 190_146);
+    assert.equal(market.summary.bestBuyExchange, "صرافی-الف");
+    // marketDifferenceToman / percent vs lowestBuy — not mid highest−lowest
+    const expectedDiff = 193_900 - 190_146;
+    const expectedPct = (expectedDiff / 190_146) * 100;
+    assert.ok(market.summary.marketSpreadPercent !== null);
+    assert.ok(Math.abs((market.summary.marketSpreadPercent as number) - expectedPct) < 1e-9);
+    // mid cards stay independent
+    assert.equal(market.summary.highest, 192_450);
+    assert.equal(market.summary.lowest, 190_323);
+  });
+
   console.log(`\nResult: ${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);
 }

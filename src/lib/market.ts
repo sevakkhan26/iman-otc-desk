@@ -82,30 +82,45 @@ export function calculateTetherMarket(exchanges: DomesticQuote[], outlierThresho
     deviationFromMedianPercent:
       finalMedian && exchange.midPrice !== null ? ((exchange.midPrice - finalMedian) / finalMedian) * 100 : null
   }));
-  const valid = recalculated.filter(
-    (exchange) => exchange.midPrice !== null && exchange.sourceStatus !== "unavailable" && !exchange.excludedFromMedian
-  );
-  // Executable bid/ask only (exclude reference-only mid-only sources from buy/sell/spread/arb)
-  const executable = valid.filter(
+  /**
+   * Genuine Buy+Sell only for executable / market-difference logic.
+   * - healthy (available) sources only — not degraded/stale/disconnected
+   * - both bid and ask finite and > 0
+   * - never invent Buy/Sell from reference/mid
+   * - reference-only (null bid or ask) excluded
+   */
+  const executable = recalculated.filter(
     (exchange) =>
+      exchange.sourceStatus === "available" &&
       exchange.buyPrice !== null &&
       exchange.sellPrice !== null &&
       Number.isFinite(exchange.buyPrice) &&
-      Number.isFinite(exchange.sellPrice)
+      Number.isFinite(exchange.sellPrice) &&
+      exchange.buyPrice > 0 &&
+      exchange.sellPrice > 0
   );
+  // Mid extremes for «بیشترین قیمت» / «کمترین قیمت» cards only (not market-difference bar).
+  // Still restricted to genuine Buy+Sell books — never reference-only mid.
   const highestQuote = pick(executable, (exchange) => exchange.midPrice, "max");
   const lowestQuote = pick(executable, (exchange) => exchange.midPrice, "min");
   const highest = highestQuote?.midPrice ?? null;
   const lowest = lowestQuote?.midPrice ?? null;
-  const marketSpreadPercent = highest !== null && lowest !== null && finalMedian ? ((highest - lowest) / finalMedian) * 100 : null;
-  // بهترین قیمت خرید = پایین‌ترین قیمت خرید بین صرافی‌ها (ارزان‌ترین نقطه خرید)
+  // پایین‌ترین قیمت خرید (Buy/Bid) among genuine books
   const bestBuyQuote = pick(executable, (exchange) => exchange.buyPrice, "min");
-  // بدترین قیمت خرید = بالاترین قیمت خرید بین صرافی‌ها (گران‌ترین نقطه خرید)
+  // بالاترین قیمت خرید
   const worstBuyQuote = pick(executable, (exchange) => exchange.buyPrice, "max");
-  // بهترین قیمت فروش = بالاترین قیمت فروش بین صرافی‌ها (گران‌ترین نقطه فروش)
+  // بالاترین قیمت فروش (Sell/Ask) among genuine books
   const bestSellQuote = pick(executable, (exchange) => exchange.sellPrice, "max");
-  // بدترین قیمت فروش = پایین‌ترین قیمت فروش بین صرافی‌ها
+  // پایین‌ترین قیمت فروش
   const worstSellQuote = pick(executable, (exchange) => exchange.sellPrice, "min");
+
+  const highestSell = bestSellQuote?.sellPrice ?? null;
+  const lowestBuy = bestBuyQuote?.buyPrice ?? null;
+  // marketDifferenceToman = highestSell − lowestBuy; percent vs lowestBuy
+  const marketSpreadPercent =
+    highestSell !== null && lowestBuy !== null && lowestBuy > 0
+      ? ((highestSell - lowestBuy) / lowestBuy) * 100
+      : null;
 
   const buySpreadPercent =
     bestBuyQuote?.buyPrice != null && worstBuyQuote?.buyPrice != null && bestBuyQuote.buyPrice > 0

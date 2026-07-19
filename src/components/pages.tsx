@@ -2040,12 +2040,22 @@ export function TetherMarketView() {
     });
   }, [data, asset, query, connection]);
 
-  const marketHighest = data ? data.summary.highest : null;
-  const marketLowest = data ? data.summary.lowest : null;
-  const marketDiffToman = (marketHighest != null && marketLowest != null) ? marketHighest - marketLowest : null;
-  const marketHighEx = data ? data.summary.highestExchange : null;
-  const marketLowEx = data ? data.summary.lowestExchange : null;
-  const hasEnoughMarketData = marketDiffToman != null && marketDiffToman > 0 && marketHighEx && marketLowEx;
+  // Market difference uses genuine Sell max vs Buy min — never mid highest/lowest cards.
+  const highestSell = data?.summary.bestSell ?? null;
+  const highestSellEx = data?.summary.bestSellExchange ?? null;
+  const lowestBuy = data?.summary.bestBuy ?? null;
+  const lowestBuyEx = data?.summary.bestBuyExchange ?? null;
+  const marketDiffToman =
+    highestSell != null && lowestBuy != null ? highestSell - lowestBuy : null;
+  const marketDiffPercent = data?.summary.marketSpreadPercent ?? null;
+  const hasEnoughMarketData =
+    marketDiffToman != null &&
+    marketDiffPercent != null &&
+    Boolean(highestSellEx) &&
+    Boolean(lowestBuyEx) &&
+    highestSell != null &&
+    lowestBuy != null &&
+    lowestBuy > 0;
 
   return (
     <>
@@ -2083,22 +2093,20 @@ export function TetherMarketView() {
                 <div className="tether-spread-value number">{formatToman(marketDiffToman)}</div>
                 <div className="tether-spread-details">
                   <div className="tether-spread-line">
-                    بالاترین: {marketHighEx} — {formatToman(marketHighest)}
+                    بالاترین قیمت فروش: {highestSellEx} — {formatToman(highestSell)}
                   </div>
                   <div className="tether-spread-line">
-                    پایین‌ترین: {marketLowEx} — {formatToman(marketLowest)}
+                    پایین‌ترین قیمت خرید: {lowestBuyEx} — {formatToman(lowestBuy)}
                   </div>
-                  {data.summary.marketSpreadPercent != null ? (
-                    <div className="tether-spread-line tether-spread-pct number">
-                      اختلاف درصدی: {formatPercent(data.summary.marketSpreadPercent)}
-                    </div>
-                  ) : null}
+                  <div className="tether-spread-line tether-spread-pct number">
+                    اختلاف درصدی: {formatPercent(marketDiffPercent)}
+                  </div>
                 </div>
               </>
             ) : (
               <>
                 <div className="tether-spread-title">اختلاف تومانی بازار</div>
-                <div className="tether-spread-empty muted">داده کافی برای مقایسه وجود ندارد</div>
+                <div className="tether-spread-empty muted">داده معتبر کافی در دسترس نیست</div>
               </>
             )}
           </div>

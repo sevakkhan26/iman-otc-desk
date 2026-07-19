@@ -12,16 +12,23 @@ function readAuthTokenSecret(): string | null {
   return secret;
 }
 
-export function createSessionToken(username: string, role: DeskRole): string | null {
+export function createSessionToken(
+  username: string,
+  role: DeskRole,
+  passwordVersion: number = 0
+): string | null {
   const secret = readAuthTokenSecret();
   if (!secret) return null;
 
   const now = Math.floor(Date.now() / 1000);
+  const pv =
+    role === "viewer" && Number.isFinite(passwordVersion) ? Math.floor(passwordVersion) : 0;
   const payload: SessionClaims = {
     u: username,
     r: role,
     iat: now,
-    exp: now + COOKIE_MAX_AGE_S
+    exp: now + COOKIE_MAX_AGE_S,
+    pv
   };
 
   const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64url");

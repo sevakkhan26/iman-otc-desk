@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getGoldHistory } from "@/lib/goldHistory";
+import { isSession, requireApiSession } from "@/lib/requireApiAuth";
 import type { GoldHistoryRange, GoldInstrumentType } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -13,6 +14,8 @@ const INSTRUMENTS: GoldInstrumentType[] = [
 ];
 
 export async function GET(request: Request) {
+  const session = await requireApiSession();
+  if (!isSession(session)) return session;
   const params = new URL(request.url).searchParams;
   const range: GoldHistoryRange = params.get("range") === "7d" ? "7d" : "24h";
   const instrumentParam = params.get("instrument");

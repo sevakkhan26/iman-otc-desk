@@ -32,6 +32,9 @@ function isDeskRole(value: unknown): value is DeskRole {
 function isValidClaims(value: unknown): value is SessionClaims {
   if (!value || typeof value !== "object") return false;
   const claims = value as SessionClaims;
+  const pvOk =
+    claims.pv === undefined ||
+    (typeof claims.pv === "number" && Number.isFinite(claims.pv) && claims.pv >= 0);
   return (
     typeof claims.u === "string" &&
     claims.u.length > 0 &&
@@ -39,7 +42,8 @@ function isValidClaims(value: unknown): value is SessionClaims {
     Number.isFinite(claims.iat) &&
     Number.isFinite(claims.exp) &&
     claims.exp > claims.iat &&
-    claims.exp - claims.iat <= COOKIE_MAX_AGE_S + 60
+    claims.exp - claims.iat <= COOKIE_MAX_AGE_S + 60 &&
+    pvOk
   );
 }
 

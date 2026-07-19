@@ -36,10 +36,13 @@ services:
       PRICE_ALERTS_STORAGE: file
       PRICE_ALERTS_DATA_DIR: /app/data/price-alerts
       PRICE_ALERTS_DATA_FILE: /app/data/price-alerts/price-alerts.json
+      # Viewer password override (admin panel) lives on the same volume.
+      VIEWER_AUTH_DATA_FILE: /app/data/price-alerts/viewer-auth.json
       # Optional: surface git SHA in diagnostics (set by deploy script when available)
       GIT_COMMIT_SHA: ${GIT_COMMIT_SHA:-}
     volumes:
       # Named volume survives restart, rebuild, force-recreate, and git pull.
+      # Holds price-alerts.json + viewer-auth.json
       - iman-otc-alerts-data:/app/data/price-alerts
     healthcheck:
       test:

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { buildMarketBubbleResponse } from "@/lib/bubble/compute";
 import { getFxStreetPrices } from "@/lib/providers/fxStreet";
 import { getGoldMarketPrices } from "@/lib/providers/goldMarket";
+import { isSession, requireApiSession } from "@/lib/requireApiAuth";
 import { getSettings } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
@@ -14,6 +15,8 @@ const NO_STORE = {
 };
 
 export async function GET() {
+  const session = await requireApiSession();
+  if (!isSession(session)) return session;
   try {
     const settings = await getSettings();
     const [fxR, goldR] = await Promise.allSettled([

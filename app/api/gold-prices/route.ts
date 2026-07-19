@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getGoldMarketPrices } from "@/lib/providers/goldMarket";
+import { isSession, requireApiSession } from "@/lib/requireApiAuth";
 import { getSettings } from "@/lib/settings";
 import type { GoldMarketQuote, GoldPricesApiItem, GoldPricesApiResponse } from "@/lib/types";
 
@@ -24,6 +25,8 @@ function toApiItem(quote: GoldMarketQuote): GoldPricesApiItem {
 }
 
 export async function GET() {
+  const session = await requireApiSession();
+  if (!isSession(session)) return session;
   try {
     const settings = await getSettings();
     const data = await getGoldMarketPrices(settings);

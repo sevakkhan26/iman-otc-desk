@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getImpactNews } from "@/lib/providers/news";
+import { isSession, requireApiSession } from "@/lib/requireApiAuth";
 import { getSettings } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
@@ -7,6 +8,8 @@ export const runtime = "nodejs";
 export const revalidate = 0;
 
 export async function GET() {
+  const session = await requireApiSession();
+  if (!isSession(session)) return session;
   const settings = await getSettings();
   const payload = await getImpactNews(settings);
 

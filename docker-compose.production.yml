@@ -10,6 +10,7 @@ services:
       PRICE_ALERTS_STORAGE: file
       PRICE_ALERTS_DATA_DIR: /app/data/price-alerts
       PRICE_ALERTS_DATA_FILE: /app/data/price-alerts/price-alerts.json
+      VIEWER_AUTH_DATA_FILE: /app/data/price-alerts/viewer-auth.json
     volumes:
       - iman-otc-alerts-data:/app/data/price-alerts
 

@@ -1,10 +1,13 @@
-import "server-only";
-
-import { pbkdf2Sync, timingSafeEqual } from "node:crypto";
+/**
+ * Password hashing helpers (Node crypto). Import only from server modules —
+ * client bundles must not pull this file (uses node:crypto).
+ */
+import { pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
 
 const EXPECTED_PREFIX = "pbkdf2";
 const EXPECTED_ITERATIONS = 200_000;
 const EXPECTED_KEY_LEN = 32;
+const SALT_LEN = 16;
 const MIN_SALT_HEX_LEN = 32; // 16 bytes
 const DIGEST = "sha256";
 
@@ -35,6 +38,13 @@ export function parsePasswordHash(stored: string): ParsedPasswordHash | null {
   } catch {
     return null;
   }
+}
+
+/** Create a new pbkdf2$… hash for storage (never store plaintext). */
+export function hashPassword(password: string): string {
+  const salt = randomBytes(SALT_LEN);
+  const derived = pbkdf2Sync(password, salt, EXPECTED_ITERATIONS, EXPECTED_KEY_LEN, DIGEST);
+  return `${EXPECTED_PREFIX}$${EXPECTED_ITERATIONS}$${salt.toString("hex")}$${derived.toString("hex")}`;
 }
 
 export function verifyPassword(password: string, storedHash: string): boolean {

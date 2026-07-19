@@ -451,6 +451,14 @@ export interface DeskSettings {
   enabledSources: Record<string, boolean>;
 }
 
+export interface ViewerAuthPublicMeta {
+  source: "override" | "env" | "none";
+  sessionEpoch: number;
+  updatedAt: string | null;
+  updatedBy: string | null;
+  passwordConfigured: boolean;
+}
+
 export interface PublicSettings {
   providerApiKeysConfigured: Record<string, boolean>;
   openAiApiKeyConfigured: boolean;
@@ -463,6 +471,8 @@ export interface PublicSettings {
   marketSpreadAlertThresholdPercent: number;
   depegAlertThresholdPercent: number;
   enabledSources: Record<string, boolean>;
+  /** Present on settings GET/PATCH for admin (viewer password status). */
+  viewerAuth?: ViewerAuthPublicMeta;
 }
 
 export interface SettingsPatch {

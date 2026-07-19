@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getFxStreetPrices } from "@/lib/providers/fxStreet";
+import { isSession, requireApiSession } from "@/lib/requireApiAuth";
 import { getSettings } from "@/lib/settings";
 import type { FxPricesApiItem, FxPricesApiResponse, FxPricesApiSource, FxStreetQuote } from "@/lib/types";
 
@@ -23,6 +24,8 @@ function toApiItem(quote: FxStreetQuote): FxPricesApiItem {
 }
 
 export async function GET() {
+  const session = await requireApiSession();
+  if (!isSession(session)) return session;
   try {
     const settings = await getSettings();
     const data = await getFxStreetPrices(settings);

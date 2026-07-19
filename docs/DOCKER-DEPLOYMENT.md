@@ -110,10 +110,18 @@ services:
 | `PRICE_ALERTS_STORAGE` | `file` | `file` \| `upstash` \| `none` |
 | `PRICE_ALERTS_DATA_DIR` | `/app/data/price-alerts` | Writable directory |
 | `PRICE_ALERTS_DATA_FILE` | `/app/data/price-alerts/price-alerts.json` | JSON store path |
+| `VIEWER_AUTH_DATA_FILE` | `/app/data/price-alerts/viewer-auth.json` | Viewer password override (admin panel) |
 | `UPSTASH_REDIS_REST_URL` | not required | Optional / Vercel |
 | `UPSTASH_REDIS_REST_TOKEN` | not required | Optional / Vercel |
 
-Auth and other secrets stay in host `.env` (not committed).
+Auth and other secrets stay in host `.env` / `secrets/*.env` (not committed).
+
+### Viewer password (admin panel)
+
+- **Admin** password: env only (`ADMIN_PASSWORD_HASH`) — not editable from UI.
+- **Viewer** bootstrap: `VIEWER_PASSWORD_HASH` in env.
+- Admin can rotate viewer password in **Settings → دسترسی Viewer**; override is stored as a PBKDF2 hash in `VIEWER_AUTH_DATA_FILE` (same Docker volume as alerts).
+- Rotating viewer password bumps `sessionEpoch` and invalidates existing viewer sessions.
 
 ## Diagnostics
 

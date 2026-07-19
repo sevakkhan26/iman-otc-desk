@@ -11,6 +11,11 @@ export type SessionClaims = {
   r: DeskRole;
   iat: number;
   exp: number;
+  /**
+   * Viewer password/session epoch at login time.
+   * Admin tokens use 0. Mismatch with store → session invalid (password rotated).
+   */
+  pv?: number;
 };
 
 export const INVALID_CREDENTIALS_MESSAGE = "نام کاربری یا رمز عبور اشتباه است";

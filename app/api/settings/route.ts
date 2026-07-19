@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAdminSession } from "@/lib/authSession";
 import { getSettings, patchSettings, toPublicSettings } from "@/lib/settings";
 import type { SettingsPatch } from "@/lib/types";
+import { getViewerAuthPublicMeta } from "@/lib/viewerAuthStore";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -11,7 +12,9 @@ export async function GET() {
   if (!role) {
     return NextResponse.json({ error: "forbidden", message: "دسترسی مجاز نیست" }, { status: 403 });
   }
-  return NextResponse.json(toPublicSettings(await getSettings()));
+  const settings = toPublicSettings(await getSettings());
+  const viewerAuth = await getViewerAuthPublicMeta();
+  return NextResponse.json({ ...settings, viewerAuth });
 }
 
 export async function PATCH(request: Request) {
@@ -20,5 +23,7 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: "forbidden", message: "دسترسی مجاز نیست" }, { status: 403 });
   }
   const patch = (await request.json()) as SettingsPatch;
-  return NextResponse.json(await patchSettings(patch));
+  const settings = await patchSettings(patch);
+  const viewerAuth = await getViewerAuthPublicMeta();
+  return NextResponse.json({ ...settings, viewerAuth });
 }

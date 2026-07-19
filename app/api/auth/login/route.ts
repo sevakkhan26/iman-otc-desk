@@ -69,7 +69,7 @@ export async function POST(request: NextRequest) {
     // fall through to the credential check with empty body
   }
 
-  const identity = verifyCredentials(body.username, body.password);
+  const identity = await verifyCredentials(body.username, body.password);
   if (!identity) {
     return NextResponse.json(
       { ok: false, message: INVALID_CREDENTIALS_MESSAGE },
@@ -77,7 +77,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const token = createSessionToken(identity.username, identity.role);
+  const token = createSessionToken(
+    identity.username,
+    identity.role,
+    identity.passwordVersion
+  );
   if (!token) {
     return NextResponse.json(
       { ok: false, message: INVALID_CREDENTIALS_MESSAGE },

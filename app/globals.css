@@ -4248,21 +4248,52 @@ table th {
   line-height: 1.7;
 }
 
-.bubble-health-list {
+.bubble-health-section {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
-.bubble-health-row {
+.bubble-health-cards {
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+  align-items: stretch;
+}
+
+.bubble-health-card {
+  margin: 0;
+  padding: 10px 12px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  justify-content: center;
+}
+
+.bubble-health-card-head {
+  display: flex;
   align-items: center;
-  font-size: 13px;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.bubble-health-card-title {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.4;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bubble-health-card-time {
+  line-height: 1.4;
 }
 
 .bubble-notes {
-  margin: 12px 0 0;
+  margin: 0;
   padding-inline-start: 18px;
 }
 
@@ -4325,12 +4356,20 @@ table th {
   color: var(--warn, #c48a00);
 }
 
+@media (max-width: 900px) {
+  .bubble-health-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 760px) {
   .bubble-side-grid {
     grid-template-columns: 1fr;
   }
+}
 
-  .bubble-health-row {
-    grid-template-columns: 1fr auto;
+@media (max-width: 560px) {
+  .bubble-health-cards {
+    grid-template-columns: 1fr;
   }
 }

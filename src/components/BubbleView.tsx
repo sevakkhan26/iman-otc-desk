@@ -232,35 +232,46 @@ function FormulaSection() {
   );
 }
 
+function healthStatusTone(status: string): "good" | "warn" | "danger" {
+  if (status === "available") return "good";
+  if (status === "degraded") return "warn";
+  return "danger";
+}
+
+function healthStatusLabel(status: string): string {
+  if (status === "available") return "فعال";
+  if (status === "degraded") return "ناقص";
+  return "قطع";
+}
+
 function HealthPanel({ data }: { data: MarketBubbleResponse }) {
   return (
-    <section className="panel bubble-panel">
-      <div className="panel-header">
-        <h3 className="panel-title">وضعیت منابع</h3>
-      </div>
-      <div className="panel-body">
-        <div className="bubble-health-list">
-          {data.health.map((h) => (
-            <div
-              key={`health-${h.scope}-${h.sourceId}`}
-              className="bubble-health-row"
-            >
-              <span>{h.sourceName}</span>
-              <span className={`status-chip ${h.status === "available" ? "good" : h.status === "degraded" ? "warn" : "danger"}`}>
-                {h.status === "available" ? "فعال" : h.status === "degraded" ? "ناقص" : "قطع"}
+    <section className="bubble-health-section" aria-label="وضعیت منابع">
+      <div className="bubble-health-cards">
+        {data.health.map((h) => (
+          <article
+            key={`health-${h.scope}-${h.sourceId}`}
+            className="panel bubble-panel bubble-health-card"
+          >
+            <div className="bubble-health-card-head">
+              <h3 className="panel-title bubble-health-card-title">{h.sourceName}</h3>
+              <span className={`status-chip ${healthStatusTone(h.status)}`}>
+                {healthStatusLabel(h.status)}
               </span>
-              <span className="muted small number">{h.lastUpdated ? formatDate(h.lastUpdated) : "—"}</span>
             </div>
-          ))}
-        </div>
-        {data.notes.length ? (
-          <ul className="bubble-notes muted small">
-            {data.notes.map((n, noteIndex) => (
-              <li key={`bubble-note-${noteIndex}-${n.slice(0, 48)}`}>{n}</li>
-            ))}
-          </ul>
-        ) : null}
+            <div className="bubble-health-card-time muted small number">
+              {h.lastUpdated ? formatDate(h.lastUpdated) : "—"}
+            </div>
+          </article>
+        ))}
       </div>
+      {data.notes.length ? (
+        <ul className="bubble-notes muted small">
+          {data.notes.map((n, noteIndex) => (
+            <li key={`bubble-note-${noteIndex}-${n.slice(0, 48)}`}>{n}</li>
+          ))}
+        </ul>
+      ) : null}
     </section>
   );
 }
@@ -308,8 +319,8 @@ export function BubbleView() {
         reason={content.gold.unavailableReason}
       />
 
-      <FormulaSection />
       <HealthPanel data={content} />
+      <FormulaSection />
     </div>
   );
 }

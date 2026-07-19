@@ -1148,6 +1148,15 @@ a.icon-button.header-alerts-button.is-active {
   overflow-wrap: anywhere;
 }
 
+/* Toman unit: isolated LTR → visual «تومان» left, amount right. Page stays RTL. */
+.toman-amount,
+bdi.toman-amount {
+  direction: ltr;
+  unicode-bidi: isolate;
+  display: inline;
+  white-space: nowrap;
+}
+
 .metric-note {
   color: var(--muted-2);
   margin-top: 8px;

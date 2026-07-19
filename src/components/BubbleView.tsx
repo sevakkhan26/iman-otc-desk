@@ -113,7 +113,7 @@ function ConsolidatedDollarCard({
                 {dollarBubbleSupportSentence(consolidated.sign, consolidated.bubblePercent)}
               </p>
             </div>
-            <div className="grid metrics-grid bubble-metrics">
+            <div className="grid metrics-grid bubble-metrics bubble-dollar-metrics">
               <Metric label="میانگین قیمت درهم" value={formatToman(consolidated.averageDirhamToman)} />
               <Metric label="ضریب تبدیل" value={formatNumber(DIRHAM_TO_USD_MULTIPLIER, 4)} />
               <Metric label="دلار محاسباتی" value={formatToman(consolidated.calculatedDollarToman)} />

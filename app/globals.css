@@ -4173,6 +4173,84 @@ table th {
   gap: 10px;
 }
 
+/* Dollar section only: fixed 3×2 grid, larger balanced cards, centered content. */
+.bubble-dollar-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+
+.bubble-dollar-metrics .bubble-metric {
+  min-height: 118px;
+  height: 100%;
+  padding: 16px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 10px;
+  box-sizing: border-box;
+}
+
+.bubble-dollar-metrics .metric-label {
+  margin: 0;
+  width: 100%;
+  max-width: 100%;
+  text-align: center;
+  font-size: clamp(11px, 1.05vw, 13px);
+  line-height: 1.45;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.bubble-dollar-metrics .metric-value {
+  margin: 0;
+  width: 100%;
+  max-width: 100%;
+  text-align: center;
+  font-size: clamp(15px, 1.55vw, 22px);
+  font-weight: 800;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  hyphens: none;
+}
+
+@media (max-width: 900px) {
+  .bubble-dollar-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bubble-dollar-metrics .bubble-metric {
+    min-height: 112px;
+    padding: 15px 12px;
+  }
+
+  .bubble-dollar-metrics .metric-value {
+    font-size: clamp(14px, 2.4vw, 20px);
+  }
+}
+
+@media (max-width: 560px) {
+  .bubble-dollar-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .bubble-dollar-metrics .bubble-metric {
+    min-height: 108px;
+    padding: 14px 12px;
+  }
+
+  .bubble-dollar-metrics .metric-label {
+    font-size: clamp(12px, 3.4vw, 13px);
+  }
+
+  .bubble-dollar-metrics .metric-value {
+    font-size: clamp(16px, 4.5vw, 20px);
+  }
+}
+
 .bubble-metric.tone-danger .metric-value {
   color: var(--danger, #dc2f3a);
 }

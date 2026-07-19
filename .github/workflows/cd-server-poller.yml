@@ -1,0 +1,25 @@
+# Continuous Deploy is performed by the LAN server poller (auto-deploy-poller),
+# not by GitHub-hosted runners (they cannot reach 192.168.50.105).
+#
+# After every push to main, the server detects the new SHA within ~30s and runs:
+#   git pull --ff-only && docker compose build && up -d
+#
+# Manual LAN deploy:
+#   curl -X POST "http://192.168.50.105:9000/hooks/<hook-id>?token=..."
+name: CD (server poller)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  note:
+    name: Deploy handled on LAN server
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain CD path
+        run: |
+          echo "Push received on GitHub."
+          echo "LAN server auto-deploy-poller will pull+build+recreate within ~30–60s."
+          echo "Watch: docker logs -f auto-deploy-poller  (on 192.168.50.105)"

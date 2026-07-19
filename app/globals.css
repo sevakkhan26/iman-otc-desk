@@ -185,6 +185,22 @@ input {
   overflow: hidden;
 }
 
+/* Desktop icon rail: allow hover labels to paint outside the rail */
+@media (min-width: 761px) {
+  .shell.collapsed .sidebar {
+    overflow: visible;
+    z-index: 30;
+  }
+
+  .shell.collapsed .nav {
+    overflow: visible;
+  }
+
+  .shell.collapsed .sidebar-bottom {
+    overflow: visible;
+  }
+}
+
 .sidebar-top {
   /* 40px | brand | 40px — keeps OTC Desk optically centered with toggle present */
   display: grid;
@@ -250,11 +266,14 @@ input {
 }
 
 .shell.collapsed .nav-link {
+  position: relative;
   justify-content: center;
   padding: 10px 0;
+  overflow: visible;
 }
 
-.shell.collapsed .nav-link span,
+/* Hide inline labels/badges in the rail; desktop hover shows flyout label */
+.shell.collapsed .nav-link .nav-label,
 .shell.collapsed .nav-link .nav-badge {
   display: none;
 }
@@ -266,6 +285,76 @@ input {
 
 .shell.collapsed .sidebar-foot-text {
   display: none;
+}
+
+/* Fast, large hover label next to the icon (into the main content) */
+@media (min-width: 761px) {
+  .shell.collapsed .nav-link .nav-label {
+    display: block;
+    position: absolute;
+    top: 50%;
+    /* Rail is on the right (RTL); fly label toward content (left of icon). */
+    right: calc(100% + 10px);
+    left: auto;
+    transform: translateY(-50%) translateX(8px);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    z-index: 60;
+    margin: 0;
+    padding: 10px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    box-shadow: var(--glass-shadow-sm), var(--glass-inner);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    color: var(--text);
+    font-size: 15px;
+    font-weight: 800;
+    line-height: 1.25;
+    white-space: nowrap;
+    text-align: center;
+    transition:
+      opacity 0.07s ease,
+      transform 0.07s ease,
+      visibility 0.07s ease;
+  }
+
+  .shell.collapsed .nav-link:hover .nav-label,
+  .shell.collapsed .nav-link:focus-visible .nav-label {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(-50%) translateX(0);
+  }
+
+  /* Keep unread badge as a corner dot on the icon in the rail */
+  .shell.collapsed .nav-link .nav-badge {
+    display: inline-flex;
+    position: absolute;
+    top: 2px;
+    inset-inline-end: 2px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    font-size: 9px;
+  }
+
+  .shell.collapsed .desktop-sidebar-toggle {
+    display: none;
+  }
+
+  .shell.collapsed .sidebar-top {
+    display: flex;
+    justify-content: center;
+    min-height: 8px;
+    padding-bottom: 0;
+    border-bottom: none;
+  }
+
+  .shell.collapsed .sidebar-brand {
+    display: none;
+  }
 }
 
 .brand-title {
@@ -328,7 +417,7 @@ input {
 }
 
 /* Icon + label (+ badge) as a right-aligned group (RTL start) */
-.nav-link > span:not(.nav-badge) {
+.nav-link > .nav-label {
   flex: 0 1 auto;
   min-width: 0;
   text-align: start;
@@ -3400,24 +3489,62 @@ tr:last-child td {
     box-shadow: var(--glass-shadow);
   }
 
-  /* Desktop collapse rules must not hide labels in the drawer */
+  /* Desktop collapse / hover-rail rules must not apply inside the mobile drawer */
   .shell.collapsed .sidebar .brand,
-  .shell.collapsed .sidebar .nav-link span,
+  .shell.collapsed .sidebar .sidebar-brand,
+  .shell.collapsed .sidebar .nav-link .nav-label,
+  .shell.collapsed .sidebar .nav-link .nav-badge,
   .shell.collapsed .sidebar .sidebar-foot,
   .shell.collapsed .sidebar .sidebar-foot-text,
   .shell.collapsed .sidebar .sidebar-meta-bottom {
     display: revert;
+    position: static;
+    transform: none;
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    inset: auto;
+    right: auto;
+    left: auto;
+    top: auto;
+    padding: revert;
+    border: revert;
+    background: revert;
+    box-shadow: none;
+    font-size: inherit;
+    font-weight: inherit;
+    white-space: normal;
   }
 
   .shell.collapsed .sidebar .nav-link {
-    justify-content: center;
-    padding: 10px 10px;
+    position: relative;
+    justify-content: flex-start;
+    padding: 10px 12px;
+    overflow: hidden;
+  }
+
+  .shell.collapsed .sidebar .nav-link .nav-label {
+    display: inline;
+    text-align: start;
+  }
+
+  .shell.collapsed .sidebar .nav-link .nav-badge {
+    display: inline-flex;
+    position: static;
   }
 
   .shell.collapsed .sidebar .sidebar-top {
     display: grid;
     grid-template-columns: 40px minmax(0, 1fr) 40px;
     justify-content: initial;
+    min-height: auto;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .shell.collapsed .sidebar .sidebar-brand {
+    display: block;
+    grid-column: 2;
   }
 
   .sidebar-top {

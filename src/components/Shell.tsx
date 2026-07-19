@@ -9,12 +9,11 @@ import { sidebarNavItems } from "@/lib/sidebarNav";
 import { formatAppVersionLabel } from "@/lib/version";
 import { PriceAlertToastBridge } from "@/components/PriceAlertToastBridge";
 
-const STORAGE_KEY = "otc-sidebar-collapsed";
 const MOBILE_MQ = "(max-width: 760px)";
 
 export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
   const pathname = usePathname();
-  const [collapsed, setCollapsed] = useState(false);
+  // Desktop rail is always icon-only (collapsed). Mobile uses the slide-in drawer.
   const [mobileOpen, setMobileOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [role, setRole] = useState<DeskRole | null>(null);
@@ -26,15 +25,6 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const drawerRef = useRef<HTMLElement>(null);
   const sidebarId = useId();
-
-  // default open; restore the user's last choice after mount (avoids hydration mismatch)
-  useEffect(() => {
-    try {
-      if (window.localStorage.getItem(STORAGE_KEY) === "1") setCollapsed(true);
-    } catch {
-      /* ignore storage errors */
-    }
-  }, []);
 
   useEffect(() => {
     const mq = window.matchMedia(MOBILE_MQ);
@@ -148,18 +138,6 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
 
   const navItems = sidebarNavItems.filter((item) => !item.adminOnly || role === "admin");
 
-  const toggleDesktop = () => {
-    setCollapsed((prev) => {
-      const next = !prev;
-      try {
-        window.localStorage.setItem(STORAGE_KEY, next ? "1" : "0");
-      } catch {
-        /* ignore storage errors */
-      }
-      return next;
-    });
-  };
-
   const openMobile = useCallback(() => setMobileOpen(true), []);
   const closeMobile = useCallback(() => {
     setMobileOpen(false);
@@ -192,9 +170,7 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
   }
 
   return (
-    <div
-      className={`shell ${collapsed ? "collapsed" : ""}${mobileOpen ? " mobile-drawer-open" : ""}`}
-    >
+    <div className={`shell collapsed${mobileOpen ? " mobile-drawer-open" : ""}`}>
       {/* Compact mobile top bar — not the full nav list */}
       <header className="mobile-topbar">
         <div className="brand mobile-topbar-brand">
@@ -230,16 +206,7 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
         inert={isMobile && !mobileOpen ? true : undefined}
       >
         <div className="sidebar-top">
-          <button
-            type="button"
-            className="sidebar-toggle desktop-sidebar-toggle"
-            onClick={toggleDesktop}
-            aria-expanded={!collapsed}
-            aria-label={collapsed ? "باز کردن منو" : "بستن منو"}
-            title={collapsed ? "باز کردن منو" : "بستن منو"}
-          >
-            <Menu aria-hidden="true" />
-          </button>
+          {/* Desktop: always icon rail — no expand toggle */}
           <div className="brand sidebar-brand">
             <h1 className="brand-title" style={{ marginBottom: 0 }}>
               OTC Desk
@@ -265,13 +232,13 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
                 key={item.href}
                 className={`nav-link ${active ? "active" : ""}`}
                 href={item.href}
-                title={item.label}
+                aria-label={item.label}
                 onClick={() => {
                   if (isMobile) setMobileOpen(false);
                 }}
               >
                 <Icon aria-hidden="true" />
-                <span>{item.label}</span>
+                <span className="nav-label">{item.label}</span>
                 {item.href === "/alerts" && unreadAlerts > 0 ? (
                   <span className="nav-badge" aria-label={`${unreadAlerts} اعلان خوانده‌نشده`}>
                     {unreadAlerts > 99 ? "99+" : unreadAlerts}
@@ -290,7 +257,7 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
           <button
             type="button"
             className="nav-link logout-link"
-            title="خروج"
+            aria-label="خروج"
             disabled={loggingOut}
             aria-busy={loggingOut}
             onClick={() => {
@@ -298,7 +265,7 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
             }}
           >
             <LogOut aria-hidden="true" />
-            <span>{loggingOut ? "در حال خروج..." : "خروج"}</span>
+            <span className="nav-label">{loggingOut ? "در حال خروج..." : "خروج"}</span>
           </button>
           <div className="sidebar-meta-bottom">
             <div className="sidebar-version" title={formatAppVersionLabel()}>

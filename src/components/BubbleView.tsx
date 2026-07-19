@@ -4,14 +4,17 @@ import { useMemo, useState } from "react";
 import { ChevronDown, ChevronUp, RefreshCw } from "lucide-react";
 import { useApi } from "@/hooks/useApi";
 import {
-  bubbleSignLabel,
   bubbleSignTone,
-  type DollarSideBubble,
-  type DollarSourceBubbleCard,
-  type GoldSourceBubbleCard,
+  dollarBubbleSupportSentence,
+  goldBubblePrimaryStatus,
+  goldBubbleSupportSentence,
+  MSG_DOLLAR_INSUFFICIENT,
+  MSG_GOLD_INSUFFICIENT,
+  type ConsolidatedDollarBubble,
+  type ConsolidatedGoldBubble,
   type MarketBubbleResponse
 } from "@/lib/bubble/compute";
-import { DIRHAM_TO_USD_MULTIPLIER, type GoldBubbleDetail } from "@/lib/bubble/formulas";
+import { DIRHAM_TO_USD_MULTIPLIER } from "@/lib/bubble/formulas";
 import { formatDate, formatNumber, formatPercent, formatToman, formatUsd } from "@/components/format";
 import { BubbleSkeleton } from "@/components/skeletons";
 import { ThemeToggleButton } from "@/components/ThemeToggleButton";
@@ -72,220 +75,129 @@ function signToneClass(sign: string | null | undefined): "danger" | "good" | "wa
   return bubbleSignTone(sign as "positive" | "negative" | "near_zero" | null);
 }
 
-function DollarSummaryCard({
-  summary,
+function sourceNamesLine(members: Array<{ sourceName: string }>, count: number): string {
+  if (count === 0) return "—";
+  const names = members.map((m) => m.sourceName).join("، ");
+  if (count === 1) return `بر اساس ۱ منبع: ${names}`;
+  return `بر اساس ${new Intl.NumberFormat("fa-IR").format(count)} منبع: ${names}`;
+}
+
+function ConsolidatedDollarCard({
+  consolidated,
   reason
 }: {
-  summary: DollarSideBubble | null;
+  consolidated: ConsolidatedDollarBubble | null;
   reason: string | null;
 }) {
   return (
     <section className="panel bubble-panel">
       <div className="panel-header">
-        <h3 className="panel-title">حباب دلار (خلاصه بازار)</h3>
-        {summary ? (
-          <span className={`status-chip ${signToneClass(summary.sign)}`}>
-            {bubbleSignLabel(summary.sign)}
-          </span>
-        ) : null}
+        <h3 className="panel-title">حباب دلار</h3>
       </div>
       <div className="panel-body">
-        {!summary ? (
-          <div className="empty muted">{reason ?? "داده کافی برای محاسبه حباب در دسترس نیست"}</div>
-        ) : (
-          <div className="grid metrics-grid bubble-metrics">
-            <Metric label="قیمت درهم (میانه)" value={formatToman(summary.dirhamToman)} />
-            <Metric label="ضریب تبدیل" value={formatNumber(DIRHAM_TO_USD_MULTIPLIER, 4)} />
-            <Metric label="دلار محاسباتی" value={formatToman(summary.realDollarToman)} />
-            <Metric label="دلار بازار (میانه)" value={formatToman(summary.marketDollarToman)} />
-            <Metric
-              label="حباب تومانی"
-              value={formatToman(summary.bubbleToman)}
-              tone={signToneClass(summary.sign)}
-            />
-            <Metric
-              label="حباب درصدی"
-              value={formatPercent(summary.bubblePercent)}
-              tone={signToneClass(summary.sign)}
-            />
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function DollarSourceCard({ card }: { card: DollarSourceBubbleCard }) {
-  return (
-    <article className="panel bubble-source-card">
-      <div className="panel-header">
-        <h3 className="panel-title">حباب دلار · {card.sourceName}</h3>
-        <span className={`status-chip ${card.available ? signToneClass(card.mid?.sign) : "warn"}`}>
-          {card.available ? bubbleSignLabel(card.mid?.sign ?? null) : "قطع / ناقص"}
-        </span>
-      </div>
-      <div className="panel-body">
-        {!card.available || !card.mid ? (
-          <div className="empty muted">
-            {card.unavailableReason ?? "داده کافی برای محاسبه حباب در دسترس نیست"}
-          </div>
+        {!consolidated ? (
+          <div className="empty muted">{reason ?? MSG_DOLLAR_INSUFFICIENT}</div>
         ) : (
           <>
-            <div className="grid metrics-grid bubble-metrics">
-              <Metric label="قیمت درهم" value={formatToman(card.mid.dirhamToman)} />
-              <Metric label="ضریب تبدیل" value={formatNumber(DIRHAM_TO_USD_MULTIPLIER, 4)} />
-              <Metric label="دلار محاسباتی" value={formatToman(card.mid.realDollarToman)} />
-              <Metric
-                label={`دلار بازار (${card.marketDollar.assetLabel})`}
-                value={formatToman(card.mid.marketDollarToman)}
-              />
-              <Metric
-                label="حباب تومانی"
-                value={formatToman(card.mid.bubbleToman)}
-                tone={signToneClass(card.mid.sign)}
-              />
-              <Metric
-                label="حباب درصدی"
-                value={formatPercent(card.mid.bubblePercent)}
-                tone={signToneClass(card.mid.sign)}
-              />
-            </div>
-            {card.buy && card.sell ? (
-              <div className="bubble-side-grid">
-                <div className="bubble-side-block">
-                  <div className="bubble-side-title">خرید</div>
-                  <div className="muted small">حباب: {formatToman(card.buy.bubbleToman)}</div>
-                  <div className="muted small">٪ {formatNumber(card.buy.bubblePercent, 2)}</div>
-                </div>
-                <div className="bubble-side-block">
-                  <div className="bubble-side-title">فروش</div>
-                  <div className="muted small">حباب: {formatToman(card.sell.bubbleToman)}</div>
-                  <div className="muted small">٪ {formatNumber(card.sell.bubblePercent, 2)}</div>
-                </div>
-              </div>
-            ) : card.dirham.referenceOnly || card.marketDollar.referenceOnly ? (
-              <p className="muted small bubble-note">
-                این منبع فقط قیمت مرجع دارد — خرید/فروش جداگانه محاسبه نشده است.
+            <div
+              className={`bubble-dollar-result tone-${signToneClass(consolidated.sign)}`}
+              role="status"
+            >
+              <p className="bubble-dollar-result-text">
+                {dollarBubbleSupportSentence(consolidated.sign, consolidated.bubblePercent)}
               </p>
-            ) : null}
+            </div>
+            <div className="grid metrics-grid bubble-metrics">
+              <Metric label="میانگین قیمت درهم" value={formatToman(consolidated.averageDirhamToman)} />
+              <Metric label="ضریب تبدیل" value={formatNumber(DIRHAM_TO_USD_MULTIPLIER, 4)} />
+              <Metric label="دلار محاسباتی" value={formatToman(consolidated.calculatedDollarToman)} />
+              <Metric label="میانگین دلار بازار" value={formatToman(consolidated.averageMarketDollarToman)} />
+              <Metric
+                label="اختلاف تومانی (بازار − محاسباتی)"
+                value={formatToman(consolidated.bubbleToman)}
+                tone={signToneClass(consolidated.sign)}
+              />
+              <Metric
+                label="اختلاف درصدی"
+                value={formatPercent(consolidated.bubblePercent)}
+                tone={signToneClass(consolidated.sign)}
+              />
+            </div>
             <div className="bubble-source-meta muted small">
-              به‌روزرسانی: {formatDate(card.health.lastUpdated)}
-              {card.health.stale ? " · تأخیری" : ""}
+              درهم: {sourceNamesLine(consolidated.dirhamSources, consolidated.dirhamSourceCount)}
+            </div>
+            <div className="bubble-source-meta muted small">
+              دلار بازار:{" "}
+              {sourceNamesLine(consolidated.marketDollarSources, consolidated.marketDollarSourceCount)}
+            </div>
+            <div className="bubble-source-meta muted small">
+              به‌روزرسانی: {formatDate(consolidated.lastUpdated)}
             </div>
           </>
-        )}
-      </div>
-    </article>
-  );
-}
-
-function GoldDetailMetrics({ detail }: { detail: GoldBubbleDetail }) {
-  return (
-    <div className="grid metrics-grid bubble-metrics">
-      <Metric label="اونس جهانی" value={formatUsd(detail.ounceUsd)} />
-      <Metric label="قیمت درهم" value={formatToman(detail.dirhamToman)} />
-      <Metric label="دلار محاسباتی" value={formatToman(detail.realDollarToman)} />
-      <Metric label="مظنه" value={formatToman(detail.mazaneToman)} />
-      <Metric label="یک گرم طلای ۱۸ عیار" value={formatToman(detail.gram18Toman)} />
-      <Metric label="هر کیلو طلا (دلار)" value={formatUsd(detail.globalGoldKgUsd)} />
-      <Metric label="هر کیلو طلا (تومان)" value={formatToman(detail.globalGoldKgToman)} />
-      <Metric label="ارزش داخلی هر کیلو طلا" value={formatToman(detail.localPureGoldKgToman)} />
-      <Metric label="ارزش داخلی هر کیلو طلا (دلار)" value={formatUsd(detail.impliedLocalGoldKgUsd)} />
-      <Metric
-        label="حباب هر کیلو طلا (تومان)"
-        value={formatToman(detail.goldBubbleTomanPerKg)}
-        tone={signToneClass(detail.sign)}
-      />
-      <Metric
-        label="حباب هر کیلو طلا (دلار)"
-        value={formatUsd(detail.goldBubbleUsdPerKg)}
-        tone={signToneClass(detail.sign)}
-      />
-      <Metric
-        label="حباب درصدی"
-        value={formatPercent(detail.goldBubblePercent)}
-        tone={signToneClass(detail.sign)}
-      />
-      <Metric
-        label="معادل حباب به گرم ۱۸ عیار"
-        value={formatNumber(detail.equivalentGram18Bubble, 3)}
-        tone={signToneClass(detail.sign)}
-      />
-    </div>
-  );
-}
-
-function GoldSummaryCard({
-  summary,
-  reason
-}: {
-  summary: GoldBubbleDetail | null;
-  reason: string | null;
-}) {
-  return (
-    <section className="panel bubble-panel">
-      <div className="panel-header">
-        <h3 className="panel-title">حباب طلا (خلاصه بازار)</h3>
-        {summary ? (
-          <span className={`status-chip ${signToneClass(summary.sign)}`}>
-            {bubbleSignLabel(summary.sign)}
-          </span>
-        ) : null}
-      </div>
-      <div className="panel-body">
-        {!summary ? (
-          <div className="empty muted">{reason ?? "داده کافی برای محاسبه حباب در دسترس نیست"}</div>
-        ) : (
-          <div className="grid metrics-grid bubble-metrics">
-            <Metric
-              label="حباب هر کیلو طلا (تومان)"
-              value={formatToman(summary.goldBubbleTomanPerKg)}
-              tone={signToneClass(summary.sign)}
-            />
-            <Metric
-              label="حباب هر کیلو طلا (دلار)"
-              value={formatUsd(summary.goldBubbleUsdPerKg)}
-              tone={signToneClass(summary.sign)}
-            />
-            <Metric
-              label="حباب درصدی"
-              value={formatPercent(summary.goldBubblePercent)}
-              tone={signToneClass(summary.sign)}
-            />
-            <Metric label="وضعیت" value={bubbleSignLabel(summary.sign)} tone={signToneClass(summary.sign)} />
-          </div>
         )}
       </div>
     </section>
   );
 }
 
-function GoldSourceCard({ card }: { card: GoldSourceBubbleCard }) {
+function ConsolidatedGoldCard({
+  consolidated,
+  reason
+}: {
+  consolidated: ConsolidatedGoldBubble | null;
+  reason: string | null;
+}) {
   return (
-    <article className="panel bubble-source-card">
+    <section className="panel bubble-panel">
       <div className="panel-header">
-        <h3 className="panel-title">حباب طلا · {card.sourceName}</h3>
-        <span className={`status-chip ${card.available ? signToneClass(card.detail?.sign) : "warn"}`}>
-          {card.available ? bubbleSignLabel(card.detail?.sign ?? null) : "قطع / ناقص"}
-        </span>
+        <h3 className="panel-title">حباب طلا</h3>
+        {consolidated ? (
+          <span className={`status-chip ${signToneClass(consolidated.sign)}`}>
+            {goldBubblePrimaryStatus(consolidated.sign)}
+          </span>
+        ) : null}
       </div>
       <div className="panel-body">
-        {!card.available || !card.detail ? (
-          <div className="empty muted">
-            {card.unavailableReason ?? "داده کافی برای محاسبه حباب در دسترس نیست"}
-            {card.health.note ? <div className="small">{card.health.note}</div> : null}
-          </div>
+        {!consolidated ? (
+          <div className="empty muted">{reason ?? MSG_GOLD_INSUFFICIENT}</div>
         ) : (
           <>
-            <GoldDetailMetrics detail={card.detail} />
+            <div className="bubble-gold-direction" role="status">
+              <div className={`bubble-gold-primary tone-${signToneClass(consolidated.sign)}`}>
+                {goldBubblePrimaryStatus(consolidated.sign)}
+              </div>
+              <p className="bubble-gold-support muted small">
+                {goldBubbleSupportSentence(consolidated.sign, consolidated.goldBubblePercent)}
+              </p>
+            </div>
+            <div className="grid metrics-grid bubble-metrics">
+              <Metric label="میانگین اونس" value={formatUsd(consolidated.averageOunceUsd)} />
+              <Metric label="میانگین درهم" value={formatToman(consolidated.averageDirhamToman)} />
+              <Metric label="میانگین مظنه" value={formatToman(consolidated.averageMazaneToman)} />
+              <Metric label="دلار محاسباتی" value={formatToman(consolidated.realDollarToman)} />
+              <Metric
+                label="اختلاف هر کیلو طلای ایران با ارزش جهانی (تومان)"
+                value={formatToman(consolidated.goldBubbleTomanPerKg)}
+                tone={signToneClass(consolidated.sign)}
+              />
+              <Metric
+                label="اختلاف هر کیلو طلای ایران با ارزش جهانی (دلار)"
+                value={formatUsd(consolidated.goldBubbleUsdPerKg)}
+                tone={signToneClass(consolidated.sign)}
+              />
+              <Metric
+                label="اختلاف درصدی ایران با ارزش جهانی"
+                value={formatPercent(consolidated.goldBubblePercent)}
+                tone={signToneClass(consolidated.sign)}
+              />
+            </div>
             <div className="bubble-source-meta muted small">
-              به‌روزرسانی: {formatDate(card.health.lastUpdated)}
-              {card.health.stale ? " · تأخیری" : ""}
+              به‌روزرسانی: {formatDate(consolidated.lastUpdated)}
             </div>
           </>
         )}
       </div>
-    </article>
+    </section>
   );
 }
 
@@ -307,9 +219,7 @@ function FormulaSection() {
           <h4 className="bubble-formula-h">دلار</h4>
           <ul className="bubble-formula-list">
             <li>دلار محاسباتی = قیمت درهم × ۳٫۶۷۲۵</li>
-            <li>حباب تومانی = دلار بازار − دلار محاسباتی</li>
-            <li>حباب درصدی = (حباب تومانی ÷ دلار محاسباتی) × ۱۰۰</li>
-            <li>خرید و فروش فقط وقتی هر دو طرف از همان منبع موجود باشند محاسبه می‌شوند</li>
+            <li>دلار بازار از قیمت کاغذی/مرجع همان منبع (بدون ساختن خرید/فروش جعلی)</li>
           </ul>
           <h4 className="bubble-formula-h">طلا</h4>
           <ul className="bubble-formula-list">
@@ -394,32 +304,15 @@ export function BubbleView() {
       <PageHeader onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
       {error ? <div className="empty warn-inline muted">خطای تازه: {error} — آخرین داده معتبر نمایش داده می‌شود.</div> : null}
 
-      <DollarSummaryCard summary={content.dollar.summary} reason={content.dollar.summaryUnavailableReason} />
+      <ConsolidatedDollarCard
+        consolidated={content.dollar.consolidated}
+        reason={content.dollar.unavailableReason}
+      />
 
-      <div className="grid bubble-source-grid">
-        {content.dollar.sources.map((card) => (
-          <DollarSourceCard key={`dollar-source-${card.sourceId}`} card={card} />
-        ))}
-      </div>
-
-      <GoldSummaryCard summary={content.gold.summary} reason={content.gold.summaryUnavailableReason} />
-
-      {content.gold.summary ? (
-        <section className="panel bubble-panel">
-          <div className="panel-header">
-            <h3 className="panel-title">جزئیات محاسبه طلا (خلاصه)</h3>
-          </div>
-          <div className="panel-body">
-            <GoldDetailMetrics detail={content.gold.summary} />
-          </div>
-        </section>
-      ) : null}
-
-      <div className="grid bubble-source-grid">
-        {content.gold.sources.map((card) => (
-          <GoldSourceCard key={`gold-source-${card.sourceId}`} card={card} />
-        ))}
-      </div>
+      <ConsolidatedGoldCard
+        consolidated={content.gold.consolidated}
+        reason={content.gold.unavailableReason}
+      />
 
       <FormulaSection />
       <HealthPanel data={content} />

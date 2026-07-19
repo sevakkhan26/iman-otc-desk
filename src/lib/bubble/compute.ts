@@ -17,8 +17,35 @@ import type {
   SourceStatus
 } from "@/lib/types";
 
+/**
+ * Quote cache / display horizon (project dashboard MAX_STALE_PRICE_MS).
+ * Quotes older than this are not used even as raw bubble inputs.
+ */
 const MAX_STALE_MS = 6 * 60 * 60_000;
-const FRESH_MS = 15 * 60_000;
+
+/**
+ * Soft “تأخیری” marker (dashboard FRESH_PRICE_MS / provider visual warn).
+ * Does NOT by itself disable derived bubble — only marks health.stale.
+ */
+export const BUBBLE_WARN_AGE_MS = 15 * 60_000;
+
+/**
+ * Hard max age for a trusted gold-bubble calculation.
+ * Based on provider cache STALE_TTL (30m) × safety factor: genuinely multi-hour data is rejected.
+ * Navasan/Bonbast instruments often update on different cycles; 2h avoids false disables.
+ */
+export const BUBBLE_INPUT_MAX_AGE_MS = 2 * 60 * 60_000;
+
+/**
+ * Max allowed skew among ounce / dirham / mazane of the *same* provider.
+ * Must tolerate normal multi-instrument lag (gold API vs FX API, different Navasan rate.date fields)
+ * while still blocking multi-hour skew (e.g. live ounce + 4h-old FX).
+ */
+export const BUBBLE_INPUT_ALIGN_MS = 90 * 60_000;
+
+export const MSG_STALE_BUBBLE = "داده قدیمی؛ محاسبه حباب غیرفعال است";
+export const MSG_MISALIGNED_BUBBLE = "زمان ورودی‌ها با یکدیگر هماهنگ نیست";
+export const MSG_INSUFFICIENT_BUBBLE = "داده کافی برای محاسبه حباب در دسترس نیست";
 
 /** Sanity bands (Toman / USD) — reject unit mix and garbage without inventing. */
 const DIRHAM_MIN = 5_000;
@@ -46,83 +73,120 @@ export type DollarSideBubble = DollarBubbleLegs & {
   side: "buy" | "sell" | "mid" | "reference";
 };
 
-export type DollarSourceBubbleCard = {
+/** One FX contribution to the consolidated dollar average. */
+export type DollarAverageMember = {
   sourceId: string;
   sourceName: string;
-  available: boolean;
-  unavailableReason: string | null;
-  dirham: {
-    buy: number | null;
-    sell: number | null;
-    mid: number | null;
-    lastUpdated: string | null;
-    referenceOnly: boolean;
-  };
-  marketDollar: {
-    buy: number | null;
-    sell: number | null;
-    mid: number | null;
-    lastUpdated: string | null;
-    assetLabel: string;
-    referenceOnly: boolean;
-  };
-  mid: DollarSideBubble | null;
-  buy: DollarSideBubble | null;
-  sell: DollarSideBubble | null;
-  health: BubbleSourceHealth;
+  price: number;
+  lastUpdated: string | null;
+  assetLabel?: string;
 };
 
-export type GoldSourceBubbleCard = {
-  sourceId: string;
-  sourceName: string;
-  available: boolean;
-  unavailableReason: string | null;
-  detail: GoldBubbleDetail | null;
-  inputs: {
-    ounceUsd: number | null;
-    mazaneToman: number | null;
-    dirhamToman: number | null;
-    dirhamSourceId: string | null;
-    dirhamSourceName: string | null;
-    crossSourceDirham: boolean;
-  };
-  health: BubbleSourceHealth;
+/** Single canonical dollar bubble (arithmetic means of valid sources). */
+export type ConsolidatedDollarBubble = {
+  averageDirhamToman: number;
+  calculatedDollarToman: number;
+  averageMarketDollarToman: number;
+  bubbleToman: number;
+  bubblePercent: number;
+  sign: BubbleSign;
+  dirhamSources: DollarAverageMember[];
+  marketDollarSources: DollarAverageMember[];
+  dirhamSourceCount: number;
+  marketDollarSourceCount: number;
+  lastUpdated: string | null;
+};
+
+/** Single canonical gold bubble from arithmetic means of valid inputs (no per-provider cards). */
+export type ConsolidatedGoldBubble = GoldBubbleDetail & {
+  averageOunceUsd: number;
+  averageDirhamToman: number;
+  averageMazaneToman: number;
+  ounceSourceCount: number;
+  dirhamSourceCount: number;
+  mazaneSourceCount: number;
+  lastUpdated: string | null;
 };
 
 export type MarketBubbleResponse = {
   lastUpdated: string | null;
   notes: string[];
   dollar: {
-    summary: DollarSideBubble | null;
-    summaryUnavailableReason: string | null;
-    sources: DollarSourceBubbleCard[];
+    consolidated: ConsolidatedDollarBubble | null;
+    unavailableReason: string | null;
   };
   gold: {
-    summary: GoldBubbleDetail | null;
-    summaryUnavailableReason: string | null;
-    sources: GoldSourceBubbleCard[];
+    consolidated: ConsolidatedGoldBubble | null;
+    unavailableReason: string | null;
   };
   health: BubbleSourceHealth[];
 };
 
-function ageMs(iso: string | null | undefined): number | null {
+export const MSG_DOLLAR_INSUFFICIENT = "داده معتبر کافی در دسترس نیست";
+export const MSG_GOLD_INSUFFICIENT = "داده معتبر کافی در دسترس نیست";
+
+/** Parse ISO (already UTC from providers via toUtcIso / Date.toISOString) → epoch ms. */
+export function parseBubbleTimestampUtc(iso: string | null | undefined): number | null {
   if (!iso) return null;
   const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return null;
-  return Date.now() - t;
+  return Number.isFinite(t) ? t : null;
 }
 
-function isFreshEnough(iso: string | null | undefined): boolean {
-  const age = ageMs(iso);
-  if (age === null) return true;
+function ageMs(iso: string | null | undefined, nowMs: number = Date.now()): number | null {
+  const t = parseBubbleTimestampUtc(iso);
+  if (t === null) return null;
+  return nowMs - t;
+}
+
+/** Quote still within the long cache window (may still be «تأخیری» for bubble output). */
+function isWithinCacheWindow(iso: string | null | undefined, nowMs: number = Date.now()): boolean {
+  const age = ageMs(iso, nowMs);
+  if (age === null) return true; // missing timestamp: do not discard value
   if (age < 0) return true;
   return age <= MAX_STALE_MS;
 }
 
-function isStale(iso: string | null | undefined): boolean {
-  const age = ageMs(iso);
-  if (age === null) return false;
-  return age > FRESH_MS;
+/**
+ * Hard freshness for derived bubble.
+ * Missing timestamp → allow (providers sometimes omit; value still present).
+ * Present timestamp → age must be ≤ BUBBLE_INPUT_MAX_AGE_MS (2h).
+ */
+export function isBubbleInputFresh(iso: string | null | undefined, nowMs: number = Date.now()): boolean {
+  const age = ageMs(iso, nowMs);
+  if (age === null) return true;
+  if (age < 0) return true;
+  return age <= BUBBLE_INPUT_MAX_AGE_MS;
+}
+
+/**
+ * Gate for gold bubble inputs of a single provider.
+ * - Null timestamps are skipped for skew (not treated as year-1970 / ancient).
+ * - Any present timestamp older than MAX_AGE → stale.
+ * - Span of present timestamps > ALIGN → misaligned (hours of skew, not minutes).
+ */
+export function areBubbleInputsAligned(
+  timestamps: Array<string | null | undefined>,
+  nowMs: number = Date.now()
+): { ok: boolean; reason: "ok" | "stale" | "misaligned" } {
+  const times: number[] = [];
+  for (const iso of timestamps) {
+    const t = parseBubbleTimestampUtc(iso);
+    if (t === null) continue;
+    const age = nowMs - t;
+    if (age > BUBBLE_INPUT_MAX_AGE_MS) return { ok: false, reason: "stale" };
+    times.push(t);
+  }
+  if (times.length >= 2) {
+    const span = Math.max(...times) - Math.min(...times);
+    if (span > BUBBLE_INPUT_ALIGN_MS) return { ok: false, reason: "misaligned" };
+  }
+  return { ok: true, reason: "ok" };
+}
+
+export function bubbleGateMessage(reason: "stale" | "misaligned" | "insufficient"): string {
+  if (reason === "stale") return MSG_STALE_BUBBLE;
+  if (reason === "misaligned") return MSG_MISALIGNED_BUBBLE;
+  return MSG_INSUFFICIENT_BUBBLE;
 }
 
 function inBand(value: number | null, min: number, max: number): number | null {
@@ -137,12 +201,6 @@ function pickPrice(buy: number | null, sell: number | null, mid: number | null):
   const single = buy ?? sell;
   if (single !== null && single > 0) return single;
   return null;
-}
-
-function isReferenceOnly(buy: number | null, sell: number | null): boolean {
-  if (buy === null || sell === null) return true;
-  if (!(buy > 0 && sell > 0)) return true;
-  return Math.abs(buy - sell) / Math.max(buy, sell) <= 0.0001;
 }
 
 function latestIso(values: Array<string | null | undefined>): string | null {
@@ -160,17 +218,22 @@ function latestIso(values: Array<string | null | undefined>): string | null {
   return best;
 }
 
-function median(values: number[]): number | null {
+function arithmeticMean(values: number[]): number | null {
   if (!values.length) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!;
+  const sum = values.reduce((a, b) => a + b, 0);
+  const avg = sum / values.length;
+  return Number.isFinite(avg) ? avg : null;
 }
 
 function paperDollarAssetsFor(sourceId: string): string[] {
   if (sourceId === "bonbast") return ["دلار بن‌بست", "دلار کاغذی"];
   return ["دلار کاغذی"];
 }
+
+const DOLLAR_FX_SOURCES: Array<{ id: string; name: string }> = [
+  { id: "navasan", name: "نوسان" },
+  { id: "bonbast", name: "بن‌بست" }
+];
 
 function findFx(
   quotes: FxStreetQuote[],
@@ -183,260 +246,229 @@ function findFx(
         q.sourceId === sourceId &&
         q.assetType === asset &&
         q.status !== "unavailable" &&
-        isFreshEnough(q.lastUpdated)
+        isWithinCacheWindow(q.lastUpdated)
     );
     if (hit) return hit;
   }
   return null;
 }
 
-function findGold(
-  quotes: GoldMarketQuote[],
-  sourceId: string,
-  instrument: GoldMarketQuote["instrument"]
-): GoldMarketQuote | null {
-  return (
-    quotes.find(
-      (q) =>
-        q.sourceId === sourceId &&
-        q.instrument === instrument &&
-        q.status !== "unavailable" &&
-        isFreshEnough(q.lastUpdated)
-    ) ?? null
-  );
+/**
+ * Collect one mid price per FX source for dirham / market-dollar averages.
+ * Requires bubble-fresh timestamp and valid positive price in-band.
+ */
+function collectValidFxMembers(
+  fxQuotes: FxStreetQuote[],
+  kind: "dirham" | "marketDollar",
+  nowMs: number
+): DollarAverageMember[] {
+  const members: DollarAverageMember[] = [];
+  for (const src of DOLLAR_FX_SOURCES) {
+    const assets = kind === "dirham" ? (["درهم امارات"] as string[]) : paperDollarAssetsFor(src.id);
+    const q = findFx(fxQuotes, src.id, assets);
+    if (!q) continue;
+    if (!isBubbleInputFresh(q.lastUpdated, nowMs)) continue;
+    const band = kind === "dirham" ? [DIRHAM_MIN, DIRHAM_MAX] : [DOLLAR_MIN, DOLLAR_MAX];
+    const price = inBand(pickPrice(q.buyPrice, q.sellPrice, q.midPrice), band[0]!, band[1]!);
+    if (price === null) continue;
+    members.push({
+      sourceId: src.id,
+      sourceName: src.name,
+      price,
+      lastUpdated: q.lastUpdated,
+      assetLabel: q.assetType
+    });
+  }
+  return members;
 }
 
-function sideBubble(
-  dirham: number,
-  market: number,
-  side: DollarSideBubble["side"]
-): DollarSideBubble | null {
-  const legs = computeDollarBubble(dirham, market);
-  if (!legs) return null;
-  return { ...legs, dirhamToman: dirham, side };
-}
+export function buildConsolidatedDollarBubble(
+  fxQuotes: FxStreetQuote[],
+  nowMs: number = Date.now()
+): { consolidated: ConsolidatedDollarBubble | null; reason: string | null } {
+  const dirhamSources = collectValidFxMembers(fxQuotes, "dirham", nowMs);
+  const marketDollarSources = collectValidFxMembers(fxQuotes, "marketDollar", nowMs);
 
-function buildDollarSourceCard(
-  sourceId: string,
-  sourceName: string,
-  fxQuotes: FxStreetQuote[]
-): DollarSourceBubbleCard {
-  const dirhamQ = findFx(fxQuotes, sourceId, ["درهم امارات"]);
-  const dollarQ = findFx(fxQuotes, sourceId, paperDollarAssetsFor(sourceId));
+  const averageDirhamToman = arithmeticMean(dirhamSources.map((m) => m.price));
+  const averageMarketDollarToman = arithmeticMean(marketDollarSources.map((m) => m.price));
 
-  const health: BubbleSourceHealth = {
-    scope: "dollar",
-    sourceId,
-    sourceName,
-    status:
-      dirhamQ && dollarQ
-        ? dirhamQ.status === "degraded" || dollarQ.status === "degraded"
-          ? "degraded"
-          : "available"
-        : "unavailable",
-    lastUpdated: latestIso([dirhamQ?.lastUpdated, dollarQ?.lastUpdated]),
-    stale: isStale(dirhamQ?.lastUpdated) || isStale(dollarQ?.lastUpdated),
-    note: null
-  };
-
-  if (!dirhamQ || !dollarQ) {
-    return {
-      sourceId,
-      sourceName,
-      available: false,
-      unavailableReason: "داده کافی برای محاسبه حباب در دسترس نیست",
-      dirham: {
-        buy: null,
-        sell: null,
-        mid: null,
-        lastUpdated: dirhamQ?.lastUpdated ?? null,
-        referenceOnly: true
-      },
-      marketDollar: {
-        buy: null,
-        sell: null,
-        mid: null,
-        lastUpdated: dollarQ?.lastUpdated ?? null,
-        assetLabel: paperDollarAssetsFor(sourceId)[0]!,
-        referenceOnly: true
-      },
-      mid: null,
-      buy: null,
-      sell: null,
-      health
-    };
+  if (averageDirhamToman === null || averageMarketDollarToman === null) {
+    return { consolidated: null, reason: MSG_DOLLAR_INSUFFICIENT };
   }
 
-  const dBuy = inBand(dirhamQ.buyPrice, DIRHAM_MIN, DIRHAM_MAX);
-  const dSell = inBand(dirhamQ.sellPrice, DIRHAM_MIN, DIRHAM_MAX);
-  const dMid = inBand(pickPrice(dBuy, dSell, dirhamQ.midPrice), DIRHAM_MIN, DIRHAM_MAX);
-
-  const mBuy = inBand(dollarQ.buyPrice, DOLLAR_MIN, DOLLAR_MAX);
-  const mSell = inBand(dollarQ.sellPrice, DOLLAR_MIN, DOLLAR_MAX);
-  const mMid = inBand(pickPrice(mBuy, mSell, dollarQ.midPrice), DOLLAR_MIN, DOLLAR_MAX);
-
-  const dirhamRefOnly = isReferenceOnly(dirhamQ.buyPrice, dirhamQ.sellPrice);
-  const dollarRefOnly = isReferenceOnly(dollarQ.buyPrice, dollarQ.sellPrice);
-
-  let buy: DollarSideBubble | null = null;
-  let sell: DollarSideBubble | null = null;
-  if (!dirhamRefOnly && !dollarRefOnly && dBuy !== null && dSell !== null && mBuy !== null && mSell !== null) {
-    buy = sideBubble(dBuy, mBuy, "buy");
-    sell = sideBubble(dSell, mSell, "sell");
+  const legs = computeDollarBubble(averageDirhamToman, averageMarketDollarToman);
+  if (!legs) {
+    return { consolidated: null, reason: MSG_DOLLAR_INSUFFICIENT };
   }
-
-  const mid =
-    dMid !== null && mMid !== null
-      ? sideBubble(dMid, mMid, dirhamRefOnly || dollarRefOnly ? "reference" : "mid")
-      : null;
 
   return {
-    sourceId,
-    sourceName,
-    available: mid !== null || buy !== null || sell !== null,
-    unavailableReason:
-      mid || buy || sell ? null : "داده کافی برای محاسبه حباب در دسترس نیست",
-    dirham: {
-      buy: dBuy,
-      sell: dSell,
-      mid: dMid,
-      lastUpdated: dirhamQ.lastUpdated,
-      referenceOnly: dirhamRefOnly
+    consolidated: {
+      averageDirhamToman,
+      calculatedDollarToman: legs.realDollarToman,
+      averageMarketDollarToman,
+      bubbleToman: legs.bubbleToman,
+      bubblePercent: legs.bubblePercent,
+      sign: legs.sign,
+      dirhamSources,
+      marketDollarSources,
+      dirhamSourceCount: dirhamSources.length,
+      marketDollarSourceCount: marketDollarSources.length,
+      lastUpdated: latestIso([
+        ...dirhamSources.map((m) => m.lastUpdated),
+        ...marketDollarSources.map((m) => m.lastUpdated)
+      ])
     },
-    marketDollar: {
-      buy: mBuy,
-      sell: mSell,
-      mid: mMid,
-      lastUpdated: dollarQ.lastUpdated,
-      assetLabel: dollarQ.assetType,
-      referenceOnly: dollarRefOnly
-    },
-    mid,
-    buy,
-    sell,
-    health
+    reason: null
   };
 }
 
-function buildGoldSourceCard(
-  sourceId: string,
-  sourceName: string,
+/** Explicit dollar comparison wording (same sign as local−global: market − calculated). */
+export function dollarBubblePrimaryStatus(sign: BubbleSign | null | undefined): string {
+  if (sign === "positive") return "دلار بازار از ارزش محاسباتی درهم گران‌تر است";
+  if (sign === "negative") return "دلار بازار از ارزش محاسباتی درهم ارزان‌تر است";
+  if (sign === "near_zero") return "دلار بازار و ارزش محاسباتی تقریباً برابرند";
+  return "نامشخص";
+}
+
+/** Single compact result sentence for the dollar card (live %; never hardcoded). */
+export function dollarBubbleSupportSentence(
+  sign: BubbleSign | null | undefined,
+  bubblePercent: number | null | undefined
+): string {
+  if (sign === "near_zero") {
+    return "دلار بازار تقریباً برابر با ارزش محاسباتی درهم است.";
+  }
+  if (sign !== "positive" && sign !== "negative") return "";
+  if (bubblePercent == null || !Number.isFinite(bubblePercent)) {
+    return sign === "positive"
+      ? "دلار بازار از ارزش محاسباتی درهم گران‌تر است."
+      : "دلار بازار از ارزش محاسباتی درهم ارزان‌تر است.";
+  }
+  const abs = Math.abs(bubblePercent);
+  const pctFa = new Intl.NumberFormat("fa-IR", {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 0
+  }).format(abs);
+  if (sign === "positive") {
+    return `دلار بازار ${pctFa}٪ از ارزش محاسباتی درهم گران‌تر است.`;
+  }
+  return `دلار بازار ${pctFa}٪ از ارزش محاسباتی درهم ارزان‌تر است.`;
+}
+
+/**
+ * Collect one fresh, in-band price per source for a gold instrument (no duplicate sourceIds).
+ * Talavest may contribute ounce/mazane when present; never shown by name on the bubble UI.
+ */
+function collectValidGoldInstrumentPrices(
   goldQuotes: GoldMarketQuote[],
-  fxQuotes: FxStreetQuote[]
-): GoldSourceBubbleCard {
-  const ounceQ = findGold(goldQuotes, sourceId, "اونس طلا به دلار");
-  const mazaneQ = findGold(goldQuotes, sourceId, "مثقال طلای آبشده");
-  const dirhamQ = findFx(fxQuotes, sourceId, ["درهم امارات"]);
+  instrument: GoldMarketQuote["instrument"],
+  min: number,
+  max: number,
+  nowMs: number
+): { prices: number[]; timestamps: Array<string | null>; count: number } {
+  const bySource = new Map<string, GoldMarketQuote>();
+  for (const q of goldQuotes) {
+    if (q.instrument !== instrument || q.status === "unavailable") continue;
+    if (!isWithinCacheWindow(q.lastUpdated, nowMs)) continue;
+    if (!isBubbleInputFresh(q.lastUpdated, nowMs)) continue;
+    // First quote per sourceId only
+    if (!bySource.has(q.sourceId)) bySource.set(q.sourceId, q);
+  }
+  const prices: number[] = [];
+  const timestamps: Array<string | null> = [];
+  for (const q of bySource.values()) {
+    const p = inBand(pickPrice(q.buyPrice, q.sellPrice, q.midPrice), min, max);
+    if (p === null) continue;
+    prices.push(p);
+    timestamps.push(q.lastUpdated);
+  }
+  return { prices, timestamps, count: prices.length };
+}
 
-  const ounceUsd = inBand(pickPrice(ounceQ?.buyPrice ?? null, ounceQ?.sellPrice ?? null, ounceQ?.midPrice ?? null), OUNCE_MIN, OUNCE_MAX);
-  const mazaneToman = inBand(
-    pickPrice(mazaneQ?.buyPrice ?? null, mazaneQ?.sellPrice ?? null, mazaneQ?.midPrice ?? null),
-    MAZANE_MIN,
-    MAZANE_MAX
+function collectValidDirhamPricesForGold(
+  fxQuotes: FxStreetQuote[],
+  nowMs: number
+): { prices: number[]; timestamps: Array<string | null>; count: number } {
+  const members = collectValidFxMembers(fxQuotes, "dirham", nowMs);
+  return {
+    prices: members.map((m) => m.price),
+    timestamps: members.map((m) => m.lastUpdated),
+    count: members.length
+  };
+}
+
+/**
+ * One gold bubble from arithmetic means of all valid ounce / dirham / mazane values.
+ * Provider names are not attached to the result (UI shows a single «حباب طلا» card).
+ */
+export function buildConsolidatedGoldBubble(
+  goldQuotes: GoldMarketQuote[],
+  fxQuotes: FxStreetQuote[],
+  nowMs: number = Date.now()
+): { consolidated: ConsolidatedGoldBubble | null; reason: string | null } {
+  const ounces = collectValidGoldInstrumentPrices(
+    goldQuotes,
+    "اونس طلا به دلار",
+    OUNCE_MIN,
+    OUNCE_MAX,
+    nowMs
   );
+  const mazanes = collectValidGoldInstrumentPrices(
+    goldQuotes,
+    "مثقال طلای آبشده",
+    MAZANE_MIN,
+    MAZANE_MAX,
+    nowMs
+  );
+  const dirhams = collectValidDirhamPricesForGold(fxQuotes, nowMs);
 
-  // Source-consistent Dirham only — no silent substitution from another FX source.
-  const dirhamToman = dirhamQ
-    ? inBand(pickPrice(dirhamQ.buyPrice, dirhamQ.sellPrice, dirhamQ.midPrice), DIRHAM_MIN, DIRHAM_MAX)
-    : null;
+  const averageOunceUsd = arithmeticMean(ounces.prices);
+  const averageDirhamToman = arithmeticMean(dirhams.prices);
+  const averageMazaneToman = arithmeticMean(mazanes.prices);
 
-  const health: BubbleSourceHealth = {
-    scope: "gold",
-    sourceId,
-    sourceName,
-    status:
-      ounceQ && mazaneQ && dirhamQ
-        ? [ounceQ.status, mazaneQ.status, dirhamQ.status].includes("degraded")
-          ? "degraded"
-          : "available"
-        : "unavailable",
-    lastUpdated: latestIso([ounceQ?.lastUpdated, mazaneQ?.lastUpdated, dirhamQ?.lastUpdated]),
-    stale:
-      isStale(ounceQ?.lastUpdated) || isStale(mazaneQ?.lastUpdated) || isStale(dirhamQ?.lastUpdated),
-    note: dirhamQ ? null : "درهم هم‌منبع برای این منبع FX در دسترس نیست"
-  };
-
-  if (ounceUsd === null || mazaneToman === null || dirhamToman === null) {
-    return {
-      sourceId,
-      sourceName,
-      available: false,
-      unavailableReason: "داده کافی برای محاسبه حباب در دسترس نیست",
-      detail: null,
-      inputs: {
-        ounceUsd,
-        mazaneToman,
-        dirhamToman,
-        dirhamSourceId: dirhamQ?.sourceId ?? null,
-        dirhamSourceName: dirhamQ?.sourceName ?? null,
-        crossSourceDirham: false
-      },
-      health
-    };
+  if (averageOunceUsd === null || averageDirhamToman === null || averageMazaneToman === null) {
+    return { consolidated: null, reason: MSG_GOLD_INSUFFICIENT };
   }
 
-  const detail = computeGoldBubble(ounceUsd, dirhamToman, mazaneToman);
+  // Guard multi-hour skew across the *averages' constituent timestamps*
+  const gate = areBubbleInputsAligned(
+    [
+      latestIso(ounces.timestamps),
+      latestIso(dirhams.timestamps),
+      latestIso(mazanes.timestamps)
+    ],
+    nowMs
+  );
+  // Only hard-stale on the mean timestamps if present; small lag across instruments is OK (90m align).
+  if (!gate.ok && gate.reason === "stale") {
+    return { consolidated: null, reason: MSG_STALE_BUBBLE };
+  }
+  if (!gate.ok && gate.reason === "misaligned") {
+    return { consolidated: null, reason: MSG_MISALIGNED_BUBBLE };
+  }
+
+  const detail = computeGoldBubble(averageOunceUsd, averageDirhamToman, averageMazaneToman);
+  if (!detail) {
+    return { consolidated: null, reason: MSG_GOLD_INSUFFICIENT };
+  }
+
   return {
-    sourceId,
-    sourceName,
-    available: detail !== null,
-    unavailableReason: detail ? null : "داده کافی برای محاسبه حباب در دسترس نیست",
-    detail,
-    inputs: {
-      ounceUsd,
-      mazaneToman,
-      dirhamToman,
-      dirhamSourceId: dirhamQ!.sourceId,
-      dirhamSourceName: dirhamQ!.sourceName,
-      crossSourceDirham: false
+    consolidated: {
+      ...detail,
+      // Averages feed the formula; detail fields mirror those averages
+      averageOunceUsd,
+      averageDirhamToman,
+      averageMazaneToman,
+      ounceSourceCount: ounces.count,
+      dirhamSourceCount: dirhams.count,
+      mazaneSourceCount: mazanes.count,
+      lastUpdated: latestIso([
+        ...ounces.timestamps,
+        ...dirhams.timestamps,
+        ...mazanes.timestamps
+      ])
     },
-    health
-  };
-}
-
-function dollarSummaryFromCards(cards: DollarSourceBubbleCard[]): {
-  summary: DollarSideBubble | null;
-  reason: string | null;
-} {
-  const mids = cards.map((c) => c.mid).filter((m): m is DollarSideBubble => Boolean(m));
-  if (!mids.length) {
-    return { summary: null, reason: "داده کافی برای محاسبه حباب در دسترس نیست" };
-  }
-  const dirhams = mids.map((m) => m.dirhamToman);
-  const markets = mids.map((m) => m.marketDollarToman);
-  const dMed = median(dirhams);
-  const mMed = median(markets);
-  if (dMed === null || mMed === null) {
-    return { summary: null, reason: "داده کافی برای محاسبه حباب در دسترس نیست" };
-  }
-  const summary = sideBubble(dMed, mMed, "mid");
-  return {
-    summary,
-    reason: summary ? null : "داده کافی برای محاسبه حباب در دسترس نیست"
-  };
-}
-
-function goldSummaryFromCards(cards: GoldSourceBubbleCard[]): {
-  summary: GoldBubbleDetail | null;
-  reason: string | null;
-} {
-  const ok = cards.filter((c) => c.detail);
-  if (!ok.length) {
-    return { summary: null, reason: "داده کافی برای محاسبه حباب در دسترس نیست" };
-  }
-  const ounces = ok.map((c) => c.inputs.ounceUsd!).filter((v) => v !== null);
-  const dirhams = ok.map((c) => c.inputs.dirhamToman!).filter((v) => v !== null);
-  const mazanes = ok.map((c) => c.inputs.mazaneToman!).filter((v) => v !== null);
-  const o = median(ounces);
-  const d = median(dirhams);
-  const m = median(mazanes);
-  if (o === null || d === null || m === null) {
-    return { summary: null, reason: "داده کافی برای محاسبه حباب در دسترس نیست" };
-  }
-  const summary = computeGoldBubble(o, d, m);
-  return {
-    summary,
-    reason: summary ? null : "داده کافی برای محاسبه حباب در دسترس نیست"
+    reason: null
   };
 }
 
@@ -452,46 +484,59 @@ export function buildMarketBubbleResponse(
   if (fx?.stale) notes.push("بخشی از داده‌های ارز ممکن است تأخیری باشد");
   if (gold?.stale) notes.push("بخشی از داده‌های طلا ممکن است تأخیری باشد");
 
-  const dollarSources = [
-    buildDollarSourceCard("navasan", "نوسان", fxQuotes),
-    buildDollarSourceCard("bonbast", "بن‌بست", fxQuotes)
-  ];
-  const goldSources = [
-    buildGoldSourceCard("navasan", "نوسان", goldQuotes, fxQuotes),
-    buildGoldSourceCard("bonbast", "بن‌بست", goldQuotes, fxQuotes),
-    buildGoldSourceCard("talavest", "Talavest", goldQuotes, fxQuotes)
-  ];
+  const dollarBuilt = buildConsolidatedDollarBubble(fxQuotes);
+  const goldBuilt = buildConsolidatedGoldBubble(goldQuotes, fxQuotes);
 
-  const dollarSum = dollarSummaryFromCards(dollarSources);
-  const goldSum = goldSummaryFromCards(goldSources);
+  const dollarHealth: BubbleSourceHealth[] = DOLLAR_FX_SOURCES.map((src) => {
+    const inDirham = dollarBuilt.consolidated?.dirhamSources.some((m) => m.sourceId === src.id);
+    const inMarket = dollarBuilt.consolidated?.marketDollarSources.some((m) => m.sourceId === src.id);
+    const used = Boolean(inDirham || inMarket);
+    return {
+      scope: "dollar" as const,
+      sourceId: src.id,
+      sourceName: src.name,
+      status: used ? ("available" as const) : ("unavailable" as const),
+      lastUpdated:
+        dollarBuilt.consolidated?.dirhamSources.find((m) => m.sourceId === src.id)?.lastUpdated ??
+        dollarBuilt.consolidated?.marketDollarSources.find((m) => m.sourceId === src.id)?.lastUpdated ??
+        null,
+      stale: false,
+      note: used ? "در میانگین حباب دلار لحاظ شد" : "در میانگین حباب دلار استفاده نشد"
+    };
+  });
 
-  const health: BubbleSourceHealth[] = [
-    ...dollarSources.map((s) => s.health),
-    ...goldSources.map((s) => s.health)
-  ];
+  // Gold health is aggregate (no per-provider gold cards on /bubble).
+  const goldHealth: BubbleSourceHealth = {
+    scope: "gold",
+    sourceId: "gold-consolidated",
+    sourceName: "طلا",
+    status: goldBuilt.consolidated ? "available" : "unavailable",
+    lastUpdated: goldBuilt.consolidated?.lastUpdated ?? null,
+    stale: false,
+    note: goldBuilt.consolidated ? null : goldBuilt.reason
+  };
 
   return {
     lastUpdated: latestIso([
       fx?.lastUpdated,
       gold?.lastUpdated,
-      ...dollarSources.map((s) => s.health.lastUpdated),
-      ...goldSources.map((s) => s.health.lastUpdated)
+      dollarBuilt.consolidated?.lastUpdated ?? null,
+      goldBuilt.consolidated?.lastUpdated ?? null
     ]),
     notes,
     dollar: {
-      summary: dollarSum.summary,
-      summaryUnavailableReason: dollarSum.reason,
-      sources: dollarSources
+      consolidated: dollarBuilt.consolidated,
+      unavailableReason: dollarBuilt.reason
     },
     gold: {
-      summary: goldSum.summary,
-      summaryUnavailableReason: goldSum.reason,
-      sources: goldSources
+      consolidated: goldBuilt.consolidated,
+      unavailableReason: goldBuilt.reason
     },
-    health
+    health: [...dollarHealth, goldHealth]
   };
 }
 
+/** Dollar-side status pill (kept short). Gold uses goldBubblePrimaryStatus. */
 export function bubbleSignLabel(sign: BubbleSign | null | undefined): string {
   if (sign === "positive") return "حباب مثبت";
   if (sign === "negative") return "حباب منفی / تخفیف نسبت به ارزش محاسباتی";
@@ -499,6 +544,46 @@ export function bubbleSignLabel(sign: BubbleSign | null | undefined): string {
   return "نامشخص";
 }
 
+/**
+ * Explicit gold comparison direction.
+ * Positive ⇔ localPureGoldKgToman − globalGoldKgToman > 0 ⇔ Iran more expensive.
+ * (Subtraction order is never inverted.)
+ */
+export function goldBubblePrimaryStatus(sign: BubbleSign | null | undefined): string {
+  if (sign === "positive") return "طلای ایران گران‌تر از ارزش جهانی است";
+  if (sign === "negative") return "طلای ایران ارزان‌تر از ارزش جهانی است";
+  if (sign === "near_zero") return "قیمت طلای ایران و ارزش جهانی تقریباً برابر است";
+  return "نامشخص";
+}
+
+/** Supporting Persian sentence; percent is |goldBubblePercent| for signed wording. */
+export function goldBubbleSupportSentence(
+  sign: BubbleSign | null | undefined,
+  bubblePercent: number | null | undefined
+): string {
+  if (sign === "near_zero") {
+    return "اختلاف معناداری میان قیمت داخلی و ارزش جهانی محاسباتی وجود ندارد.";
+  }
+  if (sign !== "positive" && sign !== "negative") {
+    return "";
+  }
+  if (bubblePercent == null || !Number.isFinite(bubblePercent)) {
+    return sign === "positive"
+      ? "قیمت طلای ایران بالاتر از ارزش جهانی محاسباتی است."
+      : "قیمت طلای ایران پایین‌تر از ارزش جهانی محاسباتی است.";
+  }
+  const abs = Math.abs(bubblePercent);
+  const pctFa = new Intl.NumberFormat("fa-IR", {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 0
+  }).format(abs);
+  if (sign === "positive") {
+    return `قیمت طلای ایران ${pctFa}٪ بالاتر از ارزش جهانی محاسباتی است.`;
+  }
+  return `قیمت طلای ایران ${pctFa}٪ پایین‌تر از ارزش جهانی محاسباتی است.`;
+}
+
+/** Iran more expensive → red; cheaper → green; equal → neutral; invalid → warn. */
 export function bubbleSignTone(sign: BubbleSign | null | undefined): "danger" | "good" | "warn" | "muted" {
   if (sign === "positive") return "danger";
   if (sign === "negative") return "good";

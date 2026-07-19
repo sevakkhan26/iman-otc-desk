@@ -4276,6 +4276,91 @@ table th {
   font-size: 12px;
 }
 
+.bubble-compare-basis {
+  margin: 0 0 10px;
+  line-height: 1.7;
+}
+
+/* Full-width compact result for dollar bubble — sentence is the title; once only. */
+.bubble-dollar-result {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 12px;
+  padding: 10px 16px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--surface-2);
+  text-align: center;
+}
+
+.bubble-dollar-result-text {
+  margin: 0;
+  max-width: 100%;
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1.65;
+  /* Prefer a single horizontal line; wrap into a few balanced lines on narrow widths. */
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
+  hyphens: none;
+}
+
+.bubble-dollar-result.tone-danger .bubble-dollar-result-text {
+  color: var(--danger, #dc2f3a);
+}
+
+.bubble-dollar-result.tone-good .bubble-dollar-result-text {
+  color: var(--good, #1a9b5c);
+}
+
+.bubble-dollar-result.tone-muted .bubble-dollar-result-text {
+  color: var(--muted);
+}
+
+.bubble-dollar-result.tone-warn .bubble-dollar-result-text {
+  color: var(--warn, #c48a00);
+}
+
+.bubble-gold-direction {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.bubble-gold-primary {
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1.6;
+  margin-bottom: 4px;
+}
+
+.bubble-gold-primary.tone-danger {
+  color: var(--danger, #dc2f3a);
+}
+
+.bubble-gold-primary.tone-good {
+  color: var(--good, #1a9b5c);
+}
+
+.bubble-gold-primary.tone-muted {
+  color: var(--muted);
+}
+
+.bubble-gold-primary.tone-warn {
+  color: var(--warn, #c48a00);
+}
+
+.bubble-gold-support {
+  margin: 0;
+  line-height: 1.7;
+}
+
 @media (max-width: 760px) {
   .bubble-side-grid {
     grid-template-columns: 1fr;

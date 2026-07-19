@@ -7,7 +7,6 @@ import {
   bubbleSignTone,
   dollarBubbleSupportSentence,
   goldBubblePrimaryStatus,
-  goldBubbleSupportSentence,
   MSG_DOLLAR_INSUFFICIENT,
   MSG_GOLD_INSUFFICIENT,
   type ConsolidatedDollarBubble,
@@ -100,10 +99,10 @@ function ConsolidatedDollarCard({
         ) : (
           <>
             <div
-              className={`bubble-dollar-result tone-${signToneClass(consolidated.sign)}`}
+              className={`bubble-result-card tone-${signToneClass(consolidated.sign)}`}
               role="status"
             >
-              <p className="bubble-dollar-result-text">
+              <p className="bubble-result-card-text">
                 {dollarBubbleSupportSentence(consolidated.sign, consolidated.bubblePercent)}
               </p>
             </div>
@@ -151,23 +150,18 @@ function ConsolidatedGoldCard({
     <section className="panel bubble-panel">
       <div className="panel-header">
         <h3 className="panel-title">حباب طلا</h3>
-        {consolidated ? (
-          <span className={`status-chip ${signToneClass(consolidated.sign)}`}>
-            {goldBubblePrimaryStatus(consolidated.sign)}
-          </span>
-        ) : null}
       </div>
       <div className="panel-body">
         {!consolidated ? (
           <div className="empty muted">{reason ?? MSG_GOLD_INSUFFICIENT}</div>
         ) : (
           <>
-            <div className="bubble-gold-direction" role="status">
-              <div className={`bubble-gold-primary tone-${signToneClass(consolidated.sign)}`}>
+            <div
+              className={`bubble-result-card tone-${signToneClass(consolidated.sign)}`}
+              role="status"
+            >
+              <p className="bubble-result-card-text">
                 {goldBubblePrimaryStatus(consolidated.sign)}
-              </div>
-              <p className="bubble-gold-support muted small">
-                {goldBubbleSupportSentence(consolidated.sign, consolidated.goldBubblePercent)}
               </p>
             </div>
             <div className="grid metrics-grid bubble-metrics">

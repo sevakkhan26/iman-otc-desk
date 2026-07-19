@@ -282,11 +282,6 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
           })}
         </nav>
         <div className="sidebar-bottom">
-          <div className="sidebar-meta-bottom">
-            <div className="sidebar-version" title={formatAppVersionLabel()}>
-              <span className="sidebar-version-value">{formatAppVersionLabel()}</span>
-            </div>
-          </div>
           {logoutError ? (
             <div className="sidebar-logout-error" role="alert">
               {logoutError}
@@ -305,6 +300,11 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
             <LogOut aria-hidden="true" />
             <span>{loggingOut ? "در حال خروج..." : "خروج"}</span>
           </button>
+          <div className="sidebar-meta-bottom">
+            <div className="sidebar-version" title={formatAppVersionLabel()}>
+              <span className="sidebar-version-value">{formatAppVersionLabel()}</span>
+            </div>
+          </div>
         </div>
       </aside>
       <main className="main">

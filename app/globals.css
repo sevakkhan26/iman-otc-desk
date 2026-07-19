@@ -291,15 +291,17 @@ input {
   display: flex;
   flex-direction: row;
   flex-wrap: nowrap;
-  justify-content: center;
+  /* RTL: flex-start = right edge — icon + label right-aligned in the rail */
+  justify-content: flex-start;
   align-items: center;
   gap: 10px;
-  padding: 10px 10px;
+  padding: 10px 12px;
   border: 1px solid transparent;
   border-radius: 8px;
   color: var(--muted);
   width: 100%;
   box-sizing: border-box;
+  text-align: start;
 }
 
 .nav-link:hover {
@@ -325,11 +327,11 @@ input {
   flex: 0 0 auto;
 }
 
-/* Icon + label (+ badge) as one centered group — label does not stretch full width */
+/* Icon + label (+ badge) as a right-aligned group (RTL start) */
 .nav-link > span:not(.nav-badge) {
   flex: 0 1 auto;
   min-width: 0;
-  text-align: center;
+  text-align: start;
   line-height: 1.3;
 }
 
@@ -350,31 +352,38 @@ input {
   border-top: 1px solid var(--line-soft);
 }
 
+/* Version sits under logout — always centered */
 .sidebar-meta-bottom {
-  align-self: flex-end;
-  display: grid;
-  gap: 2px;
-  margin: 0 12px 4px;
-  padding: 0 2px;
+  align-self: center;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  margin: 2px 0 0;
+  padding: 0;
   color: var(--muted-2);
   font-size: 11px;
   line-height: 1.4;
   white-space: nowrap;
+  text-align: center;
 }
 
 .sidebar-tehran-time,
 .sidebar-version {
   margin: 0;
   padding: 0;
+  text-align: center;
+  width: 100%;
 }
 
 .sidebar-meta-value,
 .sidebar-version-value {
+  display: inline-block;
   font-weight: 700;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   direction: ltr;
   unicode-bidi: isolate;
+  text-align: center;
 }
 
 .shell.collapsed .sidebar-meta-bottom {
@@ -3385,13 +3394,14 @@ tr:last-child td {
   .nav-link {
     min-height: 48px;
     width: 100%;
-    padding: 10px 10px;
+    padding: 10px 12px;
     font-size: 14px;
-    justify-content: center;
+    justify-content: flex-start;
   }
 
   .logout-link {
     min-height: 48px;
+    justify-content: flex-start;
   }
 
   .sidebar-bottom {
@@ -4042,8 +4052,8 @@ table th {
   width: 100%;
   background: transparent;
   cursor: pointer;
-  text-align: center;
-  justify-content: center;
+  text-align: start;
+  justify-content: flex-start;
 }
 
 .logout-link:disabled {

@@ -1148,6 +1148,16 @@ a.icon-button.header-alerts-button.is-active {
   overflow-wrap: anywhere;
 }
 
+/* Only the Toman number token is LTR-isolated; unit + parents stay RTL. */
+.toman-amount {
+  white-space: nowrap;
+}
+
+.toman-amount-num {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
 .metric-note {
   color: var(--muted-2);
   margin-top: 8px;

@@ -10,9 +10,24 @@ const decimalFormatter = new Intl.NumberFormat("fa-IR", {
   maximumFractionDigits: 2
 });
 
-export function formatToman(value: number | null | undefined) {
+/** LTR Isolate / Pop — wrap only the numeric token, not «تومان» or surrounding RTL. */
+const LRI = "\u2066";
+const PDI = "\u2069";
+const NBSP = "\u00A0";
+
+/**
+ * Toman amount for strings (tables, titles, tooltips).
+ * Numeric token is LTR-isolated; unit stays outside so RTL sentences keep order:
+ * visual RIGHT → number → تومان → LEFT.
+ */
+export function formatToman(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "داده‌ای دریافت نشد";
-  return `${tomanFormatter.format(value)} تومان`;
+  return `${LRI}${tomanFormatter.format(value)}${PDI}${NBSP}تومان`;
+}
+
+/** Digits only (fa-IR), for <bdi> children. */
+export function formatTomanDigits(value: number): string {
+  return tomanFormatter.format(value);
 }
 
 export function formatNumber(value: number | null | undefined, digits = 2) {

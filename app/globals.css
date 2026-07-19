@@ -490,6 +490,52 @@ input {
   font-weight: 600;
 }
 
+/* Dashboard: title | truly centered clock stack | actions (equal side tracks). */
+.page-header--centered-clock {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 8px;
+  flex-wrap: unset;
+}
+
+.page-header--centered-clock .page-title {
+  justify-self: start;
+  min-width: 0;
+}
+
+.page-header--centered-clock .header-center {
+  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  text-align: center;
+  min-width: 0;
+  max-width: min(100%, 28rem);
+}
+
+.page-header--centered-clock .header-center .clock {
+  justify-content: center;
+}
+
+.page-header--centered-clock .header-center .last-update {
+  white-space: normal;
+  line-height: 1.45;
+  text-align: center;
+  max-width: 100%;
+}
+
+.page-header--centered-clock .header-actions {
+  justify-self: end;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  gap: 10px;
+  min-width: 0;
+}
+
 .spinning {
   animation: spin 0.9s linear infinite;
 }
@@ -3448,6 +3494,29 @@ tr:last-child td {
   .last-update {
     white-space: normal;
     max-width: 100%;
+  }
+
+  /* Dashboard header: stack title → centered clock → actions without overlap */
+  .page-header--centered-clock {
+    grid-template-columns: 1fr;
+    justify-items: stretch;
+  }
+
+  .page-header--centered-clock .page-title {
+    justify-self: start;
+    grid-column: 1;
+  }
+
+  .page-header--centered-clock .header-center {
+    grid-column: 1;
+    max-width: 100%;
+    width: 100%;
+  }
+
+  .page-header--centered-clock .header-actions {
+    grid-column: 1;
+    justify-self: end;
+    width: auto;
   }
 
   .icon-button,

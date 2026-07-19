@@ -113,6 +113,10 @@ const FOREX_LOOKBACK_MS = 2 * 60 * 60 * 1_000;
 const clockDateFmt = new Intl.DateTimeFormat("fa-IR", { weekday: "short", year: "numeric", month: "2-digit", day: "2-digit" });
 const clockTimeFmt = new Intl.DateTimeFormat("fa-IR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
+function formatLastUpdatedDateTime(ts: number): string {
+  return `${clockDateFmt.format(ts)}، ${clockTimeFmt.format(ts)}`;
+}
+
 /* ============================================================
  * Reusable primitives
  * ========================================================== */
@@ -121,13 +125,16 @@ function PageHeader({
   onRefresh,
   lastUpdated,
   lastUpdatedDisplay,
-  loading = false
+  loading = false,
+  centerClock = false
 }: {
   title: string;
   onRefresh?: () => void;
   lastUpdated?: number | null;
   lastUpdatedDisplay?: string | null;
   loading?: boolean;
+  /** Dashboard: live clock + last-update stacked and truly centered in the header. */
+  centerClock?: boolean;
 }) {
   // mount-guarded so the server render (null) matches the first client render, then ticks every second
   const [now, setNow] = useState<number | null>(null);
@@ -136,21 +143,66 @@ function PageHeader({
     const id = setInterval(() => setNow(Date.now()), CLOCK_TICK_MS);
     return () => clearInterval(id);
   }, []);
+
+  const lastUpdateText =
+    lastUpdatedDisplay ??
+    (lastUpdated != null
+      ? centerClock
+        ? formatLastUpdatedDateTime(lastUpdated)
+        : clockTimeFmt.format(lastUpdated)
+      : "—");
+
+  const clockBlock = (
+    <div className="clock" title="تاریخ و ساعت جاری">
+      <Clock aria-hidden="true" size={15} />
+      <span className="clock-date">{now ? clockDateFmt.format(now) : "—"}</span>
+      <span className="clock-time number">{now ? clockTimeFmt.format(now) : "—"}</span>
+    </div>
+  );
+
+  const lastUpdateBlock = (
+    <div className="last-update">
+      {centerClock ? "آخرین به‌روزرسانی" : "آخرین بروزرسانی"}:{" "}
+      <span className="number">{lastUpdateText}</span>
+    </div>
+  );
+
+  const actions = (
+    <div className="header-meta header-actions">
+      {onRefresh ? (
+        <button
+          className="icon-button"
+          onClick={onRefresh}
+          title="بروزرسانی"
+          aria-label="بروزرسانی"
+          disabled={loading}
+        >
+          <RefreshCw aria-hidden="true" className={loading ? "spinning" : undefined} />
+        </button>
+      ) : null}
+      <ThemeToggleButton />
+    </div>
+  );
+
+  if (centerClock) {
+    return (
+      <div className="page-header page-header--centered-clock">
+        <h2 className="page-title">{title}</h2>
+        <div className="header-center">
+          {clockBlock}
+          {lastUpdateBlock}
+        </div>
+        {actions}
+      </div>
+    );
+  }
+
   return (
     <div className="page-header">
       <h2 className="page-title">{title}</h2>
       <div className="header-meta">
-        <div className="clock" title="تاریخ و ساعت جاری">
-          <Clock aria-hidden="true" size={15} />
-          <span className="clock-date">{now ? clockDateFmt.format(now) : "—"}</span>
-          <span className="clock-time number">{now ? clockTimeFmt.format(now) : "—"}</span>
-        </div>
-        <div className="last-update">
-          آخرین بروزرسانی:{" "}
-          <span className="number">
-            {lastUpdatedDisplay ?? (lastUpdated ? clockTimeFmt.format(lastUpdated) : "—")}
-          </span>
-        </div>
+        {clockBlock}
+        {lastUpdateBlock}
         {onRefresh ? (
           <button
             className="icon-button"
@@ -1493,7 +1545,13 @@ export function DashboardView() {
   return (
     <>
       <Toasts toasts={toasts} onDismiss={dismiss} />
-      <PageHeader title="داشبورد" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+      <PageHeader
+        title="داشبورد"
+        onRefresh={reload}
+        lastUpdated={lastUpdated}
+        loading={loading}
+        centerClock
+      />
       <NewsTicker />
       <LoadState loading={loading} error={error} hasData={Boolean(data)} skeleton={<DashboardSkeleton />} />
       {data ? (

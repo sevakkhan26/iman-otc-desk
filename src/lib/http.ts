@@ -1,5 +1,7 @@
 import dns from "node:dns/promises";
 import https from "node:https";
+import type { Agent as HttpsAgent } from "node:https";
+import { HttpsProxyAgent } from "https-proxy-agent";
 
 export class ProviderError extends Error {
   constructor(message: string) {
@@ -33,8 +35,60 @@ const FALLBACK_HOST_IPS: Record<string, string[]> = {
   "arzinja.ir": ["185.143.234.235", "185.143.233.235"]
 };
 
+/** Hosts that must go through OUTBOUND_HTTPS_PROXY when it is configured (filtered in IR). */
+const DEFAULT_PROXY_HOSTS = ["bonbast.com", "www.bonbast.com"];
+
 const ipCache = new Map<string, { ips: string[]; at: number }>();
 const IP_CACHE_TTL_MS = 10 * 60_000;
+
+let cachedProxyAgent: HttpsAgent | null | undefined;
+
+function readOutboundProxyUrl(): string | null {
+  const raw =
+    process.env.OUTBOUND_HTTPS_PROXY?.trim() ||
+    process.env.HTTPS_PROXY?.trim() ||
+    process.env.https_proxy?.trim() ||
+    process.env.HTTP_PROXY?.trim() ||
+    process.env.http_proxy?.trim() ||
+    "";
+  return raw || null;
+}
+
+function getOutboundProxyAgent(): HttpsAgent | undefined {
+  if (cachedProxyAgent !== undefined) {
+    return cachedProxyAgent ?? undefined;
+  }
+  const url = readOutboundProxyUrl();
+  if (!url) {
+    cachedProxyAgent = null;
+    return undefined;
+  }
+  try {
+    cachedProxyAgent = new HttpsProxyAgent(url) as unknown as HttpsAgent;
+    return cachedProxyAgent;
+  } catch {
+    cachedProxyAgent = null;
+    return undefined;
+  }
+}
+
+function proxyHostList(): string[] {
+  const raw = process.env.PROXY_HOSTS?.trim();
+  if (!raw) return DEFAULT_PROXY_HOSTS;
+  return raw
+    .split(",")
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/** Whether this hostname should use the configured outbound HTTP(S) proxy. */
+export function shouldUseOutboundProxy(hostname: string): boolean {
+  if (!getOutboundProxyAgent()) return false;
+  const host = hostname.toLowerCase();
+  const list = proxyHostList();
+  if (list.includes("*")) return true;
+  return list.some((entry) => host === entry || host.endsWith(`.${entry}`));
+}
 
 function shouldRetryWithHttps(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
@@ -176,8 +230,10 @@ type HttpsRequestOptions = {
 
 function httpsRequestOnce(
   hostname: string,
-  ip: string,
-  options: HttpsRequestOptions
+  /** Connect target: IP for direct, or hostname when using proxy agent. */
+  connectHost: string,
+  options: HttpsRequestOptions,
+  agent?: HttpsAgent
 ): Promise<{ status: number; text: string; setCookie: string[] }> {
   const target = new URL(options.url);
   const payload = options.body ?? "";
@@ -190,11 +246,12 @@ function httpsRequestOnce(
 
     const req = https.request(
       {
-        host: ip,
+        host: connectHost,
         servername: hostname,
         port: target.port || 443,
         path: `${target.pathname}${target.search}`,
         method: options.method ?? "GET",
+        agent,
         headers: {
           ...options.headers,
           host: hostname,
@@ -228,10 +285,42 @@ function httpsRequestOnce(
   });
 }
 
+async function httpsRequestViaProxy(
+  options: HttpsRequestOptions,
+  agent: HttpsAgent
+): Promise<{ text: string; setCookie: string[] }> {
+  const target = new URL(options.url);
+  const response = await httpsRequestOnce(target.hostname, target.hostname, options, agent);
+  if (response.status >= 400) {
+    throw new ProviderError(`HTTP ${response.status}`);
+  }
+  if (!response.text.trim()) {
+    throw new ProviderError("پاسخ خالی بود");
+  }
+  return response;
+}
+
 async function httpsRequestResolved(options: HttpsRequestOptions): Promise<{ text: string; setCookie: string[] }> {
   const target = new URL(options.url);
   if (target.protocol !== "https:") {
     throw new ProviderError("فقط HTTPS پشتیبانی می‌شود");
+  }
+
+  // Filtered sources (e.g. Bonbast) — use HTTP CONNECT proxy when configured.
+  if (shouldUseOutboundProxy(target.hostname)) {
+    const agent = getOutboundProxyAgent();
+    if (agent) {
+      try {
+        return await httpsRequestViaProxy(options, agent);
+      } catch (error) {
+        // Fall through to direct path only if proxy fails (usually still blocked).
+        if (error instanceof ProviderError) {
+          // Prefer surfacing proxy error so ops can see it in provider status.
+          throw new ProviderError(`proxy: ${error.message}`);
+        }
+        throw error;
+      }
+    }
   }
 
   const ips = await resolveHostname(target.hostname, options.timeoutMs);

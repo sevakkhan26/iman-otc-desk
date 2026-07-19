@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { LogOut, Menu, X } from "lucide-react";
+import { Menu, X } from "lucide-react";
 import type { DeskRole } from "@/lib/auth";
 import { sidebarNavItems } from "@/lib/sidebarNav";
 import { formatAppVersionLabel } from "@/lib/version";
@@ -17,10 +17,6 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [role, setRole] = useState<DeskRole | null>(null);
-  const [loggingOut, setLoggingOut] = useState(false);
-  const [logoutError, setLogoutError] = useState<string | null>(null);
-  const [unreadAlerts, setUnreadAlerts] = useState(0);
-  const logoutInFlight = useRef(false);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const drawerRef = useRef<HTMLElement>(null);
@@ -115,27 +111,6 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
       .catch(() => {});
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    const pull = () => {
-      fetch("/api/alerts/notifications?evaluate=1", { cache: "no-store", credentials: "same-origin" })
-        .then(async (response) => {
-          if (!response.ok) return null;
-          return (await response.json()) as { unread?: number };
-        })
-        .then((data) => {
-          if (!cancelled && typeof data?.unread === "number") setUnreadAlerts(data.unread);
-        })
-        .catch(() => {});
-    };
-    pull();
-    const id = window.setInterval(pull, 45_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [pathname]);
-
   const navItems = sidebarNavItems.filter((item) => !item.adminOnly || role === "admin");
 
   const openMobile = useCallback(() => setMobileOpen(true), []);
@@ -143,31 +118,6 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
     setMobileOpen(false);
     requestAnimationFrame(() => menuButtonRef.current?.focus());
   }, []);
-
-  async function handleLogout() {
-    if (logoutInFlight.current || loggingOut) return;
-    logoutInFlight.current = true;
-    setLoggingOut(true);
-    setLogoutError(null);
-    try {
-      const response = await fetch("/api/auth/logout", {
-        method: "POST",
-        credentials: "same-origin",
-        cache: "no-store"
-      });
-      if (!response.ok) {
-        setLogoutError("خروج ناموفق بود. دوباره تلاش کنید.");
-        setLoggingOut(false);
-        logoutInFlight.current = false;
-        return;
-      }
-      window.location.replace("/login");
-    } catch {
-      setLogoutError("خروج ناموفق بود. دوباره تلاش کنید.");
-      setLoggingOut(false);
-      logoutInFlight.current = false;
-    }
-  }
 
   return (
     <div className={`shell collapsed${mobileOpen ? " mobile-drawer-open" : ""}`}>
@@ -239,34 +189,11 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
               >
                 <Icon aria-hidden="true" />
                 <span className="nav-label">{item.label}</span>
-                {item.href === "/alerts" && unreadAlerts > 0 ? (
-                  <span className="nav-badge" aria-label={`${unreadAlerts} اعلان خوانده‌نشده`}>
-                    {unreadAlerts > 99 ? "99+" : unreadAlerts}
-                  </span>
-                ) : null}
               </Link>
             );
           })}
         </nav>
         <div className="sidebar-bottom">
-          {logoutError ? (
-            <div className="sidebar-logout-error" role="alert">
-              {logoutError}
-            </div>
-          ) : null}
-          <button
-            type="button"
-            className="nav-link logout-link"
-            aria-label="خروج"
-            disabled={loggingOut}
-            aria-busy={loggingOut}
-            onClick={() => {
-              void handleLogout();
-            }}
-          >
-            <LogOut aria-hidden="true" />
-            <span className="nav-label">{loggingOut ? "در حال خروج..." : "خروج"}</span>
-          </button>
           <div className="sidebar-meta-bottom">
             <div className="sidebar-version" title={formatAppVersionLabel()}>
               <span className="sidebar-version-value">{formatAppVersionLabel()}</span>

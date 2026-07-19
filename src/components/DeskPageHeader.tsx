@@ -2,6 +2,8 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { Clock, RefreshCw } from "lucide-react";
+import { AlertsHeaderButton } from "@/components/AlertsHeaderButton";
+import { ProfileMenu } from "@/components/ProfileMenu";
 import { ThemeToggleButton } from "@/components/ThemeToggleButton";
 
 const CLOCK_TICK_MS = 1_000;
@@ -39,7 +41,7 @@ export type DeskPageHeaderProps = {
 
 /**
  * Shared desk page header for every route:
- * title (start) | live clock + last update on one centered line | refresh + theme (end)
+ * title (start) | live clock + last-update with compact refresh | theme + profile + alerts (end)
  */
 export function DeskPageHeader({
   title,
@@ -61,6 +63,20 @@ export function DeskPageHeader({
     lastUpdatedDisplay ??
     (lastUpdated != null ? formatLastUpdatedDateTime(lastUpdated) : "—");
 
+  const refreshButton =
+    onRefresh != null ? (
+      <button
+        type="button"
+        className="icon-button icon-button--compact last-update-refresh"
+        onClick={onRefresh}
+        title="بروزرسانی"
+        aria-label="بروزرسانی"
+        disabled={loading}
+      >
+        <RefreshCw aria-hidden="true" className={loading ? "spinning" : undefined} />
+      </button>
+    ) : null;
+
   return (
     <header className="page-header page-header--desk">
       <h2 className="page-title">{title}</h2>
@@ -72,26 +88,22 @@ export function DeskPageHeader({
           <span className="clock-date">{now ? clockDateFmt.format(now) : "—"}</span>
         </div>
         {showLastUpdate ? (
-          <div className="last-update">
-            <span className="last-update-label">آخرین به‌روزرسانی:</span>{" "}
-            <span className="number">{lastUpdateText}</span>
+          <div className="last-update last-update-row">
+            <span className="last-update-text">
+              <span className="last-update-label">آخرین به‌روزرسانی:</span>{" "}
+              <span className="number">{lastUpdateText}</span>
+            </span>
+            {refreshButton}
           </div>
+        ) : refreshButton ? (
+          <div className="last-update last-update-row">{refreshButton}</div>
         ) : null}
       </div>
 
+      {/* RTL flex start = right: Alerts sits to the right of Profile */}
       <div className="header-meta header-actions">
-        {onRefresh ? (
-          <button
-            type="button"
-            className="icon-button"
-            onClick={onRefresh}
-            title="بروزرسانی"
-            aria-label="بروزرسانی"
-            disabled={loading}
-          >
-            <RefreshCw aria-hidden="true" className={loading ? "spinning" : undefined} />
-          </button>
-        ) : null}
+        <AlertsHeaderButton />
+        <ProfileMenu />
         <ThemeToggleButton />
       </div>
     </header>

@@ -1,13 +1,10 @@
 import {
-  Bell,
   CalendarClock,
   ChartCandlestick,
-  CircleHelp,
   Coins,
   Gauge,
   Newspaper,
   Percent,
-  Settings,
   type LucideIcon
 } from "lucide-react";
 
@@ -25,8 +22,5 @@ export const sidebarNavItems: SidebarNavItem[] = [
   { href: "/gold", label: "بازار طلا", icon: Coins },
   { href: "/bubble", label: "حباب", icon: Percent },
   { href: "/impact-news", label: "خبرهای اثرگذار", icon: Newspaper },
-  { href: "/forex", label: "اخبار فارکس", icon: CalendarClock },
-  { href: "/alerts", label: "هشدارها", icon: Bell },
-  { href: "/settings", label: "تنظیمات", icon: Settings, adminOnly: true },
-  { href: "/help", label: "راهنما", icon: CircleHelp }
+  { href: "/forex", label: "اخبار فارکس", icon: CalendarClock }
 ];

@@ -631,6 +631,69 @@ input {
   text-align: center;
 }
 
+.last-update-row {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.last-update-text {
+  min-width: 0;
+}
+
+/* Compact refresh beside last-update (not the large header action buttons). */
+.icon-button--compact,
+.icon-button.last-update-refresh {
+  width: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  flex: 0 0 auto;
+}
+
+.icon-button--compact svg,
+.icon-button.last-update-refresh svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Header alerts — same size as profile/theme icon-button, with unread badge. */
+a.icon-button.header-alerts-button {
+  position: relative;
+  text-decoration: none;
+  color: inherit;
+}
+
+a.icon-button.header-alerts-button.is-active {
+  border-color: var(--hover-border);
+  background: var(--hover);
+}
+
+.header-alerts-badge {
+  position: absolute;
+  top: -4px;
+  inset-inline-end: -4px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+  background: var(--danger, #dc2f3a);
+  pointer-events: none;
+}
+
 /* Back-compat alias (older dashboard class) */
 .page-header--centered-clock {
   display: grid;
@@ -656,6 +719,103 @@ input {
   flex-wrap: nowrap;
   gap: 10px;
   min-width: 0;
+}
+
+/* Header profile dropdown (shared PageHeader) */
+.profile-menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.profile-menu-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  inset-inline-end: 0;
+  z-index: 50;
+  min-width: 11.5rem;
+  max-width: min(18rem, calc(100vw - 24px));
+  padding: 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--glass-shadow, 0 8px 24px rgba(0, 0, 0, 0.12));
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.profile-menu-header {
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid var(--line-soft);
+  margin-bottom: 2px;
+  text-align: start;
+}
+
+.profile-menu-username {
+  font-weight: 700;
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.profile-menu-role {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.profile-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text);
+  background: transparent;
+  text-decoration: none;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.35;
+  text-align: start;
+  cursor: pointer;
+  width: 100%;
+}
+
+.profile-menu-item:hover,
+.profile-menu-item:focus-visible {
+  background: var(--nav-hover, var(--surface-2));
+  border-color: var(--line-soft);
+  outline: none;
+}
+
+.profile-menu-item svg {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.profile-menu-logout {
+  color: var(--danger, #dc2f3a);
+}
+
+.profile-menu-logout svg {
+  color: var(--danger, #dc2f3a);
+}
+
+.profile-menu-logout:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.profile-menu-error {
+  margin: 4px 6px 2px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--danger, #dc2f3a);
+  background: var(--red-bg, rgba(220, 47, 58, 0.08));
 }
 
 .spinning {
@@ -3732,6 +3892,23 @@ tr:last-child td {
     min-width: 44px;
   }
 
+  /* Keep compact last-update refresh smaller than header action buttons */
+  .icon-button--compact,
+  .icon-button.last-update-refresh {
+    width: 28px;
+    min-width: 28px;
+    min-height: 28px;
+    height: 28px;
+  }
+
+  .last-update-row {
+    max-width: 100%;
+  }
+
+  .header-center--inline .last-update-row .last-update-text {
+    white-space: normal;
+  }
+
   .chip {
     min-height: 40px;
     padding: 0 12px;
@@ -4361,12 +4538,8 @@ table th {
   gap: 14px;
 }
 
-.help-page .page-header {
-  align-items: flex-start;
-}
-
 .help-lead {
-  margin: 6px 0 0;
+  margin: 0 0 4px;
   font-size: 14px;
   line-height: 1.7;
 }

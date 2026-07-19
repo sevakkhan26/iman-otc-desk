@@ -4183,14 +4183,16 @@ table th {
   gap: 10px;
 }
 
-/* Dollar section only: fixed 3×2 grid, larger balanced cards, centered content. */
-.bubble-dollar-metrics {
+/* Dollar (6 → 3×2) + gold (7 → 3+3+1) metric grids: equal cards, centered content. */
+.bubble-dollar-metrics,
+.bubble-gold-metrics {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   align-items: stretch;
 }
 
-.bubble-dollar-metrics .bubble-metric {
+.bubble-dollar-metrics .bubble-metric,
+.bubble-gold-metrics .bubble-metric {
   min-height: 118px;
   height: 100%;
   padding: 16px 14px;
@@ -4203,7 +4205,8 @@ table th {
   box-sizing: border-box;
 }
 
-.bubble-dollar-metrics .metric-label {
+.bubble-dollar-metrics .metric-label,
+.bubble-gold-metrics .metric-label {
   margin: 0;
   width: 100%;
   max-width: 100%;
@@ -4214,7 +4217,8 @@ table th {
   word-break: normal;
 }
 
-.bubble-dollar-metrics .metric-value {
+.bubble-dollar-metrics .metric-value,
+.bubble-gold-metrics .metric-value {
   margin: 0;
   width: 100%;
   max-width: 100%;
@@ -4227,37 +4231,69 @@ table th {
   hyphens: none;
 }
 
+/* Gold: 7 cards → center the lone 7th card in row 3 (same column width, not full-width). */
+.bubble-gold-metrics > :last-child:nth-child(3n + 1) {
+  grid-column: 2;
+}
+
 @media (max-width: 900px) {
-  .bubble-dollar-metrics {
+  .bubble-dollar-metrics,
+  .bubble-gold-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .bubble-dollar-metrics .bubble-metric {
+  .bubble-dollar-metrics .bubble-metric,
+  .bubble-gold-metrics .bubble-metric {
     min-height: 112px;
     padding: 15px 12px;
   }
 
-  .bubble-dollar-metrics .metric-value {
+  .bubble-dollar-metrics .metric-value,
+  .bubble-gold-metrics .metric-value {
     font-size: clamp(14px, 2.4vw, 20px);
+  }
+
+  /* Gold: reset 3-col center; center orphan on 2-col with one-column width. */
+  .bubble-gold-metrics > :last-child:nth-child(3n + 1) {
+    grid-column: auto;
+  }
+
+  .bubble-gold-metrics > :last-child:nth-child(2n + 1) {
+    grid-column: 1 / -1;
+    justify-self: center;
+    width: 100%;
+    max-width: calc((100% - 12px) / 2);
   }
 }
 
 @media (max-width: 560px) {
-  .bubble-dollar-metrics {
+  .bubble-dollar-metrics,
+  .bubble-gold-metrics {
     grid-template-columns: 1fr;
   }
 
-  .bubble-dollar-metrics .bubble-metric {
+  .bubble-dollar-metrics .bubble-metric,
+  .bubble-gold-metrics .bubble-metric {
     min-height: 108px;
     padding: 14px 12px;
   }
 
-  .bubble-dollar-metrics .metric-label {
+  .bubble-dollar-metrics .metric-label,
+  .bubble-gold-metrics .metric-label {
     font-size: clamp(12px, 3.4vw, 13px);
   }
 
-  .bubble-dollar-metrics .metric-value {
+  .bubble-dollar-metrics .metric-value,
+  .bubble-gold-metrics .metric-value {
     font-size: clamp(16px, 4.5vw, 20px);
+  }
+
+  .bubble-gold-metrics > :last-child:nth-child(2n + 1),
+  .bubble-gold-metrics > :last-child:nth-child(3n + 1) {
+    grid-column: auto;
+    justify-self: stretch;
+    max-width: none;
+    width: auto;
   }
 }
 

@@ -165,7 +165,7 @@ function ConsolidatedGoldCard({
                 {goldBubblePrimaryStatus(consolidated.sign)}
               </p>
             </div>
-            <div className="grid metrics-grid bubble-metrics">
+            <div className="grid metrics-grid bubble-metrics bubble-gold-metrics">
               <Metric label="میانگین اونس" value={formatUsd(consolidated.averageOunceUsd)} />
               <Metric label="میانگین درهم" value={formatToman(consolidated.averageDirhamToman)} />
               <Metric label="میانگین مظنه" value={formatToman(consolidated.averageMazaneToman)} />

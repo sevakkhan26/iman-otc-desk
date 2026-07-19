@@ -2,6 +2,7 @@ import dns from "node:dns/promises";
 import https from "node:https";
 import type { Agent as HttpsAgent } from "node:https";
 import { HttpsProxyAgent } from "https-proxy-agent";
+import { fetch as undiciFetch, ProxyAgent } from "undici";
 
 export class ProviderError extends Error {
   constructor(message: string) {
@@ -35,13 +36,18 @@ const FALLBACK_HOST_IPS: Record<string, string[]> = {
   "arzinja.ir": ["185.143.234.235", "185.143.233.235"]
 };
 
-/** Hosts that must go through OUTBOUND_HTTPS_PROXY when it is configured (filtered in IR). */
-const DEFAULT_PROXY_HOSTS = ["bonbast.com", "www.bonbast.com"];
+/**
+ * Hosts forced through OUTBOUND_HTTPS_PROXY.
+ * Default `*` = all outbound provider traffic when a proxy URL is set.
+ * Override with PROXY_HOSTS=bonbast.com,www.navasan.net for a allow-list.
+ */
+const DEFAULT_PROXY_HOSTS = ["*"];
 
 const ipCache = new Map<string, { ips: string[]; at: number }>();
 const IP_CACHE_TTL_MS = 10 * 60_000;
 
 let cachedProxyAgent: HttpsAgent | null | undefined;
+let cachedUndiciProxy: ProxyAgent | null | undefined;
 
 function readOutboundProxyUrl(): string | null {
   const raw =
@@ -72,6 +78,24 @@ function getOutboundProxyAgent(): HttpsAgent | undefined {
   }
 }
 
+function getUndiciProxyAgent(): ProxyAgent | undefined {
+  if (cachedUndiciProxy !== undefined) {
+    return cachedUndiciProxy ?? undefined;
+  }
+  const url = readOutboundProxyUrl();
+  if (!url) {
+    cachedUndiciProxy = null;
+    return undefined;
+  }
+  try {
+    cachedUndiciProxy = new ProxyAgent(url);
+    return cachedUndiciProxy;
+  } catch {
+    cachedUndiciProxy = null;
+    return undefined;
+  }
+}
+
 function proxyHostList(): string[] {
   const raw = process.env.PROXY_HOSTS?.trim();
   if (!raw) return DEFAULT_PROXY_HOSTS;
@@ -83,11 +107,26 @@ function proxyHostList(): string[] {
 
 /** Whether this hostname should use the configured outbound HTTP(S) proxy. */
 export function shouldUseOutboundProxy(hostname: string): boolean {
-  if (!getOutboundProxyAgent()) return false;
+  if (!getOutboundProxyAgent() && !getUndiciProxyAgent()) return false;
   const host = hostname.toLowerCase();
   const list = proxyHostList();
   if (list.includes("*")) return true;
   return list.some((entry) => host === entry || host.endsWith(`.${entry}`));
+}
+
+/** fetch that honors OUTBOUND_HTTPS_PROXY for matching hosts (HTTP + HTTPS). */
+async function proxiedFetch(url: string, init?: RequestInit): Promise<Response> {
+  let hostname = "";
+  try {
+    hostname = new URL(url).hostname;
+  } catch {
+    return fetch(url, init);
+  }
+  const dispatcher = shouldUseOutboundProxy(hostname) ? getUndiciProxyAgent() : undefined;
+  if (dispatcher) {
+    return undiciFetch(url, { ...(init as object), dispatcher }) as unknown as Promise<Response>;
+  }
+  return fetch(url, init);
 }
 
 function shouldRetryWithHttps(error: unknown): boolean {
@@ -408,7 +447,7 @@ export async function fetchJson<T>(url: string, timeoutMs = 10_000, init?: Reque
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(url, {
+    const response = await proxiedFetch(url, {
       ...init,
       cache: "no-store",
       headers,
@@ -459,7 +498,7 @@ export async function fetchText(url: string, timeoutMs = 10_000, init?: RequestI
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(url, {
+    const response = await proxiedFetch(url, {
       ...init,
       cache: "no-store",
       headers,
@@ -529,7 +568,7 @@ export async function fetchPostForm<T>(
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(url, {
+    const response = await proxiedFetch(url, {
       ...init,
       method: "POST",
       cache: "no-store",
@@ -586,7 +625,7 @@ export async function fetchPageWithCookies(
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(url, {
+    const response = await proxiedFetch(url, {
       cache: "no-store",
       headers,
       signal: controller.signal

@@ -27,6 +27,7 @@ try {
 
 console.log("shouldUseOutboundProxy(bonbast.com) =", shouldUseOutboundProxy("bonbast.com"));
 console.log("shouldUseOutboundProxy(example.com) =", shouldUseOutboundProxy("example.com"));
+console.log("shouldUseOutboundProxy(api.nobitex.ir) =", shouldUseOutboundProxy("api.nobitex.ir"));
 
 const { fetchPageWithCookies } = await import("../src/lib/http.ts");
 

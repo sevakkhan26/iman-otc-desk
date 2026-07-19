@@ -581,9 +581,24 @@ input {
 .page-header--desk .header-actions {
   justify-self: end;
   justify-content: flex-end;
+  align-items: center;
   flex-wrap: nowrap;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
+}
+
+/* Subtle vertical separators between Theme / Profile / Alerts (in the gaps only). */
+.header-actions-divider {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 1px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--line-soft);
+  opacity: 0.9;
+  pointer-events: none;
 }
 
 .page-title {
@@ -3907,7 +3922,14 @@ tr:last-child td {
     grid-area: actions;
     justify-self: end;
     width: auto;
+    max-width: 100%;
     flex-wrap: nowrap;
+    gap: 6px;
+  }
+
+  .header-actions-divider {
+    height: 16px;
+    flex-shrink: 0;
   }
 
   .header-center--inline {

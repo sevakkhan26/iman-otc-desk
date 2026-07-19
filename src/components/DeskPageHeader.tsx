@@ -101,9 +101,11 @@ export function DeskPageHeader({
       </div>
 
       {/* RTL flex start = right: Alerts sits to the right of Profile */}
-      <div className="header-meta header-actions">
+      <div className="header-meta header-actions" role="group" aria-label="کنترل‌های هدر">
         <AlertsHeaderButton />
+        <span className="header-actions-divider" aria-hidden="true" />
         <ProfileMenu />
+        <span className="header-actions-divider" aria-hidden="true" />
         <ThemeToggleButton />
       </div>
     </header>

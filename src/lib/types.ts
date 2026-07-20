@@ -161,12 +161,32 @@ export interface TetherMarketSummary {
   lastUpdated: string | null;
 }
 
+/** Server-authoritative time / freshness fields attached to market API payloads. */
+export interface AuthoritativeTimeMeta {
+  /** UTC ISO — server wall clock when the HTTP response was built. */
+  serverNow: string;
+  /** UTC ISO — when the underlying market snapshot was generated. */
+  generatedAt: string;
+  /** True when snapshot is older than the configured refresh interval. */
+  isStale: boolean;
+  lastSuccessfulRefreshAt: string | null;
+  lastAttemptedRefreshAt: string | null;
+  refreshIntervalMs: number;
+}
+
 export interface TetherMarketResponse {
   summary: TetherMarketSummary;
   exchanges: DomesticQuote[];
   settings: Pick<DeskSettings, "outlierThresholdPercent" | "marketSpreadAlertThresholdPercent">;
   /** Optional LP health from domestic runner slots (same refresh as exchanges). */
   providers?: DomesticProviderHealth[];
+  /** Present on API responses from the shared server snapshot. */
+  serverNow?: string;
+  generatedAt?: string;
+  isStale?: boolean;
+  lastSuccessfulRefreshAt?: string | null;
+  lastAttemptedRefreshAt?: string | null;
+  refreshIntervalMs?: number;
 }
 
 export interface GlobalPrice {
@@ -410,6 +430,13 @@ export interface DashboardResponse {
   forex: ForexEventsResponse;
   intelligence: IntelligenceState;
   alerts: AlertItem[];
+  /** Server-authoritative clock / snapshot meta (same for all clients). */
+  serverNow?: string;
+  generatedAt?: string;
+  isStale?: boolean;
+  lastSuccessfulRefreshAt?: string | null;
+  lastAttemptedRefreshAt?: string | null;
+  refreshIntervalMs?: number;
 }
 
 export interface ExchangeMonitorResponse {
@@ -435,6 +462,8 @@ export interface ImpactNewsResponse {
   updatedAt?: string | null;
   nextRefreshAt?: string | null;
   providers?: ImpactNewsProviderDiag[];
+  serverNow?: string;
+  generatedAt?: string;
 }
 
 export interface DeskSettings {
@@ -625,6 +654,9 @@ export interface GoldPricesApiResponse {
   notes?: string[];
   /** Same-cycle provider health for the Gold LP warning panel. */
   providers?: GoldProviderHealth[];
+  /** Server wall clock (UTC ISO) for shared header clock. */
+  serverNow?: string;
+  generatedAt?: string;
 }
 
 export interface GoldHistoryPoint {

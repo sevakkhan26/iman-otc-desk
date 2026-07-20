@@ -990,7 +990,7 @@ function ForexEventsWidget({ forex, limit = 6 }: { forex: ForexEventsResponse; l
 }
 
 export function GoldMarketView() {
-  const { data, loading, error, reload, lastUpdated } = useApi<GoldPricesApiResponse>("/api/gold-prices", 30_000);
+  const { data, loading, error, reload, lastUpdated, serverNow } = useApi<GoldPricesApiResponse>("/api/gold-prices", 30_000);
   const [instrument, setInstrument] = useState<GoldInstrumentType>("اونس طلا به دلار");
   const cards = useMemo(
     () =>
@@ -1020,6 +1020,7 @@ export function GoldMarketView() {
         onRefresh={reload}
         lastUpdated={lastUpdated}
         lastUpdatedDisplay={data?.lastUpdated ? formatGoldTehran(data.lastUpdated) : null}
+        serverNow={serverNow ?? (data as { serverNow?: string } | null)?.serverNow}
         loading={loading}
       />
       <LoadState loading={loading} error={error} hasData={Boolean(data)} skeleton={<GoldSkeleton />} />
@@ -1195,11 +1196,11 @@ function ForexPreviousMonthPanel({ section }: { section: ForexPreviousMonthSecti
 }
 
 export function ForexView() {
-  const { data, loading, error, reload, lastUpdated } = useApi<ForexEventsResponse>("/api/forex", 60_000);
+  const { data, loading, error, reload, lastUpdated, serverNow } = useApi<ForexEventsResponse>("/api/forex", 60_000);
   if (loading && !data) {
     return (
       <>
-        <DeskPageHeader title="فارکس" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+        <DeskPageHeader title="فارکس" onRefresh={reload} lastUpdated={lastUpdated} serverNow={serverNow ?? (data as { serverNow?: string } | null)?.serverNow} loading={loading} />
         <ForexSkeleton />
       </>
     );
@@ -1207,7 +1208,7 @@ export function ForexView() {
   if (!data || !Array.isArray(data.events)) {
     return (
       <>
-        <DeskPageHeader title="فارکس" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+        <DeskPageHeader title="فارکس" onRefresh={reload} lastUpdated={lastUpdated} serverNow={serverNow ?? (data as { serverNow?: string } | null)?.serverNow} loading={loading} />
         <LoadState loading={false} error={error} hasData={false} />
         <div className="empty">داده‌های فارکس در دسترس نیست</div>
       </>
@@ -1215,7 +1216,7 @@ export function ForexView() {
   }
   return (
     <>
-      <DeskPageHeader title="فارکس" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+      <DeskPageHeader title="فارکس" onRefresh={reload} lastUpdated={lastUpdated} serverNow={serverNow ?? (data as { serverNow?: string } | null)?.serverNow} loading={loading} />
       <div className="grid">
         <Panel
           title="رویدادهای مهم فارکس (USD)"
@@ -1450,7 +1451,7 @@ function SitePrices() {
  * Page views
  * ========================================================== */
 export function DashboardView() {
-  const { data, loading, error, reload, lastUpdated } = useApi<DashboardResponse>("/api/dashboard", DASHBOARD_REFRESH_MS);
+  const { data, loading, error, reload, lastUpdated, serverNow } = useApi<DashboardResponse>("/api/dashboard", DASHBOARD_REFRESH_MS);
   const { toasts, dismiss } = useConnectivityToasts(data?.tetherMarket.exchanges);
 
   // ask once for OS-level notification permission (in-app toasts work regardless)
@@ -1471,6 +1472,7 @@ export function DashboardView() {
         title="مانیتورینگ"
         onRefresh={reload}
         lastUpdated={lastUpdated}
+        serverNow={serverNow ?? data?.serverNow}
         loading={loading}
       />
       <NewsTicker />
@@ -1480,7 +1482,11 @@ export function DashboardView() {
           <QuickDecisionCockpit quickDecision={data.quickDecision} marketState={data.marketState} />
           <Panel
             title="صرافی‌های ایران (USDT/IRT)"
-            meta={<span className="muted">به‌روزرسانی: {formatDate(data.tetherMarket.summary.lastUpdated)}</span>}
+            meta={
+              <span className="muted">
+                به‌روزرسانی: {formatGoldTehran(data.tetherMarket.summary.lastUpdated)}
+              </span>
+            }
           >
             <DashboardExchangeCards rows={data.tetherMarket.exchanges} summary={data.tetherMarket.summary} />
           </Panel>
@@ -1784,7 +1790,7 @@ function LpConnectionHealthPanel({
               ) : null}
               <div className="lp-health-line muted">{item.operational}</div>
               <div className="lp-health-meta">
-                <span>آخرین اتصال موفق: {item.lastSuccessAt ? formatDate(item.lastSuccessAt) : "—"}</span>
+                <span>آخرین اتصال موفق: {item.lastSuccessAt ? formatGoldTehran(item.lastSuccessAt) : "—"}</span>
                 <span>آخرین تلاش: {item.lastAttemptAt ? formatDate(item.lastAttemptAt) : "—"}</span>
               </div>
             </article>
@@ -2003,7 +2009,7 @@ function GoldConnectionHealthPanel({ providers }: { providers?: GoldProviderHeal
 }
 
 export function TetherMarketView() {
-  const { data, loading, error, reload, lastUpdated } = useApi<TetherMarketResponse>("/api/tether-market", 60_000);
+  const { data, loading, error, reload, lastUpdated, serverNow } = useApi<TetherMarketResponse>("/api/tether-market", 60_000);
   const [asset, setAsset] = useState<AssetFilter>("all");
   const [query, setQuery] = useState("");
   const [connection, setConnection] = useState<ConnectionFilter>("all");
@@ -2038,7 +2044,7 @@ export function TetherMarketView() {
 
   return (
     <>
-      <DeskPageHeader title="بازار تتر ایران" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+      <DeskPageHeader title="بازار تتر ایران" onRefresh={reload} lastUpdated={lastUpdated} serverNow={serverNow ?? data?.serverNow} loading={loading} />
       <LoadState loading={loading} error={error} hasData={Boolean(data)} skeleton={<TetherMarketSkeleton />} />
       {data ? (
         <div className="grid">
@@ -2160,7 +2166,7 @@ const sourceLabels: Record<string, string> = {
 };
 
 export function SettingsView() {
-  const { data, loading, error, reload, lastUpdated } = useApi<PublicSettings>("/api/settings");
+  const { data, loading, error, reload, lastUpdated, serverNow } = useApi<PublicSettings>("/api/settings");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
   const [form, setForm] = useState<PublicSettings | null>(null);
@@ -2203,7 +2209,7 @@ export function SettingsView() {
 
   return (
     <>
-      <DeskPageHeader title="تنظیمات" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+      <DeskPageHeader title="تنظیمات" onRefresh={reload} lastUpdated={lastUpdated} serverNow={serverNow} loading={loading} />
       <LoadState loading={loading} error={error} hasData={Boolean(form)} skeleton={<SettingsSkeleton />} />
       {form ? (
         <div className="grid">

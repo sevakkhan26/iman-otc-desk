@@ -562,7 +562,7 @@ function NotificationHistory({
 }
 
 export function PriceAlertsView() {
-  const { data, loading, error, reload, lastUpdated } = useApi<PriceAlertsPageResponse>("/api/alerts", 45_000);
+  const { data, loading, error, reload, lastUpdated, serverNow } = useApi<PriceAlertsPageResponse>("/api/alerts", 45_000);
   const [role, setRole] = useState<DeskRole | null>(null);
   const [selected, setSelected] = useState<PriceAlertInstrumentId | null>(null);
   const [editing, setEditing] = useState<PriceAlertRule | null>(null);
@@ -592,6 +592,7 @@ export function PriceAlertsView() {
           title="هشدارها"
           onRefresh={reload}
           lastUpdated={lastUpdated}
+          serverNow={serverNow}
           loading={loading}
         />
         <AlertsSkeleton />
@@ -606,6 +607,7 @@ export function PriceAlertsView() {
           title="هشدارها"
           onRefresh={reload}
           lastUpdated={lastUpdated}
+          serverNow={serverNow}
           loading={loading}
         />
         <div className="empty">
@@ -644,6 +646,7 @@ export function PriceAlertsView() {
         }
         onRefresh={reload}
         lastUpdated={lastUpdated}
+          serverNow={serverNow}
         loading={loading}
       />
       <div className="grid">

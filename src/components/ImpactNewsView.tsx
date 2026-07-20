@@ -112,7 +112,7 @@ function NewsColumnStack({ items }: { items: ImpactNewsItem[] }) {
 }
 
 export function ImpactNewsView() {
-  const { data, loading, error, reload, lastUpdated } = useApi<ImpactNewsResponse>("/api/impact-news", NEWS_REFRESH_MS);
+  const { data, loading, error, reload, lastUpdated, serverNow } = useApi<ImpactNewsResponse>("/api/impact-news", NEWS_REFRESH_MS);
   const [asset, setAsset] = useState<AssetFilter>("all");
   const [query, setQuery] = useState("");
 
@@ -153,7 +153,7 @@ export function ImpactNewsView() {
   if (loading && !data) {
     return (
       <>
-        <DeskPageHeader title="خبرهای اثرگذار" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+        <DeskPageHeader title="خبرهای اثرگذار" onRefresh={reload} lastUpdated={lastUpdated} serverNow={serverNow} loading={loading} />
         <ImpactNewsSkeleton />
       </>
     );
@@ -162,7 +162,7 @@ export function ImpactNewsView() {
   if (error && !data) {
     return (
       <>
-        <DeskPageHeader title="خبرهای اثرگذار" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+        <DeskPageHeader title="خبرهای اثرگذار" onRefresh={reload} lastUpdated={lastUpdated} serverNow={serverNow} loading={loading} />
         <div className="empty">داده‌ای دریافت نشد: {error}</div>
       </>
     );
@@ -172,7 +172,7 @@ export function ImpactNewsView() {
 
   return (
     <div className="impact-news-page" data-layout-version="impact-news-cols-v3">
-      <DeskPageHeader title="خبرهای اثرگذار" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+      <DeskPageHeader title="خبرهای اثرگذار" onRefresh={reload} lastUpdated={lastUpdated} serverNow={serverNow} loading={loading} />
       <div className="grid">
         <SmartFilter
           asset={asset}

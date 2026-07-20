@@ -43,13 +43,26 @@ export async function GET() {
     if (notes.length) {
       payload.notes = [...notes, ...payload.notes];
     }
+    const serverNow = new Date().toISOString();
+    const body = {
+      ...payload,
+      serverNow,
+      generatedAt: payload.lastUpdated ?? serverNow,
+      isStale: false,
+      lastSuccessfulRefreshAt: payload.lastUpdated ?? null,
+      lastAttemptedRefreshAt: serverNow,
+      refreshIntervalMs: 30_000
+    };
 
-    return new NextResponse(JSON.stringify(payload), { status: 200, headers: NO_STORE });
+    return new NextResponse(JSON.stringify(body), { status: 200, headers: NO_STORE });
   } catch (error) {
     const message = error instanceof Error ? error.message : "خطای سرور";
+    const serverNow = new Date().toISOString();
     return new NextResponse(
       JSON.stringify({
         lastUpdated: null,
+        serverNow,
+        generatedAt: serverNow,
         notes: [message],
         dollar: {
           summary: null,

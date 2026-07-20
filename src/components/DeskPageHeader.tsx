@@ -5,8 +5,7 @@ import { Clock, RefreshCw } from "lucide-react";
 import { AlertsHeaderButton } from "@/components/AlertsHeaderButton";
 import { ProfileMenu } from "@/components/ProfileMenu";
 import { ThemeToggleButton } from "@/components/ThemeToggleButton";
-
-const CLOCK_TICK_MS = 1_000;
+import { useServerClock } from "@/hooks/useServerClock";
 
 const clockDateFmt = new Intl.DateTimeFormat("fa-IR", {
   weekday: "short",
@@ -20,6 +19,7 @@ const clockTimeFmt = new Intl.DateTimeFormat("fa-IR", {
   hour: "2-digit",
   minute: "2-digit",
   second: "2-digit",
+  hour12: false,
   timeZone: "Asia/Tehran"
 });
 
@@ -30,34 +30,43 @@ function formatLastUpdatedDateTime(ts: number): string {
 export type DeskPageHeaderProps = {
   title: ReactNode;
   onRefresh?: () => void;
-  /** Client poll timestamp (Date.now() from useApi). */
+  /**
+   * Last-update instant as epoch ms derived from the server snapshot
+   * (e.g. summary.lastUpdated / generatedAt). Not browser receive time.
+   */
   lastUpdated?: number | null;
-  /** Optional override string (e.g. gold provider Tehran time). */
+  /** Optional override string (e.g. gold provider Tehran time already formatted). */
   lastUpdatedDisplay?: string | null;
+  /**
+   * UTC ISO `serverNow` from the latest API payload.
+   * Drives the live clock for all devices identically.
+   */
+  serverNow?: string | null;
   loading?: boolean;
-  /** Hide last-update text (e.g. help page). Clock still shows. */
+  /** Hide last-update text (e.g. help page). Clock still shows when serverNow is set. */
   showLastUpdate?: boolean;
 };
 
 /**
  * Shared desk page header for every route:
- * title (start) | live clock + last-update with compact refresh | theme + profile + alerts (end)
+ * title | server-synced Tehran clock + last-update | theme + profile + alerts
  */
 export function DeskPageHeader({
   title,
   onRefresh,
   lastUpdated = null,
   lastUpdatedDisplay = null,
+  serverNow = null,
   loading = false,
   showLastUpdate = true
 }: DeskPageHeaderProps) {
-  // mount-guarded so server render matches first client paint, then ticks every second
-  const [now, setNow] = useState<number | null>(null);
+  // Bootstrap: wait for client mount; display only after serverNow arrives
+  const [mounted, setMounted] = useState(false);
   useEffect(() => {
-    setNow(Date.now());
-    const id = setInterval(() => setNow(Date.now()), CLOCK_TICK_MS);
-    return () => clearInterval(id);
+    setMounted(true);
   }, []);
+
+  const clockMs = useServerClock(serverNow);
 
   const lastUpdateText =
     lastUpdatedDisplay ??
@@ -82,10 +91,14 @@ export function DeskPageHeader({
       <h2 className="page-title">{title}</h2>
 
       <div className="header-center header-center--inline" aria-live="polite">
-        <div className="clock" title="تاریخ و ساعت جاری (تهران)">
+        <div className="clock" title="تاریخ و ساعت سرور (تهران)">
           <Clock aria-hidden="true" size={15} />
-          <span className="clock-time number">{now ? clockTimeFmt.format(now) : "—"}</span>
-          <span className="clock-date">{now ? clockDateFmt.format(now) : "—"}</span>
+          <span className="clock-time number">
+            {mounted && clockMs != null ? clockTimeFmt.format(clockMs) : "—"}
+          </span>
+          <span className="clock-date">
+            {mounted && clockMs != null ? clockDateFmt.format(clockMs) : "—"}
+          </span>
         </div>
         {showLastUpdate ? (
           <div className="last-update last-update-row">

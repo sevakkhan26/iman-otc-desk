@@ -31,18 +31,24 @@ export async function GET() {
     const settings = await getSettings();
     const data = await getGoldMarketPrices(settings);
     const items = data.quotes.map(toApiItem).filter((item) => item.status === "ok" && hasValidPrice(item));
+    const serverNow = new Date().toISOString();
     const response: GoldPricesApiResponse = {
       items,
       lastUpdated: data.lastUpdated ?? undefined,
       notes: items.length ? (data.stale ? data.notes : undefined) : data.notes,
-      providers: data.providers
+      providers: data.providers,
+      serverNow,
+      generatedAt: data.lastUpdated ?? serverNow
     };
     return jsonUtf8(response);
   } catch (error) {
     const message = error instanceof Error ? error.message : "خطای نامشخص منبع";
+    const serverNow = new Date().toISOString();
     const response: GoldPricesApiResponse = {
       items: [],
-      notes: [message]
+      notes: [message],
+      serverNow,
+      generatedAt: serverNow
     };
     return jsonUtf8(response);
   }

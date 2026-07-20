@@ -1,32 +1,27 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { serverTimeToEpochMs } from "@/hooks/useServerClock";
 
-/** In-flight + short soft cache to dedupe concurrent client fetches (same URL). */
+/** In-flight dedupe only (same URL). Not a durable multi-user cache. */
 const inflightClient = new Map<string, Promise<unknown>>();
-const softClientCache = new Map<string, { at: number; data: unknown }>();
-const SOFT_CACHE_MS = 2_500;
 
 function clientFetchJson<T>(url: string): Promise<T> {
-  const now = Date.now();
-  const soft = softClientCache.get(url);
-  if (soft && now - soft.at < SOFT_CACHE_MS) {
-    return Promise.resolve(soft.data as T);
-  }
-
   const existing = inflightClient.get(url);
   if (existing) {
     return existing as Promise<T>;
   }
 
-  const promise = fetch(url, { cache: "no-store" })
+  const promise = fetch(url, {
+    cache: "no-store",
+    headers: {
+      accept: "application/json",
+      "cache-control": "no-store"
+    }
+  })
     .then(async (response) => {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return (await response.json()) as T;
-    })
-    .then((data) => {
-      softClientCache.set(url, { at: Date.now(), data });
-      return data;
     })
     .finally(() => {
       inflightClient.delete(url);
@@ -36,23 +31,64 @@ function clientFetchJson<T>(url: string): Promise<T> {
   return promise;
 }
 
-function readSoftCache<T>(url: string): T | null {
-  const soft = softClientCache.get(url);
-  if (!soft) return null;
-  if (Date.now() - soft.at >= SOFT_CACHE_MS) return null;
-  return soft.data as T;
+/**
+ * Pull authoritative server timestamps from known API shapes.
+ * Never falls back to browser wall-clock for "last update".
+ */
+export function extractServerTimes(data: unknown): {
+  serverNowIso: string | null;
+  lastUpdatedMs: number | null;
+} {
+  if (!data || typeof data !== "object") {
+    return { serverNowIso: null, lastUpdatedMs: null };
+  }
+  const d = data as Record<string, unknown>;
+  const serverNowIso =
+    typeof d.serverNow === "string"
+      ? d.serverNow
+      : typeof d.generatedAt === "string"
+        ? d.generatedAt
+        : null;
+
+  const summary =
+    d.summary && typeof d.summary === "object"
+      ? (d.summary as Record<string, unknown>)
+      : null;
+  const tether =
+    d.tetherMarket && typeof d.tetherMarket === "object"
+      ? (d.tetherMarket as Record<string, unknown>)
+      : null;
+  const tetherSummary =
+    tether?.summary && typeof tether.summary === "object"
+      ? (tether.summary as Record<string, unknown>)
+      : null;
+
+  const lastUpdatedIso =
+    (typeof d.lastUpdated === "string" ? d.lastUpdated : null) ||
+    (summary && typeof summary.lastUpdated === "string" ? summary.lastUpdated : null) ||
+    (tetherSummary && typeof tetherSummary.lastUpdated === "string"
+      ? tetherSummary.lastUpdated
+      : null) ||
+    (typeof d.generatedAt === "string" ? d.generatedAt : null) ||
+    serverNowIso;
+
+  return {
+    serverNowIso,
+    lastUpdatedMs: serverTimeToEpochMs(lastUpdatedIso)
+  };
 }
 
 export function useApi<T>(url: string, refreshMs?: number) {
-  // Instant paint when the same URL was fetched very recently (nav back / remount)
-  const seed = readSoftCache<T>(url);
-  const [data, setData] = useState<T | null>(seed);
-  const [loading, setLoading] = useState(!seed);
+  const [data, setData] = useState<T | null>(null);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lastUpdated, setLastUpdated] = useState<number | null>(seed ? Date.now() : null);
+  /** Epoch ms from server snapshot (not browser receive time). */
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  /** Latest serverNow ISO from payload — drives shared header clock. */
+  const [serverNow, setServerNow] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
-  const hasDataRef = useRef(Boolean(seed));
+  const hasDataRef = useRef(false);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -66,7 +102,6 @@ export function useApi<T>(url: string, refreshMs?: number) {
     let cancelled = false;
     setError(null);
 
-    // Stale-while-revalidate: only block UI on first load
     if (hasDataRef.current) {
       setRefreshing(true);
     } else {
@@ -78,13 +113,14 @@ export function useApi<T>(url: string, refreshMs?: number) {
         if (cancelled || !mountedRef.current) return;
         setData(value);
         hasDataRef.current = true;
-        setLastUpdated(Date.now());
+        const times = extractServerTimes(value);
+        setServerNow(times.serverNowIso);
+        setLastUpdated(times.lastUpdatedMs);
         setError(null);
       })
       .catch((err: unknown) => {
         if (cancelled || !mountedRef.current) return;
         if (err instanceof Error && err.name === "AbortError") return;
-        // Keep previous data on refresh failure
         if (!hasDataRef.current) {
           setError(err instanceof Error ? err.message : "داده‌ای دریافت نشد");
         }
@@ -110,5 +146,5 @@ export function useApi<T>(url: string, refreshMs?: number) {
   }, [refreshMs]);
 
   const reload = useCallback(() => setRevision((value) => value + 1), []);
-  return { data, loading, refreshing, error, reload, lastUpdated };
+  return { data, loading, refreshing, error, reload, lastUpdated, serverNow };
 }

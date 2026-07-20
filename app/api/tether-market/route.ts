@@ -8,8 +8,15 @@ export const runtime = "nodejs";
 export const preferredRegion = ["sin1"];
 export const maxDuration = 60;
 
+const NO_STORE = {
+  "cache-control": "no-store, no-cache, must-revalidate, max-age=0",
+  pragma: "no-cache",
+  "content-type": "application/json; charset=utf-8"
+} as const;
+
 export async function GET() {
   const session = await requireApiSession();
   if (!isSession(session)) return session;
-  return NextResponse.json(await getTetherMarket());
+  const body = await getTetherMarket();
+  return new NextResponse(JSON.stringify(body), { status: 200, headers: NO_STORE });
 }

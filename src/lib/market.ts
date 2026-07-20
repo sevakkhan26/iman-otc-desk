@@ -1,4 +1,3 @@
-import { getDomesticProviderHealth, getDomesticQuotes } from "@/lib/providers/domestic";
 import { getGlobalExchangeStatuses } from "@/lib/providers/exchangeStatus";
 import { getForexEvents } from "@/lib/providers/forex";
 import { getGlobalPrices } from "@/lib/providers/globalMarket";
@@ -23,7 +22,6 @@ import type {
 } from "@/lib/types";
 import { buildAlerts } from "@/lib/alerts";
 import { getIntelligenceState } from "@/lib/intelligence";
-import { recordMedian } from "@/lib/history";
 
 function median(values: number[]) {
   if (!values.length) return null;
@@ -165,40 +163,13 @@ export function calculateTetherMarket(exchanges: DomesticQuote[], outlierThresho
   };
 }
 
+/**
+ * Canonical tether market for all clients — shared server snapshot (file/Upstash).
+ * Browsers never call providers; they only consume this payload.
+ */
 export async function getTetherMarket(): Promise<TetherMarketResponse> {
-  const settings = await getSettings();
-  const exchanges = await getDomesticQuotes(settings);
-  const response = calculateTetherMarket(exchanges, settings.outlierThresholdPercent);
-  response.settings.marketSpreadAlertThresholdPercent = settings.marketSpreadAlertThresholdPercent;
-  // Same process slots as quotes — no extra provider fetch; timestamps for LP warning panel.
-  const health = getDomesticProviderHealth();
-  response.providers = health.map((h) => {
-    const q = response.exchanges.find((e) => e.exchangeId === h.id);
-    if (!q) return h;
-    const referenceOnly =
-      q.sourceStatus !== "unavailable" &&
-      q.midPrice !== null &&
-      Number.isFinite(q.midPrice) &&
-      q.midPrice > 0 &&
-      (q.buyPrice === null || !Number.isFinite(q.buyPrice)) &&
-      (q.sellPrice === null || !Number.isFinite(q.sellPrice));
-    const status =
-      q.sourceStatus === "unavailable"
-        ? "unavailable"
-        : q.sourceStatus === "degraded" || referenceOnly
-          ? "degraded"
-          : q.sourceStatus;
-    return {
-      ...h,
-      status,
-      buyPrice: q.buyPrice,
-      sellPrice: q.sellPrice,
-      midPrice: q.midPrice,
-      error: q.errorMessage ?? h.error
-    };
-  });
-  void recordMedian(response.summary.median).catch(() => {});
-  return response;
+  const { getTetherMarketSnapshot } = await import("@/lib/marketSnapshot");
+  return getTetherMarketSnapshot();
 }
 
 function marketStateFromAlerts(alerts: AlertItem[]): MarketState {
@@ -349,9 +320,7 @@ function buildQuickDecision(
 export async function getExchangeMonitor(): Promise<ExchangeMonitorResponse> {
   const settings = await getSettings();
   const [domesticResult, globalResult] = await Promise.allSettled([
-    getDomesticQuotes(settings).then((quotes) =>
-      calculateTetherMarket(quotes, settings.outlierThresholdPercent)
-    ),
+    getTetherMarket(),
     getGlobalExchangeStatuses(settings)
   ]);
   const domestic =
@@ -403,26 +372,27 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Pro
 
 export async function getDashboard(): Promise<DashboardResponse> {
   const settings = await getSettings();
+  const { getTetherMarketSnapshot } = await import("@/lib/marketSnapshot");
 
-  // Isolated parallel loads — one slow/failed branch must not reject the whole dashboard
+  // Tether/LP from shared persistent snapshot; other branches isolated in parallel
   const settled = await Promise.allSettled([
-    getDomesticQuotes(settings),
+    getTetherMarketSnapshot(),
     getGlobalPrices(settings.globalMarketRefreshMinutes),
     getGlobalExchangeStatuses(settings),
     getImpactNews(settings),
     getForexEvents(settings)
   ]);
 
-  const quotes = settled[0].status === "fulfilled" ? settled[0].value : [];
+  const tetherSnap =
+    settled[0].status === "fulfilled"
+      ? settled[0].value
+      : calculateTetherMarket([], settings.outlierThresholdPercent);
   const globalMarket = settled[1].status === "fulfilled" ? settled[1].value : [];
   const globalStatuses = settled[2].status === "fulfilled" ? settled[2].value : [];
   const news = settled[3].status === "fulfilled" ? settled[3].value : emptyNews();
   const forex = settled[4].status === "fulfilled" ? settled[4].value : emptyForex();
 
-  const tetherMarket = calculateTetherMarket(quotes, settings.outlierThresholdPercent);
-  tetherMarket.settings.marketSpreadAlertThresholdPercent = settings.marketSpreadAlertThresholdPercent;
-  // Do not block the HTTP response on history write
-  void recordMedian(tetherMarket.summary.median).catch(() => {});
+  const tetherMarket: TetherMarketResponse = tetherSnap;
 
   const alerts = buildAlerts({
     tetherMarket,
@@ -447,6 +417,11 @@ export async function getDashboard(): Promise<DashboardResponse> {
     emptyIntelligence(Boolean(settings.openAiApiKey))
   );
 
+  const serverNow =
+    "serverNow" in tetherSnap && typeof tetherSnap.serverNow === "string"
+      ? tetherSnap.serverNow
+      : new Date().toISOString();
+
   return {
     globalMarket,
     tetherMarket,
@@ -455,6 +430,24 @@ export async function getDashboard(): Promise<DashboardResponse> {
     forex,
     intelligence,
     // داشبورد فقط هشدارهای اتصال/قطع LPهای ایرانی را پایین نمایش می‌دهد
-    alerts: alerts.filter((alert) => alert.category === "lp-specific").slice(0, 8)
+    alerts: alerts.filter((alert) => alert.category === "lp-specific").slice(0, 8),
+    serverNow,
+    generatedAt:
+      "generatedAt" in tetherSnap && typeof tetherSnap.generatedAt === "string"
+        ? tetherSnap.generatedAt
+        : serverNow,
+    isStale: "isStale" in tetherSnap ? Boolean(tetherSnap.isStale) : false,
+    lastSuccessfulRefreshAt:
+      "lastSuccessfulRefreshAt" in tetherSnap
+        ? (tetherSnap.lastSuccessfulRefreshAt as string | null)
+        : null,
+    lastAttemptedRefreshAt:
+      "lastAttemptedRefreshAt" in tetherSnap
+        ? (tetherSnap.lastAttemptedRefreshAt as string | null)
+        : null,
+    refreshIntervalMs:
+      "refreshIntervalMs" in tetherSnap && typeof tetherSnap.refreshIntervalMs === "number"
+        ? tetherSnap.refreshIntervalMs
+        : 0
   };
 }

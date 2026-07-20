@@ -242,7 +242,7 @@ function HealthPanel({ data }: { data: MarketBubbleResponse }) {
 }
 
 export function BubbleView() {
-  const { data, loading, error, reload, lastUpdated } = useApi<MarketBubbleResponse>("/api/bubble", 30_000);
+  const { data, loading, error, reload, lastUpdated, serverNow } = useApi<MarketBubbleResponse>("/api/bubble", 30_000);
 
   const content = useMemo(() => {
     if (!data) return null;
@@ -252,7 +252,7 @@ export function BubbleView() {
   if (loading && !content) {
     return (
       <>
-        <DeskPageHeader title="محاسبه حباب بازار" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+        <DeskPageHeader title="محاسبه حباب بازار" onRefresh={reload} lastUpdated={lastUpdated} serverNow={serverNow ?? (data as { serverNow?: string } | null)?.serverNow} loading={loading} />
         <BubbleSkeleton />
       </>
     );
@@ -261,7 +261,7 @@ export function BubbleView() {
   if (error && !content) {
     return (
       <>
-        <DeskPageHeader title="محاسبه حباب بازار" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+        <DeskPageHeader title="محاسبه حباب بازار" onRefresh={reload} lastUpdated={lastUpdated} serverNow={serverNow ?? (data as { serverNow?: string } | null)?.serverNow} loading={loading} />
         <div className="empty">داده‌ای دریافت نشد: {error}</div>
       </>
     );
@@ -271,7 +271,7 @@ export function BubbleView() {
 
   return (
     <div className="bubble-page" data-layout-version="bubble-v1">
-      <DeskPageHeader title="محاسبه حباب بازار" onRefresh={reload} lastUpdated={lastUpdated} loading={loading} />
+      <DeskPageHeader title="محاسبه حباب بازار" onRefresh={reload} lastUpdated={lastUpdated} serverNow={serverNow ?? (data as { serverNow?: string } | null)?.serverNow} loading={loading} />
       {error ? <div className="empty warn-inline muted">خطای تازه: {error} — آخرین داده معتبر نمایش داده می‌شود.</div> : null}
 
       <ConsolidatedDollarCard

@@ -50,9 +50,12 @@ export function formatDate(value: string | null | undefined) {
   if (!value) return "داده‌ای دریافت نشد";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "داده‌ای دریافت نشد";
+  // Always Asia/Tehran — never the browser's local timezone.
   return new Intl.DateTimeFormat("fa-IR", {
+    timeZone: "Asia/Tehran",
     dateStyle: "short",
-    timeStyle: "short"
+    timeStyle: "short",
+    hour12: false
   }).format(date);
 }
 

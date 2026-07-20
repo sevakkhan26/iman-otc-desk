@@ -120,6 +120,13 @@ export type MarketBubbleResponse = {
     unavailableReason: string | null;
   };
   health: BubbleSourceHealth[];
+  /** Server wall clock (UTC ISO) — shared header clock for all clients. */
+  serverNow?: string;
+  generatedAt?: string;
+  isStale?: boolean;
+  lastSuccessfulRefreshAt?: string | null;
+  lastAttemptedRefreshAt?: string | null;
+  refreshIntervalMs?: number;
 };
 
 export const MSG_DOLLAR_INSUFFICIENT = "داده معتبر کافی در دسترس نیست";

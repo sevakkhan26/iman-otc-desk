@@ -1107,6 +1107,11 @@ export async function getDomesticQuotes(settings: DeskSettings): Promise<Domesti
   return domesticCache.get(key, ttlMs, () => fetchDomesticQuotes(settings));
 }
 
+/** Clear process-local list cache so the next getDomesticQuotes hits providers. */
+export function clearDomesticQuotesCache(): void {
+  domesticCache.clear();
+}
+
 /** Snapshot health for all domestic providers (memory slots only). */
 export function getDomesticProviderHealth(): DomesticProviderHealth[] {
   return snapshotProviderHealth(providerDefs);

@@ -2,12 +2,15 @@
  * Market-data API key lifecycle: create / list / update scopes / revoke / authenticate / rate-limit.
  * Plaintext keys exist only at creation time in the HTTP response.
  */
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   isApiKeyStorageDurable,
   loadApiKeyStore,
   mutateApiKeyStore,
-  resolveApiKeyStorageBackend
+  pgFindApiKeyByHash,
+  pgRateLimitTick,
+  resolveApiKeyStorageBackend,
+  toUuid
 } from "@/lib/apiKeys/store";
 import type {
   ApiKeyPublic,
@@ -106,11 +109,10 @@ function assertDurableStorage(): void {
   if (!isApiKeyStorageDurable()) {
     throw new ApiKeyServiceError(
       "STORAGE_NOT_CONFIGURED",
-      resolveApiKeyStorageBackend() === "none" && process.env.VERCEL === "1"
-        ? "ذخیره‌سازی پایدار کلید API روی Vercel در دسترس نیست. UPSTASH_REDIS_REST_URL و UPSTASH_REDIS_REST_TOKEN را تنظیم کنید."
-        : "ذخیره‌سازی پایدار کلید API پیکربندی نشده است."
+      "DATABASE_URL (PostgreSQL) is required for durable API key storage."
     );
   }
+  void resolveApiKeyStorageBackend;
 }
 
 export async function listApiKeys(): Promise<ApiKeyPublic[]> {
@@ -157,7 +159,8 @@ export async function createApiKey(input: {
 
   const plaintext = generateApiKeyPlaintext();
   const keyHash = hashApiKey(plaintext);
-  const id = randomBytes(16).toString("hex");
+  // UUID ids for PostgreSQL uuid columns (legacy 32-hex ids are migrated via toUuid)
+  const id = randomUUID();
   const nowIso = new Date().toISOString();
   const keyPrefix = plaintext.slice(0, API_KEY_PREFIX.length + 8);
   const keySuffix = plaintext.slice(-4);
@@ -267,8 +270,12 @@ export async function authenticateApiKey(
   }
 
   const presentedHash = hashApiKey(raw);
-  const store = await loadApiKeyStore({ force: true });
-  const match = store.keys.find((k) => safeEqualHex(k.keyHash, presentedHash));
+  // Prefer direct hash lookup (O(1)); fall back to timing-safe scan for legacy edge cases
+  let match = await pgFindApiKeyByHash(presentedHash);
+  if (!match) {
+    const store = await loadApiKeyStore({ force: true });
+    match = store.keys.find((k) => safeEqualHex(k.keyHash, presentedHash)) ?? null;
+  }
   if (!match) {
     return { ok: false, reason: "invalid" };
   }
@@ -281,29 +288,15 @@ export async function authenticateApiKey(
 
   const now = Date.now();
   const windowStart = Math.floor(now / RATE_WINDOW_MS) * RATE_WINDOW_MS;
-  let limited = false;
-  await mutateApiKeyStore((s) => {
-    const rl = s.rateLimits[match.id];
-    if (!rl || rl.windowStartMs !== windowStart) {
-      s.rateLimits[match.id] = { windowStartMs: windowStart, count: 1 };
-    } else {
-      rl.count += 1;
-      if (rl.count > API_KEY_RATE_LIMIT_PER_MINUTE) {
-        limited = true;
-      }
-    }
-    for (const [kid, entry] of Object.entries(s.rateLimits)) {
-      if (entry.windowStartMs < windowStart - RATE_WINDOW_MS * 2) {
-        delete s.rateLimits[kid];
-      }
-    }
-    if (!limited) {
-      const key = s.keys.find((k) => k.id === match.id);
-      if (key) key.lastUsedAt = new Date(now).toISOString();
-    }
-  });
+  const count = await pgRateLimitTick(toUuid(match.id), windowStart);
+  if (count > API_KEY_RATE_LIMIT_PER_MINUTE) {
+    return { ok: false, reason: "rate_limited" };
+  }
 
-  if (limited) return { ok: false, reason: "rate_limited" };
+  await mutateApiKeyStore((s) => {
+    const key = s.keys.find((k) => k.id === match!.id || toUuid(k.id) === toUuid(match!.id));
+    if (key) key.lastUsedAt = new Date(now).toISOString();
+  });
 
   return { ok: true, keyId: match.id, name: match.name, scopes };
 }

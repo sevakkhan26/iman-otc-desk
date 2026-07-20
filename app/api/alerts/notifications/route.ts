@@ -30,18 +30,7 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const evaluate = url.searchParams.get("evaluate") !== "0";
 
-  if (resolveStorageBackend() === "none") {
-    return json({
-      items: [],
-      unread: 0,
-      diagnostics: {
-        ...getStorageDiagnostics(),
-        alertQuerySucceeded: false,
-        notificationQuerySucceeded: false,
-        authenticatedRole: session.r
-      }
-    });
-  }
+  void resolveStorageBackend();
 
   if (evaluate) {
     try {

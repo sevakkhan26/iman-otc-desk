@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { DatabaseUnavailableError } from "@/db/client";
 import { getDashboard } from "@/lib/market";
 import { isSession, requireApiSession } from "@/lib/requireApiAuth";
 
@@ -17,6 +18,26 @@ const NO_STORE = {
 export async function GET() {
   const session = await requireApiSession();
   if (!isSession(session)) return session;
-  const body = await getDashboard();
-  return new NextResponse(JSON.stringify(body), { status: 200, headers: NO_STORE });
+  try {
+    const body = await getDashboard();
+    return new NextResponse(JSON.stringify(body), { status: 200, headers: NO_STORE });
+  } catch (error) {
+    if (error instanceof DatabaseUnavailableError) {
+      return new NextResponse(
+        JSON.stringify({
+          error: "database_unavailable",
+          message: "پایگاه‌داده در دسترس نیست. DATABASE_URL را بررسی کنید."
+        }),
+        { status: 503, headers: NO_STORE }
+      );
+    }
+    console.error("[dashboard]", error instanceof Error ? error.message : error);
+    return new NextResponse(
+      JSON.stringify({
+        error: "internal_error",
+        message: error instanceof Error ? error.message : "خطای داخلی سرور"
+      }),
+      { status: 500, headers: NO_STORE }
+    );
+  }
 }

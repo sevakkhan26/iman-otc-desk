@@ -343,7 +343,7 @@ export interface PriceAlertSummary {
 }
 
 export interface PriceAlertsStorageDiagnostics {
-  storageType: "file" | "upstash" | "none";
+  storageType: "postgres" | "file" | "upstash" | "none";
   storageConfigured: boolean;
   persistent: boolean;
   readable?: boolean | null;

@@ -100,9 +100,14 @@ function sampleSnapshot(exchanges: DomesticQuote[]): TetherMarketResponse {
 async function main() {
   console.log("Multi-scope market API keys tests\n");
 
-  process.env.TETHER_API_KEYS_STORAGE = "file";
-  process.env.TETHER_API_KEYS_DATA_DIR = `${process.cwd()}/.data/test-api-keys-multi`;
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "otc-api-keys-"));
+  process.env.DATABASE_URL = `pglite:${join(dir, "pglite")}`;
   process.env.VERCEL = "";
+  const { runMigrations } = await import("../src/db/migrate.ts");
+  await runMigrations();
   await __dangerouslyResetApiKeyStoreForTests();
   clearApiKeyStoreMemory();
 

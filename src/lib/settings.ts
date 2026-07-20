@@ -1,9 +1,10 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
+/**
+ * Desk settings — PostgreSQL app_settings (single source of truth).
+ * Fail closed when DATABASE_URL is unavailable.
+ */
+import { DatabaseUnavailableError, getDatabaseUrl } from "@/db/client";
+import { pgGetSettingsJson, pgSaveSettingsJson } from "@/db/repositories/settings";
 import type { DeskSettings, PublicSettings, SettingsPatch } from "@/lib/types";
-
-const dataDir = path.join(process.cwd(), ".data");
-const settingsPath = path.join(dataDir, "settings.json");
 
 const allSources = [
   "nobitex",
@@ -68,14 +69,20 @@ export async function getSettings(): Promise<DeskSettings> {
     return settingsMemCache.value;
   }
   try {
-    const raw = await readFile(settingsPath, "utf8");
-    const value = mergeSettings(JSON.parse(raw) as Partial<DeskSettings>);
+    getDatabaseUrl();
+    const stored = await pgGetSettingsJson();
+    const value = mergeSettings(stored ?? {});
     settingsMemCache = { value, at: Date.now() };
     return value;
-  } catch {
-    const value = mergeSettings({});
-    settingsMemCache = { value, at: Date.now() };
-    return value;
+  } catch (error) {
+    if (error instanceof DatabaseUnavailableError) throw error;
+    const msg = error instanceof Error ? error.message : "PostgreSQL settings read failed";
+    const cause =
+      error && typeof error === "object" && "cause" in error
+        ? (error as { cause?: unknown }).cause
+        : undefined;
+    const causeMsg = cause instanceof Error ? ` (${cause.message})` : "";
+    throw new DatabaseUnavailableError(`${msg}${causeMsg}`, error);
   }
 }
 
@@ -94,8 +101,15 @@ export async function patchSettings(patch: SettingsPatch): Promise<PublicSetting
     }
   };
 
-  await mkdir(dataDir, { recursive: true });
-  await writeFile(settingsPath, JSON.stringify(next, null, 2), "utf8");
+  try {
+    getDatabaseUrl();
+    await pgSaveSettingsJson(next, null);
+  } catch (error) {
+    if (error instanceof DatabaseUnavailableError) throw error;
+    throw new DatabaseUnavailableError(
+      error instanceof Error ? error.message : "PostgreSQL settings write failed"
+    );
+  }
   settingsMemCache = { value: next, at: Date.now() };
   return toPublicSettings(next);
 }
@@ -119,17 +133,19 @@ export function toPublicSettings(settings: DeskSettings): PublicSettings {
 }
 
 function sanitizePatch(patch: SettingsPatch): Partial<DeskSettings> {
-  const numericFields: Array<keyof Pick<
-    DeskSettings,
-    | "priceRefreshMinutes"
-    | "globalMarketRefreshMinutes"
-    | "globalExchangeRefreshMinutes"
-    | "newsRefreshMinutes"
-    | "intelligenceRefreshMinutes"
-    | "outlierThresholdPercent"
-    | "marketSpreadAlertThresholdPercent"
-    | "depegAlertThresholdPercent"
-  >> = [
+  const numericFields: Array<
+    keyof Pick<
+      DeskSettings,
+      | "priceRefreshMinutes"
+      | "globalMarketRefreshMinutes"
+      | "globalExchangeRefreshMinutes"
+      | "newsRefreshMinutes"
+      | "intelligenceRefreshMinutes"
+      | "outlierThresholdPercent"
+      | "marketSpreadAlertThresholdPercent"
+      | "depegAlertThresholdPercent"
+    >
+  > = [
     "priceRefreshMinutes",
     "globalMarketRefreshMinutes",
     "globalExchangeRefreshMinutes",
@@ -153,4 +169,9 @@ function sanitizePatch(patch: SettingsPatch): Partial<DeskSettings> {
   }
 
   return cleaned;
+}
+
+/** Test helper */
+export function clearSettingsMemCache(): void {
+  settingsMemCache = null;
 }

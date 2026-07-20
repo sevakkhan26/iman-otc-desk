@@ -6,10 +6,9 @@
 
 import {
   getInflightRefresh,
+  pgWithTetherRefreshLock,
   readMarketSnapshot,
-  releaseSnapshotLock,
   setInflightRefresh,
-  tryAcquireSnapshotLock,
   writeMarketSnapshot,
   type MarketSnapshotRecord
 } from "@/lib/marketSnapshotStore";
@@ -197,15 +196,8 @@ async function refreshAndStore(settings: DeskSettings): Promise<MarketSnapshotRe
   if (existingInflight) return existingInflight;
 
   const work = (async () => {
-    const locked = await tryAcquireSnapshotLock();
-    try {
-      if (!locked) {
-        // Another instance is refreshing — wait briefly then read shared store
-        await new Promise((r) => setTimeout(r, 400));
-        const shared = await readMarketSnapshot();
-        if (shared) return shared;
-      }
-      // Double-check freshness after lock (winner may have finished)
+    // PostgreSQL advisory lock: only one process refreshes; others serve last snapshot.
+    const lockResult = await pgWithTetherRefreshLock(async () => {
       const current = await readMarketSnapshot();
       const now = Date.now();
       if (
@@ -216,7 +208,6 @@ async function refreshAndStore(settings: DeskSettings): Promise<MarketSnapshotRe
         return current;
       }
       const record = await buildFreshRecord(settings);
-      // If refresh failed hard but we had previous good data, merge attempt timestamp
       if (
         record.lastSuccessfulRefreshAt === null &&
         current?.lastSuccessfulRefreshAt &&
@@ -231,9 +222,24 @@ async function refreshAndStore(settings: DeskSettings): Promise<MarketSnapshotRe
       }
       await writeMarketSnapshot(record);
       return record;
-    } finally {
-      if (locked) await releaseSnapshotLock();
+    });
+
+    if (!lockResult.acquired) {
+      // Another process holds the refresh lock — serve last committed snapshot
+      await new Promise((r) => setTimeout(r, 400));
+      const shared = await readMarketSnapshot();
+      if (shared) return shared;
+      // No snapshot yet; wait a bit more and retry read
+      await new Promise((r) => setTimeout(r, 800));
+      const again = await readMarketSnapshot();
+      if (again) return again;
+      // Absolute last resort: build without lock (rare race on empty DB)
+      const record = await buildFreshRecord(settings);
+      await writeMarketSnapshot(record);
+      return record;
     }
+
+    return lockResult.result!;
   })();
 
   setInflightRefresh(work);

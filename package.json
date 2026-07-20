@@ -1,26 +1,33 @@
 {
   "name": "dealing-desk-otc-dashboard",
-  "version": "3.1.1",
+  "version": "3.2.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "npx --yes tsx scripts/test-auth-cookies.mts && npx --yes tsx scripts/test-viewer-auth.mts && npx --yes tsx scripts/test-user-store.mts && npx --yes tsx scripts/test-impact-news.mts && npx --yes tsx scripts/test-price-alerts.mts && npx --yes tsx scripts/test-okex-tetherland.mts && npx --yes tsx scripts/test-bubble.mts && npx --yes tsx scripts/test-market-snapshot.mts && npx --yes tsx scripts/test-tether-api-keys.mts",
+    "db:migrate": "npx --yes tsx src/db/migrate.ts",
+    "db:import": "npx --yes tsx scripts/import-legacy-to-postgres.mts",
+    "db:import:dry": "npx --yes tsx scripts/import-legacy-to-postgres.mts --dry-run",
+    "test": "npx --yes tsx scripts/test-auth-cookies.mts && npx --yes tsx scripts/test-viewer-auth.mts && npx --yes tsx scripts/test-user-store.mts && npx --yes tsx scripts/test-impact-news.mts && npx --yes tsx scripts/test-price-alerts.mts && npx --yes tsx scripts/test-okex-tetherland.mts && npx --yes tsx scripts/test-bubble.mts && npx --yes tsx scripts/test-market-snapshot.mts && npx --yes tsx scripts/test-tether-api-keys.mts && npx --yes tsx scripts/test-postgres.mts",
     "test:tether-api-keys": "npx --yes tsx scripts/test-tether-api-keys.mts",
     "test:viewer-auth": "npx --yes tsx scripts/test-viewer-auth.mts",
     "test:user-store": "npx --yes tsx scripts/test-user-store.mts",
     "test:impact-news": "npx --yes tsx scripts/test-impact-news.mts",
     "test:okex-tetherland": "npx --yes tsx scripts/test-okex-tetherland.mts",
     "test:bubble": "npx --yes tsx scripts/test-bubble.mts",
+    "test:postgres": "npx --yes tsx scripts/test-postgres.mts",
     "build": "next build"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.5.4",
+    "drizzle-orm": "^0.45.2",
     "fast-xml-parser": "^5.2.5",
     "https-proxy-agent": "^9.1.0",
     "lucide-react": "^0.475.0",
     "next": "^15.1.6",
+    "postgres": "^3.4.9",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "server-only": "^0.0.1"
@@ -30,9 +37,11 @@
     "@types/node": "^22.10.7",
     "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",
+    "drizzle-kit": "^0.31.10",
     "eslint": "^9.18.0",
     "eslint-config-next": "^15.1.6",
     "npm": "^11.17.0",
+    "tsx": "^4.23.1",
     "typescript": "^5.7.3"
   }
 }

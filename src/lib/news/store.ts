@@ -1,16 +1,16 @@
 /**
- * Persistent Impact News store (.data/impact-news-store.json).
- * Compatible with Docker disk and best-effort on serverless.
+ * Impact News store — PostgreSQL app_settings + news_items.
+ * Fail closed on write when DATABASE_URL missing; reads fall back to empty only if DB down
+ * would break the request path, so we throw on write and soft-empty on read if unavailable.
  */
-
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { eq } from "drizzle-orm";
+import { getDatabaseUrl, getDb } from "@/db/client";
+import { appSettings, newsItems } from "@/db/schema";
 import type { Severity } from "@/lib/types";
 import type { ScoredNewsArticle } from "@/lib/news/pipeline";
 import { filterByRetention, isWithinRetention } from "@/lib/news/pipeline";
 
-const dataDir = path.join(process.cwd(), ".data");
-const storePath = path.join(dataDir, "impact-news-store.json");
+const NEWS_META_KEY = "impact_news_store";
 
 export type ProviderHealth = {
   id: string;
@@ -45,17 +45,28 @@ function emptyStore(): NewsStoreFile {
 export async function loadNewsStore(): Promise<NewsStoreFile> {
   if (memoryStore) return memoryStore;
   try {
-    const raw = await readFile(storePath, "utf8");
-    const parsed = JSON.parse(raw) as NewsStoreFile;
-    if (!parsed || parsed.version !== 1 || typeof parsed.articles !== "object") {
-      memoryStore = emptyStore();
-      return memoryStore;
+    getDatabaseUrl();
+    const db = getDb();
+    const metaRows = await db
+      .select()
+      .from(appSettings)
+      .where(eq(appSettings.key, NEWS_META_KEY))
+      .limit(1);
+    const meta = metaRows[0]?.value as Partial<NewsStoreFile> | undefined;
+    const articleRows = await db.select().from(newsItems);
+    const articles: Record<string, StoredArticle> = {};
+    for (const row of articleRows) {
+      articles[row.id] = row.payload as StoredArticle;
+    }
+    // Prefer news_items rows; fall back to embedded articles in meta blob
+    if (!Object.keys(articles).length && meta?.articles) {
+      Object.assign(articles, meta.articles);
     }
     memoryStore = {
       version: 1,
-      updatedAt: parsed.updatedAt ?? null,
-      articles: parsed.articles ?? {},
-      providers: parsed.providers ?? {}
+      updatedAt: typeof meta?.updatedAt === "string" ? meta.updatedAt : null,
+      articles,
+      providers: (meta?.providers as Record<string, ProviderHealth>) ?? {}
     };
     return memoryStore;
   } catch {
@@ -67,10 +78,54 @@ export async function loadNewsStore(): Promise<NewsStoreFile> {
 export async function saveNewsStore(store: NewsStoreFile): Promise<void> {
   memoryStore = store;
   try {
-    await mkdir(dataDir, { recursive: true });
-    await writeFile(storePath, JSON.stringify(store, null, 2), "utf8");
+    getDatabaseUrl();
+    const db = getDb();
+    const now = new Date().toISOString();
+    // Meta (providers + updatedAt)
+    await db
+      .insert(appSettings)
+      .values({
+        key: NEWS_META_KEY,
+        value: {
+          version: 1,
+          updatedAt: store.updatedAt,
+          providers: store.providers
+        } as unknown as Record<string, unknown>,
+        updatedAt: now
+      })
+      .onConflictDoUpdate({
+        target: appSettings.key,
+        set: {
+          value: {
+            version: 1,
+            updatedAt: store.updatedAt,
+            providers: store.providers
+          } as unknown as Record<string, unknown>,
+          updatedAt: now
+        }
+      });
+
+    // Upsert articles
+    for (const [id, article] of Object.entries(store.articles)) {
+      await db
+        .insert(newsItems)
+        .values({
+          id,
+          payload: article as unknown as Record<string, unknown>,
+          publishedAt: article.publishedAt ?? null,
+          updatedAt: now
+        })
+        .onConflictDoUpdate({
+          target: newsItems.id,
+          set: {
+            payload: article as unknown as Record<string, unknown>,
+            publishedAt: article.publishedAt ?? null,
+            updatedAt: now
+          }
+        });
+    }
   } catch {
-    /* serverless / read-only FS: keep memory only */
+    /* keep memory; caller paths are best-effort for news */
   }
 }
 
@@ -95,7 +150,6 @@ export function mergeArticles(store: NewsStoreFile, incoming: ScoredNewsArticle[
       added += 1;
       continue;
     }
-    // Prefer newer publishedAt / higher impact; never invent fields
     const prevT = new Date(prev.publishedAt ?? 0).getTime();
     const nextT = new Date(item.publishedAt ?? 0).getTime();
     const keep = {

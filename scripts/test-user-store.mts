@@ -41,14 +41,16 @@ async function main() {
   assert("username ok", validateUsernamePlain("trader_01") === null);
 
   const dir = await mkdtemp(path.join(tmpdir(), "otc-users-"));
-  const usersPath = path.join(dir, "desk-users.json");
-  const viewerPath = path.join(dir, "viewer-auth.json");
-  process.env.DESK_USERS_DATA_FILE = usersPath;
-  process.env.VIEWER_AUTH_DATA_FILE = viewerPath;
+  process.env.DATABASE_URL = `pglite:${path.join(dir, "pglite")}`;
   process.env.ADMIN_USERNAME = "rootadmin";
   process.env.ADMIN_PASSWORD_HASH = hashPassword("admin-password-xx");
   process.env.VIEWER_USERNAME = "deskviewer";
   process.env.VIEWER_PASSWORD_HASH = hashPassword("viewer-password-xx");
+  process.env.AUTH_TOKEN_SECRET = process.env.AUTH_TOKEN_SECRET || "x".repeat(40);
+  // migrate empty DB
+  const { runMigrations } = await import("../src/db/migrate.ts");
+  const { closeDb } = await import("../src/db/client.ts");
+  await runMigrations();
   clearUserStoreMemCache();
   clearViewerAuthMemCache();
 
@@ -140,8 +142,12 @@ async function main() {
   } finally {
     clearUserStoreMemCache();
     clearViewerAuthMemCache();
-    delete process.env.DESK_USERS_DATA_FILE;
-    delete process.env.VIEWER_AUTH_DATA_FILE;
+    try {
+      const { closeDb } = await import("../src/db/client.ts");
+      await closeDb();
+    } catch {
+      /* ignore */
+    }
     await rm(dir, { recursive: true, force: true });
   }
 

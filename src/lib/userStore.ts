@@ -1,16 +1,19 @@
 /**
- * Managed desk users (admin-created) with password hashes + per-user session epoch.
- *
- * Bootstrap accounts stay in env:
- *   - ADMIN_USERNAME / ADMIN_PASSWORD_HASH (not editable from panel)
- *   - VIEWER_USERNAME / VIEWER_PASSWORD_HASH (+ optional viewer-auth override file)
- *
- * Durable path: same volume family as viewer-auth / price-alerts.
- * Node-only (fs) — do not import from client components.
+ * Managed desk users — PostgreSQL users table (single source of truth).
+ * Bootstrap accounts stay in env (admin) / env+PG override (viewer).
+ * Fail closed when DATABASE_URL is unavailable for managed-user operations.
  */
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import path from "node:path";
+import {
+  pgBumpCredentialVersion,
+  pgDeleteUser,
+  pgFindUserByUsernameKey,
+  pgListUsers,
+  pgSetUserActive,
+  pgUpsertUser,
+  type PgUserRow
+} from "@/db/repositories/users";
+import { DatabaseUnavailableError, getDatabaseUrl } from "@/db/client";
 import type { DeskRole } from "@/lib/auth";
 import { hashPassword, parsePasswordHash } from "@/lib/passwordHash";
 import {
@@ -29,7 +32,6 @@ export const ENV_VIEWER_ID = "env:viewer";
 type ManagedUserRecord = {
   id: string;
   username: string;
-  /** Lowercase username for unique lookup */
   usernameKey: string;
   passwordHash: string;
   role: DeskRole;
@@ -38,11 +40,6 @@ type ManagedUserRecord = {
   createdAt: string;
   updatedAt: string | null;
   updatedBy: string | null;
-};
-
-type UsersFile = {
-  version: 1;
-  users: ManagedUserRecord[];
 };
 
 export type UserAccountPublic = {
@@ -71,9 +68,6 @@ export type ResetPasswordInput = {
   confirmPassword: string;
 };
 
-let mem: UsersFile | null | undefined;
-let writeChain: Promise<void> = Promise.resolve();
-
 function stripEnvQuotes(value: string): string {
   if (
     (value.startsWith("'") && value.endsWith("'")) ||
@@ -95,87 +89,49 @@ function readEnvPasswordHash(envValue: string | undefined): string | null {
   return value;
 }
 
+/** @deprecated kept for importer path resolution */
 export function resolveUsersDataPath(): string {
   const explicit = process.env.DESK_USERS_DATA_FILE?.trim();
   if (explicit) return explicit;
-
   const viewerAuth = process.env.VIEWER_AUTH_DATA_FILE?.trim();
   if (viewerAuth) {
-    return path.join(path.dirname(viewerAuth), "desk-users.json");
+    const dir = viewerAuth.replace(/\/[^/]+$/, "");
+    return `${dir}/desk-users.json`;
   }
-
   const alertsDir = process.env.PRICE_ALERTS_DATA_DIR?.trim();
-  if (alertsDir) return path.join(alertsDir, "desk-users.json");
-
-  return path.join(process.cwd(), ".data", "desk-users.json");
+  if (alertsDir) return `${alertsDir}/desk-users.json`;
+  return `${process.cwd()}/.data/desk-users.json`;
 }
 
-function emptyFile(): UsersFile {
-  return { version: 1, users: [] };
+function rowToManaged(r: PgUserRow): ManagedUserRecord {
+  return {
+    id: r.id,
+    username: r.username,
+    usernameKey: r.usernameKey,
+    passwordHash: r.passwordHash,
+    role: r.role,
+    sessionEpoch: r.credentialVersion,
+    enabled: r.isActive,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+    updatedBy: r.updatedBy
+  };
 }
 
-function isValidRecord(value: unknown): value is ManagedUserRecord {
-  if (!value || typeof value !== "object") return false;
-  const u = value as ManagedUserRecord;
-  return (
-    typeof u.id === "string" &&
-    u.id.length > 0 &&
-    typeof u.username === "string" &&
-    u.username.length > 0 &&
-    typeof u.usernameKey === "string" &&
-    u.usernameKey.length > 0 &&
-    typeof u.passwordHash === "string" &&
-    Boolean(parsePasswordHash(u.passwordHash)) &&
-    (u.role === "admin" || u.role === "viewer") &&
-    typeof u.sessionEpoch === "number" &&
-    Number.isFinite(u.sessionEpoch) &&
-    u.sessionEpoch >= 0 &&
-    typeof u.enabled === "boolean" &&
-    typeof u.createdAt === "string"
-  );
-}
-
-async function readFileStore(): Promise<UsersFile> {
-  if (mem !== undefined && mem !== null) return mem;
-
-  const filePath = resolveUsersDataPath();
-  try {
-    const raw = await readFile(filePath, "utf8");
-    const parsed = JSON.parse(raw) as Partial<UsersFile>;
-    if (parsed.version === 1 && Array.isArray(parsed.users)) {
-      const users = parsed.users.filter(isValidRecord).map((u) => ({
-        ...u,
-        sessionEpoch: Math.floor(u.sessionEpoch),
-        updatedAt: typeof u.updatedAt === "string" ? u.updatedAt : null,
-        updatedBy: typeof u.updatedBy === "string" ? u.updatedBy : null
-      }));
-      mem = { version: 1, users };
-      return mem;
-    }
-  } catch {
-    /* missing or invalid */
-  }
-  mem = emptyFile();
-  return mem;
-}
-
-async function persistFileStore(next: UsersFile): Promise<void> {
-  const filePath = resolveUsersDataPath();
-  const dir = path.dirname(filePath);
-  await mkdir(dir, { recursive: true });
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmp, JSON.stringify(next, null, 2), "utf8");
-  await rename(tmp, filePath);
-  mem = next;
-}
-
-function queueWrite(next: UsersFile): Promise<void> {
-  const run = writeChain.then(() => persistFileStore(next));
-  writeChain = run.then(
-    () => undefined,
-    () => undefined
-  );
-  return run;
+function toPublicManaged(user: ManagedUserRecord): UserAccountPublic {
+  return {
+    id: user.id,
+    username: user.username,
+    role: user.role,
+    source: "managed",
+    enabled: user.enabled,
+    canDelete: true,
+    canResetPassword: true,
+    passwordConfigured: true,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
+    updatedBy: user.updatedBy
+  };
 }
 
 export function normalizeUsernameKey(username: string): string {
@@ -205,24 +161,8 @@ export function getEnvViewerUsername(): string | null {
   return readEnvUsername(process.env.VIEWER_USERNAME);
 }
 
-function toPublicManaged(user: ManagedUserRecord): UserAccountPublic {
-  return {
-    id: user.id,
-    username: user.username,
-    role: user.role,
-    source: "managed",
-    enabled: user.enabled,
-    canDelete: true,
-    canResetPassword: true,
-    passwordConfigured: true,
-    createdAt: user.createdAt,
-    updatedAt: user.updatedAt,
-    updatedBy: user.updatedBy
-  };
-}
-
 export async function listUserAccounts(): Promise<UserAccountPublic[]> {
-  const store = await readFileStore();
+  getDatabaseUrl();
   const accounts: UserAccountPublic[] = [];
 
   const adminUser = getEnvAdminUsername();
@@ -260,8 +200,10 @@ export async function listUserAccounts(): Promise<UserAccountPublic[]> {
     });
   }
 
-  for (const user of store.users) {
-    accounts.push(toPublicManaged(user));
+  const rows = await pgListUsers();
+  for (const r of rows) {
+    if (r.source === "env") continue; // env accounts listed above
+    accounts.push(toPublicManaged(rowToManaged(r)));
   }
 
   return accounts;
@@ -270,20 +212,20 @@ export async function listUserAccounts(): Promise<UserAccountPublic[]> {
 export async function findManagedUserByUsername(username: string): Promise<ManagedUserRecord | null> {
   const key = normalizeUsernameKey(username);
   if (!key) return null;
-  const store = await readFileStore();
-  return store.users.find((u) => u.usernameKey === key) ?? null;
+  getDatabaseUrl();
+  const row = await pgFindUserByUsernameKey(key);
+  if (!row || row.source === "env") return null;
+  return rowToManaged(row);
 }
 
 export async function findManagedUserById(id: string): Promise<ManagedUserRecord | null> {
   if (!id || id.startsWith("env:")) return null;
-  const store = await readFileStore();
-  return store.users.find((u) => u.id === id) ?? null;
+  getDatabaseUrl();
+  const rows = await pgListUsers();
+  const row = rows.find((r) => r.id === id && r.source !== "env");
+  return row ? rowToManaged(row) : null;
 }
 
-/**
- * Session epoch for a login identity (invalidates cookies after password rotate).
- * Env admin → 0. Env viewer → viewer-auth epoch. Managed → per-user epoch.
- */
 export async function getIdentitySessionEpoch(username: string, role: DeskRole): Promise<number | null> {
   const key = normalizeUsernameKey(username);
   const adminUser = getEnvAdminUsername();
@@ -303,7 +245,6 @@ export async function getIdentitySessionEpoch(username: string, role: DeskRole):
   return managed.sessionEpoch;
 }
 
-/** Whether this session username is still a valid, enabled account. */
 export async function isIdentityStillValid(
   username: string,
   role: DeskRole,
@@ -328,6 +269,12 @@ export async function createManagedUser(
   input: CreateUserInput,
   updatedBy: string
 ): Promise<{ ok: true; user: UserAccountPublic } | { ok: false; message: string }> {
+  try {
+    getDatabaseUrl();
+  } catch {
+    return { ok: false, message: "DATABASE_URL is required" };
+  }
+
   const usernameError = validateUsernamePlain(input.username);
   if (usernameError) return { ok: false, message: usernameError };
 
@@ -348,31 +295,46 @@ export async function createManagedUser(
     return { ok: false, message: "این نام کاربری از قبل وجود دارد" };
   }
 
-  const store = await readFileStore();
-  if (store.users.length >= MAX_MANAGED_USERS) {
+  const managed = (await pgListUsers()).filter((u) => u.source !== "env");
+  if (managed.length >= MAX_MANAGED_USERS) {
     return { ok: false, message: `حداکثر ${MAX_MANAGED_USERS} کاربر قابل ایجاد است` };
   }
 
   const now = new Date().toISOString();
   const username = input.username.trim();
-  const record: ManagedUserRecord = {
-    id: randomUUID(),
-    username,
-    usernameKey: normalizeUsernameKey(username),
-    passwordHash: hashPassword(password),
-    role,
-    sessionEpoch: 0,
-    enabled: true,
-    createdAt: now,
-    updatedAt: now,
-    updatedBy: updatedBy || "admin"
-  };
-
-  const next: UsersFile = { version: 1, users: [...store.users, record] };
+  const id = randomUUID();
   try {
-    await queueWrite(next);
-    return { ok: true, user: toPublicManaged(record) };
-  } catch {
+    await pgUpsertUser({
+      id,
+      username,
+      usernameKey: normalizeUsernameKey(username),
+      passwordHash: hashPassword(password),
+      role,
+      isActive: true,
+      credentialVersion: 0,
+      source: "managed",
+      updatedBy: updatedBy || "admin"
+    });
+    return {
+      ok: true,
+      user: {
+        id,
+        username,
+        role,
+        source: "managed",
+        enabled: true,
+        canDelete: true,
+        canResetPassword: true,
+        passwordConfigured: true,
+        createdAt: now,
+        updatedAt: now,
+        updatedBy: updatedBy || "admin"
+      }
+    };
+  } catch (error) {
+    if (error instanceof DatabaseUnavailableError) {
+      return { ok: false, message: error.message };
+    }
     return { ok: false, message: "ذخیره کاربر ناموفق بود" };
   }
 }
@@ -409,27 +371,26 @@ export async function resetUserPassword(
     return { ok: true, user: viewer };
   }
 
-  const store = await readFileStore();
-  const index = store.users.findIndex((u) => u.id === id);
-  if (index < 0) return { ok: false, message: "کاربر یافت نشد", status: 404 };
+  const prev = await findManagedUserById(id);
+  if (!prev) return { ok: false, message: "کاربر یافت نشد", status: 404 };
 
   const passwordError = validateViewerPasswordPlain(newPassword);
   if (passwordError) return { ok: false, message: passwordError, status: 400 };
 
-  const prev = store.users[index];
-  const now = new Date().toISOString();
-  const updated: ManagedUserRecord = {
-    ...prev,
-    passwordHash: hashPassword(newPassword),
-    sessionEpoch: prev.sessionEpoch + 1,
-    updatedAt: now,
-    updatedBy: updatedBy || "admin"
-  };
-  const users = [...store.users];
-  users[index] = updated;
-
   try {
-    await queueWrite({ version: 1, users });
+    await pgUpsertUser({
+      id: prev.id,
+      username: prev.username,
+      usernameKey: prev.usernameKey,
+      passwordHash: hashPassword(newPassword),
+      role: prev.role,
+      isActive: prev.enabled,
+      credentialVersion: prev.sessionEpoch + 1,
+      source: "managed",
+      updatedBy: updatedBy || "admin"
+    });
+    const updated = await findManagedUserById(id);
+    if (!updated) return { ok: false, message: "کاربر یافت نشد", status: 404 };
     return { ok: true, user: toPublicManaged(updated) };
   } catch {
     return { ok: false, message: "ذخیره رمز ناموفق بود", status: 500 };
@@ -443,14 +404,11 @@ export async function deleteManagedUser(
     return { ok: false, message: "کاربر سیستمی قابل حذف نیست", status: 400 };
   }
 
-  const store = await readFileStore();
-  const nextUsers = store.users.filter((u) => u.id !== id);
-  if (nextUsers.length === store.users.length) {
-    return { ok: false, message: "کاربر یافت نشد", status: 404 };
-  }
+  const prev = await findManagedUserById(id);
+  if (!prev) return { ok: false, message: "کاربر یافت نشد", status: 404 };
 
   try {
-    await queueWrite({ version: 1, users: nextUsers });
+    await pgDeleteUser(id);
     return { ok: true };
   } catch {
     return { ok: false, message: "حذف کاربر ناموفق بود", status: 500 };
@@ -466,32 +424,33 @@ export async function setManagedUserEnabled(
     return { ok: false, message: "وضعیت کاربر سیستمی از پنل تغییر نمی‌کند", status: 400 };
   }
 
-  const store = await readFileStore();
-  const index = store.users.findIndex((u) => u.id === id);
-  if (index < 0) return { ok: false, message: "کاربر یافت نشد", status: 404 };
-
-  const prev = store.users[index];
-  const now = new Date().toISOString();
-  const updated: ManagedUserRecord = {
-    ...prev,
-    enabled: Boolean(enabled),
-    // Bump epoch when disabling so open sessions die immediately
-    sessionEpoch: enabled ? prev.sessionEpoch : prev.sessionEpoch + 1,
-    updatedAt: now,
-    updatedBy: updatedBy || "admin"
-  };
-  const users = [...store.users];
-  users[index] = updated;
+  const prev = await findManagedUserById(id);
+  if (!prev) return { ok: false, message: "کاربر یافت نشد", status: 404 };
 
   try {
-    await queueWrite({ version: 1, users });
+    await pgSetUserActive(id, Boolean(enabled));
+    if (!enabled) {
+      await pgBumpCredentialVersion(id);
+    }
+    await pgUpsertUser({
+      id: prev.id,
+      username: prev.username,
+      usernameKey: prev.usernameKey,
+      passwordHash: prev.passwordHash,
+      role: prev.role,
+      isActive: Boolean(enabled),
+      credentialVersion: enabled ? prev.sessionEpoch : prev.sessionEpoch + 1,
+      source: "managed",
+      updatedBy: updatedBy || "admin"
+    });
+    const updated = await findManagedUserById(id);
+    if (!updated) return { ok: false, message: "کاربر یافت نشد", status: 404 };
     return { ok: true, user: toPublicManaged(updated) };
   } catch {
     return { ok: false, message: "به‌روزرسانی کاربر ناموفق بود", status: 500 };
   }
 }
 
-/** Test helper: drop in-memory cache (does not delete file). */
 export function clearUserStoreMemCache(): void {
-  mem = undefined;
+  // no process-level user cache
 }

@@ -3,13 +3,15 @@
 # Deploy from this repository (preferred):
 #   docker compose up -d --build --force-recreate iman-otc-desk
 #
-# Or from /home/server/docker-projects after one-time alignment (see docs/DOCKER-DEPLOYMENT.md).
+# PostgreSQL cutover (when approved — see docs/DATABASE-UBUNTU.md):
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
+#   Set DATABASE_URL=postgres://… and run migrations before restarting the app.
 #
 # IMPORTANT: never run `docker compose down -v` in normal deploy — it deletes
-# the iman-otc-alerts-data volume and destroys alert history.
+# named volumes (alerts data and/or postgres data).
 #
-# Scaling: file backend supports ONE active writer. Do not run multiple replicas
-# against the same JSON file; switch PRICE_ALERTS_STORAGE=upstash for multi-replica.
+# After PostgreSQL cutover, multi-replica is safe against the shared database
+# (advisory locks + single source of truth).
 
 services:
   iman-otc-desk:
@@ -32,14 +34,16 @@ services:
     # injected with environment: / env_file on the server without committing them.
     environment:
       NODE_ENV: production
-      # Explicit file storage for Docker — no Upstash required.
-      PRICE_ALERTS_STORAGE: file
-      PRICE_ALERTS_DATA_DIR: /app/data/price-alerts
-      PRICE_ALERTS_DATA_FILE: /app/data/price-alerts/price-alerts.json
-      # Viewer password override (admin panel) lives on the same volume.
-      VIEWER_AUTH_DATA_FILE: /app/data/price-alerts/viewer-auth.json
+      # REQUIRED after PostgreSQL cutover (set on host / .env — never commit secrets):
+      # DATABASE_URL: postgres://otc_app:…@otc-postgres:5432/otc_desk
+      # DATABASE_POOL_MAX: "10"
+      DATABASE_URL: ${DATABASE_URL:-}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
       # Optional: surface git SHA in diagnostics (set by deploy script when available)
       GIT_COMMIT_SHA: ${GIT_COMMIT_SHA:-}
+      # LEGACY file paths kept only until Ubuntu cutover is approved and import verified.
+      # Runtime no longer uses them for durable state.
+      PRICE_ALERTS_DATA_DIR: /app/data/price-alerts
     volumes:
       # Named volume survives restart, rebuild, force-recreate, and git pull.
       # Holds price-alerts.json + viewer-auth.json

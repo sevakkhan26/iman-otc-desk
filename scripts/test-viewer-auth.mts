@@ -42,9 +42,10 @@ async function main() {
   assert("good password accepted", validateViewerPasswordPlain("longEnough9") === null);
 
   const dir = await mkdtemp(path.join(tmpdir(), "otc-viewer-auth-"));
-  const filePath = path.join(dir, "viewer-auth.json");
-  process.env.VIEWER_AUTH_DATA_FILE = filePath;
+  process.env.DATABASE_URL = `pglite:${path.join(dir, "pglite")}`;
   process.env.VIEWER_PASSWORD_HASH = hashPassword("env-bootstrap-password-xx");
+  const { runMigrations } = await import("../src/db/migrate.ts");
+  await runMigrations();
   clearViewerAuthMemCache();
 
   try {
@@ -76,7 +77,12 @@ async function main() {
     assert("new password valid", Boolean(h2 && verifyPassword("panel-password-02", h2!)));
   } finally {
     clearViewerAuthMemCache();
-    delete process.env.VIEWER_AUTH_DATA_FILE;
+    try {
+      const { closeDb } = await import("../src/db/client.ts");
+      await closeDb();
+    } catch {
+      /* ignore */
+    }
     await rm(dir, { recursive: true, force: true });
   }
 

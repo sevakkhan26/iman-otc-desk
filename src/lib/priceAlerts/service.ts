@@ -60,17 +60,17 @@ async function buildDiagnostics(
   const base = getStorageDiagnostics();
   let readable = base.readable;
   let writable = base.writable;
-  if (base.storageType === "file") {
+  if (base.storageType === "postgres") {
     const health = await probeFileStorageHealth();
     readable = health.readable;
     writable = health.writable;
-  } else if (base.storageType === "upstash") {
-    readable = alertOk && notifOk;
-    writable = alertOk;
+  } else if (alertOk) {
+    readable = true;
+    writable = true;
   }
   return {
     ...base,
-    persistent: base.storageType === "file" || base.storageType === "upstash",
+    persistent: base.storageType === "postgres",
     readable,
     writable,
     isVercel: base.vercel,
@@ -128,16 +128,8 @@ export async function getPriceAlertsPage(role: string | null = null): Promise<Pr
   let unread = 0;
   let lastEvaluatedAt: string | null = null;
 
-  if (backend === "none") {
-    return jsonSafePage({
-      summary: { active: 0, triggered: 0, unread: 0 },
-      instruments: buildInstrumentSnapshots(live),
-      alerts: [],
-      notifications: [],
-      lastEvaluatedAt: null,
-      diagnostics: await buildDiagnostics(role, false, false)
-    });
-  }
+  // postgres is the only backend; probe once so missing DATABASE_URL surfaces in diagnostics
+  void backend;
 
   try {
     const evaluation = await evaluatePriceAlerts(live);
@@ -206,12 +198,7 @@ export function validateCreateInput(input: CreateAlertInput): string | null {
 export async function createPriceAlert(input: CreateAlertInput): Promise<PriceAlertRule> {
   const err = validateCreateInput(input);
   if (err) throw new Error(err);
-  if (resolveStorageBackend() === "none") {
-    throw new PriceAlertStorageError(
-      "STORAGE_NOT_CONFIGURED",
-      "ذخیره‌سازی هشدارها در این محیط پیکربندی نشده است"
-    );
-  }
+  void resolveStorageBackend(); // postgres only; write fails closed without DATABASE_URL
   const now = new Date().toISOString();
   const rule: PriceAlertRule = {
     id: newId("pa"),
@@ -246,12 +233,6 @@ export async function patchPriceAlert(
   patch: Partial<CreateAlertInput> & { enabled?: boolean },
   actor: string
 ): Promise<PriceAlertRule | null> {
-  if (resolveStorageBackend() === "none") {
-    throw new PriceAlertStorageError(
-      "STORAGE_NOT_CONFIGURED",
-      "ذخیره‌سازی هشدارها در این محیط پیکربندی نشده است"
-    );
-  }
   const existing = (await listAlerts()).find((a) => a.id === id);
   if (!existing) return null;
 
@@ -292,11 +273,5 @@ export async function patchPriceAlert(
 }
 
 export async function removePriceAlert(id: string): Promise<boolean> {
-  if (resolveStorageBackend() === "none") {
-    throw new PriceAlertStorageError(
-      "STORAGE_NOT_CONFIGURED",
-      "ذخیره‌سازی هشدارها در این محیط پیکربندی نشده است"
-    );
-  }
   return deleteAlert(id);
 }

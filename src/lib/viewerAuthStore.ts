@@ -1,19 +1,17 @@
 /**
- * Viewer password override + session epoch (invalidates old viewer cookies).
- *
- * Admin password stays env-only. Viewer:
- *   1. Optional override hash in VIEWER_AUTH_DATA_FILE (or under price-alerts dir / .data)
- *   2. Else VIEWER_PASSWORD_HASH from env (bootstrap)
- *
- * Docker: prefer same volume as price alerts so overrides survive recreate.
- * Node-only (fs) — do not import from client components.
+ * Viewer password override + session epoch — PostgreSQL app_settings.
+ * Fail closed when DATABASE_URL is unavailable (override path).
+ * Env VIEWER_PASSWORD_HASH remains bootstrap when no override row exists.
  */
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { eq } from "drizzle-orm";
+import { DatabaseUnavailableError, getDatabaseUrl, getDb } from "@/db/client";
+import { appSettings } from "@/db/schema";
 import { hashPassword, parsePasswordHash } from "@/lib/passwordHash";
 
 export const VIEWER_PASSWORD_MIN_LEN = 10;
 export const VIEWER_PASSWORD_MAX_LEN = 128;
+
+const VIEWER_AUTH_KEY = "viewer_auth_override";
 
 type ViewerAuthFile = {
   passwordHash: string;
@@ -23,7 +21,6 @@ type ViewerAuthFile = {
 };
 
 let mem: ViewerAuthFile | null | undefined;
-let writeChain: Promise<void> = Promise.resolve();
 
 function stripEnvQuotes(value: string): string {
   if (
@@ -43,74 +40,92 @@ function readEnvPasswordHash(): string | null {
   return value;
 }
 
-/** Resolve durable path for viewer override (Docker volume-friendly). */
+/** @deprecated path helper kept for importer compatibility */
 export function resolveViewerAuthPath(): string {
   const explicit = process.env.VIEWER_AUTH_DATA_FILE?.trim();
   if (explicit) return explicit;
-
   const alertsDir = process.env.PRICE_ALERTS_DATA_DIR?.trim();
-  if (alertsDir) return path.join(alertsDir, "viewer-auth.json");
-
-  return path.join(process.cwd(), ".data", "viewer-auth.json");
+  if (alertsDir) return pathJoin(alertsDir, "viewer-auth.json");
+  return pathJoin(process.cwd(), ".data", "viewer-auth.json");
 }
 
-function emptyOverride(): null {
+function pathJoin(...parts: string[]): string {
+  return parts.join("/").replace(/\/+/g, "/");
+}
+
+function parseOverride(value: unknown): ViewerAuthFile | null {
+  if (!value || typeof value !== "object") return null;
+  const parsed = value as Partial<ViewerAuthFile>;
+  if (
+    typeof parsed.passwordHash === "string" &&
+    parsePasswordHash(parsed.passwordHash) &&
+    typeof parsed.sessionEpoch === "number" &&
+    Number.isFinite(parsed.sessionEpoch) &&
+    parsed.sessionEpoch >= 0
+  ) {
+    return {
+      passwordHash: parsed.passwordHash,
+      sessionEpoch: Math.floor(parsed.sessionEpoch),
+      updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
+      updatedBy: typeof parsed.updatedBy === "string" ? parsed.updatedBy : null
+    };
+  }
   return null;
 }
 
-async function readOverrideFile(): Promise<ViewerAuthFile | null> {
+async function readOverride(): Promise<ViewerAuthFile | null> {
   if (mem !== undefined) return mem;
-
-  const filePath = resolveViewerAuthPath();
   try {
-    const raw = await readFile(filePath, "utf8");
-    const parsed = JSON.parse(raw) as Partial<ViewerAuthFile>;
-    if (
-      typeof parsed.passwordHash === "string" &&
-      parsePasswordHash(parsed.passwordHash) &&
-      typeof parsed.sessionEpoch === "number" &&
-      Number.isFinite(parsed.sessionEpoch) &&
-      parsed.sessionEpoch >= 0
-    ) {
-      mem = {
-        passwordHash: parsed.passwordHash,
-        sessionEpoch: Math.floor(parsed.sessionEpoch),
-        updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
-        updatedBy: typeof parsed.updatedBy === "string" ? parsed.updatedBy : null
-      };
-      return mem;
-    }
-  } catch {
-    /* missing or invalid — use env bootstrap */
+    getDatabaseUrl();
+    const db = getDb();
+    const rows = await db
+      .select()
+      .from(appSettings)
+      .where(eq(appSettings.key, VIEWER_AUTH_KEY))
+      .limit(1);
+    const parsed = rows[0] ? parseOverride(rows[0].value) : null;
+    mem = parsed;
+    return mem;
+  } catch (error) {
+    if (error instanceof DatabaseUnavailableError) throw error;
+    throw new DatabaseUnavailableError(
+      error instanceof Error ? error.message : "PostgreSQL viewer-auth read failed"
+    );
   }
-  mem = emptyOverride();
-  return mem;
 }
 
 async function persistOverride(next: ViewerAuthFile): Promise<void> {
-  const filePath = resolveViewerAuthPath();
-  const dir = path.dirname(filePath);
-  await mkdir(dir, { recursive: true });
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  const body = JSON.stringify(next, null, 2);
-  await writeFile(tmp, body, "utf8");
-  await rename(tmp, filePath);
+  getDatabaseUrl();
+  const db = getDb();
+  const now = new Date().toISOString();
+  await db
+    .insert(appSettings)
+    .values({
+      key: VIEWER_AUTH_KEY,
+      value: next as unknown as Record<string, unknown>,
+      updatedBy: next.updatedBy,
+      updatedAt: now
+    })
+    .onConflictDoUpdate({
+      target: appSettings.key,
+      set: {
+        value: next as unknown as Record<string, unknown>,
+        updatedBy: next.updatedBy,
+        updatedAt: now
+      }
+    });
   mem = next;
 }
 
-/** Effective hash for viewer login (file override → env). */
+/** Effective hash for viewer login (PG override → env). */
 export async function getViewerPasswordHash(): Promise<string | null> {
-  const override = await readOverrideFile();
+  const override = await readOverride();
   if (override?.passwordHash) return override.passwordHash;
   return readEnvPasswordHash();
 }
 
-/**
- * Session epoch embedded in viewer cookies.
- * Env-only bootstrap uses 0; each panel password change increments.
- */
 export async function getViewerSessionEpoch(): Promise<number> {
-  const override = await readOverrideFile();
+  const override = await readOverride();
   return override?.sessionEpoch ?? 0;
 }
 
@@ -123,7 +138,7 @@ export type ViewerAuthPublicMeta = {
 };
 
 export async function getViewerAuthPublicMeta(): Promise<ViewerAuthPublicMeta> {
-  const override = await readOverrideFile();
+  const override = await readOverride();
   if (override) {
     return {
       source: "override",
@@ -159,9 +174,6 @@ export function validateViewerPasswordPlain(password: string): string | null {
   return null;
 }
 
-/**
- * Set viewer password from admin panel. Bumps sessionEpoch so old viewer cookies fail.
- */
 export async function setViewerPasswordFromAdmin(
   newPassword: string,
   updatedBy: string
@@ -170,7 +182,7 @@ export async function setViewerPasswordFromAdmin(
   if (validationError) return { ok: false, message: validationError };
 
   const passwordHash = hashPassword(newPassword);
-  const prev = await readOverrideFile();
+  const prev = await readOverride();
   const sessionEpoch = (prev?.sessionEpoch ?? 0) + 1;
   const next: ViewerAuthFile = {
     passwordHash,
@@ -179,20 +191,19 @@ export async function setViewerPasswordFromAdmin(
     updatedBy: updatedBy || "admin"
   };
 
-  const run = writeChain.then(() => persistOverride(next));
-  writeChain = run.then(
-    () => undefined,
-    () => undefined
-  );
   try {
-    await run;
+    await persistOverride(next);
     return { ok: true, sessionEpoch };
   } catch {
     return { ok: false, message: "ذخیره رمز viewer ناموفق بود" };
   }
 }
 
-/** Test helper: drop in-memory cache (does not delete file). */
+/** Importer / test: write override payload directly */
+export async function __importViewerAuthOverride(payload: ViewerAuthFile): Promise<void> {
+  await persistOverride(payload);
+}
+
 export function clearViewerAuthMemCache(): void {
   mem = undefined;
 }

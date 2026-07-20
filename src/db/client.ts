@@ -127,8 +127,8 @@ async function initDb(): Promise<DeskDb> {
   try {
     s.sql = postgres(url, {
       max: poolMax,
-      idle_timeout: 20,
-      connect_timeout: 10,
+      idle_timeout: 30,
+      connect_timeout: 30,
       prepare: false
     });
     s.db = drizzlePg(s.sql, { schema });

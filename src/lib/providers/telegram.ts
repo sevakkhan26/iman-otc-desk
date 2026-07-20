@@ -1,11 +1,8 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { fetchJson } from "@/lib/http";
 import type { SourceStatus, TelegramPrice, TelegramPricesResponse, TelegramPriceType } from "@/lib/types";
 
-const dataDir = path.join(process.cwd(), ".data");
-const offsetPath = path.join(dataDir, "telegram-offset.json");
-const pricesPath = path.join(dataDir, "telegram-prices.json");
+const TG_OFFSET_KV = "telegram_offset";
+const TG_PRICES_KV = "telegram_prices";
 
 // don't hammer Telegram if the dashboard polls often
 const MIN_POLL_MS = 4_000;
@@ -95,17 +92,23 @@ function parseMessage(message: TgMessage): TelegramPrice[] {
   return results;
 }
 
-async function readJson<T>(file: string, fallback: T): Promise<T> {
+async function readJson<T>(key: string, fallback: T): Promise<T> {
   try {
-    return JSON.parse(await readFile(file, "utf8")) as T;
+    const { pgGetKv } = await import("@/db/repositories/kv");
+    const v = await pgGetKv<T>(key);
+    return v ?? fallback;
   } catch {
     return fallback;
   }
 }
 
-async function writeJson(file: string, value: unknown): Promise<void> {
-  await mkdir(dataDir, { recursive: true });
-  await writeFile(file, JSON.stringify(value, null, 2), "utf8");
+async function writeJson(key: string, value: unknown): Promise<void> {
+  try {
+    const { pgSetKv } = await import("@/db/repositories/kv");
+    await pgSetKv(key, value, "telegram");
+  } catch {
+    // best-effort
+  }
 }
 
 function emptyItems(): TelegramPrice[] {
@@ -144,7 +147,7 @@ function toResponse(file: PricesFile, sourceStatus: SourceStatus, message?: stri
 
 export async function getTelegramPrices(): Promise<TelegramPricesResponse> {
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  const stored = await readJson<PricesFile>(pricesPath, { items: emptyItems(), lastUpdated: null, lastPolledAt: 0 });
+  const stored = await readJson<PricesFile>(TG_PRICES_KV, { items: emptyItems(), lastUpdated: null, lastPolledAt: 0 });
 
   if (!token) {
     return toResponse(stored, "unavailable", "توکن تلگرام تنظیم نشده است");
@@ -156,7 +159,7 @@ export async function getTelegramPrices(): Promise<TelegramPricesResponse> {
   }
 
   try {
-    const offset = await readJson<{ offset: number }>(offsetPath, { offset: 0 });
+    const offset = await readJson<{ offset: number }>(TG_OFFSET_KV, { offset: 0 });
     const allowed = encodeURIComponent(JSON.stringify(["channel_post", "edited_channel_post"]));
     const url = `https://api.telegram.org/bot${token}/getUpdates?timeout=0&allowed_updates=${allowed}${
       offset.offset ? `&offset=${offset.offset}` : ""
@@ -181,8 +184,8 @@ export async function getTelegramPrices(): Promise<TelegramPricesResponse> {
       lastUpdated: fresh.length || !stored.lastUpdated ? new Date().toISOString() : stored.lastUpdated,
       lastPolledAt: Date.now()
     };
-    await writeJson(pricesPath, next);
-    if (updates.length) await writeJson(offsetPath, { offset: maxUpdateId + 1 });
+    await writeJson(TG_PRICES_KV, next);
+    if (updates.length) await writeJson(TG_OFFSET_KV, { offset: maxUpdateId + 1 });
 
     return toResponse(next, "available");
   } catch (error) {

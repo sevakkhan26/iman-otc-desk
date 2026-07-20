@@ -1,11 +1,12 @@
+/**
+ * News translation cache — durable store: PostgreSQL app_settings key `news_translations`.
+ */
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { pgGetKv, pgSetKv } from "@/db/repositories/kv";
 import { outboundFetch } from "@/lib/http";
 import type { DeskSettings, ImpactNewsItem } from "@/lib/types";
 
-const dataDir = path.join(process.cwd(), ".data");
-const cachePath = path.join(dataDir, "news-translations.json");
+const KV_KEY = "news_translations";
 const MAX_CACHE_ENTRIES = 400;
 const BATCH_SIZE = 8;
 const TRANSLATE_TIMEOUT_MS = 20_000;
@@ -87,9 +88,8 @@ function sanitizeCache(cache: TranslationCache): TranslationCache {
 
 async function readCache(): Promise<TranslationCache> {
   try {
-    const raw = await readFile(cachePath, "utf8");
-    const parsed = JSON.parse(raw) as TranslationCache;
-    if (!parsed.entries || typeof parsed.entries !== "object") return { entries: {} };
+    const parsed = await pgGetKv<TranslationCache>(KV_KEY);
+    if (!parsed?.entries || typeof parsed.entries !== "object") return { entries: {} };
     return sanitizeCache(parsed);
   } catch {
     return { entries: {} };
@@ -101,8 +101,11 @@ async function writeCache(cache: TranslationCache): Promise<void> {
   const entries = Object.entries(sanitized.entries)
     .sort(([, a], [, b]) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
     .slice(0, MAX_CACHE_ENTRIES);
-  await mkdir(dataDir, { recursive: true });
-  await writeFile(cachePath, JSON.stringify({ entries: Object.fromEntries(entries) }, null, 2), "utf8");
+  try {
+    await pgSetKv(KV_KEY, { entries: Object.fromEntries(entries) }, "news-translation");
+  } catch {
+    // best-effort cache
+  }
 }
 
 function maskTokens(text: string): { masked: string; tokens: string[] } {

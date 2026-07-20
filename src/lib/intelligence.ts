@@ -1,5 +1,7 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
+/**
+ * Intelligence reports — durable store: PostgreSQL app_settings key `intelligence_history`.
+ */
+import { pgGetKv, pgSetKv } from "@/db/repositories/kv";
 import { outboundFetch } from "@/lib/http";
 import type {
   AlertItem,
@@ -22,8 +24,7 @@ type IntelligenceInput = {
   settings: DeskSettings;
 };
 
-const dataDir = path.join(process.cwd(), ".data");
-const historyPath = path.join(dataDir, "intelligence-history.json");
+const KV_KEY = "intelligence_history";
 
 const systemPrompt = `تو تحلیلگر ارشد Dealing Desk و OTC هستی.
 
@@ -54,17 +55,17 @@ const systemPrompt = `تو تحلیلگر ارشد Dealing Desk و OTC هستی.
 
 async function readHistory(): Promise<IntelligenceReport[]> {
   try {
-    const raw = await readFile(historyPath, "utf8");
-    const parsed = JSON.parse(raw) as IntelligenceReport[];
-    return Array.isArray(parsed) ? parsed : [];
+    const parsed = await pgGetKv<IntelligenceReport[] | { items?: IntelligenceReport[] }>(KV_KEY);
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && Array.isArray(parsed.items)) return parsed.items;
+    return [];
   } catch {
     return [];
   }
 }
 
 async function writeHistory(history: IntelligenceReport[]) {
-  await mkdir(dataDir, { recursive: true });
-  await writeFile(historyPath, JSON.stringify(history.slice(0, 200), null, 2), "utf8");
+  await pgSetKv(KV_KEY, { items: history.slice(0, 200) }, "intelligence");
 }
 
 function section(text: string, label: string) {

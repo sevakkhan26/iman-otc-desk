@@ -1,5 +1,3 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { recordGoldHistory } from "@/lib/goldHistory";
 import {
   clampToNow,
@@ -25,8 +23,7 @@ const FETCH_TIMEOUT_MS = 15_000;
 const NAVASAN_CSRF_PREFIX = "2bba8a6abdcae9571d63fefcd1df29bb3a8f5d91http://www.navasan.net/54tf%f";
 const TALAVEST_GOLD_API = "http://et.tala.ir/webservice/westgold.app/6397dbw8222f0ffb85cd539f865g9994";
 
-const dataDir = path.join(process.cwd(), ".data");
-const cachePath = path.join(dataDir, "gold-market-source-cache.json");
+const GOLD_SOURCE_CACHE_KV = "gold_market_source_cache";
 
 type SourceId = "navasan" | "bonbast" | "talavest";
 type NavasanRate = { value?: string | number; date?: number };
@@ -438,8 +435,8 @@ async function fetchNavasan(): Promise<{ quotes: GoldMarketQuote[]; live: boolea
 async function readSourceCache(): Promise<SourceCacheFile> {
   if (memSourceCache) return memSourceCache;
   try {
-    const raw = await readFile(cachePath, "utf8");
-    memSourceCache = JSON.parse(raw) as SourceCacheFile;
+    const { pgGetKv } = await import("@/db/repositories/kv");
+    memSourceCache = (await pgGetKv<SourceCacheFile>(GOLD_SOURCE_CACHE_KV)) ?? {};
     return memSourceCache;
   } catch {
     memSourceCache = {};
@@ -450,8 +447,8 @@ async function readSourceCache(): Promise<SourceCacheFile> {
 async function writeSourceCache(cache: SourceCacheFile): Promise<void> {
   memSourceCache = cache;
   try {
-    await mkdir(dataDir, { recursive: true });
-    await writeFile(cachePath, JSON.stringify(cache), "utf8");
+    const { pgSetKv } = await import("@/db/repositories/kv");
+    await pgSetKv(GOLD_SOURCE_CACHE_KV, cache, "gold-cache");
   } catch {
     // best-effort
   }

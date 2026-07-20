@@ -490,6 +490,45 @@ async function main() {
       }
     }
 
+    // --- remaining durable JSON blobs → app_settings KV ---
+    {
+      const kvFiles = [
+        { key: "gold_history", names: ["gold-history.json"] },
+        { key: "forex_events_history", names: ["forex-events-history.json"] },
+        { key: "intelligence_history", names: ["intelligence-history.json"] },
+        { key: "news_translations", names: ["news-translations.json"] },
+        { key: "forex_calendar_cache", names: ["forex-cache.json"] },
+        { key: "gold_market_source_cache", names: ["gold-market-source-cache.json"] },
+        { key: "fx_street_source_cache", names: ["fx-street-source-cache.json"] },
+        { key: "telegram_prices", names: ["telegram-prices.json"] },
+        { key: "telegram_offset", names: ["telegram-offset.json"] }
+      ];
+      let kvCount = 0;
+      for (const item of kvFiles) {
+        const f = await findFile(roots, item.names);
+        if (!f) continue;
+        const data = await readJson(f);
+        if (!data) continue;
+        report.files[item.key] = f;
+        if (!dryRun) {
+          // intelligence-history was a bare array in old files
+          const value =
+            item.key === "intelligence_history" && Array.isArray(data)
+              ? { items: data }
+              : data;
+          await sql`
+            INSERT INTO app_settings (key, value, updated_by, updated_at)
+            VALUES (${item.key}, ${sql.json(value)}, 'legacy-import', now())
+            ON CONFLICT (key) DO UPDATE
+            SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()
+          `;
+        }
+        kvCount += 1;
+        log("kv imported", item.key);
+      }
+      report.counts.kv_blobs = kvCount;
+    }
+
     report.finishedAt = new Date().toISOString();
     report.ok = true;
 

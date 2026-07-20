@@ -1,5 +1,7 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
+/**
+ * Gold price history — durable store: PostgreSQL app_settings key `gold_history`.
+ */
+import { pgGetKv, pgSetKv } from "@/db/repositories/kv";
 import type {
   GoldHistoryRange,
   GoldHistoryResponse,
@@ -10,8 +12,7 @@ import type {
   GoldPriceUnit
 } from "@/lib/types";
 
-const dataDir = path.join(process.cwd(), ".data");
-const historyPath = path.join(dataDir, "gold-history.json");
+const KV_KEY = "gold_history";
 
 type Sample = {
   t: number;
@@ -38,10 +39,9 @@ function quoteValue(quote: GoldMarketQuote): number | null {
 
 async function readSamples(): Promise<Sample[]> {
   try {
-    const raw = await readFile(historyPath, "utf8");
-    const parsed = JSON.parse(raw) as { samples?: unknown };
-    if (!Array.isArray(parsed.samples)) return [];
-    return parsed.samples.filter(
+    const stored = await pgGetKv<{ samples?: unknown }>(KV_KEY);
+    if (!stored || !Array.isArray(stored.samples)) return [];
+    return stored.samples.filter(
       (sample): sample is Sample =>
         Boolean(sample) &&
         typeof (sample as Sample).t === "number" &&
@@ -84,8 +84,7 @@ export async function recordGoldHistory(quotes: GoldMarketQuote[]): Promise<void
       samples.push(entry);
     }
     const pruned = samples.filter((sample) => now - sample.t <= MAX_AGE_MS);
-    await mkdir(dataDir, { recursive: true });
-    await writeFile(historyPath, JSON.stringify({ samples: pruned }), "utf8");
+    await pgSetKv(KV_KEY, { samples: pruned }, "gold-history");
   } catch {
     // best-effort
   }

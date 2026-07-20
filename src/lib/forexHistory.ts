@@ -1,5 +1,7 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
+/**
+ * Forex event history — durable store: PostgreSQL app_settings key `forex_events_history`.
+ */
+import { pgGetKv, pgSetKv } from "@/db/repositories/kv";
 import { getGoldPriceSamples } from "@/lib/goldHistory";
 import { getMedianPriceSamples } from "@/lib/history";
 import type {
@@ -13,8 +15,7 @@ import type {
   SourceStatus
 } from "@/lib/types";
 
-const dataDir = path.join(process.cwd(), ".data");
-const historyPath = path.join(dataDir, "forex-events-history.json");
+const KV_KEY = "forex_events_history";
 
 /** Keep completed events for 4 months so previous-month queries stay available. */
 const RETAIN_MS = 120 * 24 * 60 * 60_000;
@@ -61,8 +62,7 @@ function isImportant(event: ForexEvent): boolean {
 
 async function readHistory(): Promise<HistoryFile> {
   try {
-    const raw = await readFile(historyPath, "utf8");
-    const parsed = JSON.parse(raw) as HistoryFile;
+    const parsed = await pgGetKv<HistoryFile>(KV_KEY);
     if (!parsed || !Array.isArray(parsed.events)) return { events: [], updatedAt: null };
     return {
       events: parsed.events.filter(
@@ -78,8 +78,7 @@ async function readHistory(): Promise<HistoryFile> {
 
 async function writeHistory(file: HistoryFile): Promise<void> {
   try {
-    await mkdir(dataDir, { recursive: true });
-    await writeFile(historyPath, JSON.stringify(file), "utf8");
+    await pgSetKv(KV_KEY, file, "forex-history");
   } catch {
     // best-effort
   }

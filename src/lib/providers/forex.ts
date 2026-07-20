@@ -1,6 +1,4 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { buildPreviousMonthSection, recordCompletedForexEvents } from "@/lib/forexHistory";
 import { fetchJson } from "@/lib/http";
 import type { DeskSettings, ForexEvent, ForexEventsResponse, ForexImpact, PremiumImpact } from "@/lib/types";
@@ -147,13 +145,11 @@ const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Forex Factory rate-limits aggressive polling, and the calendar only changes weekly,
 // so cache successful responses (in memory AND on disk) and fall back to the last good
-// result on transient errors (e.g. HTTP 429). Disk persistence survives server restarts.
+// result on transient errors (e.g. HTTP 429). Durable last-good lives in PostgreSQL.
 const FRESH_TTL_MS = 60 * 1000; // 1 min normal
 const STALE_TTL_MS = 24 * 60 * 60_000; // 24 h: serve last good data when the source fails
 const HOT_TTL_MS = 20 * 1000; // 20s around release times
-
-const dataDir = path.join(process.cwd(), ".data");
-const cachePath = path.join(dataDir, "forex-cache.json");
+const FOREX_CACHE_KV = "forex_calendar_cache";
 
 type CacheEntry = { at: number; data: ForexEventsResponse };
 
@@ -162,8 +158,8 @@ let inflight: Promise<ForexEventsResponse> | null = null;
 
 async function readDiskCache(): Promise<CacheEntry | null> {
   try {
-    const raw = await readFile(cachePath, "utf8");
-    const parsed = JSON.parse(raw) as CacheEntry;
+    const { pgGetKv } = await import("@/db/repositories/kv");
+    const parsed = await pgGetKv<CacheEntry>(FOREX_CACHE_KV);
     return parsed && typeof parsed.at === "number" && parsed.data ? parsed : null;
   } catch {
     return null;
@@ -172,10 +168,10 @@ async function readDiskCache(): Promise<CacheEntry | null> {
 
 async function writeDiskCache(entry: CacheEntry): Promise<void> {
   try {
-    await mkdir(dataDir, { recursive: true });
-    await writeFile(cachePath, JSON.stringify(entry), "utf8");
+    const { pgSetKv } = await import("@/db/repositories/kv");
+    await pgSetKv(FOREX_CACHE_KV, entry, "forex-cache");
   } catch {
-    // disk cache is best-effort; ignore write failures
+    // cache is best-effort
   }
 }
 

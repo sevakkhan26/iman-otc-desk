@@ -2,17 +2,24 @@
  * Idempotent importer: JSON/file durable state → PostgreSQL.
  *
  * Usage:
- *   DATABASE_URL=pglite:.data/pglite npx tsx scripts/import-legacy-to-postgres.mts [--dry-run]
+ *   DATABASE_URL=postgres://… pnpm exec tsx scripts/import-legacy-to-postgres.mts
+ *   DATABASE_URL=postgres://… pnpm exec tsx scripts/import-legacy-to-postgres.mts --dry-run
+ *   LEGACY_DATA_DIR=/app/data/price-alerts DATABASE_URL=… pnpm exec tsx scripts/import-legacy-to-postgres.mts
  *
- * Never deletes source data. Safe to run twice.
+ * Searches multiple roots (production Docker volume + local .data). Never deletes sources.
+ * Safe to run twice.
  */
+import { access, readFile, writeFile, mkdir } from "node:fs/promises";
+import { constants } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
-import { closeDb, getDatabaseUrl, getDb, pingDatabase } from "../src/db/client.ts";
+import { closeDb, getDatabaseUrl, getDb, isPgliteUrl, pingDatabase } from "../src/db/client.ts";
 import { runMigrations } from "../src/db/migrate.ts";
 import { pgImportApiKeyStoreFile, pgListApiKeyRecords } from "../src/db/repositories/apiKeys.ts";
-import { pgWriteTetherSnapshot, pgReadLatestTetherSnapshot } from "../src/db/repositories/marketSnapshots.ts";
+import {
+  pgWriteTetherSnapshot,
+  pgReadLatestTetherSnapshot
+} from "../src/db/repositories/marketSnapshots.ts";
 import { pgGetSettingsJson, pgSaveSettingsJson } from "../src/db/repositories/settings.ts";
 import { pgLoadAlertsBundle, pgSaveAlertsBundle } from "../src/db/repositories/alerts.ts";
 import { pgListUsers, pgUpsertUser } from "../src/db/repositories/users.ts";
@@ -23,14 +30,56 @@ import type { MarketSnapshotRecord } from "../src/lib/marketSnapshotStore.ts";
 import type { ApiKeyStoreFile } from "../src/lib/apiKeys/types.ts";
 
 const dryRun = process.argv.includes("--dry-run");
-const dataDir = path.join(process.cwd(), ".data");
+const skipMigrate = process.argv.includes("--skip-migrate");
+
+/** Collect --data-dir=PATH and LEGACY_DATA_DIR / LEGACY_DATA_DIRS */
+function collectDataRoots(): string[] {
+  const roots: string[] = [];
+  for (const arg of process.argv.slice(2)) {
+    if (arg.startsWith("--data-dir=")) {
+      roots.push(path.resolve(arg.slice("--data-dir=".length)));
+    }
+  }
+  const single = process.env.LEGACY_DATA_DIR?.trim();
+  if (single) roots.push(path.resolve(single));
+  const multi = process.env.LEGACY_DATA_DIRS?.trim();
+  if (multi) {
+    for (const part of multi.split(/[:;,]/)) {
+      const p = part.trim();
+      if (p) roots.push(path.resolve(p));
+    }
+  }
+  // Production Docker volume (named volume mount)
+  roots.push("/app/data/price-alerts");
+  // Common host bind if operator mounts volume beside app
+  roots.push(path.join(process.cwd(), "app", "data", "price-alerts"));
+  // Local / legacy default
+  roots.push(path.join(process.cwd(), ".data"));
+  roots.push(path.join(process.cwd(), ".data", "price-alerts"));
+
+  // Dedup preserve order
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const r of roots) {
+    const n = path.resolve(r);
+    if (seen.has(n)) continue;
+    seen.add(n);
+    out.push(n);
+  }
+  return out;
+}
+
+const dataRoots = collectDataRoots();
 
 type CountMap = Record<string, { before: number; imported: number; after: number; skipped: number }>;
 
 const report: {
   startedAt: string;
   dryRun: boolean;
+  skipMigrate: boolean;
   databaseUrlMode: string;
+  dataRoots: string[];
+  filesFound: Record<string, string | null>;
   counts: CountMap;
   errors: string[];
   warnings: string[];
@@ -39,7 +88,10 @@ const report: {
 } = {
   startedAt: new Date().toISOString(),
   dryRun,
+  skipMigrate,
   databaseUrlMode: "",
+  dataRoots,
+  filesFound: {},
   counts: {},
   errors: [],
   warnings: [],
@@ -50,7 +102,41 @@ function initCount(key: string, before = 0): void {
   report.counts[key] = { before, imported: 0, after: 0, skipped: 0 };
 }
 
-async function readJson<T>(filePath: string): Promise<T | null> {
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath, constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Find first readable file among roots × relative candidates */
+async function findFirstFile(
+  label: string,
+  relativeCandidates: string[]
+): Promise<string | null> {
+  for (const root of dataRoots) {
+    for (const rel of relativeCandidates) {
+      const full = path.isAbsolute(rel) ? rel : path.join(root, rel);
+      if (await fileExists(full)) {
+        report.filesFound[label] = full;
+        return full;
+      }
+    }
+  }
+  // Also try absolute paths listed as relativeCandidates when they start with /
+  for (const rel of relativeCandidates) {
+    if (path.isAbsolute(rel) && (await fileExists(rel))) {
+      report.filesFound[label] = rel;
+      return rel;
+    }
+  }
+  report.filesFound[label] = null;
+  return null;
+}
+
+async function readJsonFile<T>(filePath: string): Promise<T | null> {
   try {
     const raw = await readFile(filePath, "utf8");
     return JSON.parse(raw) as T;
@@ -61,21 +147,52 @@ async function readJson<T>(filePath: string): Promise<T | null> {
 
 async function importSettings(): Promise<void> {
   initCount("settings");
-  const file = path.join(dataDir, "settings.json");
-  const data = await readJson<Partial<DeskSettings>>(file);
+  const file = await findFirstFile("settings.json", [
+    "settings.json",
+    path.join("..", "settings.json")
+  ]);
+  // Also search sibling of price-alerts volume
+  if (!file) {
+    for (const root of dataRoots) {
+      const parent = path.dirname(root);
+      const cand = path.join(parent, "settings.json");
+      if (await fileExists(cand)) {
+        report.filesFound["settings.json"] = cand;
+        const data = await readJsonFile<Partial<DeskSettings>>(cand);
+        if (data) return applySettings(data);
+      }
+    }
+    // full .data style
+    const d = await findFirstFile("settings.json", [
+      path.join(process.cwd(), ".data", "settings.json")
+    ]);
+    if (!d) {
+      report.warnings.push("settings.json missing — defaults will apply at runtime");
+      return;
+    }
+    const data = await readJsonFile<Partial<DeskSettings>>(d);
+    if (!data) {
+      report.warnings.push("settings.json unreadable");
+      return;
+    }
+    return applySettings(data);
+  }
+  const data = await readJsonFile<Partial<DeskSettings>>(file);
   if (!data) {
-    report.warnings.push("settings.json missing or unreadable");
+    report.warnings.push("settings.json unreadable");
     return;
   }
+  return applySettings(data);
+}
+
+async function applySettings(data: Partial<DeskSettings>): Promise<void> {
   report.counts.settings!.before = 1;
   if (dryRun) {
     report.counts.settings!.imported = 1;
     return;
   }
   const existing = await pgGetSettingsJson();
-  if (existing) {
-    report.counts.settings!.skipped = 1;
-  }
+  if (existing) report.counts.settings!.skipped = 1;
   await pgSaveSettingsJson(
     {
       providerApiKeys: data.providerApiKeys ?? {},
@@ -98,14 +215,21 @@ async function importSettings(): Promise<void> {
 
 async function importApiKeys(): Promise<void> {
   initCount("api_keys");
-  const file = path.join(dataDir, "tether-api-keys.json");
-  const data = await readJson<ApiKeyStoreFile>(file);
-  if (!data?.keys) {
+  const file = await findFirstFile("tether-api-keys.json", [
+    "tether-api-keys.json",
+    path.join(process.cwd(), ".data", "tether-api-keys.json"),
+    process.env.TETHER_API_KEYS_DATA_FILE?.trim() || ""
+  ].filter(Boolean));
+  if (!file) {
     report.warnings.push("tether-api-keys.json missing");
     return;
   }
+  const data = await readJsonFile<ApiKeyStoreFile>(file);
+  if (!data?.keys) {
+    report.warnings.push("tether-api-keys.json invalid");
+    return;
+  }
   report.counts.api_keys!.before = data.keys.length;
-  // Validate hashes are hex HMAC (64 chars) — compatible
   for (const k of data.keys) {
     if (!/^[0-9a-f]{64}$/i.test(k.keyHash)) {
       report.errors.push(
@@ -126,17 +250,18 @@ async function importApiKeys(): Promise<void> {
 
 async function importUsers(): Promise<void> {
   initCount("users");
-  const candidates = [
-    path.join(dataDir, "desk-users.json"),
-    path.join(dataDir, "price-alerts", "desk-users.json")
-  ];
-  let data: { users?: Array<Record<string, unknown>> } | null = null;
-  for (const c of candidates) {
-    data = await readJson(c);
-    if (data?.users) break;
+  const file = await findFirstFile("desk-users.json", [
+    "desk-users.json",
+    "price-alerts/desk-users.json",
+    process.env.DESK_USERS_DATA_FILE?.trim() || ""
+  ].filter(Boolean));
+  if (!file) {
+    report.warnings.push("desk-users.json missing (env admin/viewer still work)");
+    return;
   }
+  const data = await readJsonFile<{ users?: Array<Record<string, unknown>> }>(file);
   if (!data?.users) {
-    report.warnings.push("desk-users.json missing");
+    report.warnings.push("desk-users.json empty/invalid");
     return;
   }
   report.counts.users!.before = data.users.length;
@@ -174,50 +299,55 @@ async function importUsers(): Promise<void> {
 
 async function importViewerAuth(): Promise<void> {
   initCount("viewer_auth");
-  const candidates = [
-    path.join(dataDir, "viewer-auth.json"),
-    path.join(dataDir, "price-alerts", "viewer-auth.json")
-  ];
-  for (const c of candidates) {
-    const data = await readJson<{
-      passwordHash: string;
-      sessionEpoch: number;
-      updatedAt?: string | null;
-      updatedBy?: string | null;
-    }>(c);
-    if (!data?.passwordHash) continue;
-    report.counts.viewer_auth!.before = 1;
-    if (!dryRun) {
-      await __importViewerAuthOverride({
-        passwordHash: data.passwordHash,
-        sessionEpoch: data.sessionEpoch ?? 0,
-        updatedAt: data.updatedAt ?? null,
-        updatedBy: data.updatedBy ?? "legacy-import"
-      });
-      report.counts.viewer_auth!.imported = 1;
-      report.counts.viewer_auth!.after = 1;
-    } else {
-      report.counts.viewer_auth!.imported = 1;
-    }
+  const file = await findFirstFile("viewer-auth.json", [
+    "viewer-auth.json",
+    "price-alerts/viewer-auth.json",
+    process.env.VIEWER_AUTH_DATA_FILE?.trim() || ""
+  ].filter(Boolean));
+  if (!file) {
+    report.warnings.push("viewer-auth.json missing (env VIEWER_PASSWORD_HASH bootstrap only)");
     return;
   }
-  report.warnings.push("viewer-auth.json missing (env bootstrap only)");
+  const data = await readJsonFile<{
+    passwordHash: string;
+    sessionEpoch: number;
+    updatedAt?: string | null;
+    updatedBy?: string | null;
+  }>(file);
+  if (!data?.passwordHash) {
+    report.warnings.push("viewer-auth.json invalid");
+    return;
+  }
+  report.counts.viewer_auth!.before = 1;
+  if (dryRun) {
+    report.counts.viewer_auth!.imported = 1;
+    return;
+  }
+  await __importViewerAuthOverride({
+    passwordHash: data.passwordHash,
+    sessionEpoch: data.sessionEpoch ?? 0,
+    updatedAt: data.updatedAt ?? null,
+    updatedBy: data.updatedBy ?? "legacy-import"
+  });
+  report.counts.viewer_auth!.imported = 1;
+  report.counts.viewer_auth!.after = 1;
 }
 
 async function importAlerts(): Promise<void> {
   initCount("price_alerts");
   initCount("alert_notifications");
-  const candidates = [
-    path.join(dataDir, "price-alerts.json"),
-    path.join(dataDir, "price-alerts", "price-alerts.json")
-  ];
-  let data: { alerts?: unknown[]; notifications?: unknown[] } | null = null;
-  for (const c of candidates) {
-    data = await readJson(c);
-    if (data?.alerts) break;
-  }
-  if (!data) {
+  const file = await findFirstFile("price-alerts.json", [
+    "price-alerts.json",
+    "price-alerts/price-alerts.json",
+    process.env.PRICE_ALERTS_DATA_FILE?.trim() || ""
+  ].filter(Boolean));
+  if (!file) {
     report.warnings.push("price-alerts.json missing");
+    return;
+  }
+  const data = await readJsonFile<{ alerts?: unknown[]; notifications?: unknown[] }>(file);
+  if (!data) {
+    report.warnings.push("price-alerts.json unreadable");
     return;
   }
   const alerts = (data.alerts ?? []) as Array<{ id: string } & Record<string, unknown>>;
@@ -237,7 +367,6 @@ async function importAlerts(): Promise<void> {
     report.counts.price_alerts!.imported = alerts.length;
     report.counts.alert_notifications!.imported = notifications.length;
   } else {
-    // merge by id
     const alertMap = new Map(existing.alerts.map((a) => [(a as { id: string }).id, a]));
     for (const a of alerts) {
       if (!alertMap.has(a.id)) {
@@ -272,10 +401,18 @@ async function importAlerts(): Promise<void> {
 
 async function importSnapshot(): Promise<void> {
   initCount("market_snapshots");
-  const file = path.join(dataDir, "market-snapshot.json");
-  const data = await readJson<MarketSnapshotRecord>(file);
+  const file = await findFirstFile("market-snapshot.json", [
+    "market-snapshot.json",
+    process.env.MARKET_SNAPSHOT_DATA_FILE?.trim() || "",
+    path.join(process.cwd(), ".data", "market-snapshot.json")
+  ].filter(Boolean));
+  if (!file) {
+    report.warnings.push("market-snapshot.json missing (fresh snapshot will build on first request)");
+    return;
+  }
+  const data = await readJsonFile<MarketSnapshotRecord>(file);
   if (!data?.tetherMarket) {
-    report.warnings.push("market-snapshot.json missing");
+    report.warnings.push("market-snapshot.json invalid");
     return;
   }
   report.counts.market_snapshots!.before = 1;
@@ -284,9 +421,7 @@ async function importSnapshot(): Promise<void> {
     return;
   }
   const existing = await pgReadLatestTetherSnapshot();
-  if (existing) {
-    report.counts.market_snapshots!.skipped = 1;
-  }
+  if (existing) report.counts.market_snapshots!.skipped = 1;
   await pgWriteTetherSnapshot({
     version: 1,
     generatedAt: data.generatedAt,
@@ -304,10 +439,17 @@ async function importSnapshot(): Promise<void> {
 
 async function importMedianHistory(): Promise<void> {
   initCount("median_history");
-  const file = path.join(dataDir, "median-history.json");
-  const data = await readJson<{ samples?: Array<{ t: number; v: number }> }>(file);
-  if (!data?.samples?.length) {
+  const file = await findFirstFile("median-history.json", [
+    "median-history.json",
+    path.join(process.cwd(), ".data", "median-history.json")
+  ]);
+  if (!file) {
     report.warnings.push("median-history.json missing");
+    return;
+  }
+  const data = await readJsonFile<{ samples?: Array<{ t: number; v: number }> }>(file);
+  if (!data?.samples?.length) {
+    report.warnings.push("median-history.json empty");
     return;
   }
   report.counts.median_history!.before = data.samples.length;
@@ -337,14 +479,21 @@ async function importMedianHistory(): Promise<void> {
 
 async function importNews(): Promise<void> {
   initCount("news_items");
-  const file = path.join(dataDir, "impact-news-store.json");
-  const data = await readJson<{
+  const file = await findFirstFile("impact-news-store.json", [
+    "impact-news-store.json",
+    path.join(process.cwd(), ".data", "impact-news-store.json")
+  ]);
+  if (!file) {
+    report.warnings.push("impact-news-store.json missing");
+    return;
+  }
+  const data = await readJsonFile<{
     articles?: Record<string, Record<string, unknown>>;
     providers?: Record<string, unknown>;
     updatedAt?: string | null;
   }>(file);
   if (!data?.articles) {
-    report.warnings.push("impact-news-store.json missing");
+    report.warnings.push("impact-news-store.json invalid");
     return;
   }
   const ids = Object.keys(data.articles);
@@ -397,17 +546,34 @@ async function importNews(): Promise<void> {
   report.counts.news_items!.imported = imported;
 }
 
+async function writeReport(): Promise<string> {
+  const outDir = path.join(process.cwd(), ".data");
+  await mkdir(outDir, { recursive: true });
+  const reportPath = path.join(
+    outDir,
+    `migration-report-${dryRun ? "dry-" : ""}${Date.now()}.json`
+  );
+  await writeFile(reportPath, JSON.stringify(report, null, 2), "utf8");
+  return reportPath;
+}
+
 async function main() {
   try {
     const url = getDatabaseUrl();
-    report.databaseUrlMode = url.startsWith("pglite") ? "pglite" : "postgres";
+    report.databaseUrlMode = isPgliteUrl(url) ? "pglite" : "postgres";
     console.log(`[import] DATABASE_URL mode: ${report.databaseUrlMode}`);
     console.log(`[import] dry-run: ${dryRun}`);
+    console.log(`[import] data roots:`, dataRoots);
 
-    console.log("[import] running migrations…");
-    const mig = await runMigrations();
-    console.log("[import] migrations applied:", mig.applied, "skipped:", mig.skipped);
+    if (!skipMigrate) {
+      console.log("[import] running schema migrations…");
+      const mig = await runMigrations();
+      console.log("[import] migrations applied:", mig.applied, "skipped:", mig.skipped);
+    } else {
+      console.log("[import] skipping migrations (--skip-migrate)");
+    }
     await pingDatabase();
+    console.log("[import] database ping OK");
 
     await importSettings();
     await importApiKeys();
@@ -420,14 +586,11 @@ async function main() {
 
     report.ok = report.errors.length === 0;
     report.finishedAt = new Date().toISOString();
-
-    const outDir = path.join(process.cwd(), ".data");
-    await mkdir(outDir, { recursive: true });
-    const reportPath = path.join(outDir, `migration-report-${Date.now()}.json`);
-    await writeFile(reportPath, JSON.stringify(report, null, 2), "utf8");
+    const reportPath = await writeReport();
 
     console.log("\n=== Migration report ===");
-    console.log(JSON.stringify(report.counts, null, 2));
+    console.log("Files found:", JSON.stringify(report.filesFound, null, 2));
+    console.log("Counts:", JSON.stringify(report.counts, null, 2));
     if (report.warnings.length) console.log("Warnings:", report.warnings);
     if (report.errors.length) console.log("Errors:", report.errors);
     console.log(`Report written: ${reportPath}`);
@@ -439,8 +602,7 @@ async function main() {
     report.finishedAt = new Date().toISOString();
     console.error(e);
     try {
-      const reportPath = path.join(process.cwd(), ".data", `migration-report-error-${Date.now()}.json`);
-      await writeFile(reportPath, JSON.stringify(report, null, 2), "utf8");
+      const reportPath = await writeReport();
       console.error("Error report:", reportPath);
     } catch {
       /* ignore */

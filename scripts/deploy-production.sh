@@ -82,6 +82,30 @@ if [ -n "${CONTEXT}" ]; then
   docker context use "${CONTEXT}"
 fi
 
+# --- PostgreSQL schema migrate before recreate (when DATABASE_URL is available) ---
+if [ -n "${DATABASE_URL:-}" ] && [ "${SKIP_DB_MIGRATE:-0}" != "1" ]; then
+  log "DATABASE_URL set — applying schema migrations before container recreate"
+  if command -v pnpm >/dev/null 2>&1; then
+    pnpm exec tsx src/db/migrate.ts || node scripts/run-migrations.mjs \
+      || fail "database migration failed (fix DATABASE_URL / Postgres health)"
+  else
+    node scripts/run-migrations.mjs \
+      || fail "database migration failed (fix DATABASE_URL / Postgres health)"
+  fi
+  log "schema migrations OK"
+  if [ "${AUTO_IMPORT_LEGACY:-0}" = "1" ]; then
+    log "AUTO_IMPORT_LEGACY=1 — importing legacy JSON before restart"
+    if command -v pnpm >/dev/null 2>&1; then
+      pnpm exec tsx scripts/import-legacy-to-postgres.mts --skip-migrate \
+        || fail "legacy import failed"
+    else
+      log "WARN: pnpm/tsx missing — import will retry in container entrypoint if scripts present"
+    fi
+  fi
+else
+  log "DATABASE_URL unset or SKIP_DB_MIGRATE=1 — container entrypoint will migrate if DATABASE_URL is injected via compose"
+fi
+
 log "building and recreating service ${SERVICE_NAME} (volume preserved)"
 # Never pass -v / --volumes — that would delete iman-otc-alerts-data.
 docker compose -f "${COMPOSE_FILE}" up -d --build --force-recreate "${SERVICE_NAME}"

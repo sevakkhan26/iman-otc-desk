@@ -1,6 +1,6 @@
 {
   "name": "dealing-desk-otc-dashboard",
-  "version": "3.2.0",
+  "version": "3.2.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,8 @@
     "db:migrate": "npx --yes tsx src/db/migrate.ts",
     "db:import": "npx --yes tsx scripts/import-legacy-to-postgres.mts",
     "db:import:dry": "npx --yes tsx scripts/import-legacy-to-postgres.mts --dry-run",
+    "db:production-setup": "bash scripts/production-pg-setup.sh",
+    "db:production-setup:dry": "bash scripts/production-pg-setup.sh --dry-run",
     "test": "npx --yes tsx scripts/test-auth-cookies.mts && npx --yes tsx scripts/test-viewer-auth.mts && npx --yes tsx scripts/test-user-store.mts && npx --yes tsx scripts/test-impact-news.mts && npx --yes tsx scripts/test-price-alerts.mts && npx --yes tsx scripts/test-okex-tetherland.mts && npx --yes tsx scripts/test-bubble.mts && npx --yes tsx scripts/test-market-snapshot.mts && npx --yes tsx scripts/test-tether-api-keys.mts && npx --yes tsx scripts/test-postgres.mts",
     "test:tether-api-keys": "npx --yes tsx scripts/test-tether-api-keys.mts",
     "test:viewer-auth": "npx --yes tsx scripts/test-viewer-auth.mts",

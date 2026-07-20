@@ -66,3 +66,15 @@ node scripts/run-legacy-import-data.mjs --force
 See `docs/PRODUCTION-PG-SETUP.md` and `docs/DATABASE-UBUNTU.md`.
 
 Container start always runs schema migrations when `DATABASE_URL` is set.
+
+## Backup / restore (independent DB)
+
+Postgres is a **separate container + volume** (`otc-postgres` / `otc-postgres-data`).  
+You can backup only the database and restore it on another laptop without the app container.
+
+```bash
+./scripts/pg-backup.sh ./backups/postgres          # portable .dump
+./scripts/pg-restore.sh ./backups/postgres/….dump  # new PC / local
+```
+
+Full guide: **`docs/DATABASE-BACKUP.md`**.

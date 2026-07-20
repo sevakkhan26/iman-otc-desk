@@ -25,3 +25,8 @@ app/data/
 *.tmp
 
 .docker-export/
+
+# local DB dumps
+backups/
+*.dump
+*.dump.meta.json

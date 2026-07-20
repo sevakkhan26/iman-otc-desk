@@ -166,39 +166,17 @@ export async function getDbAsync(): Promise<DeskDb> {
 }
 
 /**
- * Sync accessor for call sites that cannot await.
- * Returns existing instance; kicks off init if needed and throws if not ready.
- * Prefer getDbAsync() in new code.
+ * Sync accessor — only returns an already-initialized DB.
+ * Never opens a second PGlite handle (that aborts WASM under Next.js concurrency).
+ * Prefer await getDbAsync() everywhere.
  */
 export function getDb(): DeskDb {
   const s = state();
   if (s.db) return s.db;
-  // Kick off async init for next tick / concurrent awaiters
+  // Single-flight async init; do not construct PGlite here.
   void getDbAsync();
-  // Best-effort sync path for PGlite constructor (may still need waitReady)
-  const url = getDatabaseUrl();
-  if (isPgliteUrl(url)) {
-    // Block via deasync is not available — force sync construction + queue
-    const dataDir = resolvePgliteDataDir(url);
-    mkdirSync(dataDir, { recursive: true });
-    try {
-      const pglite = new PGlite(dataDir);
-      s.pglite = pglite;
-      s.db = drizzlePglite(pglite, { schema });
-      s.mode = "pglite";
-      s.initPromise = Promise.resolve(s.db);
-      return s.db;
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      throw new DatabaseUnavailableError(`PGlite sync init failed: ${msg}`, error);
-    }
-  }
-  // postgres.js can be constructed sync
-  if (!s.initPromise) {
-    s.initPromise = initDb();
-  }
   throw new DatabaseUnavailableError(
-    "PostgreSQL is still connecting — retry the request. Prefer await getDbAsync()."
+    "Database is initializing — use await getDbAsync() (retry the request)."
   );
 }
 

@@ -13,7 +13,7 @@ import { access, readFile, writeFile, mkdir } from "node:fs/promises";
 import { constants } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { closeDb, getDatabaseUrl, getDb, isPgliteUrl, pingDatabase } from "../src/db/client.ts";
+import { closeDb, getDatabaseUrl, getDbAsync, isPgliteUrl, pingDatabase } from "../src/db/client.ts";
 import { runMigrations } from "../src/db/migrate.ts";
 import { pgImportApiKeyStoreFile, pgListApiKeyRecords } from "../src/db/repositories/apiKeys.ts";
 import {
@@ -457,7 +457,7 @@ async function importMedianHistory(): Promise<void> {
     report.counts.median_history!.imported = data.samples.length;
     return;
   }
-  const db = getDb();
+  const db = await getDbAsync();
   let imported = 0;
   for (const s of data.samples) {
     if (!Number.isFinite(s.t) || !Number.isFinite(s.v)) {
@@ -502,7 +502,7 @@ async function importNews(): Promise<void> {
     report.counts.news_items!.imported = ids.length;
     return;
   }
-  const db = getDb();
+  const db = await getDbAsync();
   let imported = 0;
   for (const [id, article] of Object.entries(data.articles)) {
     try {

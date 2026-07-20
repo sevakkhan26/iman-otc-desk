@@ -4,7 +4,7 @@
  * would break the request path, so we throw on write and soft-empty on read if unavailable.
  */
 import { eq } from "drizzle-orm";
-import { getDatabaseUrl, getDb } from "@/db/client";
+import { getDatabaseUrl, getDbAsync } from "@/db/client";
 import { appSettings, newsItems } from "@/db/schema";
 import type { Severity } from "@/lib/types";
 import type { ScoredNewsArticle } from "@/lib/news/pipeline";
@@ -46,7 +46,7 @@ export async function loadNewsStore(): Promise<NewsStoreFile> {
   if (memoryStore) return memoryStore;
   try {
     getDatabaseUrl();
-    const db = getDb();
+    const db = await getDbAsync();
     const metaRows = await db
       .select()
       .from(appSettings)
@@ -79,7 +79,7 @@ export async function saveNewsStore(store: NewsStoreFile): Promise<void> {
   memoryStore = store;
   try {
     getDatabaseUrl();
-    const db = getDb();
+    const db = await getDbAsync();
     const now = new Date().toISOString();
     // Meta (providers + updatedAt)
     await db

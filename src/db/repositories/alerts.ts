@@ -1,12 +1,12 @@
 import { eq } from "drizzle-orm";
-import { getDb } from "@/db/client";
+import { getDbAsync } from "@/db/client";
 import { alertNotifications, priceAlerts } from "@/db/schema";
 
 export async function pgLoadAlertsBundle(): Promise<{
   alerts: unknown[];
   notifications: unknown[];
 }> {
-  const db = getDb();
+  const db = await getDbAsync();
   const a = await db.select().from(priceAlerts);
   const n = await db.select().from(alertNotifications);
   return {
@@ -19,7 +19,7 @@ export async function pgSaveAlertsBundle(bundle: {
   alerts: Array<{ id: string } & Record<string, unknown>>;
   notifications: Array<{ id: string; alertId?: string; triggeredAt?: string } & Record<string, unknown>>;
 }): Promise<void> {
-  const db = getDb();
+  const db = await getDbAsync();
   // Replace strategy inside transaction semantics: delete all + insert
   await db.delete(alertNotifications);
   await db.delete(priceAlerts);
@@ -47,7 +47,7 @@ export async function pgSaveAlertsBundle(bundle: {
 }
 
 export async function pgUpsertAlert(alert: { id: string } & Record<string, unknown>): Promise<void> {
-  const db = getDb();
+  const db = await getDbAsync();
   await db
     .insert(priceAlerts)
     .values({
@@ -66,6 +66,6 @@ export async function pgUpsertAlert(alert: { id: string } & Record<string, unkno
 }
 
 export async function pgDeleteAlert(id: string): Promise<void> {
-  const db = getDb();
+  const db = await getDbAsync();
   await db.delete(priceAlerts).where(eq(priceAlerts.id, id));
 }

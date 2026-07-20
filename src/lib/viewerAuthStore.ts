@@ -4,7 +4,7 @@
  * Env VIEWER_PASSWORD_HASH remains bootstrap when no override row exists.
  */
 import { eq } from "drizzle-orm";
-import { DatabaseUnavailableError, getDatabaseUrl, getDb } from "@/db/client";
+import { DatabaseUnavailableError, getDatabaseUrl, getDbAsync } from "@/db/client";
 import { appSettings } from "@/db/schema";
 import { hashPassword, parsePasswordHash } from "@/lib/passwordHash";
 
@@ -64,7 +64,7 @@ async function readOverride(): Promise<ViewerAuthFile | null> {
   if (mem !== undefined) return mem;
   try {
     getDatabaseUrl();
-    const db = getDb();
+    const db = await getDbAsync();
     const rows = await db
       .select()
       .from(appSettings)
@@ -83,7 +83,7 @@ async function readOverride(): Promise<ViewerAuthFile | null> {
 
 async function persistOverride(next: ViewerAuthFile): Promise<void> {
   getDatabaseUrl();
-  const db = getDb();
+  const db = await getDbAsync();
   const now = new Date().toISOString();
   await db
     .insert(appSettings)

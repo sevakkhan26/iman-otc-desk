@@ -2,7 +2,7 @@
  * Median price history — PostgreSQL median_history_samples.
  */
 import { desc } from "drizzle-orm";
-import { getDatabaseUrl, getDb } from "@/db/client";
+import { getDatabaseUrl, getDbAsync } from "@/db/client";
 import { medianHistorySamples } from "@/db/schema";
 import type { MedianHistoryRange, MedianHistoryResponse } from "@/lib/types";
 
@@ -14,7 +14,7 @@ const MIN_INTERVAL_MS = 60_000;
 async function readSamples(): Promise<Sample[]> {
   try {
     getDatabaseUrl();
-    const db = getDb();
+    const db = await getDbAsync();
     const rows = await db
       .select()
       .from(medianHistorySamples)
@@ -38,7 +38,7 @@ export async function recordMedian(median: number | null): Promise<void> {
   if (median === null || !Number.isFinite(median)) return;
   try {
     getDatabaseUrl();
-    const db = getDb();
+    const db = await getDbAsync();
     const samples = await readSamples();
     const now = Date.now();
     const last = samples[samples.length - 1];

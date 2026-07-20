@@ -533,22 +533,39 @@ function parseJsonResponse<T>(text: string): T {
   }
 }
 
+/** Deterministic client/auth errors — never double-hit origin or retry blindly. */
+export function isDeterministicHttpError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return /\bHTTP (400|401|403|404|405|410|422)\b/.test(msg);
+}
+
+function normalizeHeaderRecord(init?: RequestInit): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!init?.headers) return out;
+  if (init.headers instanceof Headers) {
+    init.headers.forEach((value, key) => {
+      out[key] = value;
+    });
+    return out;
+  }
+  if (Array.isArray(init.headers)) {
+    for (const [key, value] of init.headers) out[key] = value;
+    return out;
+  }
+  for (const [key, value] of Object.entries(init.headers)) {
+    if (typeof value === "string") out[key] = value;
+  }
+  return out;
+}
+
 export async function fetchJson<T>(url: string, timeoutMs = 10_000, init?: RequestInit): Promise<T> {
   const headers = {
     accept: "application/json, text/plain;q=0.8, */*;q=0.5",
     "user-agent": BROWSER_UA,
-    ...(init?.headers ?? {})
+    ...normalizeHeaderRecord(init)
   } as Record<string, string>;
 
-  try {
-    const text = await httpsGetText(url, timeoutMs, headers);
-    return parseJsonResponse<T>(text);
-  } catch (httpsError) {
-    if (!(httpsError instanceof ProviderError)) {
-      throw httpsError;
-    }
-  }
-
+  // Prefer hostname TLS (CDN/WAF friendly). IP-resolved path is fallback only.
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -561,17 +578,28 @@ export async function fetchJson<T>(url: string, timeoutMs = 10_000, init?: Reque
     });
 
     if (!response.ok) {
+      // Consume body so the socket can close cleanly
+      try {
+        await response.text();
+      } catch {
+        /* ignore */
+      }
       throw new ProviderError(`HTTP ${response.status}`);
     }
 
     return parseJsonResponse<T>(await response.text());
   } catch (error) {
-    if (shouldRetryWithHttps(error)) {
-      try {
-        return parseJsonResponse<T>(await httpsGetText(url, timeoutMs, headers));
-      } catch (retryError) {
-        if (retryError instanceof ProviderError) throw retryError;
-      }
+    if (isDeterministicHttpError(error)) {
+      throw error instanceof ProviderError
+        ? error
+        : new ProviderError(error instanceof Error ? error.message : "HTTP error");
+    }
+    // Transient network — try resolved-IP path once
+    try {
+      const text = await httpsGetText(url, timeoutMs, headers);
+      return parseJsonResponse<T>(text);
+    } catch (fallbackError) {
+      if (fallbackError instanceof ProviderError) throw fallbackError;
     }
     if (error instanceof ProviderError) {
       throw error;

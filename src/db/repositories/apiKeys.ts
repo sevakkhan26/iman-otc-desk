@@ -3,7 +3,7 @@
  * Preserves HMAC key hashes from the prior file store for compatibility.
  */
 import { and, eq, sql } from "drizzle-orm";
-import { getDb } from "@/db/client";
+import { getDbAsync } from "@/db/client";
 import { apiKeyScopes, apiKeys, apiRateLimitBuckets, apiClients } from "@/db/schema";
 import type { ApiKeyRecord, ApiKeyScope, ApiKeyStoreFile } from "@/lib/apiKeys/types";
 import { isApiKeyScope, normalizeRecordScopes } from "@/lib/apiKeys/types";
@@ -16,7 +16,7 @@ function numOrNull(v: string | null | undefined): number | null {
 }
 
 export async function pgListApiKeyRecords(): Promise<ApiKeyRecord[]> {
-  const db = getDb();
+  const db = await getDbAsync();
   const keys = await db.select().from(apiKeys);
   const scopes = await db.select().from(apiKeyScopes);
   const byKey = new Map<string, ApiKeyScope[]>();
@@ -60,7 +60,7 @@ export function toUuid(id: string): string {
 }
 
 export async function pgInsertApiKey(record: ApiKeyRecord): Promise<void> {
-  const db = getDb();
+  const db = await getDbAsync();
   const scopes = normalizeRecordScopes(record);
   const keyId = toUuid(record.id);
 
@@ -89,7 +89,7 @@ export async function pgInsertApiKey(record: ApiKeyRecord): Promise<void> {
 }
 
 export async function pgUpdateApiKeyScopes(id: string, scopes: ApiKeyScope[]): Promise<boolean> {
-  const db = getDb();
+  const db = await getDbAsync();
   const existing = await db.select().from(apiKeys).where(eq(apiKeys.id, id)).limit(1);
   if (!existing[0]) return false;
   if (existing[0].revokedAt) {
@@ -107,7 +107,7 @@ export async function pgUpdateApiKeyScopes(id: string, scopes: ApiKeyScope[]): P
 }
 
 export async function pgRevokeApiKey(id: string): Promise<ApiKeyRecord | null> {
-  const db = getDb();
+  const db = await getDbAsync();
   const now = new Date().toISOString();
   const rows = await db
     .update(apiKeys)
@@ -135,7 +135,7 @@ export async function pgRevokeApiKey(id: string): Promise<ApiKeyRecord | null> {
 }
 
 export async function pgFindApiKeyByHash(keyHash: string): Promise<ApiKeyRecord | null> {
-  const db = getDb();
+  const db = await getDbAsync();
   const rows = await db.select().from(apiKeys).where(eq(apiKeys.keyHash, keyHash)).limit(1);
   const k = rows[0];
   if (!k) return null;
@@ -158,7 +158,7 @@ export async function pgFindApiKeyByHash(keyHash: string): Promise<ApiKeyRecord 
 }
 
 export async function pgTouchApiKeyLastUsed(id: string, whenIso: string): Promise<void> {
-  const db = getDb();
+  const db = await getDbAsync();
   await db.update(apiKeys).set({ lastUsedAt: whenIso }).where(eq(apiKeys.id, id));
 }
 
@@ -167,7 +167,7 @@ export async function pgIncrementRateLimit(
   apiKeyId: string,
   windowStartMs: number
 ): Promise<number> {
-  const db = getDb();
+  const db = await getDbAsync();
   await db
     .insert(apiRateLimitBuckets)
     .values({ apiKeyId, bucketStartMs: windowStartMs, requestCount: 1 })
@@ -189,7 +189,7 @@ export async function pgIncrementRateLimit(
 }
 
 export async function pgEnsureDefaultClient(name: string, createdBy: string | null): Promise<string> {
-  const db = getDb();
+  const db = await getDbAsync();
   const existing = await db.select().from(apiClients).limit(1);
   if (existing[0]) return existing[0].id;
   const id = randomUUID();

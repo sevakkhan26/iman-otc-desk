@@ -4,7 +4,7 @@
  */
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { closeDb, execRaw, getDatabaseUrl, getDb, isPgliteUrl, pingDatabase } from "@/db/client";
+import { closeDb, execRaw, getDatabaseUrl, getDbAsync, isPgliteUrl, pingDatabase } from "@/db/client";
 
 async function ensureMeta(): Promise<void> {
   await execRaw(`
@@ -21,7 +21,7 @@ async function getApplied(): Promise<Set<string>> {
     await ensureMeta();
     // Use a simple SELECT via execRaw-compatible path
     const { sql } = await import("drizzle-orm");
-    const db = getDb();
+    const db = await getDbAsync();
     const result = await db.execute(
       sql`SELECT value FROM schema_meta WHERE key = 'applied_migrations'`
     );
@@ -63,7 +63,7 @@ export async function runMigrations(): Promise<{ applied: string[]; skipped: str
   const url = getDatabaseUrl();
   const pglite = isPgliteUrl(url);
   // Ensure connection
-  getDb();
+  await getDbAsync();
   await pingDatabase();
   await ensureMeta();
 

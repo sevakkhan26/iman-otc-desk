@@ -3,7 +3,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
-import { getDb, withAdvisoryLock } from "@/db/client";
+import { getDbAsync, withAdvisoryLock } from "@/db/client";
 import { ingestionRuns, marketQuotes, marketSnapshots, sourceHealth } from "@/db/schema";
 import type { MarketSnapshotRecord } from "@/lib/marketSnapshotStore";
 import type { DomesticProviderHealth, DomesticQuote, TetherMarketResponse } from "@/lib/types";
@@ -22,7 +22,7 @@ function numStr(v: number | null | undefined): string | null {
 }
 
 export async function pgReadLatestTetherSnapshot(): Promise<MarketSnapshotRecord | null> {
-  const db = getDb();
+  const db = await getDbAsync();
   const rows = await db
     .select()
     .from(marketSnapshots)
@@ -51,7 +51,7 @@ export async function pgReadLatestTetherSnapshot(): Promise<MarketSnapshotRecord
 }
 
 export async function pgWriteTetherSnapshot(record: MarketSnapshotRecord): Promise<string> {
-  const db = getDb();
+  const db = await getDbAsync();
   const hash = contentHash({
     summary: record.tetherMarket.summary,
     exchanges: record.tetherMarket.exchanges,

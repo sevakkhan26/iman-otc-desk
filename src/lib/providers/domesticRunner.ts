@@ -73,7 +73,23 @@ function unavailable(id: string, name: string, message: string): DomesticQuote {
 
 function isRateLimitError(error: unknown): boolean {
   const msg = error instanceof Error ? error.message : String(error);
-  return /429|rate.?limit|too many requests|مکرر/i.test(msg);
+  return /429|rate.?limit|too many requests|مکرر|Retry-After/i.test(msg);
+}
+
+/** 4xx client errors (except 408/429) — do not retry; thrashing WAFs (e.g. Exir CloudFront 403). */
+function isNonRetryableProviderError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  if (isRateLimitError(error)) return false;
+  if (/\bHTTP 408\b/.test(msg)) return false;
+  return /\bHTTP (400|401|403|404|405|410|422)\b/.test(msg);
+}
+
+function parseRetryAfterMs(error: unknown): number | null {
+  const msg = error instanceof Error ? error.message : String(error);
+  const m = msg.match(/retry-after[=:\s]+(\d+)/i);
+  if (!m) return null;
+  const sec = Number(m[1]);
+  return Number.isFinite(sec) && sec > 0 ? Math.min(sec * 1000, 15 * 60_000) : null;
 }
 
 function hasUsablePrices(q: DomesticQuote | null): boolean {
@@ -81,17 +97,29 @@ function hasUsablePrices(q: DomesticQuote | null): boolean {
   return q.buyPrice !== null || q.sellPrice !== null || q.midPrice !== null;
 }
 
+/**
+ * Per-call hard timeout. Timer is always cleared.
+ * Does not share AbortControllers across providers — each live() owns its own fetch signal.
+ * Note: this does not cancel the underlying I/O; live() timeouts still apply independently.
+ */
 function withHardTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
+    let settled = false;
     const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       reject(new Error(`زمان پاسخ‌دهی ${label} تمام شد (${timeoutMs}ms)`));
     }, timeoutMs);
     promise.then(
       (v) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         resolve(v);
       },
       (e) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         reject(e);
       }
@@ -143,9 +171,12 @@ export async function runIsolatedProvider(def: IsolatedProviderDef): Promise<Dom
 
     for (let attempt = 1; attempt <= attempts; attempt++) {
       if (attempt > 1) {
-        await new Promise((r) => setTimeout(r, 200 * attempt));
+        // Short jittered backoff — only reached for transient failures
+        const jitter = Math.floor(Math.random() * 150);
+        await new Promise((r) => setTimeout(r, 200 * attempt + jitter));
       }
       try {
+        // Each attempt starts a fresh live() → fresh AbortController inside fetchJson
         const quote = await withHardTimeout(def.live(), def.timeoutMs, def.name);
         if (!hasUsablePrices(quote)) {
           throw new Error("قیمت عددی معتبر برنگشت");
@@ -161,8 +192,15 @@ export async function runIsolatedProvider(def: IsolatedProviderDef): Promise<Dom
       } catch (error) {
         lastError = error;
         if (isRateLimitError(error)) {
-          slot.rateLimitedUntil = Date.now() + def.rateLimitBackoffMs;
+          const retryAfter = parseRetryAfterMs(error);
+          slot.rateLimitedUntil = Date.now() + (retryAfter ?? def.rateLimitBackoffMs);
           slot.lastError = "HTTP 429 / rate limit";
+          break;
+        }
+        if (isNonRetryableProviderError(error)) {
+          // e.g. Exir CloudFront 403 — do not thrash; short cooldown
+          slot.rateLimitedUntil = Date.now() + Math.min(def.rateLimitBackoffMs, 120_000);
+          slot.lastError = error instanceof Error ? error.message : "HTTP client error";
           break;
         }
         slot.lastError = error instanceof Error ? error.message : "خطای منبع";

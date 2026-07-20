@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
-import { getDb } from "@/db/client";
+import { getDbAsync } from "@/db/client";
 import { users } from "@/db/schema";
 import type { DeskRole } from "@/lib/auth";
 
@@ -19,7 +19,7 @@ export type PgUserRow = {
 };
 
 export async function pgListUsers(): Promise<PgUserRow[]> {
-  const db = getDb();
+  const db = await getDbAsync();
   const rows = await db.select().from(users);
   return rows.map((r) => ({
     id: r.id,
@@ -37,7 +37,7 @@ export async function pgListUsers(): Promise<PgUserRow[]> {
 }
 
 export async function pgFindUserByUsernameKey(usernameKey: string): Promise<PgUserRow | null> {
-  const db = getDb();
+  const db = await getDbAsync();
   const rows = await db.select().from(users).where(eq(users.usernameKey, usernameKey)).limit(1);
   const r = rows[0];
   if (!r) return null;
@@ -67,7 +67,7 @@ export async function pgUpsertUser(input: {
   source?: string;
   updatedBy?: string | null;
 }): Promise<string> {
-  const db = getDb();
+  const db = await getDbAsync();
   const existing = await pgFindUserByUsernameKey(input.usernameKey);
   if (existing) {
     await db
@@ -100,7 +100,7 @@ export async function pgUpsertUser(input: {
 }
 
 export async function pgBumpCredentialVersion(userId: string): Promise<number> {
-  const db = getDb();
+  const db = await getDbAsync();
   const rows = await db.select().from(users).where(eq(users.id, userId)).limit(1);
   if (!rows[0]) return 0;
   const next = rows[0].credentialVersion + 1;
@@ -112,7 +112,7 @@ export async function pgBumpCredentialVersion(userId: string): Promise<number> {
 }
 
 export async function pgSetUserActive(userId: string, isActive: boolean): Promise<void> {
-  const db = getDb();
+  const db = await getDbAsync();
   await db
     .update(users)
     .set({ isActive, updatedAt: new Date().toISOString() })
@@ -120,6 +120,6 @@ export async function pgSetUserActive(userId: string, isActive: boolean): Promis
 }
 
 export async function pgDeleteUser(userId: string): Promise<void> {
-  const db = getDb();
+  const db = await getDbAsync();
   await db.delete(users).where(eq(users.id, userId));
 }

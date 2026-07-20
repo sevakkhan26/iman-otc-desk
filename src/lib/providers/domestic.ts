@@ -199,9 +199,9 @@ async function liveRamzinex(): Promise<DomesticQuote> {
     // fall through to full list
   }
 
-  // 2) Fallback: full pairs list (large payload; longer timeout)
+  // 2) Fallback only if single-pair missing fields — full list is large (~0.5MB); keep rare
   if (!item) {
-    const data = await fetchJson<{ data?: RamzinexPairRow[] }>(RAMZINEX_PAIRS_LIST_URL, 15_000);
+    const data = await fetchJson<{ data?: RamzinexPairRow[] }>(RAMZINEX_PAIRS_LIST_URL, 12_000);
     item = data.data?.find(
       (entry) =>
         entry.pair_id === RAMZINEX_USDT_IRR_PAIR_ID ||
@@ -255,18 +255,41 @@ async function liveAbanTether(): Promise<DomesticQuote> {
   return buildQuote(id, name, buyPrice, sellPrice);
 }
 
+/** OMPFinex USDT/IRT market id 9 — public depth (prices in Rial). */
 const OMP_USDT_MARKET_ID = 9;
+const OMP_DEPTH_URL = `https://api.ompfinex.com/v1/market/${OMP_USDT_MARKET_ID}/depth?limit=10`;
 
 async function liveOmpFinex(): Promise<DomesticQuote> {
   const id = "ompfinex";
   const name = "OMPFinex";
+  // limit=10 keeps payload small (~0.5KB) vs full book; reduces timeout under load
   const data = await fetchJson<{
+    status?: string;
     data?: { bids?: Array<[string, string]>; asks?: Array<[string, string]> };
-  }>(`https://api.ompfinex.com/v1/market/${OMP_USDT_MARKET_ID}/depth`, 12_000, {
-    headers: { "user-agent": DESK_UA }
+  }>(OMP_DEPTH_URL, 10_000, {
+    headers: {
+      accept: "application/json",
+      "user-agent": BROWSER_UA
+    }
   });
-  const buyPrice = toToman(data.data?.bids?.[0]?.[0], "rial");
-  const sellPrice = toToman(data.data?.asks?.[0]?.[0], "rial");
+  if (data.status && data.status !== "OK") {
+    throw new ProviderError(`OMPFinex status=${data.status}`);
+  }
+  const bids = data.data?.bids ?? [];
+  const asks = data.data?.asks ?? [];
+  let bestBid: number | null = null;
+  let bestAsk: number | null = null;
+  for (const row of bids) {
+    const p = toToman(row?.[0], "rial");
+    if (p !== null && (bestBid === null || p > bestBid)) bestBid = p;
+  }
+  for (const row of asks) {
+    const p = toToman(row?.[0], "rial");
+    if (p !== null && (bestAsk === null || p < bestAsk)) bestAsk = p;
+  }
+  // Desk: buyPrice = highest bid, sellPrice = lowest ask
+  const buyPrice = bestBid;
+  const sellPrice = bestAsk;
   if (buyPrice === null && sellPrice === null) {
     throw new ProviderError("داده دفتر سفارش تتر دریافت نشد");
   }
@@ -456,7 +479,19 @@ async function liveTetherland(): Promise<DomesticQuote> {
   return liveTetherlandReferenceOnly();
 }
 
+/**
+ * Exir public orderbook (official API):
+ *   GET https://api.exir.io/v1/orderbook?symbol=usdt-irt
+ * Response: { "usdt-irt": { bids:[[price,size],...], asks:[...] } } prices in Toman.
+ * Behind CloudFront — short/bot-like UA or double-requests after 403 worsen WAF blocks.
+ */
 const EXIR_ORDERBOOK_URL = "https://api.exir.io/v1/orderbook?symbol=usdt-irt";
+const EXIR_HEADERS = {
+  accept: "application/json",
+  "user-agent": BROWSER_UA,
+  "accept-language": "en-US,en;q=0.9,fa;q=0.8"
+  // Do NOT send Origin/Referer — CloudFront returns 403 for some Origin values
+} as const;
 
 async function liveExir(): Promise<DomesticQuote> {
   const id = "exir";
@@ -468,12 +503,25 @@ async function liveExir(): Promise<DomesticQuote> {
     };
     bids?: Array<[number | string, number | string]>;
     asks?: Array<[number | string, number | string]>;
-  }>(EXIR_ORDERBOOK_URL, 8_000, {
-    headers: { "user-agent": BROWSER_UA, accept: "application/json" }
+  }>(EXIR_ORDERBOOK_URL, 10_000, {
+    headers: { ...EXIR_HEADERS }
   });
   const book = data["usdt-irt"] ?? data;
-  const buyPrice = toToman(book.bids?.[0]?.[0]);
-  const sellPrice = toToman(book.asks?.[0]?.[0]);
+  const bids = book.bids ?? [];
+  const asks = book.asks ?? [];
+  // Best bid = max price, best ask = min price (do not assume sort)
+  let bestBid: number | null = null;
+  let bestAsk: number | null = null;
+  for (const row of bids) {
+    const p = toToman(row?.[0]);
+    if (p !== null && (bestBid === null || p > bestBid)) bestBid = p;
+  }
+  for (const row of asks) {
+    const p = toToman(row?.[0]);
+    if (p !== null && (bestAsk === null || p < bestAsk)) bestAsk = p;
+  }
+  const buyPrice = bestBid;
+  const sellPrice = bestAsk;
   if (buyPrice === null || sellPrice === null) {
     throw new ProviderError("دفتر سفارش اکسیر خرید/فروش معتبر ندارد");
   }
@@ -985,8 +1033,8 @@ const providerDefs: IsolatedProviderDef[] = [
     id: "ramzinex",
     name: "رمزینکس",
     endpoint: RAMZINEX_PAIR_URL,
-    // Hard timeout must cover single-pair fetch (and rare list fallback). Was 9s on full ~0.5MB /pairs → frequent timeouts.
-    timeoutMs: 16_000,
+    // Single-pair /pairs/11 is ~1KB; hard timeout above fetch budgets
+    timeoutMs: 14_000,
     minFetchMs: MIN_FETCH,
     staleTtlMs: STALE_TTL,
     maxRetries: 1,
@@ -1007,11 +1055,12 @@ const providerDefs: IsolatedProviderDef[] = [
   {
     id: "ompfinex",
     name: "OMPFinex",
-    endpoint: `https://api.ompfinex.com/v1/market/${OMP_USDT_MARKET_ID}/depth`,
+    endpoint: OMP_DEPTH_URL,
+    // Hard timeout > fetchJson(10s); one short transient retry
     timeoutMs: 12_000,
     minFetchMs: OMP_MIN,
     staleTtlMs: OMP_STALE,
-    maxRetries: 0,
+    maxRetries: 1,
     rateLimitBackoffMs: OMP_BACKOFF,
     live: liveOmpFinex
   },
@@ -1019,10 +1068,11 @@ const providerDefs: IsolatedProviderDef[] = [
     id: "exir",
     name: "اکسیر",
     endpoint: EXIR_ORDERBOOK_URL,
-    timeoutMs: 8_000,
+    // CloudFront WAF: do not retry 403 (runner treats as non-retryable)
+    timeoutMs: 12_000,
     minFetchMs: MIN_FETCH,
     staleTtlMs: STALE_TTL,
-    maxRetries: 1,
+    maxRetries: 0,
     rateLimitBackoffMs: RATE_BACKOFF,
     live: liveExir
   },

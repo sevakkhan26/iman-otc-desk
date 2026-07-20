@@ -40,19 +40,6 @@ function readEnvPasswordHash(): string | null {
   return value;
 }
 
-/** @deprecated path helper kept for importer compatibility */
-export function resolveViewerAuthPath(): string {
-  const explicit = process.env.VIEWER_AUTH_DATA_FILE?.trim();
-  if (explicit) return explicit;
-  const alertsDir = process.env.PRICE_ALERTS_DATA_DIR?.trim();
-  if (alertsDir) return pathJoin(alertsDir, "viewer-auth.json");
-  return pathJoin(process.cwd(), ".data", "viewer-auth.json");
-}
-
-function pathJoin(...parts: string[]): string {
-  return parts.join("/").replace(/\/+/g, "/");
-}
-
 function parseOverride(value: unknown): ViewerAuthFile | null {
   if (!value || typeof value !== "object") return null;
   const parsed = value as Partial<ViewerAuthFile>;

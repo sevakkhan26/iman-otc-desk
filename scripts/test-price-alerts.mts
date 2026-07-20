@@ -16,7 +16,6 @@ import {
   __setStoreForTests,
   appendNotification,
   createAlert,
-  getConfiguredDataFile,
   getStorageDiagnostics,
   listAlerts,
   listNotifications,

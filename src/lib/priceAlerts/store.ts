@@ -64,14 +64,6 @@ export function resolveStorageBackend(): StorageBackendType {
   return "postgres";
 }
 
-export function getConfiguredDataDir(): string {
-  return process.env.PRICE_ALERTS_DATA_DIR?.trim() || `${process.cwd()}/.data/price-alerts`;
-}
-
-export function getConfiguredDataFile(): string {
-  return process.env.PRICE_ALERTS_DATA_FILE?.trim() || `${getConfiguredDataDir()}/price-alerts.json`;
-}
-
 export function getStorageDiagnostics(extra?: {
   readable?: boolean | null;
   writable?: boolean | null;

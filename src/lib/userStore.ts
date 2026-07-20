@@ -89,20 +89,6 @@ function readEnvPasswordHash(envValue: string | undefined): string | null {
   return value;
 }
 
-/** @deprecated kept for importer path resolution */
-export function resolveUsersDataPath(): string {
-  const explicit = process.env.DESK_USERS_DATA_FILE?.trim();
-  if (explicit) return explicit;
-  const viewerAuth = process.env.VIEWER_AUTH_DATA_FILE?.trim();
-  if (viewerAuth) {
-    const dir = viewerAuth.replace(/\/[^/]+$/, "");
-    return `${dir}/desk-users.json`;
-  }
-  const alertsDir = process.env.PRICE_ALERTS_DATA_DIR?.trim();
-  if (alertsDir) return `${alertsDir}/desk-users.json`;
-  return `${process.cwd()}/.data/desk-users.json`;
-}
-
 function rowToManaged(r: PgUserRow): ManagedUserRecord {
   return {
     id: r.id,

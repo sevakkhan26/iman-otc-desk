@@ -170,25 +170,46 @@ async function liveTabdeal(): Promise<DomesticQuote> {
   return buildQuote(id, name, buyPrice, sellPrice);
 }
 
+/** Ramzinex USDT/IRR pair id (tether/rial). Prefer single-pair API — full /pairs is ~0.5MB+ and often hits timeouts. */
+const RAMZINEX_USDT_IRR_PAIR_ID = 11;
+const RAMZINEX_PAIR_URL = `https://publicapi.ramzinex.com/exchange/api/v1.0/exchange/pairs/${RAMZINEX_USDT_IRR_PAIR_ID}`;
+const RAMZINEX_PAIRS_LIST_URL = "https://publicapi.ramzinex.com/exchange/api/v1.0/exchange/pairs";
+
+type RamzinexPairRow = {
+  pair_id?: number;
+  base_currency_symbol?: { en?: string };
+  quote_currency_symbol?: { en?: string };
+  buy?: number;
+  sell?: number;
+};
+
 async function liveRamzinex(): Promise<DomesticQuote> {
   const id = "ramzinex";
   const name = "رمزینکس";
-  const data = await fetchJson<{
-    data?: Array<{
-      pair_id?: number;
-      base_currency_symbol?: { en?: string };
-      quote_currency_symbol?: { en?: string };
-      buy?: number;
-      sell?: number;
-    }>;
-  }>("https://publicapi.ramzinex.com/exchange/api/v1.0/exchange/pairs", 9_000);
 
-  const item = data.data?.find(
-    (entry) =>
-      entry.pair_id === 11 ||
-      (entry.base_currency_symbol?.en?.toLowerCase() === "usdt" &&
-        entry.quote_currency_symbol?.en?.toLowerCase() === "irr")
-  );
+  let item: RamzinexPairRow | undefined;
+
+  // 1) Fast path: single pair (~1KB) — avoids downloading the full market list
+  try {
+    const single = await fetchJson<{ data?: RamzinexPairRow }>(RAMZINEX_PAIR_URL, 12_000);
+    if (single.data && (single.data.buy != null || single.data.sell != null)) {
+      item = single.data;
+    }
+  } catch {
+    // fall through to full list
+  }
+
+  // 2) Fallback: full pairs list (large payload; longer timeout)
+  if (!item) {
+    const data = await fetchJson<{ data?: RamzinexPairRow[] }>(RAMZINEX_PAIRS_LIST_URL, 15_000);
+    item = data.data?.find(
+      (entry) =>
+        entry.pair_id === RAMZINEX_USDT_IRR_PAIR_ID ||
+        (entry.base_currency_symbol?.en?.toLowerCase() === "usdt" &&
+          entry.quote_currency_symbol?.en?.toLowerCase() === "irr")
+    );
+  }
+
   const buyPrice = toToman(item?.buy, "rial");
   const sellPrice = toToman(item?.sell, "rial");
   if (buyPrice === null && sellPrice === null) {
@@ -963,8 +984,9 @@ const providerDefs: IsolatedProviderDef[] = [
   {
     id: "ramzinex",
     name: "رمزینکس",
-    endpoint: "https://publicapi.ramzinex.com/exchange/api/v1.0/exchange/pairs",
-    timeoutMs: 9_000,
+    endpoint: RAMZINEX_PAIR_URL,
+    // Hard timeout must cover single-pair fetch (and rare list fallback). Was 9s on full ~0.5MB /pairs → frequent timeouts.
+    timeoutMs: 16_000,
     minFetchMs: MIN_FETCH,
     staleTtlMs: STALE_TTL,
     maxRetries: 1,

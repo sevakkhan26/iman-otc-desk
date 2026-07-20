@@ -60,6 +60,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/drizzle ./drizzle
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/run-migrations.mjs ./scripts/run-migrations.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/run-legacy-import.mjs ./scripts/run-legacy-import.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/run-legacy-import-data.mjs ./scripts/run-legacy-import-data.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/docker-migrate-deps/postgres ./node_modules/postgres
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh

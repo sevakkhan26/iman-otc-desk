@@ -38,9 +38,9 @@ services:
       # DATABASE_URL=postgres://otc_app:…@otc-postgres:5432/otc_desk
       DATABASE_URL: ${DATABASE_URL:-}
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
-      # Schema migrate runs automatically in docker-entrypoint on every start.
-      # First cutover only — import old JSON once, then set back to 0 / remove:
-      AUTO_IMPORT_LEGACY: ${AUTO_IMPORT_LEGACY:-0}
+      # Schema migrate on every start. Import: auto|1|0
+      # auto = import JSON only when app_settings is empty (first cutover)
+      AUTO_IMPORT_LEGACY: ${AUTO_IMPORT_LEGACY:-auto}
       # Optional: surface git SHA in diagnostics (set by deploy script when available)
       GIT_COMMIT_SHA: ${GIT_COMMIT_SHA:-}
       # Cold backup volume for one-shot import (runtime SoT is PostgreSQL)

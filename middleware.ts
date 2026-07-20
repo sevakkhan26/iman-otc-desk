@@ -16,6 +16,11 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
+  // External market-data APIs — Bearer API key only (no panel session)
+  if (pathname === "/api/v1" || pathname.startsWith("/api/v1/")) {
+    return NextResponse.next();
+  }
+
   // already logged in → keep /login out of the way
   if (pathname === "/login") {
     if (loggedIn) {
@@ -41,6 +46,9 @@ export async function middleware(request: NextRequest) {
       return NextResponse.json({ error: "forbidden", message: "دسترسی مجاز نیست" }, { status: 403 });
     }
     if (pathname === "/api/users" || pathname.startsWith("/api/users/")) {
+      return NextResponse.json({ error: "forbidden", message: "دسترسی مجاز نیست" }, { status: 403 });
+    }
+    if (pathname === "/api/admin" || pathname.startsWith("/api/admin/")) {
       return NextResponse.json({ error: "forbidden", message: "دسترسی مجاز نیست" }, { status: 403 });
     }
 

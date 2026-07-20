@@ -1,13 +1,14 @@
 {
   "name": "dealing-desk-otc-dashboard",
-  "version": "2.4.7",
+  "version": "3.1.1",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "npx --yes tsx scripts/test-auth-cookies.mts && npx --yes tsx scripts/test-viewer-auth.mts && npx --yes tsx scripts/test-user-store.mts && npx --yes tsx scripts/test-impact-news.mts && npx --yes tsx scripts/test-price-alerts.mts && npx --yes tsx scripts/test-okex-tetherland.mts && npx --yes tsx scripts/test-bubble.mts && npx --yes tsx scripts/test-market-snapshot.mts",
+    "test": "npx --yes tsx scripts/test-auth-cookies.mts && npx --yes tsx scripts/test-viewer-auth.mts && npx --yes tsx scripts/test-user-store.mts && npx --yes tsx scripts/test-impact-news.mts && npx --yes tsx scripts/test-price-alerts.mts && npx --yes tsx scripts/test-okex-tetherland.mts && npx --yes tsx scripts/test-bubble.mts && npx --yes tsx scripts/test-market-snapshot.mts && npx --yes tsx scripts/test-tether-api-keys.mts",
+    "test:tether-api-keys": "npx --yes tsx scripts/test-tether-api-keys.mts",
     "test:viewer-auth": "npx --yes tsx scripts/test-viewer-auth.mts",
     "test:user-store": "npx --yes tsx scripts/test-user-store.mts",
     "test:impact-news": "npx --yes tsx scripts/test-impact-news.mts",

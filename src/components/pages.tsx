@@ -8,6 +8,7 @@ import { DeskPageHeader } from "@/components/DeskPageHeader";
 import { TomanAmount } from "@/components/TomanAmount";
 import { UserManagementPanel } from "@/components/UserManagementPanel";
 import { ExchangeNameLink } from "@/components/ExchangeNameLink";
+import { TetherApiKeysPanel } from "@/components/TetherApiKeysPanel";
 import type {
   DashboardResponse,
   DomesticProviderHealth,
@@ -2215,6 +2216,9 @@ export function SettingsView() {
         <div className="grid">
           <Panel title="مدیریت کاربران">
             <UserManagementPanel />
+          </Panel>
+          <Panel title="مدیریت دسترسی API قیمت‌ها">
+            <TetherApiKeysPanel />
           </Panel>
           <Panel title="بازه‌های بروزرسانی">
             <div className="grid settings-grid">

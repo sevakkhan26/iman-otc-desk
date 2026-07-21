@@ -172,46 +172,103 @@ async function liveTabdeal(): Promise<DomesticQuote> {
 
 /** Ramzinex USDT/IRR pair id (tether/rial). Prefer single-pair API — full /pairs is ~0.5MB+ and often hits timeouts. */
 const RAMZINEX_USDT_IRR_PAIR_ID = 11;
-const RAMZINEX_PAIR_URL = `https://publicapi.ramzinex.com/exchange/api/v1.0/exchange/pairs/${RAMZINEX_USDT_IRR_PAIR_ID}`;
-const RAMZINEX_PAIRS_LIST_URL = "https://publicapi.ramzinex.com/exchange/api/v1.0/exchange/pairs";
+/** CDN/public host first; api. host as alternate (some egress IPs hit one but not the other). */
+const RAMZINEX_PAIR_URLS = [
+  `https://publicapi.ramzinex.com/exchange/api/v1.0/exchange/pairs/${RAMZINEX_USDT_IRR_PAIR_ID}`,
+  `https://api.ramzinex.com/exchange/api/v1.0/exchange/pairs/${RAMZINEX_USDT_IRR_PAIR_ID}`
+] as const;
+const RAMZINEX_PAIR_URL = RAMZINEX_PAIR_URLS[0];
 
 type RamzinexPairRow = {
   pair_id?: number;
   base_currency_symbol?: { en?: string };
   quote_currency_symbol?: { en?: string };
-  buy?: number;
-  sell?: number;
+  buy?: number | string;
+  sell?: number | string;
+  is_temporarily_suspended?: number | boolean;
+  financial?: { last24h?: { close?: number | string; highest?: number | string; lowest?: number | string } };
 };
+
+function ramzinexRial(value: unknown): number | null {
+  return toToman(value, "rial");
+}
+
+function pickRamzinexRow(payload: unknown): RamzinexPairRow | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const root = payload as { data?: RamzinexPairRow | RamzinexPairRow[] | null };
+  const data = root.data;
+  if (!data) return undefined;
+  if (Array.isArray(data)) {
+    return data.find(
+      (entry) =>
+        entry.pair_id === RAMZINEX_USDT_IRR_PAIR_ID ||
+        (entry.base_currency_symbol?.en?.toLowerCase() === "usdt" &&
+          (entry.quote_currency_symbol?.en?.toLowerCase() === "irr" ||
+            entry.quote_currency_symbol?.en?.toLowerCase() === "rls"))
+    );
+  }
+  return data;
+}
+
+async function fetchRamzinexPair(): Promise<RamzinexPairRow> {
+  const headers = {
+    "user-agent": BROWSER_UA,
+    accept: "application/json, text/plain;q=0.8, */*;q=0.5"
+  };
+  const errors: string[] = [];
+
+  // Only single-pair URLs — never the full /pairs dump (timeouts on slow egress).
+  for (const url of RAMZINEX_PAIR_URLS) {
+    try {
+      // Keep each attempt short so both hosts fit under provider timeoutMs (14s).
+      const body = await fetchJson<unknown>(url, 6_000, { headers });
+      const item = pickRamzinexRow(body);
+      if (!item) {
+        errors.push(`${url}: empty data`);
+        continue;
+      }
+      if (item.is_temporarily_suspended === 1 || item.is_temporarily_suspended === true) {
+        throw new ProviderError("معاملات تتر رمزینکس موقتاً متوقف است");
+      }
+      return item;
+    } catch (error) {
+      if (error instanceof ProviderError && /متوقف/.test(error.message)) throw error;
+      const msg = error instanceof Error ? error.message : String(error);
+      errors.push(`${url}: ${msg}`);
+    }
+  }
+
+  throw new ProviderError(
+    errors.length ? `رمزینکس: ${errors[errors.length - 1]}` : "پاسخ رمزینکس معتبر نبود"
+  );
+}
 
 async function liveRamzinex(): Promise<DomesticQuote> {
   const id = "ramzinex";
   const name = "رمزینکس";
 
-  let item: RamzinexPairRow | undefined;
+  const item = await fetchRamzinexPair();
 
-  // 1) Fast path: single pair (~1KB) — avoids downloading the full market list
-  try {
-    const single = await fetchJson<{ data?: RamzinexPairRow }>(RAMZINEX_PAIR_URL, 12_000);
-    if (single.data && (single.data.buy != null || single.data.sell != null)) {
-      item = single.data;
+  let buyPrice = ramzinexRial(item.buy);
+  let sellPrice = ramzinexRial(item.sell);
+
+  // Some edge responses omit book sides — fall back to 24h close (rial)
+  if (buyPrice === null && sellPrice === null) {
+    const close = ramzinexRial(item.financial?.last24h?.close);
+    if (close !== null) {
+      buyPrice = close;
+      sellPrice = close;
     }
-  } catch {
-    // fall through to full list
   }
 
-  // 2) Fallback only if single-pair missing fields — full list is large (~0.5MB); keep rare
-  if (!item) {
-    const data = await fetchJson<{ data?: RamzinexPairRow[] }>(RAMZINEX_PAIRS_LIST_URL, 12_000);
-    item = data.data?.find(
-      (entry) =>
-        entry.pair_id === RAMZINEX_USDT_IRR_PAIR_ID ||
-        (entry.base_currency_symbol?.en?.toLowerCase() === "usdt" &&
-          entry.quote_currency_symbol?.en?.toLowerCase() === "irr")
-    );
+  // Desk: buyPrice = bid, sellPrice = ask. Ramzinex buy/sell are in rial and usually bid < ask.
+  // If inverted (rare), swap so assertRealisticUsdtIrt does not reject a valid book.
+  if (buyPrice !== null && sellPrice !== null && buyPrice > sellPrice) {
+    const tmp = buyPrice;
+    buyPrice = sellPrice;
+    sellPrice = tmp;
   }
 
-  const buyPrice = toToman(item?.buy, "rial");
-  const sellPrice = toToman(item?.sell, "rial");
   if (buyPrice === null && sellPrice === null) {
     throw new ProviderError("داده قیمت تتر در پاسخ منبع پیدا نشد");
   }

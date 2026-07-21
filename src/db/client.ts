@@ -30,6 +30,8 @@ type GlobalDbState = {
   mode: "postgres" | "pglite" | null;
   initPromise: Promise<DeskDb> | null;
   pgliteQueue: Promise<unknown>;
+  /** Generation bumped on pool reset so in-flight retries re-init cleanly. */
+  poolGeneration: number;
 };
 
 const g = globalThis as typeof globalThis & { __otcDeskDb?: GlobalDbState };
@@ -42,10 +44,116 @@ function state(): GlobalDbState {
       pglite: null,
       mode: null,
       initPromise: null,
-      pgliteQueue: Promise.resolve()
+      pgliteQueue: Promise.resolve(),
+      poolGeneration: 0
     };
   }
   return g.__otcDeskDb;
+}
+
+/** Transient network / pool failures under Docker Desktop (TCP bridge flakiness). */
+export function isTransientDbError(error: unknown): boolean {
+  const walk: unknown[] = [error];
+  const seen = new Set<unknown>();
+  while (walk.length) {
+    const cur = walk.shift();
+    if (cur == null || seen.has(cur)) continue;
+    seen.add(cur);
+    if (typeof cur === "object") {
+      const o = cur as { code?: unknown; errno?: unknown; message?: unknown; cause?: unknown };
+      const code = String(o.code ?? o.errno ?? "");
+      if (
+        code === "CONNECT_TIMEOUT" ||
+        code === "ECONNRESET" ||
+        code === "ECONNREFUSED" ||
+        code === "ETIMEDOUT" ||
+        code === "EPIPE" ||
+        code === "57P01" || // admin_shutdown
+        code === "57P03" // cannot_connect_now
+      ) {
+        return true;
+      }
+      const msg = String(o.message ?? "");
+      if (/CONNECT_TIMEOUT|ECONNRESET|ECONNREFUSED|ETIMEDOUT|connection terminated|not yet accepting/i.test(msg)) {
+        return true;
+      }
+      if ("cause" in o && o.cause) walk.push(o.cause);
+    } else if (typeof cur === "string") {
+      if (/CONNECT_TIMEOUT|ECONNRESET|ECONNREFUSED|ETIMEDOUT/i.test(cur)) return true;
+    }
+  }
+  return false;
+}
+
+async function destroyPgPool(): Promise<void> {
+  const s = state();
+  const sql = s.sql;
+  s.sql = null;
+  s.db = null;
+  s.mode = null;
+  s.initPromise = null;
+  s.poolGeneration += 1;
+  if (sql) {
+    try {
+      await sql.end({ timeout: 1 });
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function createPgSql(url: string): ReturnType<typeof postgres> {
+  const poolMax = Math.max(1, Number(process.env.DATABASE_POOL_MAX ?? 10) || 10);
+  // Prefer fewer sockets under Docker Desktop — less connect churn, more reuse.
+  const max = Math.min(poolMax, 6);
+  const base = {
+    max,
+    // Keep idle sockets longer so refresh storms reuse instead of reconnecting
+    idle_timeout: 60,
+    // Fail faster on dead bridge, then retry with a fresh pool
+    connect_timeout: 8,
+    max_lifetime: 60 * 15,
+    prepare: false as const,
+    // Skip catalog type fetch round-trips on each new connection
+    fetch_types: false as const,
+    connection: {
+      application_name: "iman-otc-desk"
+    }
+  };
+
+  // Prefer explicit Unix socket (shared volume) — no Docker bridge TCP.
+  const socket = process.env.OTC_DB_SOCKET?.trim();
+  if (socket) {
+    let user = process.env.POSTGRES_USER?.trim() || "otc_app";
+    let password = process.env.POSTGRES_PASSWORD ?? "";
+    let database = process.env.POSTGRES_DB?.trim() || "otc_desk";
+    try {
+      // Accept postgres://user:pass@host/db or …@localhost/db?host=/socket
+      const normalized = url.replace(/^postgres(ql)?:\/\//i, "http://");
+      const u = new URL(normalized);
+      if (u.username) user = decodeURIComponent(u.username);
+      if (u.password) password = decodeURIComponent(u.password);
+      const pathDb = u.pathname.replace(/^\//, "");
+      if (pathDb) database = pathDb;
+    } catch {
+      /* use env defaults */
+    }
+    return postgres({
+      ...base,
+      host: socket,
+      database,
+      username: user,
+      password
+    });
+  }
+
+  // Fix empty-host URLs (postgres://user:pass@/db?host=/socket) for WHATWG URL parser
+  let connectUrl = url;
+  if (/^postgres(ql)?:\/\/[^@]+@\//i.test(url) && /[?&]host=\//i.test(url)) {
+    connectUrl = url.replace(/@\//, "@localhost/");
+  }
+
+  return postgres(connectUrl, base);
 }
 
 export class DatabaseUnavailableError extends Error {
@@ -88,12 +196,11 @@ function resolvePgliteDataDir(url: string): string {
   return path.resolve(process.cwd(), ".data", "pglite");
 }
 
-async function initDb(): Promise<DeskDb> {
+async function initDbOnce(): Promise<DeskDb> {
   const s = state();
   if (s.db) return s.db;
 
   const url = getDatabaseUrl();
-  const poolMax = Math.max(1, Number(process.env.DATABASE_POOL_MAX ?? 10) || 10);
 
   if (isPgliteUrl(url)) {
     const dataDir = resolvePgliteDataDir(url);
@@ -125,31 +232,34 @@ async function initDb(): Promise<DeskDb> {
   }
 
   try {
-    s.sql = postgres(url, {
-      max: poolMax,
-      idle_timeout: 30,
-      connect_timeout: 30,
-      prepare: false
-    });
+    s.sql = createPgSql(url);
     s.db = drizzlePg(s.sql, { schema });
     s.mode = "postgres";
     // smoke probe
     await s.sql`SELECT 1`;
     return s.db;
   } catch (error) {
-    if (s.sql) {
-      try {
-        await s.sql.end({ timeout: 1 });
-      } catch {
-        /* ignore */
-      }
-    }
-    s.sql = null;
-    s.db = null;
-    s.mode = null;
+    await destroyPgPool();
     const msg = error instanceof Error ? error.message : String(error);
     throw new DatabaseUnavailableError(`PostgreSQL connection failed: ${msg}`, error);
   }
+}
+
+async function initDb(): Promise<DeskDb> {
+  const attempts = Math.max(1, Number(process.env.DATABASE_CONNECT_RETRIES ?? 3) || 3);
+  let last: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await initDbOnce();
+    } catch (error) {
+      last = error;
+      if (!isTransientDbError(error) || i === attempts - 1) throw error;
+      await destroyPgPool();
+      // 50ms, 150ms, 350ms…
+      await new Promise((r) => setTimeout(r, 50 + i * 100));
+    }
+  }
+  throw last;
 }
 
 /** Async-safe DB accessor (preferred). */
@@ -166,18 +276,53 @@ export async function getDbAsync(): Promise<DeskDb> {
 }
 
 /**
- * Sync accessor — only returns an already-initialized DB.
- * Never opens a second PGlite handle (that aborts WASM under Next.js concurrency).
- * Prefer await getDbAsync() everywhere.
+ * Run a DB operation; on transient CONNECT_TIMEOUT / reset, rebuild the pool and retry once.
+ * Use for critical hot paths (settings, snapshots) under Docker Desktop.
+ */
+export async function withDbRetry<T>(fn: () => Promise<T>, label = "db"): Promise<T> {
+  try {
+    await getDbAsync();
+    return await fn();
+  } catch (error) {
+    if (!isTransientDbError(error)) throw error;
+    console.warn(
+      `[db] transient error on ${label}, resetting pool and retrying once:`,
+      error instanceof Error ? error.message : error
+    );
+    await destroyPgPool();
+    await getDbAsync();
+    return await fn();
+  }
+}
+
+/**
+ * Sync accessor for call sites that cannot await.
+ * - Postgres: construct pool immediately (lazy first query) so hot paths never "still connecting".
+ * - PGlite: never open a second WASM handle; kick async init and throw until ready.
+ * Prefer await getDbAsync() in new code.
  */
 export function getDb(): DeskDb {
   const s = state();
   if (s.db) return s.db;
-  // Single-flight async init; do not construct PGlite here.
-  void getDbAsync();
-  throw new DatabaseUnavailableError(
-    "Database is initializing — use await getDbAsync() (retry the request)."
-  );
+  const url = getDatabaseUrl();
+  if (isPgliteUrl(url)) {
+    // Single-flight async init; do not construct PGlite here (aborts WASM under concurrency).
+    void getDbAsync();
+    throw new DatabaseUnavailableError(
+      "Database is initializing — use await getDbAsync() (retry the request)."
+    );
+  }
+  // postgres.js: open pool sync — connection happens on first query (no race throw)
+  try {
+    s.sql = createPgSql(url);
+    s.db = drizzlePg(s.sql, { schema });
+    s.mode = "postgres";
+    s.initPromise = Promise.resolve(s.db);
+    return s.db;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    throw new DatabaseUnavailableError(`PostgreSQL client init failed: ${msg}`, error);
+  }
 }
 
 export function getDbMode(): "postgres" | "pglite" | null {
@@ -237,10 +382,6 @@ export async function withAdvisoryLock<T>(
 
 export async function closeDb(): Promise<void> {
   const s = state();
-  if (s.sql) {
-    await s.sql.end({ timeout: 5 });
-    s.sql = null;
-  }
   if (s.pglite) {
     try {
       await s.pglite.close();
@@ -249,9 +390,7 @@ export async function closeDb(): Promise<void> {
     }
     s.pglite = null;
   }
-  s.db = null;
-  s.mode = null;
-  s.initPromise = null;
+  await destroyPgPool();
   s.pgliteQueue = Promise.resolve();
 }
 

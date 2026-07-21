@@ -331,6 +331,55 @@ async function refreshPipeline(settings: DeskSettings): Promise<ImpactNewsRespon
   return response;
 }
 
+/** Build a response from durable store without hitting RSS/translation (fast path). */
+async function responseFromDurableStore(): Promise<ImpactNewsResponse | null> {
+  try {
+    const store = await loadNewsStore();
+    purgeExpiredArticles(store);
+    const active = sortArticlesForDisplay(listActiveArticles(store)).slice(0, MAX_VISIBLE_ARTICLES);
+    if (!active.length) return null;
+    const providers = Object.values(store.providers);
+    const status = aggregateSourceStatus(
+      providers.length
+        ? providers
+        : [{ id: "store", name: "store", status: "degraded" as const, lastAttemptAt: null, lastSuccessAt: store.updatedAt, articleCount: active.length, httpStatus: null, lastError: null, retryAfterAt: null }]
+    );
+    return {
+      items: active.map((a) => toImpactItem(a)),
+      sourceStatus: status === "unavailable" ? "degraded" : status,
+      lastUpdated: store.updatedAt,
+      updatedAt: store.updatedAt,
+      nextRefreshAt: new Date(Date.now() + NEWS_SERVER_REFRESH_MS).toISOString(),
+      message: undefined,
+      providers: providers.map((h) => ({
+        id: h.id,
+        name: h.name,
+        status: h.status,
+        lastSuccessAt: h.lastSuccessAt,
+        articleCount: h.articleCount,
+        lastError: h.lastError
+      }))
+    };
+  } catch {
+    return null;
+  }
+}
+
+function kickBackgroundRefresh(settings: DeskSettings): void {
+  if (inflight) return;
+  inflight = refreshPipeline(settings)
+    .catch((err) => {
+      console.warn(
+        "[impact-news] background refresh failed",
+        err instanceof Error ? err.message : err
+      );
+      return lastResponse;
+    })
+    .finally(() => {
+      inflight = null;
+    }) as Promise<ImpactNewsResponse>;
+}
+
 export async function getImpactNews(settings: DeskSettings): Promise<ImpactNewsResponse> {
   if (settings.enabledSources.news === false) {
     return {
@@ -345,9 +394,8 @@ export async function getImpactNews(settings: DeskSettings): Promise<ImpactNewsR
 
   const now = Date.now();
 
-  // Serve warm cache during min-gap / within server refresh window
+  // 1) In-process warm cache
   if (lastResponse && now - lastFetchAt < NEWS_SERVER_REFRESH_MS) {
-    // Still purge client-visible retention on each read
     const store = await loadNewsStore();
     purgeExpiredArticles(store);
     const activeIds = new Set(listActiveArticles(store).map((a) => a.id));
@@ -361,12 +409,22 @@ export async function getImpactNews(settings: DeskSettings): Promise<ImpactNewsR
     }
   }
 
-  if (inflight) return inflight;
-
-  // Throttle concurrent storms
   if (lastResponse && now - lastFetchAt < MIN_GAP_MS) {
     return lastResponse;
   }
+
+  // 2) Durable store — return immediately, refresh RSS/translate in background
+  const fromDb = await responseFromDurableStore();
+  if (fromDb) {
+    lastResponse = fromDb;
+    lastFetchAt = now;
+    nextRefreshAt = fromDb.nextRefreshAt ?? null;
+    kickBackgroundRefresh(settings);
+    return fromDb;
+  }
+
+  // 3) Cold start — wait for pipeline (or share inflight)
+  if (inflight) return inflight;
 
   inflight = refreshPipeline(settings).finally(() => {
     inflight = null;

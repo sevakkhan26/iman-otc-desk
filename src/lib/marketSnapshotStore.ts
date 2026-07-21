@@ -2,7 +2,7 @@
  * Canonical market snapshot store — PostgreSQL only.
  * Fail closed when DATABASE_URL is unavailable.
  */
-import { DatabaseUnavailableError, getDatabaseUrl } from "@/db/client";
+import { DatabaseUnavailableError, getDatabaseUrl, withDbRetry } from "@/db/client";
 import {
   pgReadLatestTetherSnapshot,
   pgWithTetherRefreshLock,
@@ -27,7 +27,7 @@ let inflightRefresh: Promise<MarketSnapshotRecord> | null = null;
 export async function readMarketSnapshot(): Promise<MarketSnapshotRecord | null> {
   try {
     getDatabaseUrl();
-    return await pgReadLatestTetherSnapshot();
+    return await withDbRetry(() => pgReadLatestTetherSnapshot(), "snapshot-read");
   } catch (error) {
     if (error instanceof DatabaseUnavailableError) throw error;
     console.error("[market-snapshot] read failed", error instanceof Error ? error.message : error);
@@ -40,13 +40,11 @@ export async function readMarketSnapshot(): Promise<MarketSnapshotRecord | null>
 export async function writeMarketSnapshot(record: MarketSnapshotRecord): Promise<void> {
   try {
     getDatabaseUrl();
-    await pgWriteTetherSnapshot(record);
+    // Write failures must not 503 the whole dashboard — log and continue with in-memory payload.
+    await withDbRetry(() => pgWriteTetherSnapshot(record), "snapshot-write");
   } catch (error) {
-    if (error instanceof DatabaseUnavailableError) throw error;
     console.error("[market-snapshot] write failed", error instanceof Error ? error.message : error);
-    throw new DatabaseUnavailableError(
-      error instanceof Error ? error.message : "PostgreSQL market snapshot write failed"
-    );
+    // Soft-fail: tether response already computed; next refresh retries persistence.
   }
 }
 

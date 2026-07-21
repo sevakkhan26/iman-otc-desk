@@ -2,7 +2,12 @@
  * Desk settings — PostgreSQL app_settings (single source of truth).
  * Fail closed when DATABASE_URL is unavailable.
  */
-import { DatabaseUnavailableError, getDatabaseUrl } from "@/db/client";
+import {
+  DatabaseUnavailableError,
+  getDatabaseUrl,
+  isTransientDbError,
+  withDbRetry
+} from "@/db/client";
 import { pgGetSettingsJson, pgSaveSettingsJson } from "@/db/repositories/settings";
 import type { DeskSettings, PublicSettings, SettingsPatch } from "@/lib/types";
 
@@ -62,19 +67,51 @@ function mergeSettings(value: Partial<DeskSettings>): DeskSettings {
 }
 
 let settingsMemCache: { value: DeskSettings; at: number } | null = null;
-const SETTINGS_MEM_TTL_MS = 5_000;
+/** Fresh TTL — dashboard hits settings on almost every API; avoid hammering Postgres. */
+const SETTINGS_MEM_TTL_MS = 30_000;
+/** After a transient CONNECT_TIMEOUT, keep serving last good settings instead of HTTP 503. */
+const SETTINGS_STALE_MAX_MS = 15 * 60_000;
 
+/**
+ * Read desk settings.
+ * Resilience (v3.4+): never take down market pages on a blip —
+ *   1) fresh mem cache
+ *   2) live Postgres (with connect retry)
+ *   3) stale mem cache (up to SETTINGS_STALE_MAX_MS)
+ *   4) process defaults (soft) when OTC_SETTINGS_SOFT_FAIL is not "0"
+ */
 export async function getSettings(): Promise<DeskSettings> {
   if (settingsMemCache && Date.now() - settingsMemCache.at < SETTINGS_MEM_TTL_MS) {
     return settingsMemCache.value;
   }
   try {
     getDatabaseUrl();
-    const stored = await pgGetSettingsJson();
+    const stored = await withDbRetry(() => pgGetSettingsJson(), "settings-read");
     const value = mergeSettings(stored ?? {});
     settingsMemCache = { value, at: Date.now() };
     return value;
   } catch (error) {
+    if (
+      settingsMemCache &&
+      Date.now() - settingsMemCache.at < SETTINGS_STALE_MAX_MS
+    ) {
+      console.warn(
+        "[settings] DB read failed — serving stale cache",
+        error instanceof Error ? error.message : error
+      );
+      return settingsMemCache.value;
+    }
+    const soft = (process.env.OTC_SETTINGS_SOFT_FAIL ?? "1") !== "0";
+    if (soft && (isTransientDbError(error) || error instanceof DatabaseUnavailableError)) {
+      console.warn(
+        "[settings] DB unavailable — serving process defaults (soft fail)",
+        error instanceof Error ? error.message : error
+      );
+      const value = mergeSettings({});
+      // short cache so we retry DB soon without hammering every request
+      settingsMemCache = { value, at: Date.now() - SETTINGS_MEM_TTL_MS + 3_000 };
+      return value;
+    }
     if (error instanceof DatabaseUnavailableError) throw error;
     const msg = error instanceof Error ? error.message : "PostgreSQL settings read failed";
     const cause =

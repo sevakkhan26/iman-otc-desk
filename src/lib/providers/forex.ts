@@ -228,6 +228,34 @@ async function withPreviousMonth(data: ForexEventsResponse): Promise<ForexEvents
   }
 }
 
+function kickBackgroundForexRefresh(): void {
+  if (inflight) return;
+  inflight = (async () => {
+    try {
+      const fresh = await fetchFresh();
+      if (fresh.events.length) {
+        const entry: CacheEntry = { at: Date.now(), data: fresh };
+        memCache = entry;
+        await writeDiskCache(entry);
+        return withPreviousMonth(fresh);
+      }
+      const fallback = await getCachedEntry();
+      if (fallback && fallback.data.events.length && Date.now() - fallback.at < STALE_TTL_MS) {
+        return withPreviousMonth({
+          ...fallback.data,
+          sourceStatus: "degraded",
+          message: `آخرین داده معتبر نمایش داده شد (به‌روزرسانی موقتاً ناموفق${
+            fresh.message ? `: ${fresh.message}` : ""
+          })`
+        });
+      }
+      return withPreviousMonth(fresh);
+    } finally {
+      inflight = null;
+    }
+  })();
+}
+
 export async function getForexEvents(settings: DeskSettings): Promise<ForexEventsResponse> {
   if (settings.enabledSources.forex === false) {
     const empty: ForexEventsResponse = {
@@ -240,7 +268,6 @@ export async function getForexEvents(settings: DeskSettings): Promise<ForexEvent
   }
 
   const cached = await getCachedEntry();
-  let effectiveTtl = FRESH_TTL_MS;
   if (cached && cached.data.events.length) {
     const now = Date.now();
     const hasNearRelease = cached.data.events.some((ev) => {
@@ -249,40 +276,33 @@ export async function getForexEvents(settings: DeskSettings): Promise<ForexEvent
       if (!Number.isFinite(t)) return false;
       return Math.abs(t - now) < 15 * 60 * 1000; // within ~15min of release
     });
-    effectiveTtl = hasNearRelease ? HOT_TTL_MS : FRESH_TTL_MS;
-    if (Date.now() - cached.at < effectiveTtl) {
-      // Recompute previous-month from durable store even when weekly calendar cache is fresh.
+    const effectiveTtl = hasNearRelease ? HOT_TTL_MS : FRESH_TTL_MS;
+    const age = now - cached.at;
+
+    if (age < effectiveTtl) {
       return withPreviousMonth(cached.data);
+    }
+
+    // Stale-while-revalidate: never block the UI on upstream calendar (often >10s)
+    if (age < STALE_TTL_MS) {
+      kickBackgroundForexRefresh();
+      return withPreviousMonth({
+        ...cached.data,
+        sourceStatus: cached.data.sourceStatus === "unavailable" ? "degraded" : cached.data.sourceStatus
+      });
     }
   }
 
-  // De-duplicate concurrent refreshes (e.g. dashboard + alerts) into one upstream request.
+  // Cold start (no cache) — wait once, shared inflight
   if (!inflight) {
-    inflight = (async () => {
-      try {
-        const fresh = await fetchFresh();
-        if (fresh.events.length) {
-          const entry: CacheEntry = { at: Date.now(), data: fresh };
-          memCache = entry;
-          await writeDiskCache(entry);
-          return withPreviousMonth(fresh);
-        }
-        // Upstream failed/empty: serve the last good data if still within the stale window.
-        const fallback = await getCachedEntry();
-        if (fallback && fallback.data.events.length && Date.now() - fallback.at < STALE_TTL_MS) {
-          return withPreviousMonth({
-            ...fallback.data,
-            sourceStatus: "degraded",
-            message: `آخرین داده معتبر نمایش داده شد (به‌روزرسانی موقتاً ناموفق${
-              fresh.message ? `: ${fresh.message}` : ""
-            })`
-          });
-        }
-        return withPreviousMonth(fresh);
-      } finally {
-        inflight = null;
-      }
-    })();
+    kickBackgroundForexRefresh();
   }
-  return inflight;
+  if (inflight) return inflight;
+
+  return withPreviousMonth({
+    events: [],
+    sourceStatus: "unavailable",
+    lastUpdated: null,
+    message: "منبع در دسترس نیست"
+  });
 }

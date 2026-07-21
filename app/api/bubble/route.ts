@@ -4,10 +4,11 @@ import { getFxStreetPrices } from "@/lib/providers/fxStreet";
 import { getGoldMarketPrices } from "@/lib/providers/goldMarket";
 import { isSession, requireApiSession } from "@/lib/requireApiAuth";
 import { getSettings } from "@/lib/settings";
+import { serveSwr, withDeadline } from "@/lib/swrServe";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-export const maxDuration = 30;
+export const maxDuration = 20;
 
 const NO_STORE = {
   "cache-control": "no-store",
@@ -18,41 +19,48 @@ export async function GET() {
   const session = await requireApiSession();
   if (!isSession(session)) return session;
   try {
-    const settings = await getSettings();
-    const [fxR, goldR] = await Promise.allSettled([
-      getFxStreetPrices(settings),
-      getGoldMarketPrices(settings)
-    ]);
+    const body = await serveSwr(
+      "api:bubble",
+      20_000,
+      10 * 60_000,
+      async () => {
+        const settings = await getSettings();
+        const [fxR, goldR] = await Promise.allSettled([
+          withDeadline(getFxStreetPrices(settings), 8_000, "bubble-fx"),
+          withDeadline(getGoldMarketPrices(settings), 8_000, "bubble-gold")
+        ]);
 
-    const fx = fxR.status === "fulfilled" ? fxR.value : null;
-    const gold = goldR.status === "fulfilled" ? goldR.value : null;
+        const fx = fxR.status === "fulfilled" ? fxR.value : null;
+        const gold = goldR.status === "fulfilled" ? goldR.value : null;
 
-    const notes: string[] = [];
-    if (fxR.status === "rejected") {
-      notes.push(
-        `ارز: ${fxR.reason instanceof Error ? fxR.reason.message : "دریافت ناموفق"}`
-      );
-    }
-    if (goldR.status === "rejected") {
-      notes.push(
-        `طلا: ${goldR.reason instanceof Error ? goldR.reason.message : "دریافت ناموفق"}`
-      );
-    }
+        const notes: string[] = [];
+        if (fxR.status === "rejected") {
+          notes.push(
+            `ارز: ${fxR.reason instanceof Error ? fxR.reason.message : "دریافت ناموفق"}`
+          );
+        }
+        if (goldR.status === "rejected") {
+          notes.push(
+            `طلا: ${goldR.reason instanceof Error ? goldR.reason.message : "دریافت ناموفق"}`
+          );
+        }
 
-    const payload = buildMarketBubbleResponse(fx, gold);
-    if (notes.length) {
-      payload.notes = [...notes, ...payload.notes];
-    }
-    const serverNow = new Date().toISOString();
-    const body = {
-      ...payload,
-      serverNow,
-      generatedAt: payload.lastUpdated ?? serverNow,
-      isStale: false,
-      lastSuccessfulRefreshAt: payload.lastUpdated ?? null,
-      lastAttemptedRefreshAt: serverNow,
-      refreshIntervalMs: 30_000
-    };
+        const payload = buildMarketBubbleResponse(fx, gold);
+        if (notes.length) {
+          payload.notes = [...notes, ...payload.notes];
+        }
+        const serverNow = new Date().toISOString();
+        return {
+          ...payload,
+          serverNow,
+          generatedAt: payload.lastUpdated ?? serverNow,
+          isStale: false,
+          lastSuccessfulRefreshAt: payload.lastUpdated ?? null,
+          lastAttemptedRefreshAt: serverNow,
+          refreshIntervalMs: 30_000
+        };
+      }
+    );
 
     return new NextResponse(JSON.stringify(body), { status: 200, headers: NO_STORE });
   } catch (error) {

@@ -2,7 +2,7 @@ import { getGlobalExchangeStatuses } from "@/lib/providers/exchangeStatus";
 import { getForexEvents } from "@/lib/providers/forex";
 import { getGlobalPrices } from "@/lib/providers/globalMarket";
 import { getImpactNews } from "@/lib/providers/news";
-import { getSettings } from "@/lib/settings";
+import { defaultSettings, getSettings } from "@/lib/settings";
 import type {
   AlertItem,
   DashboardResponse,
@@ -371,26 +371,57 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Pro
 }
 
 export async function getDashboard(): Promise<DashboardResponse> {
-  const settings = await getSettings();
+  // Settings soft-fail: never block the whole shell on CONNECT_TIMEOUT
+  let settings: DeskSettings;
+  try {
+    settings = await getSettings();
+  } catch (error) {
+    console.warn(
+      "[dashboard] getSettings failed, using defaults",
+      error instanceof Error ? error.message : error
+    );
+    settings = { ...defaultSettings };
+  }
   const { getTetherMarketSnapshot } = await import("@/lib/marketSnapshot");
+
+  // Cap total dashboard assembly so browsers never spin until maxDuration 60s
+  const branchTimeoutMs = Math.max(
+    8_000,
+    Number(process.env.DASHBOARD_BRANCH_TIMEOUT_MS ?? 12_000) || 12_000
+  );
+
+  // Soft timeouts: never throw — return null so Promise.allSettled + empty* fallbacks apply
+  const timed = <T>(p: Promise<T>, label: string): Promise<T | null> =>
+    withTimeout(
+      p.then((v) => v as T | null).catch((err) => {
+        console.warn(`[dashboard] ${label} failed`, err instanceof Error ? err.message : err);
+        return null;
+      }),
+      branchTimeoutMs,
+      null
+    );
 
   // Tether/LP from shared persistent snapshot; other branches isolated in parallel
   const settled = await Promise.allSettled([
-    getTetherMarketSnapshot(),
-    getGlobalPrices(settings.globalMarketRefreshMinutes),
-    getGlobalExchangeStatuses(settings),
-    getImpactNews(settings),
-    getForexEvents(settings)
+    timed(getTetherMarketSnapshot(), "tether"),
+    timed(getGlobalPrices(settings.globalMarketRefreshMinutes), "globalPrices"),
+    timed(getGlobalExchangeStatuses(settings), "globalStatuses"),
+    timed(getImpactNews(settings), "news"),
+    timed(getForexEvents(settings), "forex")
   ]);
 
   const tetherSnap =
-    settled[0].status === "fulfilled"
+    settled[0].status === "fulfilled" && settled[0].value
       ? settled[0].value
       : calculateTetherMarket([], settings.outlierThresholdPercent);
-  const globalMarket = settled[1].status === "fulfilled" ? settled[1].value : [];
-  const globalStatuses = settled[2].status === "fulfilled" ? settled[2].value : [];
-  const news = settled[3].status === "fulfilled" ? settled[3].value : emptyNews();
-  const forex = settled[4].status === "fulfilled" ? settled[4].value : emptyForex();
+  const globalMarket =
+    settled[1].status === "fulfilled" && settled[1].value ? settled[1].value : [];
+  const globalStatuses =
+    settled[2].status === "fulfilled" && settled[2].value ? settled[2].value : [];
+  const news =
+    settled[3].status === "fulfilled" && settled[3].value ? settled[3].value : emptyNews();
+  const forex =
+    settled[4].status === "fulfilled" && settled[4].value ? settled[4].value : emptyForex();
 
   const tetherMarket: TetherMarketResponse = tetherSnap;
 

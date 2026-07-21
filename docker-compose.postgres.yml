@@ -32,8 +32,12 @@ services:
 
   iman-otc-desk:
     environment:
+      # Always compose DNS — never host.docker.internal (Docker Desktop CONNECT_TIMEOUT → 503)
       DATABASE_URL: postgres://${POSTGRES_USER:-otc_app}:${POSTGRES_PASSWORD}@otc-postgres:5432/${POSTGRES_DB:-otc_desk}
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
+      OTC_FORCE_COMPOSE_DB: "1"
+      OTC_DB_HOST: otc-postgres
+      OTC_DB_PORT: "5432"
       # Obsolete file/redis backends — left unset intentionally
     depends_on:
       otc-postgres:

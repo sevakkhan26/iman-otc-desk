@@ -2,7 +2,14 @@
 
 Symptom: version 3.2.x live, dashboard empty, HTTP **503**, no data.
 
-Cause: app requires PostgreSQL (`DATABASE_URL`). Schema/data not loaded yet.
+## Two distinct 503 causes
+
+| Log / symptom | Cause | Fix |
+|---------------|--------|-----|
+| `database_unavailable` + empty schema / migrate not run | Postgres required; schema/data not loaded yet | Steps below (migrate + import) |
+| `write CONNECT_TIMEOUT host.docker.internal:5433` (or slow login/API then 503) | App container used **host hairpin** DB URL under Docker Desktop | Set `DATABASE_URL=…@otc-postgres:5432/…`, set `OTC_FORCE_COMPOSE_DB=1`, recreate app. **Never** `host.docker.internal` / `127.0.0.1:5433` for in-container app. |
+
+Cause (classic empty cutover): app requires PostgreSQL (`DATABASE_URL`). Schema/data not loaded yet.
 
 ## On Ubuntu server (NOW)
 

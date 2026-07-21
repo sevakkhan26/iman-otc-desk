@@ -16,11 +16,14 @@ Also `scripts/deploy-production.sh` runs migrate **before** recreate when `DATAB
 **Server `.env` / compose env (never Git):**
 
 ```env
+# MUST use compose service DNS (same Docker network). Never host.docker.internal or host-published ports.
 DATABASE_URL=postgres://otc_app:SECRET@otc-postgres:5432/otc_desk
 DATABASE_POOL_MAX=10
 # first boot only:
 AUTO_IMPORT_LEGACY=1
 ```
+
+**Do not** set `DATABASE_URL` to `host.docker.internal:5433` or `127.0.0.1:5433` inside the app container. On Docker Desktop that hairpins through the VM/host and causes intermittent `CONNECT_TIMEOUT` → HTTP **503**. The entrypoint refuses those hosts (unless `ALLOW_UNSAFE_DB_HOST=1`) and, when `OTC_FORCE_COMPOSE_DB=1`, rebuilds the URL as `@otc-postgres:5432`.
 
 After first successful import, set `AUTO_IMPORT_LEGACY=0` (or remove).
 

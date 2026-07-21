@@ -11,6 +11,10 @@ services:
       PRICE_ALERTS_DATA_DIR: /app/data/price-alerts
       PRICE_ALERTS_DATA_FILE: /app/data/price-alerts/price-alerts.json
       VIEWER_AUTH_DATA_FILE: /app/data/price-alerts/viewer-auth.json
+      # Never use host.docker.internal for Postgres (Docker Desktop CONNECT_TIMEOUT → 503).
+      OTC_FORCE_COMPOSE_DB: "1"
+      OTC_DB_HOST: otc-postgres
+      OTC_DB_PORT: "5432"
     volumes:
       - iman-otc-alerts-data:/app/data/price-alerts
 

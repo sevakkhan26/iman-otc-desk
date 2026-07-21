@@ -2,10 +2,12 @@ import { NextResponse } from "next/server";
 import { getGoldMarketPrices } from "@/lib/providers/goldMarket";
 import { isSession, requireApiSession } from "@/lib/requireApiAuth";
 import { getSettings } from "@/lib/settings";
+import { serveSwr, withDeadline } from "@/lib/swrServe";
 import type { GoldMarketQuote, GoldPricesApiItem, GoldPricesApiResponse } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const maxDuration = 20;
 
 function hasValidPrice(item: Pick<GoldPricesApiItem, "buy" | "sell" | "mid">): boolean {
   return item.buy !== null || item.sell !== null || item.mid !== null;
@@ -28,18 +30,26 @@ export async function GET() {
   const session = await requireApiSession();
   if (!isSession(session)) return session;
   try {
-    const settings = await getSettings();
-    const data = await getGoldMarketPrices(settings);
-    const items = data.quotes.map(toApiItem).filter((item) => item.status === "ok" && hasValidPrice(item));
-    const serverNow = new Date().toISOString();
-    const response: GoldPricesApiResponse = {
-      items,
-      lastUpdated: data.lastUpdated ?? undefined,
-      notes: items.length ? (data.stale ? data.notes : undefined) : data.notes,
-      providers: data.providers,
-      serverNow,
-      generatedAt: data.lastUpdated ?? serverNow
-    };
+    const response = await serveSwr(
+      "api:gold-prices",
+      20_000,
+      10 * 60_000,
+      async () => {
+        const settings = await getSettings();
+        const data = await withDeadline(getGoldMarketPrices(settings), 10_000, "gold");
+        const items = data.quotes.map(toApiItem).filter((item) => item.status === "ok" && hasValidPrice(item));
+        const serverNow = new Date().toISOString();
+        const body: GoldPricesApiResponse = {
+          items,
+          lastUpdated: data.lastUpdated ?? undefined,
+          notes: items.length ? (data.stale ? data.notes : undefined) : data.notes,
+          providers: data.providers,
+          serverNow,
+          generatedAt: data.lastUpdated ?? serverNow
+        };
+        return body;
+      }
+    );
     return jsonUtf8(response);
   } catch (error) {
     const message = error instanceof Error ? error.message : "خطای نامشخص منبع";

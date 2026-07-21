@@ -19,12 +19,13 @@ import {
 } from "@/lib/providers/domestic";
 import { calculateTetherMarket } from "@/lib/market";
 import { recordMedian } from "@/lib/history";
-import { getSettings } from "@/lib/settings";
+import { defaultSettings, getSettings } from "@/lib/settings";
 import { ttlFromMinutes } from "@/lib/providerCache";
 import type {
   DashboardResponse,
   DeskSettings,
   DomesticProviderHealth,
+  DomesticQuote,
   SourceStatus,
   TetherMarketResponse
 } from "@/lib/types";
@@ -134,13 +135,50 @@ function attachMeta(
   };
 }
 
-async function buildFreshRecord(settings: DeskSettings): Promise<MarketSnapshotRecord> {
+async function buildFreshRecord(
+  settings: DeskSettings,
+  options?: { bypassListCache?: boolean }
+): Promise<MarketSnapshotRecord> {
   const attemptedAt = new Date().toISOString();
   const refreshIntervalMs = ttlFromMinutes(settings.priceRefreshMinutes);
   try {
-    // Snapshot owns refresh cadence — bypass process-local list cache for this fetch.
-    clearDomesticQuotesCache();
-    const quotes = await getDomesticQuotes(settings);
+    // Default: reuse process-local provider cache (fast). Manual force may bypass.
+    if (options?.bypassListCache) {
+      clearDomesticQuotesCache();
+    }
+    // Hard cap so multi-LP fan-out cannot block HTTP for 30–60s
+    const fetchBudgetMs = Math.max(
+      4_000,
+      Number(process.env.TETHER_REFRESH_BUDGET_MS ?? 8_000) || 8_000
+    );
+    const quotesOrTimeout = await Promise.race([
+      getDomesticQuotes(settings).then((q) => q as DomesticQuote[] | "timeout"),
+      new Promise<"timeout">((resolve) => {
+        setTimeout(() => resolve("timeout"), fetchBudgetMs);
+      })
+    ]);
+    if (quotesOrTimeout === "timeout") {
+      const previous = await readMarketSnapshot().catch(() => null);
+      if (previous) {
+        return { ...previous, lastAttemptedRefreshAt: attemptedAt };
+      }
+      // No prior snapshot — return empty quickly rather than hang
+      const empty = calculateTetherMarket([], settings.outlierThresholdPercent);
+      empty.settings.marketSpreadAlertThresholdPercent = settings.marketSpreadAlertThresholdPercent;
+      const nowIso = new Date().toISOString();
+      return {
+        version: 1,
+        generatedAt: nowIso,
+        lastSuccessfulRefreshAt: null,
+        lastAttemptedRefreshAt: attemptedAt,
+        settingsKey: settingsKey(settings),
+        refreshIntervalMs,
+        tetherMarket: empty,
+        providers: getDomesticProviderHealth(),
+        quotes: []
+      };
+    }
+    const quotes = quotesOrTimeout;
     const market = calculateTetherMarket(quotes, settings.outlierThresholdPercent);
     market.settings.marketSpreadAlertThresholdPercent = settings.marketSpreadAlertThresholdPercent;
     void recordMedian(market.summary.median).catch(() => {});
@@ -252,13 +290,27 @@ async function refreshAndStore(settings: DeskSettings): Promise<MarketSnapshotRe
 
 /**
  * Serve the canonical tether market snapshot.
- * Uses persistent store + refresh interval; single-flight across concurrent requests.
+ * Stale-while-revalidate: if we have any prior snapshot, return it immediately and
+ * refresh in the background. First paint never waits on 12s multi-LP fan-out.
  */
 export async function getTetherMarketSnapshot(): Promise<TetherMarketSnapshotResponse> {
-  const settings = await getSettings();
+  let settings: DeskSettings;
+  try {
+    settings = await getSettings();
+  } catch {
+    settings = { ...defaultSettings };
+  }
   const key = settingsKey(settings);
   const nowMs = Date.now();
-  let record = await readMarketSnapshot();
+  let record: MarketSnapshotRecord | null = null;
+  try {
+    record = await readMarketSnapshot();
+  } catch (error) {
+    console.warn(
+      "[market-snapshot] read failed (soft)",
+      error instanceof Error ? error.message : error
+    );
+  }
 
   const needsRefresh =
     !record ||
@@ -266,14 +318,52 @@ export async function getTetherMarketSnapshot(): Promise<TetherMarketSnapshotRes
     !Number.isFinite(Date.parse(record.generatedAt)) ||
     nowMs - Date.parse(record.generatedAt) >= record.refreshIntervalMs;
 
-  if (needsRefresh) {
-    record = await refreshAndStore(settings);
+  if (needsRefresh && record) {
+    // SWR: paint last snapshot now; refresh without blocking the HTTP response
+    if (!getInflightRefresh()) {
+      void refreshAndStore(settings).catch((error) => {
+        console.warn(
+          "[market-snapshot] background refresh failed",
+          error instanceof Error ? error.message : error
+        );
+      });
+    }
+    return attachMeta(record.tetherMarket, record, Date.now());
+  }
+
+  if (needsRefresh && !record) {
+    // Cold start only — must wait (capped inside buildFreshRecord)
+    try {
+      record = await refreshAndStore(settings);
+    } catch (error) {
+      console.warn(
+        "[market-snapshot] cold refresh failed (soft)",
+        error instanceof Error ? error.message : error
+      );
+    }
   }
 
   if (!record) {
-    // Absolute fallback — should be rare (empty store + failed lock/refresh)
-    record = await buildFreshRecord(settings);
-    await writeMarketSnapshot(record);
+    try {
+      record = await buildFreshRecord(settings, { bypassListCache: false });
+      await writeMarketSnapshot(record);
+    } catch (error) {
+      console.warn(
+        "[market-snapshot] buildFresh failed (soft)",
+        error instanceof Error ? error.message : error
+      );
+      const empty = calculateTetherMarket([], settings.outlierThresholdPercent);
+      const serverNow = new Date().toISOString();
+      return {
+        ...empty,
+        serverNow,
+        generatedAt: serverNow,
+        isStale: true,
+        lastSuccessfulRefreshAt: null,
+        lastAttemptedRefreshAt: serverNow,
+        refreshIntervalMs: ttlFromMinutes(settings.priceRefreshMinutes)
+      };
+    }
   }
 
   return attachMeta(record.tetherMarket, record, Date.now());
@@ -282,6 +372,7 @@ export async function getTetherMarketSnapshot(): Promise<TetherMarketSnapshotRes
 /** Force a refresh (manual client Refresh / diagnostics). Still server-side only. */
 export async function forceRefreshTetherMarketSnapshot(): Promise<TetherMarketSnapshotResponse> {
   const settings = await getSettings();
+  // Manual refresh: bypass short list cache so user sees fresh LP pulls
   const record = await refreshAndStore(settings);
   return attachMeta(record.tetherMarket, record, Date.now());
 }

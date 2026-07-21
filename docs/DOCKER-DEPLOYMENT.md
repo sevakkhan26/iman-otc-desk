@@ -1,5 +1,35 @@
 # Docker production deployment (Price Alerts persistence)
 
+## Outbound proxy (Bonbast / Navasan)
+
+Iran-filtered market sites (`bonbast.com`, `navasan.net`) are fetched **server-side**
+via `src/lib/http.ts`. If the Docker host cannot reach them directly, set an
+**HTTP CONNECT** proxy (not Telegram MTProto):
+
+```bash
+# In repo-root `.env` on the server (never commit real credentials)
+OUTBOUND_HTTPS_PROXY=http://USER:PASS@mtproxier.com:2053
+PROXY_HOSTS=bonbast.com,navasan.net
+```
+
+Then recreate the container so env is injected:
+
+```bash
+docker compose up -d --force-recreate iman-otc-desk
+```
+
+Quick check from the host (expect HTTP 200 + HTML):
+
+```bash
+curl -sS -o /dev/null -w "%{http_code}\n" \
+  -x "http://USER:PASS@mtproxier.com:2053" \
+  "https://bonbast.com/"
+```
+
+If bubble page shows «داده معتبر کافی در دسترس نیست», FX/gold providers failed —
+almost always Bonbast/Navasan blocked without proxy. After proxy is set, hard-refresh
+the bubble page (or wait one provider poll cycle).
+
 ## Architecture
 
 | Environment | Storage | Notes |

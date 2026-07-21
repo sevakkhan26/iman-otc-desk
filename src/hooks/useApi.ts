@@ -6,14 +6,55 @@ import { serverTimeToEpochMs } from "@/hooks/useServerClock";
 /** In-flight dedupe only (same URL). Not a durable multi-user cache. */
 const inflightClient = new Map<string, Promise<unknown>>();
 
+/**
+ * Tab-lifetime last-good payloads so menu switches paint instantly
+ * (dashboard ↔ tether ↔ gold) without re-waiting for the network.
+ */
+const clientLastGood = new Map<string, { data: unknown; at: number }>();
+
+const CLIENT_FETCH_TIMEOUT_MS = 15_000;
+
+function readSessionCache<T>(url: string): T | null {
+  if (typeof sessionStorage === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(`otc:api:${url}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { data: T; at: number };
+    // Keep for the whole browser tab session (max 6h safety)
+    if (Date.now() - parsed.at > 6 * 60 * 60_000) return null;
+    return parsed.data;
+  } catch {
+    return null;
+  }
+}
+
+function writeSessionCache(url: string, data: unknown): void {
+  if (typeof sessionStorage === "undefined") return;
+  try {
+    sessionStorage.setItem(`otc:api:${url}`, JSON.stringify({ data, at: Date.now() }));
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+function seedFromCaches<T>(url: string): T | null {
+  const mem = clientLastGood.get(url);
+  if (mem) return mem.data as T;
+  return readSessionCache<T>(url);
+}
+
 function clientFetchJson<T>(url: string): Promise<T> {
   const existing = inflightClient.get(url);
   if (existing) {
     return existing as Promise<T>;
   }
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CLIENT_FETCH_TIMEOUT_MS);
+
   const promise = fetch(url, {
     cache: "no-store",
+    signal: controller.signal,
     headers: {
       accept: "application/json",
       "cache-control": "no-store"
@@ -24,6 +65,7 @@ function clientFetchJson<T>(url: string): Promise<T> {
       return (await response.json()) as T;
     })
     .finally(() => {
+      clearTimeout(timer);
       inflightClient.delete(url);
     });
 
@@ -79,17 +121,26 @@ export function extractServerTimes(data: unknown): {
 }
 
 export function useApi<T>(url: string, refreshMs?: number) {
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(true);
+  const seeded = seedFromCaches<T>(url);
+  const [data, setData] = useState<T | null>(seeded);
+  // Never block the whole page on skeleton if we already have a last-good payload
+  const [loading, setLoading] = useState(!seeded);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** Epoch ms from server snapshot (not browser receive time). */
-  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<number | null>(() => {
+    if (!seeded) return null;
+    return extractServerTimes(seeded).lastUpdatedMs;
+  });
   /** Latest serverNow ISO from payload — drives shared header clock. */
-  const [serverNow, setServerNow] = useState<string | null>(null);
+  const [serverNow, setServerNow] = useState<string | null>(() => {
+    if (!seeded) return null;
+    return extractServerTimes(seeded).serverNowIso;
+  });
   const [revision, setRevision] = useState(0);
-  const hasDataRef = useRef(false);
+  const hasDataRef = useRef(Boolean(seeded));
   const mountedRef = useRef(true);
+  const urlRef = useRef(url);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -98,12 +149,33 @@ export function useApi<T>(url: string, refreshMs?: number) {
     };
   }, []);
 
+  // When URL changes (rare), re-seed from cache for that URL
+  useEffect(() => {
+    if (urlRef.current === url) return;
+    urlRef.current = url;
+    const next = seedFromCaches<T>(url);
+    if (next) {
+      setData(next);
+      hasDataRef.current = true;
+      const times = extractServerTimes(next);
+      setServerNow(times.serverNowIso);
+      setLastUpdated(times.lastUpdatedMs);
+      setLoading(false);
+      setError(null);
+    } else {
+      setData(null);
+      hasDataRef.current = false;
+      setLoading(true);
+    }
+  }, [url]);
+
   useEffect(() => {
     let cancelled = false;
     setError(null);
 
     if (hasDataRef.current) {
       setRefreshing(true);
+      setLoading(false);
     } else {
       setLoading(true);
     }
@@ -113,6 +185,8 @@ export function useApi<T>(url: string, refreshMs?: number) {
         if (cancelled || !mountedRef.current) return;
         setData(value);
         hasDataRef.current = true;
+        clientLastGood.set(url, { data: value, at: Date.now() });
+        writeSessionCache(url, value);
         const times = extractServerTimes(value);
         setServerNow(times.serverNowIso);
         setLastUpdated(times.lastUpdatedMs);
@@ -120,7 +194,14 @@ export function useApi<T>(url: string, refreshMs?: number) {
       })
       .catch((err: unknown) => {
         if (cancelled || !mountedRef.current) return;
-        if (err instanceof Error && err.name === "AbortError") return;
+        if (err instanceof Error && err.name === "AbortError") {
+          // Timeout: keep last-good UI if any; only error empty shell
+          if (!hasDataRef.current) {
+            setError("پاسخ سرور طول کشید — دوباره تلاش کنید");
+          }
+          return;
+        }
+        // Keep previous data visible on 500 / network blips
         if (!hasDataRef.current) {
           setError(err instanceof Error ? err.message : "داده‌ای دریافت نشد");
         }

@@ -4,7 +4,7 @@ import type { DeskSettings, FxStreetAssetType, FxStreetQuote, FxStreetResponse, 
 const FRESH_TTL_MS = 3 * 60_000;
 const STALE_TTL_MS = 30 * 60_000;
 /** Offline display window when Navasan/Bonbast/proxy are unreachable. */
-const OFFLINE_DISPLAY_TTL_MS = 6 * 60 * 60_000;
+const OFFLINE_DISPLAY_TTL_MS = 48 * 60 * 60_000;
 const MIN_FETCH_GAP_MS = 15_000;
 const FETCH_TIMEOUT_MS = 15_000;
 

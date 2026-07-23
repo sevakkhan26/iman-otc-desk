@@ -30,11 +30,13 @@ const MAX_STALE_MS = 6 * 60 * 60_000;
 export const BUBBLE_WARN_AGE_MS = 15 * 60_000;
 
 /**
- * Hard max age for a trusted gold-bubble calculation.
- * Based on provider cache STALE_TTL (30m) × safety factor: genuinely multi-hour data is rejected.
- * Navasan/Bonbast instruments often update on different cycles; 2h avoids false disables.
+ * Hard max age for bubble calculation inputs.
+ * Prefer fresh data, but allow up to 48h so the page still paints from PostgreSQL
+ * source caches during DNS/proxy outages (still marked stale in health/notes).
+ * Override with BUBBLE_INPUT_MAX_AGE_HOURS (e.g. 2 for strict mode).
  */
-export const BUBBLE_INPUT_MAX_AGE_MS = 2 * 60 * 60_000;
+export const BUBBLE_INPUT_MAX_AGE_MS =
+  Math.max(1, Number(process.env.BUBBLE_INPUT_MAX_AGE_HOURS ?? 48) || 48) * 60 * 60_000;
 
 /**
  * Max allowed skew among ounce / dirham / mazane of the *same* provider.

@@ -19,7 +19,7 @@ import type {
 const FRESH_TTL_MS = 3 * 60_000;
 const STALE_TTL_MS = 30 * 60_000;
 /** When live scrape fails (DNS/proxy outage), still paint bubble/gold from disk up to this age. */
-const OFFLINE_DISPLAY_TTL_MS = 6 * 60 * 60_000;
+const OFFLINE_DISPLAY_TTL_MS = 48 * 60 * 60_000;
 const MIN_FETCH_GAP_MS = 15_000;
 const FETCH_TIMEOUT_MS = 15_000;
 const NAVASAN_CSRF_PREFIX = "2bba8a6abdcae9571d63fefcd1df29bb3a8f5d91http://www.navasan.net/54tf%f";

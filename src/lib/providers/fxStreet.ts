@@ -3,6 +3,8 @@ import type { DeskSettings, FxStreetAssetType, FxStreetQuote, FxStreetResponse, 
 
 const FRESH_TTL_MS = 3 * 60_000;
 const STALE_TTL_MS = 30 * 60_000;
+/** Offline display window when Navasan/Bonbast/proxy are unreachable. */
+const OFFLINE_DISPLAY_TTL_MS = 6 * 60 * 60_000;
 const MIN_FETCH_GAP_MS = 15_000;
 const FETCH_TIMEOUT_MS = 15_000;
 
@@ -428,10 +430,56 @@ async function writeSourceCache(cache: SourceCacheFile): Promise<void> {
   }
 }
 
-function validCachedQuotes(entry: SourceCacheEntry | undefined): FxStreetQuote[] {
+function validCachedQuotes(
+  entry: SourceCacheEntry | undefined,
+  maxAgeMs: number = STALE_TTL_MS
+): FxStreetQuote[] {
   if (!entry?.quotes.length) return [];
-  if (Date.now() - entry.at >= STALE_TTL_MS) return [];
+  if (Date.now() - entry.at >= maxAgeMs) return [];
   return entry.quotes.filter(quoteHasValidPrice);
+}
+
+function responseFromSourceCache(sourceCache: SourceCacheFile): FxStreetResponse | null {
+  const quotes: FxStreetQuote[] = [];
+  for (const sourceId of ["navasan", "bonbast"] as SourceId[]) {
+    let cached = validCachedQuotes(sourceCache[sourceId], STALE_TTL_MS);
+    if (!cached.length) cached = validCachedQuotes(sourceCache[sourceId], OFFLINE_DISPLAY_TTL_MS);
+    if (cached.length) quotes.push(...cached);
+  }
+  if (!quotes.length) return null;
+  return {
+    quotes,
+    sourceStatus: "degraded",
+    lastUpdated: latestTimestamp(quotes.map((q) => q.lastUpdated)),
+    notes: ["قیمت‌ها از کش محلی (شبکه/منبع موقتاً در دسترس نیست)"],
+    stale: true
+  };
+}
+
+function kickFxBackgroundRefresh(settings: DeskSettings): void {
+  if (inflight) return;
+  inflight = (async () => {
+    try {
+      lastFetchAt = Date.now();
+      const fresh = await fetchFresh(settings);
+      if (fresh.quotes.some(quoteHasValidPrice)) {
+        memCache = fresh;
+        return fresh;
+      }
+      if (memCache?.quotes.some(quoteHasValidPrice)) {
+        return {
+          ...memCache,
+          sourceStatus: "degraded" as const,
+          stale: true,
+          notes: fresh.notes ?? memCache.notes
+        };
+      }
+      memCache = fresh;
+      return fresh;
+    } finally {
+      inflight = null;
+    }
+  })();
 }
 
 async function resolveSource(
@@ -452,7 +500,8 @@ async function resolveSource(
     }
     throw new Error("داده معتبری دریافت نشد");
   } catch {
-    const cached = validCachedQuotes(sourceCache[sourceId]);
+    let cached = validCachedQuotes(sourceCache[sourceId], STALE_TTL_MS);
+    if (!cached.length) cached = validCachedQuotes(sourceCache[sourceId], OFFLINE_DISPLAY_TTL_MS);
     if (cached.length) {
       return {
         quotes: cached,
@@ -508,32 +557,28 @@ export async function getFxStreetPrices(settings: DeskSettings): Promise<FxStree
     return memCache;
   }
 
-  if (!inflight) {
-    inflight = (async () => {
-      try {
-        lastFetchAt = Date.now();
-        const fresh = await fetchFresh(settings);
-        if (fresh.quotes.some(quoteHasValidPrice)) {
-          memCache = fresh;
-          return fresh;
-        }
-
-        if (memCache?.quotes.some(quoteHasValidPrice)) {
-          return {
-            ...memCache,
-            sourceStatus: "degraded",
-            stale: true,
-            notes: fresh.notes ?? memCache.notes
-          };
-        }
-
-        memCache = fresh;
-        return fresh;
-      } finally {
-        inflight = null;
-      }
-    })();
+  // Disk SWR: paint bubble/FX immediately from PostgreSQL source cache
+  const sourceCache = await readSourceCache();
+  const fromDisk = responseFromSourceCache(sourceCache);
+  if (fromDisk) {
+    memCache = fromDisk;
+    lastFetchAt = Date.now();
+    kickFxBackgroundRefresh(settings);
+    return fromDisk;
   }
 
-  return inflight;
+  if (memCache?.quotes.some(quoteHasValidPrice)) {
+    kickFxBackgroundRefresh(settings);
+    return { ...memCache, stale: true, sourceStatus: "degraded" };
+  }
+
+  kickFxBackgroundRefresh(settings);
+  if (inflight) return inflight;
+
+  return {
+    quotes: [],
+    sourceStatus: "unavailable",
+    lastUpdated: null,
+    notes: ["منبع ارز در دسترس نیست"]
+  };
 }

@@ -18,6 +18,8 @@ import type {
 
 const FRESH_TTL_MS = 3 * 60_000;
 const STALE_TTL_MS = 30 * 60_000;
+/** When live scrape fails (DNS/proxy outage), still paint bubble/gold from disk up to this age. */
+const OFFLINE_DISPLAY_TTL_MS = 6 * 60 * 60_000;
 const MIN_FETCH_GAP_MS = 15_000;
 const FETCH_TIMEOUT_MS = 15_000;
 const NAVASAN_CSRF_PREFIX = "2bba8a6abdcae9571d63fefcd1df29bb3a8f5d91http://www.navasan.net/54tf%f";
@@ -454,10 +456,82 @@ async function writeSourceCache(cache: SourceCacheFile): Promise<void> {
   }
 }
 
-function validCachedQuotes(entry: SourceCacheEntry | undefined): GoldMarketQuote[] {
+function validCachedQuotes(
+  entry: SourceCacheEntry | undefined,
+  maxAgeMs: number = STALE_TTL_MS
+): GoldMarketQuote[] {
   if (!entry?.quotes.length) return [];
-  if (Date.now() - entry.at >= STALE_TTL_MS) return [];
+  if (Date.now() - entry.at >= maxAgeMs) return [];
   return entry.quotes.filter(quoteHasValidPrice);
+}
+
+function responseFromSourceCache(sourceCache: SourceCacheFile): GoldMarketResponse | null {
+  const quotes: GoldMarketQuote[] = [];
+  const notes: string[] = [];
+  let usedStale = false;
+  const providers: GoldProviderHealth[] = [];
+
+  for (const sourceId of SOURCE_ORDER) {
+    const entry = sourceCache[sourceId];
+    // Prefer soft-stale first, then longer offline window
+    let cached = validCachedQuotes(entry, STALE_TTL_MS);
+    if (!cached.length) cached = validCachedQuotes(entry, OFFLINE_DISPLAY_TTL_MS);
+    if (!cached.length) continue;
+    usedStale = true;
+    quotes.push(...cached);
+    const instruments = instrumentsFromQuotes(cached);
+    const missingInstruments = missingFromQuotes(cached);
+    providers.push({
+      id: sourceId,
+      name: SOURCE_LABELS[sourceId],
+      status: "degraded",
+      instruments,
+      missingInstruments,
+      lastSuccessAt: cacheSuccessIso(entry),
+      lastAttemptAt: nowIso(),
+      error: "نمایش از کش — به‌روزرسانی زنده در دسترس نیست",
+      stale: true
+    });
+  }
+
+  if (!quotes.length) return null;
+  notes.push("قیمت‌ها از کش محلی (شبکه/منبع موقتاً در دسترس نیست)");
+  return {
+    quotes,
+    sourceStatus: "degraded",
+    lastUpdated: latestTimestamp(quotes.map((q) => q.lastUpdated)),
+    notes,
+    stale: usedStale,
+    providers
+  };
+}
+
+function kickGoldBackgroundRefresh(settings: DeskSettings): void {
+  if (inflight) return;
+  inflight = (async () => {
+    try {
+      lastFetchAt = Date.now();
+      const fresh = await fetchFresh(settings);
+      if (fresh.quotes.some(quoteHasValidPrice)) {
+        void recordGoldHistory(fresh.quotes);
+        memCache = fresh;
+        return fresh;
+      }
+      if (memCache?.quotes.some(quoteHasValidPrice)) {
+        return {
+          ...memCache,
+          sourceStatus: "degraded" as const,
+          stale: true,
+          notes: fresh.notes ?? memCache.notes,
+          providers: fresh.providers ?? memCache.providers
+        };
+      }
+      memCache = fresh;
+      return fresh;
+    } finally {
+      inflight = null;
+    }
+  })();
 }
 
 function instrumentsFromQuotes(quotes: GoldMarketQuote[]): GoldInstrumentType[] {
@@ -535,7 +609,8 @@ async function resolveSource(
     throw new Error("داده معتبری دریافت نشد");
   } catch (error) {
     const rawError = errorMessage(error);
-    const cached = validCachedQuotes(sourceCache[sourceId]);
+    let cached = validCachedQuotes(sourceCache[sourceId], STALE_TTL_MS);
+    if (!cached.length) cached = validCachedQuotes(sourceCache[sourceId], OFFLINE_DISPLAY_TTL_MS);
     if (cached.length) {
       const instruments = instrumentsFromQuotes(cached);
       const missingInstruments = missingFromQuotes(cached);
@@ -636,35 +711,29 @@ export async function getGoldMarketPrices(settings: DeskSettings): Promise<GoldM
     return memCache;
   }
 
-  if (!inflight) {
-    inflight = (async () => {
-      try {
-        lastFetchAt = Date.now();
-        const fresh = await fetchFresh(settings);
-        if (fresh.quotes.some(quoteHasValidPrice)) {
-          void recordGoldHistory(fresh.quotes);
-          memCache = fresh;
-          return fresh;
-        }
-
-        if (memCache?.quotes.some(quoteHasValidPrice)) {
-          return {
-            ...memCache,
-            sourceStatus: "degraded",
-            stale: true,
-            notes: fresh.notes ?? memCache.notes,
-            // Prefer fresh health so disconnected/degraded reasons stay current.
-            providers: fresh.providers ?? memCache.providers
-          };
-        }
-
-        memCache = fresh;
-        return fresh;
-      } finally {
-        inflight = null;
-      }
-    })();
+  // Disk/memory SWR: never block bubble/gold UI on DNS/proxy outages
+  const sourceCache = await readSourceCache();
+  const fromDisk = responseFromSourceCache(sourceCache);
+  if (fromDisk) {
+    memCache = fromDisk;
+    lastFetchAt = Date.now();
+    kickGoldBackgroundRefresh(settings);
+    return fromDisk;
   }
 
-  return inflight;
+  if (memCache?.quotes.some(quoteHasValidPrice)) {
+    kickGoldBackgroundRefresh(settings);
+    return { ...memCache, stale: true, sourceStatus: "degraded" };
+  }
+
+  // Cold path only when no cache exists at all
+  kickGoldBackgroundRefresh(settings);
+  if (inflight) return inflight;
+
+  return {
+    quotes: [],
+    sourceStatus: "unavailable",
+    lastUpdated: null,
+    notes: ["منبع طلا در دسترس نیست"]
+  };
 }

@@ -81,6 +81,14 @@ export async function recordGoldHistory(quotes: GoldMarketQuote[]): Promise<void
         .reverse()
         .find((sample) => sample.source === entry.source && sample.instrument === entry.instrument);
       if (last && now - last.t < MIN_INTERVAL_MS) continue;
+      // Same price: only heartbeat every 30m so outage restarts do not paint flat walls.
+      if (
+        last &&
+        Math.abs(last.v - entry.v) <= Math.max(Math.abs(last.v) * 1e-9, 1e-6) &&
+        now - last.t < 30 * 60_000
+      ) {
+        continue;
+      }
       samples.push(entry);
     }
     const pruned = samples.filter((sample) => now - sample.t <= MAX_AGE_MS);

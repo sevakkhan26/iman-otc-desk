@@ -3,10 +3,42 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { GoldHistoryRange, GoldPricesApiSource } from "@/lib/types";
 import { formatPercent } from "@/components/format";
+import {
+  CHART_H,
+  CHART_PAD_RIGHT,
+  CHART_PAD_TOP,
+  CHART_PAD_X,
+  CHART_W,
+  areaPathsFor,
+  collapseFlatRuns,
+  linePathsFor,
+  nearestTimedPoint,
+  outageBands,
+  outageThresholdMs,
+  overlayPercent,
+  parseTimedPoints,
+  plotHeight,
+  plotWidth,
+  resolveTimeDomain,
+  resolveValueDomain,
+  timeAxisTicks,
+  timeFromClientX,
+  toPlotPoints,
+  type PlotPoint,
+  yFromValue,
+  yGridValues
+} from "@/components/chartMath";
 
-const faNum = new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 0 });
-const faTime = new Intl.DateTimeFormat("fa-IR", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Tehran" });
-const faDay = new Intl.DateTimeFormat("fa-IR", { month: "2-digit", day: "2-digit", timeZone: "Asia/Tehran" });
+const faTime = new Intl.DateTimeFormat("fa-IR", {
+  hour: "2-digit",
+  minute: "2-digit",
+  timeZone: "Asia/Tehran"
+});
+const faDay = new Intl.DateTimeFormat("fa-IR", {
+  month: "2-digit",
+  day: "2-digit",
+  timeZone: "Asia/Tehran"
+});
 const faDateTime = new Intl.DateTimeFormat("fa-IR", {
   month: "2-digit",
   day: "2-digit",
@@ -14,15 +46,7 @@ const faDateTime = new Intl.DateTimeFormat("fa-IR", {
   minute: "2-digit",
   timeZone: "Asia/Tehran"
 });
-
-const W = 720;
-const H = 280;
-const PAD_X = 62;
-const PAD_TOP = 28;
-const PAD_BOTTOM = 36;
-const PAD_RIGHT = 20;
-
-type PlotPoint = { x: number; y: number; v: number; t: string; time: number };
+const faNum = new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 0 });
 
 export type GoldSourceChartSeries = {
   source: GoldPricesApiSource;
@@ -101,7 +125,6 @@ function readChartColors(): ChartColors {
 
 function useChartColors() {
   const [colors, setColors] = useState<ChartColors>(LIGHT_COLORS);
-
   useEffect(() => {
     const sync = () => setColors(readChartColors());
     sync();
@@ -109,12 +132,11 @@ function useChartColors() {
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     return () => observer.disconnect();
   }, []);
-
   return colors;
 }
 
-function axisLabel(iso: string, range: GoldHistoryRange) {
-  const date = new Date(iso);
+function axisLabel(ms: number, range: GoldHistoryRange) {
+  const date = new Date(ms);
   if (Number.isNaN(date.getTime())) return "—";
   return range === "7d" ? faDay.format(date) : faTime.format(date);
 }
@@ -123,133 +145,6 @@ function tooltipLabel(iso: string, range: GoldHistoryRange) {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "—";
   return range === "7d" ? faDateTime.format(date) : faTime.format(date);
-}
-
-const X_EDGE_PAD = 0.03;
-
-type XScale = (index: number) => number;
-
-function makeXScale(pointCount: number, plotW: number): XScale {
-  return (index: number) => {
-    if (pointCount <= 1) return PAD_X + plotW / 2;
-    const innerStart = PAD_X + plotW * X_EDGE_PAD;
-    const innerW = plotW * (1 - 2 * X_EDGE_PAD);
-    return innerStart + (index / (pointCount - 1)) * innerW;
-  };
-}
-
-function buildUnifiedTimeline(parsed: Array<{ plotPoints: Array<{ t: string; time: number }> }>): number[] {
-  const unique = new Set<number>();
-  for (const entry of parsed) {
-    for (const point of entry.plotPoints) unique.add(point.time);
-  }
-  return [...unique].sort((a, b) => a - b);
-}
-
-function linearLinePath(plotPoints: PlotPoint[]): string {
-  if (plotPoints.length < 2) return "";
-  let d = `M ${plotPoints[0].x} ${plotPoints[0].y}`;
-  for (let i = 1; i < plotPoints.length; i++) {
-    d += ` L ${plotPoints[i].x} ${plotPoints[i].y}`;
-  }
-  return d;
-}
-
-function linearAreaPath(plotPoints: PlotPoint[], baseY: number): string {
-  const line = linearLinePath(plotPoints);
-  if (!line) return "";
-  const first = plotPoints[0];
-  const last = plotPoints[plotPoints.length - 1];
-  return `${line} L ${last.x} ${baseY} L ${first.x} ${baseY} Z`;
-}
-
-function outageThresholdMs(range: GoldHistoryRange): number {
-  return range === "7d" ? 24 * 60 * 60_000 : 5 * 60 * 60_000;
-}
-
-function splitByOutages(plotPoints: PlotPoint[], range: GoldHistoryRange): PlotPoint[][] {
-  if (plotPoints.length < 2) return plotPoints.length ? [plotPoints] : [];
-  const threshold = outageThresholdMs(range);
-  const segments: PlotPoint[][] = [[plotPoints[0]]];
-  for (let i = 1; i < plotPoints.length; i++) {
-    const prev = plotPoints[i - 1];
-    const curr = plotPoints[i];
-    if (curr.time - prev.time > threshold) {
-      segments.push([curr]);
-    } else {
-      segments[segments.length - 1].push(curr);
-    }
-  }
-  return segments.filter((segment) => segment.length >= 2);
-}
-
-function buildSourceLinePaths(plotPoints: PlotPoint[], range: GoldHistoryRange): string[] {
-  if (plotPoints.length < 2) return [];
-  return splitByOutages(plotPoints, range).map(linearLinePath).filter(Boolean);
-}
-
-function buildSourceAreaPaths(plotPoints: PlotPoint[], baseY: number, range: GoldHistoryRange): string[] {
-  if (plotPoints.length < 2) return [];
-  return splitByOutages(plotPoints, range)
-    .map((segment) => linearAreaPath(segment, baseY))
-    .filter(Boolean);
-}
-
-function svgToClient(svg: SVGSVGElement, viewX: number, viewY: number) {
-  const pt = svg.createSVGPoint();
-  pt.x = viewX;
-  pt.y = viewY;
-  const ctm = svg.getScreenCTM();
-  if (!ctm) return { x: 0, y: 0 };
-  const mapped = pt.matrixTransform(ctm);
-  return { x: mapped.x, y: mapped.y };
-}
-
-function plotScreenBounds(svg: SVGSVGElement, plotW: number) {
-  const left = svgToClient(svg, PAD_X, PAD_TOP).x;
-  const right = svgToClient(svg, PAD_X + plotW, PAD_TOP).x;
-  return { left: Math.min(left, right), width: Math.abs(right - left) };
-}
-
-function indexFromClientX(
-  clientX: number,
-  svg: SVGSVGElement,
-  plotW: number,
-  pointCount: number
-): number {
-  if (pointCount < 2) return 0;
-  const { left: plotLeft, width: plotWidth } = plotScreenBounds(svg, plotW);
-  if (plotWidth <= 0) return 0;
-  const relativeX = clientX - plotLeft;
-  const ratio = Math.min(1, Math.max(0, relativeX / plotWidth));
-  return Math.min(pointCount - 1, Math.max(0, Math.round(ratio * (pointCount - 1))));
-}
-
-function overlayPercent(svg: SVGSVGElement, body: HTMLDivElement, viewX: number, viewY: number) {
-  const bodyRect = body.getBoundingClientRect();
-  const client = svgToClient(svg, viewX, viewY);
-  if (bodyRect.width <= 0 || bodyRect.height <= 0) {
-    return { left: (viewX / W) * 100, top: (viewY / H) * 100 };
-  }
-  return {
-    left: ((client.x - bodyRect.left) / bodyRect.width) * 100,
-    top: ((client.y - bodyRect.top) / bodyRect.height) * 100
-  };
-}
-
-function nearestPoint(points: PlotPoint[], targetTime: number, maxDeltaMs?: number): PlotPoint | null {
-  if (!points.length) return null;
-  let best = points[0];
-  let bestDelta = Math.abs(best.time - targetTime);
-  for (let i = 1; i < points.length; i++) {
-    const delta = Math.abs(points[i].time - targetTime);
-    if (delta < bestDelta) {
-      best = points[i];
-      bestDelta = delta;
-    }
-  }
-  if (maxDeltaMs !== undefined && bestDelta > maxDeltaMs) return null;
-  return best;
 }
 
 function sourceStroke(colors: ChartColors, source: GoldPricesApiSource) {
@@ -267,9 +162,11 @@ export function GoldSourceChartPanel({
   const colors = useChartColors();
   const bodyRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
-  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
-  const formatAxisValue = formatters.formatAxisValue ?? ((value: number) => faNum.format(Math.round(value)));
-  const formatAverage = formatters.formatAverage ?? ((value: number) => formatters.formatValue(Math.round(value)));
+  const [hoverTime, setHoverTime] = useState<number | null>(null);
+  const formatAxisValue =
+    formatters.formatAxisValue ?? ((value: number) => faNum.format(Math.round(value)));
+  const formatAverage =
+    formatters.formatAverage ?? ((value: number) => formatters.formatValue(Math.round(value)));
 
   const { range, series } = data;
   const orderedSeries = useMemo(
@@ -281,59 +178,36 @@ export function GoldSourceChartPanel({
     if (!orderedSeries.length) return null;
 
     const parsed = orderedSeries
-      .map((entry) => ({
-        ...entry,
-        plotPoints: entry.points
-          .map((point) => {
-            const time = new Date(point.t).getTime();
-            if (Number.isNaN(time) || !Number.isFinite(point.v) || point.v <= 0) return null;
-            return { ...point, time };
-          })
-          .filter((point): point is { t: string; v: number; time: number } => point !== null)
-          .sort((a, b) => a.time - b.time)
-      }))
-      .filter((entry) => entry.plotPoints.length >= 1);
+      .map((entry) => {
+        const timed = collapseFlatRuns(parseTimedPoints(entry.points));
+        return { ...entry, timed };
+      })
+      .filter((entry) => entry.timed.length >= 1);
 
     if (!parsed.length) return null;
 
-    const allValues = parsed.flatMap((entry) => entry.plotPoints.map((point) => point.v));
-    let min = Math.min(...allValues);
-    let max = Math.max(...allValues);
-    if (min === max) {
-      const pad = Math.max(Math.abs(min) * 0.001, 1);
-      min -= pad;
-      max += pad;
-    }
-
-    const unifiedTimes = buildUnifiedTimeline(parsed);
-    const timeToIndex = new Map(unifiedTimes.map((time, index) => [time, index]));
-    const timelineCount = unifiedTimes.length;
-    const plotW = W - PAD_X - PAD_RIGHT;
-    const plotH = H - PAD_TOP - PAD_BOTTOM;
-    const baseY = PAD_TOP + plotH;
-    const xScale = makeXScale(timelineCount, plotW);
-    const y = (value: number) => PAD_TOP + (1 - (value - min) / (max - min)) * plotH;
+    const allTimes = parsed.flatMap((e) => e.timed.map((p) => p.time));
+    const allValues = parsed.flatMap((e) => e.timed.map((p) => p.v));
+    const { tMin, tMax } = resolveTimeDomain(allTimes, range);
+    const { min, max } = resolveValueDomain(allValues);
+    const plotW = plotWidth();
+    const plotH = plotHeight(CHART_H);
+    const baseY = CHART_PAD_TOP + plotH;
 
     const plotted = parsed.map((entry) => {
-      const plotPoints: PlotPoint[] = entry.plotPoints.map((point) => ({
-        x: xScale(timeToIndex.get(point.time) ?? 0),
-        y: y(point.v),
-        v: point.v,
-        t: point.t,
-        time: point.time
-      }));
+      const plotPoints: PlotPoint[] = toPlotPoints(entry.timed, tMin, tMax, min, max, plotW, plotH);
       return {
         ...entry,
         plotPoints,
-        linePaths: buildSourceLinePaths(plotPoints, range),
-        areaPaths: buildSourceAreaPaths(plotPoints, baseY, range),
+        linePaths: linePathsFor(plotPoints, range, "smooth"),
+        areaPaths: areaPathsFor(plotPoints, baseY, range, "smooth"),
         isSinglePoint: plotPoints.length === 1,
-        last: plotPoints[plotPoints.length - 1]
+        last: plotPoints[plotPoints.length - 1]!
       };
     });
 
-    const primary = plotted.find((entry) => entry.source === "navasan") ?? plotted[0];
-    const avg = allValues.reduce((sum, value) => sum + value, 0) / allValues.length;
+    const primary = plotted.find((e) => e.source === "navasan") ?? plotted[0]!;
+    const avg = allValues.reduce((s, v) => s + v, 0) / allValues.length;
     const firstPrimary = primary.plotPoints[0]?.v;
     const change =
       data.changePercent ??
@@ -341,18 +215,18 @@ export function GoldSourceChartPanel({
         ? ((primary.last.v - firstPrimary) / firstPrimary) * 100
         : null);
 
-    const firstTime = unifiedTimes[0] ?? Date.now();
-    const lastTime = unifiedTimes[unifiedTimes.length - 1] ?? firstTime;
+    const bands = outageBands(allTimes, range, tMin, tMax, plotW, plotH);
+    const xTicks = timeAxisTicks(tMin, tMax, range === "7d" ? 6 : 5);
+    const yTicks = yGridValues(min, max, 5);
 
     return {
       min,
       max,
+      tMin,
+      tMax,
       plotW,
       plotH,
       baseY,
-      unifiedTimes,
-      timelineCount,
-      xScale,
       plotted,
       primary,
       minV: Math.min(...allValues),
@@ -360,20 +234,21 @@ export function GoldSourceChartPanel({
       lastV: primary.last.v,
       avg,
       change,
-      startLabel: new Date(firstTime).toISOString(),
-      endLabel: new Date(lastTime).toISOString()
+      bands,
+      xTicks,
+      yTicks,
+      allTimes
     };
   }, [orderedSeries, data.changePercent, range]);
 
   const handlePointer = useCallback(
     (clientX: number) => {
       if (!geom || !svgRef.current) return;
-      setHoverIndex(indexFromClientX(clientX, svgRef.current, geom.plotW, geom.timelineCount));
+      setHoverTime(timeFromClientX(clientX, svgRef.current, geom.tMin, geom.tMax, geom.plotW));
     },
     [geom]
   );
-
-  const clearHover = useCallback(() => setHoverIndex(null), []);
+  const clearHover = useCallback(() => setHoverTime(null), []);
 
   if (!geom) {
     return (
@@ -385,24 +260,26 @@ export function GoldSourceChartPanel({
   }
 
   const up = (geom.change ?? 0) >= 0;
-  const isHovering = hoverIndex !== null;
-  const activeIndex = hoverIndex ?? Math.max(0, geom.timelineCount - 1);
-  const activeTime = geom.unifiedTimes[activeIndex] ?? geom.unifiedTimes[geom.unifiedTimes.length - 1] ?? Date.now();
-  const crosshairX = geom.xScale(activeIndex);
-  const dataSpanMs = Math.max(
-    (geom.unifiedTimes[geom.unifiedTimes.length - 1] ?? activeTime) - (geom.unifiedTimes[0] ?? activeTime),
-    1
-  );
-  const hoverWindowMs = Math.max(dataSpanMs * 0.06, 5 * 60_000);
+  const isHovering = hoverTime !== null;
+  const activeTime = hoverTime ?? geom.primary.last.time;
+  const hoverWindowMs = Math.max(outageThresholdMs(range) * 0.75, 20 * 60_000);
 
   const hoverRows = geom.plotted
     .map((entry) => ({
       source: entry.source,
       sourceName: entry.sourceName,
-      point: nearestPoint(entry.plotPoints, activeTime, hoverWindowMs),
+      point: nearestTimedPoint(entry.plotPoints, activeTime, isHovering ? hoverWindowMs : undefined),
       color: sourceStroke(colors, entry.source)
     }))
     .sort((a, b) => SOURCE_ORDER[a.source] - SOURCE_ORDER[b.source]);
+
+  const crosshairX = (() => {
+    const span = Math.max(geom.tMax - geom.tMin, 1);
+    const innerStart = CHART_PAD_X + geom.plotW * 0.02;
+    const innerW = geom.plotW * 0.96;
+    const ratio = Math.min(1, Math.max(0, (activeTime - geom.tMin) / span));
+    return innerStart + ratio * innerW;
+  })();
 
   const activeY =
     hoverRows.find((row) => row.source === geom.primary.source)?.point?.y ?? geom.primary.last.y;
@@ -410,19 +287,19 @@ export function GoldSourceChartPanel({
   const overlayPos =
     svgRef.current && bodyRef.current
       ? overlayPercent(svgRef.current, bodyRef.current, crosshairX, activeY)
-      : { left: (crosshairX / W) * 100, top: (activeY / H) * 100 };
+      : { left: (crosshairX / CHART_W) * 100, top: (activeY / CHART_H) * 100 };
 
   const lastOverlayPos =
     svgRef.current && bodyRef.current
       ? overlayPercent(svgRef.current, bodyRef.current, geom.primary.last.x, geom.primary.last.y)
-      : { left: (geom.primary.last.x / W) * 100, top: (geom.primary.last.y / H) * 100 };
+      : { left: (geom.primary.last.x / CHART_W) * 100, top: (geom.primary.last.y / CHART_H) * 100 };
 
   const badgeLeft = Math.min(Math.max(lastOverlayPos.left, 8), 72);
-  const gridFracs = [0, 0.25, 0.5, 0.75, 1];
   const navasanEntry = geom.plotted.find((entry) => entry.source === "navasan");
+  const hasOutage = geom.bands.length > 0;
 
   return (
-    <div className="median-chart-panel" data-chart-version="premium-v2">
+    <div className="median-chart-panel" data-chart-version="premium-v3-time">
       <div className="median-chart-mini-stats" aria-label="خلاصه بازه نمودار">
         <div className="median-mini-stat">
           <span className="median-mini-stat-label">آخرین</span>
@@ -459,6 +336,12 @@ export function GoldSourceChartPanel({
             {entry.sourceName}
           </span>
         ))}
+        {hasOutage ? (
+          <span className="gold-chart-legend-item gold-chart-legend-gap">
+            <span className="gold-chart-legend-swatch gold-chart-legend-swatch-gap" aria-hidden="true" />
+            قطع داده
+          </span>
+        ) : null}
       </div>
 
       <div
@@ -473,68 +356,114 @@ export function GoldSourceChartPanel({
         <svg
           ref={svgRef}
           className="median-chart-svg"
-          viewBox={`0 0 ${W} ${H}`}
+          viewBox={`0 0 ${CHART_W} ${CHART_H}`}
           preserveAspectRatio="none"
           role="img"
           aria-label={formatters.ariaLabel}
         >
           <defs>
             <linearGradient id={`goldFill-${uid}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={colors.blue} stopOpacity="0.52" />
-              <stop offset="55%" stopColor={colors.blue2} stopOpacity="0.22" />
+              <stop offset="0%" stopColor={colors.blue} stopOpacity="0.42" />
+              <stop offset="55%" stopColor={colors.blue2} stopOpacity="0.16" />
               <stop offset="100%" stopColor={colors.blue} stopOpacity="0.02" />
             </linearGradient>
             <linearGradient id={`goldGlass-${uid}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={colors.card} stopOpacity="0.75" />
+              <stop offset="0%" stopColor={colors.card} stopOpacity="0.55" />
               <stop offset="100%" stopColor={colors.card} stopOpacity="0" />
             </linearGradient>
             <linearGradient id={`goldLineNavasan-${uid}`} x1="0" y1="0" x2="1" y2="0">
               <stop offset="0%" stopColor={colors.blue} />
               <stop offset="100%" stopColor={colors.blue2} />
             </linearGradient>
+            <pattern
+              id={`goldGapHatch-${uid}`}
+              width="8"
+              height="8"
+              patternUnits="userSpaceOnUse"
+              patternTransform="rotate(35)"
+            >
+              <line x1="0" y1="0" x2="0" y2="8" stroke="currentColor" strokeWidth="1.5" opacity="0.12" />
+            </pattern>
             <filter id={`goldGlow-${uid}`} x="-80%" y="-80%" width="260%" height="260%">
-              <feGaussianBlur stdDeviation="3.5" result="blur" />
+              <feGaussianBlur stdDeviation="2.8" result="blur" />
               <feMerge>
                 <feMergeNode in="blur" />
                 <feMergeNode in="SourceGraphic" />
               </feMerge>
             </filter>
             <clipPath id={`goldPlot-${uid}`}>
-              <rect x={PAD_X} y={PAD_TOP} width={geom.plotW} height={geom.plotH} rx="8" />
+              <rect x={CHART_PAD_X} y={CHART_PAD_TOP} width={geom.plotW} height={geom.plotH} rx="10" />
             </clipPath>
           </defs>
 
-          <rect className="median-chart-plot-bg" x={PAD_X} y={PAD_TOP} width={geom.plotW} height={geom.plotH} rx="8" />
+          <rect
+            className="median-chart-plot-bg"
+            x={CHART_PAD_X}
+            y={CHART_PAD_TOP}
+            width={geom.plotW}
+            height={geom.plotH}
+            rx="10"
+          />
 
-          {gridFracs.map((frac) => {
-            const value = geom.max - frac * (geom.max - geom.min);
-            const yy = PAD_TOP + frac * geom.plotH;
+          {geom.yTicks.map((value, i) => {
+            const yy = yFromValue(value, geom.min, geom.max, geom.plotH);
+            const edge = i === 0 || i === geom.yTicks.length - 1;
             return (
-              <g key={frac} className="median-grid">
+              <g key={`y-${i}`} className="median-grid">
                 <line
-                  x1={PAD_X}
+                  x1={CHART_PAD_X}
                   y1={yy}
-                  x2={W - PAD_RIGHT}
+                  x2={CHART_W - CHART_PAD_RIGHT}
                   y2={yy}
                   className="median-grid-line"
-                  strokeDasharray={frac === 0 || frac === 1 ? "none" : "5 7"}
+                  strokeDasharray={edge ? "none" : "4 6"}
                 />
-                <text x={PAD_X - 12} y={yy + 4} textAnchor="end" className="median-axis">
+                <text x={CHART_PAD_X - 10} y={yy + 4} textAnchor="end" className="median-axis">
                   {formatAxisValue(value)}
                 </text>
               </g>
             );
           })}
 
-          <line x1={PAD_X} y1={PAD_TOP} x2={PAD_X} y2={geom.baseY} className="median-axis-y-line" />
-          <text x={PAD_X} y={H - 10} textAnchor="start" className="median-axis median-axis-x">
-            {axisLabel(geom.startLabel, range)}
-          </text>
-          <text x={W - PAD_RIGHT} y={H - 10} textAnchor="end" className="median-axis median-axis-x">
-            {axisLabel(geom.endLabel, range)}
-          </text>
+          <line
+            x1={CHART_PAD_X}
+            y1={CHART_PAD_TOP}
+            x2={CHART_PAD_X}
+            y2={geom.baseY}
+            className="median-axis-y-line"
+          />
+
+          {geom.xTicks.map((ms, i) => {
+            const span = Math.max(geom.tMax - geom.tMin, 1);
+            const ratio = (ms - geom.tMin) / span;
+            const x = CHART_PAD_X + geom.plotW * 0.02 + geom.plotW * 0.96 * ratio;
+            const anchor = i === 0 ? "start" : i === geom.xTicks.length - 1 ? "end" : "middle";
+            return (
+              <text
+                key={`x-${i}`}
+                x={x}
+                y={CHART_H - 10}
+                textAnchor={anchor}
+                className="median-axis median-axis-x"
+              >
+                {axisLabel(ms, range)}
+              </text>
+            );
+          })}
 
           <g clipPath={`url(#goldPlot-${uid})`}>
+            {geom.bands.map((band, i) => (
+              <rect
+                key={`gap-${i}`}
+                x={band.x}
+                y={CHART_PAD_TOP}
+                width={band.width}
+                height={geom.plotH}
+                className="chart-outage-band"
+                fill={`url(#goldGapHatch-${uid})`}
+              />
+            ))}
+
             {navasanEntry?.areaPaths.map((areaPath, index) => (
               <path
                 key={`navasan-area-${index}`}
@@ -544,8 +473,8 @@ export function GoldSourceChartPanel({
               />
             ))}
             <rect
-              x={PAD_X}
-              y={PAD_TOP}
+              x={CHART_PAD_X}
+              y={CHART_PAD_TOP}
               width={geom.plotW}
               height={geom.plotH}
               fill={`url(#goldGlass-${uid})`}
@@ -558,9 +487,11 @@ export function GoldSourceChartPanel({
                   d={linePath}
                   fill="none"
                   stroke={
-                    entry.source === "navasan" ? `url(#goldLineNavasan-${uid})` : sourceStroke(colors, entry.source)
+                    entry.source === "navasan"
+                      ? `url(#goldLineNavasan-${uid})`
+                      : sourceStroke(colors, entry.source)
                   }
-                  strokeWidth={entry.source === "navasan" ? "3.25" : "2.75"}
+                  strokeWidth={entry.source === "navasan" ? "3" : "2.4"}
                   strokeLinejoin="round"
                   strokeLinecap="round"
                   className="median-chart-line"
@@ -575,7 +506,7 @@ export function GoldSourceChartPanel({
                       key={`${entry.source}-single`}
                       cx={point.x}
                       cy={point.y}
-                      r="6"
+                      r="5.5"
                       fill={sourceStroke(colors, entry.source)}
                       stroke="var(--bg)"
                       strokeWidth="2"
@@ -583,15 +514,36 @@ export function GoldSourceChartPanel({
                   ))
                 : null
             )}
+            {/* End markers for each series */}
+            {geom.plotted.map((entry) =>
+              !entry.isSinglePoint ? (
+                <circle
+                  key={`${entry.source}-end`}
+                  cx={entry.last.x}
+                  cy={entry.last.y}
+                  r={entry.source === "navasan" ? 4.5 : 3.5}
+                  fill={sourceStroke(colors, entry.source)}
+                  stroke="var(--bg)"
+                  strokeWidth="1.5"
+                  opacity={0.95}
+                />
+              ) : null
+            )}
             {isHovering ? (
-              <line x1={crosshairX} y1={PAD_TOP} x2={crosshairX} y2={geom.baseY} className="median-hover-line" />
+              <line
+                x1={crosshairX}
+                y1={CHART_PAD_TOP}
+                x2={crosshairX}
+                y2={geom.baseY}
+                className="median-hover-line"
+              />
             ) : null}
           </g>
 
           {!isHovering ? (
             <g className="median-last-marker">
               <line
-                x1={PAD_X}
+                x1={CHART_PAD_X}
                 y1={geom.primary.last.y}
                 x2={geom.primary.last.x}
                 y2={geom.primary.last.y}
@@ -615,7 +567,13 @@ export function GoldSourceChartPanel({
               )}
               {hoverRows.map((row) =>
                 row.point ? (
-                  <circle key={`${row.source}-inner`} cx={row.point.x} cy={row.point.y} r="2.75" fill="var(--bg)" />
+                  <circle
+                    key={`${row.source}-inner`}
+                    cx={row.point.x}
+                    cy={row.point.y}
+                    r="2.75"
+                    fill="var(--bg)"
+                  />
                 ) : null
               )}
             </g>
@@ -625,23 +583,19 @@ export function GoldSourceChartPanel({
         {!isHovering ? (
           <div
             className={`median-chart-live-badge ${up ? "up" : "down"}`}
-            style={{
-              left: `${badgeLeft}%`,
-              top: `${lastOverlayPos.top}%`
-            }}
+            style={{ left: `${badgeLeft}%`, top: `${lastOverlayPos.top}%` }}
           >
             <span className="median-chart-live-badge-label">آخرین قیمت</span>
-            <span className="median-chart-live-badge-value number">{formatters.formatValue(geom.lastV)}</span>
+            <span className="median-chart-live-badge-value number">
+              {formatters.formatValue(geom.lastV)}
+            </span>
             <span className="gold-chart-live-badge-source">{geom.primary.sourceName}</span>
           </div>
         ) : null}
 
         <div
           className={`median-chart-tooltip ${isHovering ? "visible" : ""} gold-chart-tooltip-multi`}
-          style={{
-            left: `${overlayPos.left}%`,
-            top: `${overlayPos.top}%`
-          }}
+          style={{ left: `${overlayPos.left}%`, top: `${overlayPos.top}%` }}
         >
           <div className="gold-chart-tooltip-sources">
             {hoverRows.map((row) => (
@@ -653,7 +607,7 @@ export function GoldSourceChartPanel({
                   {row.point ? formatters.formatValue(row.point.v) : "—"}
                 </span>
                 <span className="median-chart-tooltip-time">
-                  {row.point ? tooltipLabel(row.point.t, range) : "—"}
+                  {row.point ? tooltipLabel(row.point.t, range) : "بدون نمونه"}
                 </span>
               </div>
             ))}

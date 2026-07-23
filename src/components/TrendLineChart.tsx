@@ -4,10 +4,43 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNod
 import { TrendingDown, TrendingUp } from "lucide-react";
 import { formatPercent } from "@/components/format";
 import { SkeletonBlock } from "@/components/skeletons";
+import {
+  CHART_H as H,
+  CHART_PAD_RIGHT as PAD_RIGHT,
+  CHART_PAD_TOP as PAD_TOP,
+  CHART_PAD_X as PAD_X,
+  CHART_W as W,
+  areaPathsFor,
+  collapseFlatRuns,
+  linePathsFor,
+  nearestTimedPoint,
+  outageBands,
+  outageThresholdMs,
+  overlayPercent,
+  parseTimedPoints,
+  plotHeight,
+  plotWidth,
+  resolveTimeDomain,
+  resolveValueDomain,
+  timeAxisTicks,
+  timeFromClientX,
+  toPlotPoints,
+  xFromTime,
+  yFromValue,
+  yGridValues
+} from "@/components/chartMath";
 
 const faNum = new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 0 });
-const faTime = new Intl.DateTimeFormat("fa-IR", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Tehran" });
-const faDay = new Intl.DateTimeFormat("fa-IR", { month: "2-digit", day: "2-digit", timeZone: "Asia/Tehran" });
+const faTime = new Intl.DateTimeFormat("fa-IR", {
+  hour: "2-digit",
+  minute: "2-digit",
+  timeZone: "Asia/Tehran"
+});
+const faDay = new Intl.DateTimeFormat("fa-IR", {
+  month: "2-digit",
+  day: "2-digit",
+  timeZone: "Asia/Tehran"
+});
 const faDateTime = new Intl.DateTimeFormat("fa-IR", {
   month: "2-digit",
   day: "2-digit",
@@ -51,7 +84,6 @@ function readChartColors(): ChartColors {
 
 function useChartColors() {
   const [colors, setColors] = useState<ChartColors>(LIGHT_COLORS);
-
   useEffect(() => {
     const sync = () => setColors(readChartColors());
     sync();
@@ -59,20 +91,16 @@ function useChartColors() {
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     return () => observer.disconnect();
   }, []);
-
   return colors;
 }
 
 export type TrendLineChartRange = "24h" | "7d";
-
 export type TrendLineChartPoint = { t: string; v: number };
-
 export type TrendLineChartData = {
   range: TrendLineChartRange;
   points: TrendLineChartPoint[];
   changePercent: number | null;
 };
-
 export type TrendLineChartFormatters = {
   formatValue: (value: number | null | undefined) => string;
   formatAxisValue?: (value: number) => string;
@@ -81,17 +109,8 @@ export type TrendLineChartFormatters = {
   emptyMessage?: string;
 };
 
-const W = 720;
-const H = 280;
-const PAD_X = 62;
-const PAD_TOP = 28;
-const PAD_BOTTOM = 36;
-const PAD_RIGHT = 20;
-
-type PlotPoint = { x: number; y: number; v: number; t: string };
-
-function axisLabel(iso: string, range: TrendLineChartRange) {
-  const date = new Date(iso);
+function axisLabelMs(ms: number, range: TrendLineChartRange) {
+  const date = new Date(ms);
   if (Number.isNaN(date.getTime())) return "—";
   return range === "7d" ? faDay.format(date) : faTime.format(date);
 }
@@ -102,168 +121,11 @@ function tooltipLabel(iso: string, range: TrendLineChartRange) {
   return range === "7d" ? faDateTime.format(date) : faTime.format(date);
 }
 
-function smoothLinePath(plotPoints: PlotPoint[]): string {
-  if (plotPoints.length < 2) return "";
-  if (plotPoints.length === 2) {
-    return `M ${plotPoints[0].x} ${plotPoints[0].y} L ${plotPoints[1].x} ${plotPoints[1].y}`;
-  }
-
-  const tension = 0.24;
-  let d = `M ${plotPoints[0].x} ${plotPoints[0].y}`;
-
-  for (let i = 0; i < plotPoints.length - 1; i++) {
-    const p0 = plotPoints[Math.max(0, i - 1)];
-    const p1 = plotPoints[i];
-    const p2 = plotPoints[i + 1];
-    const p3 = plotPoints[Math.min(plotPoints.length - 1, i + 2)];
-
-    const cp1x = p1.x + (p2.x - p0.x) * tension;
-    const cp1y = p1.y + (p2.y - p0.y) * tension;
-    const cp2x = p2.x - (p3.x - p1.x) * tension;
-    const cp2y = p2.y - (p3.y - p1.y) * tension;
-
-    d += ` C ${cp1x} ${cp1y} ${cp2x} ${cp2y} ${p2.x} ${p2.y}`;
-  }
-
-  return d;
-}
-
-function linearLinePath(plotPoints: PlotPoint[]): string {
-  if (plotPoints.length < 2) return "";
-  let d = `M ${plotPoints[0].x} ${plotPoints[0].y}`;
-  for (let i = 1; i < plotPoints.length; i++) {
-    d += ` L ${plotPoints[i].x} ${plotPoints[i].y}`;
-  }
-  return d;
-}
-
-function pointTimeMs(point: PlotPoint): number {
-  const time = new Date(point.t).getTime();
-  return Number.isNaN(time) ? 0 : time;
-}
-
-function medianTimeDeltaMs(plotPoints: PlotPoint[]): number {
-  if (plotPoints.length < 2) return Infinity;
-  const deltas: number[] = [];
-  for (let i = 1; i < plotPoints.length; i++) {
-    const delta = pointTimeMs(plotPoints[i]) - pointTimeMs(plotPoints[i - 1]);
-    if (delta > 0) deltas.push(delta);
-  }
-  if (!deltas.length) return Infinity;
-  deltas.sort((a, b) => a - b);
-  return deltas[Math.floor(deltas.length / 2)];
-}
-
-function splitPlotSegments(plotPoints: PlotPoint[], gapThresholdMs: number): PlotPoint[][] {
-  if (plotPoints.length < 2) return plotPoints.length ? [plotPoints] : [];
-  const segments: PlotPoint[][] = [[plotPoints[0]]];
-  for (let i = 1; i < plotPoints.length; i++) {
-    const prev = plotPoints[i - 1];
-    const curr = plotPoints[i];
-    const gap = pointTimeMs(curr) - pointTimeMs(prev);
-    if (gap > gapThresholdMs) {
-      if (segments[segments.length - 1].length >= 1) {
-        segments.push([curr]);
-      } else {
-        segments[segments.length - 1].push(curr);
-      }
-      continue;
-    }
-    segments[segments.length - 1].push(curr);
-  }
-  return segments.filter((segment) => segment.length >= 2);
-}
-
-function buildLinePaths(
-  plotPoints: PlotPoint[],
-  pathMode: "linear" | "smooth",
-  breakGaps: boolean
-): string[] {
-  if (plotPoints.length < 2) return [];
-  const lineFn = pathMode === "linear" ? linearLinePath : smoothLinePath;
-  if (!breakGaps) {
-    const path = lineFn(plotPoints);
-    return path ? [path] : [];
-  }
-  const gapThreshold = medianTimeDeltaMs(plotPoints) * 4;
-  return splitPlotSegments(plotPoints, gapThreshold).map(lineFn).filter(Boolean);
-}
-
-function buildAreaPaths(plotPoints: PlotPoint[], baseY: number, pathMode: "linear" | "smooth", breakGaps: boolean): string[] {
-  if (plotPoints.length < 2) return [];
-  const lineFn = pathMode === "linear" ? linearLinePath : smoothLinePath;
-  if (!breakGaps) {
-    const line = lineFn(plotPoints);
-    if (!line) return [];
-    const first = plotPoints[0];
-    const last = plotPoints[plotPoints.length - 1];
-    return [`${line} L ${last.x} ${baseY} L ${first.x} ${baseY} Z`];
-  }
-  const gapThreshold = medianTimeDeltaMs(plotPoints) * 4;
-  return splitPlotSegments(plotPoints, gapThreshold)
-    .map((segment) => {
-      const line = lineFn(segment);
-      if (!line) return "";
-      const first = segment[0];
-      const last = segment[segment.length - 1];
-      return `${line} L ${last.x} ${baseY} L ${first.x} ${baseY} Z`;
-    })
-    .filter(Boolean);
-}
-
-type XScale = (index: number) => number;
-
-function makeXScale(pointCount: number, plotW: number): XScale {
-  return (index: number) => PAD_X + (index / (pointCount - 1)) * plotW;
-}
-
-function svgToClient(svg: SVGSVGElement, viewX: number, viewY: number) {
-  const pt = svg.createSVGPoint();
-  pt.x = viewX;
-  pt.y = viewY;
-  const ctm = svg.getScreenCTM();
-  if (!ctm) return { x: 0, y: 0 };
-  const mapped = pt.matrixTransform(ctm);
-  return { x: mapped.x, y: mapped.y };
-}
-
-function plotScreenBounds(svg: SVGSVGElement, plotW: number) {
-  const left = svgToClient(svg, PAD_X, PAD_TOP).x;
-  const right = svgToClient(svg, PAD_X + plotW, PAD_TOP).x;
-  return { left: Math.min(left, right), width: Math.abs(right - left) };
-}
-
-function indexFromClientX(
-  clientX: number,
-  svg: SVGSVGElement,
-  plotW: number,
-  pointCount: number
-): number {
-  if (pointCount < 2) return 0;
-  const { left: plotLeft, width: plotWidth } = plotScreenBounds(svg, plotW);
-  if (plotWidth <= 0) return 0;
-  const relativeX = clientX - plotLeft;
-  const ratio = Math.min(1, Math.max(0, relativeX / plotWidth));
-  return Math.min(pointCount - 1, Math.max(0, Math.round(ratio * (pointCount - 1))));
-}
-
-function overlayPercent(svg: SVGSVGElement, body: HTMLDivElement, viewX: number, viewY: number) {
-  const bodyRect = body.getBoundingClientRect();
-  const client = svgToClient(svg, viewX, viewY);
-  if (bodyRect.width <= 0 || bodyRect.height <= 0) {
-    return { left: (viewX / W) * 100, top: (viewY / H) * 100 };
-  }
-  return {
-    left: ((client.x - bodyRect.left) / bodyRect.width) * 100,
-    top: ((client.y - bodyRect.top) / bodyRect.height) * 100
-  };
-}
-
 export function TrendLineChartPanel({
   data,
   formatters,
   pathMode = "smooth",
-  breakGaps = false
+  breakGaps = true
 }: {
   data: TrendLineChartData;
   formatters: TrendLineChartFormatters;
@@ -274,69 +136,75 @@ export function TrendLineChartPanel({
   const colors = useChartColors();
   const bodyRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
-  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
-  const formatAxisValue = formatters.formatAxisValue ?? ((value: number) => faNum.format(Math.round(value)));
-  const formatAverage = formatters.formatAverage ?? ((value: number) => formatters.formatValue(Math.round(value)));
+  const [hoverTime, setHoverTime] = useState<number | null>(null);
+  const formatAxisValue =
+    formatters.formatAxisValue ?? ((value: number) => faNum.format(Math.round(value)));
+  const formatAverage =
+    formatters.formatAverage ?? ((value: number) => formatters.formatValue(Math.round(value)));
 
   const { points, range } = data;
 
   const geom = useMemo(() => {
-    if (points.length < 2) return null;
-    const values = points.map((p) => p.v);
-    let min = Math.min(...values);
-    let max = Math.max(...values);
-    if (min === max) {
-      const pad = Math.max(Math.abs(min) * 0.001, 1);
-      min -= pad;
-      max += pad;
-    }
-    const plotW = W - PAD_X - PAD_RIGHT;
-    const plotH = H - PAD_TOP - PAD_BOTTOM;
+    const timed = collapseFlatRuns(parseTimedPoints(points));
+    if (timed.length < 2) return null;
+
+    const times = timed.map((p) => p.time);
+    const values = timed.map((p) => p.v);
+    const { tMin, tMax } = resolveTimeDomain(times, range);
+    const { min, max } = resolveValueDomain(values);
+    const plotW = plotWidth();
+    const plotH = plotHeight(H);
     const baseY = PAD_TOP + plotH;
-    const xScale = makeXScale(points.length, plotW);
-    const y = (v: number) => PAD_TOP + (1 - (v - min) / (max - min)) * plotH;
-    const plotPoints: PlotPoint[] = points.map((p, i) => ({ x: xScale(i), y: y(p.v), v: p.v, t: p.t }));
-    const linePaths = buildLinePaths(plotPoints, pathMode, breakGaps);
-    const areaPaths = buildAreaPaths(plotPoints, baseY, pathMode, breakGaps);
-    const linePath = linePaths[0] ?? "";
-    const areaPath = areaPaths[0] ?? "";
-    const last = plotPoints[plotPoints.length - 1];
-    const avg = values.reduce((sum, v) => sum + v, 0) / values.length;
+    const plotPoints = toPlotPoints(timed, tMin, tMax, min, max, plotW, plotH);
+
+    const mode = pathMode === "linear" ? "linear" : "smooth";
+    const finalLinePaths = breakGaps
+      ? linePathsFor(plotPoints, range, mode)
+      : connectAll(plotPoints, mode);
+    const finalAreaPaths = breakGaps
+      ? areaPathsFor(plotPoints, baseY, range, mode)
+      : connectAllArea(plotPoints, baseY, mode);
+
+    const last = plotPoints[plotPoints.length - 1]!;
+    const avg = values.reduce((s, v) => s + v, 0) / values.length;
     const change =
       data.changePercent ??
-      (values[0] !== 0 ? ((values[values.length - 1] - values[0]) / values[0]) * 100 : null);
+      (values[0] !== 0 ? ((values[values.length - 1]! - values[0]!) / values[0]!) * 100 : null);
 
     return {
       min,
       max,
+      tMin,
+      tMax,
       plotW,
       plotH,
       baseY,
-      xScale,
       plotPoints,
-      linePaths,
-      areaPaths,
-      linePath,
-      areaPath,
+      linePaths: finalLinePaths,
+      areaPaths: finalAreaPaths,
       lastX: last.x,
       lastY: last.y,
       lastV: last.v,
+      lastT: last.t,
+      lastTime: last.time,
       minV: Math.min(...values),
       maxV: Math.max(...values),
       avg,
-      change
+      change,
+      bands: outageBands(times, range, tMin, tMax, plotW, plotH),
+      xTicks: timeAxisTicks(tMin, tMax, range === "7d" ? 6 : 5),
+      yTicks: yGridValues(min, max, 5)
     };
-  }, [points, data.changePercent, pathMode, breakGaps]);
+  }, [points, data.changePercent, pathMode, breakGaps, range]);
 
   const handlePointer = useCallback(
     (clientX: number) => {
       if (!geom || !svgRef.current) return;
-      setHoverIndex(indexFromClientX(clientX, svgRef.current, geom.plotW, points.length));
+      setHoverTime(timeFromClientX(clientX, svgRef.current, geom.tMin, geom.tMax, geom.plotW));
     },
-    [geom, points.length]
+    [geom]
   );
-
-  const clearHover = useCallback(() => setHoverIndex(null), []);
+  const clearHover = useCallback(() => setHoverTime(null), []);
 
   if (!geom) {
     return (
@@ -348,14 +216,18 @@ export function TrendLineChartPanel({
   }
 
   const up = (geom.change ?? 0) >= 0;
-  const activeIndex = hoverIndex ?? points.length - 1;
-  const active = geom.plotPoints[activeIndex];
-  const isHovering = hoverIndex !== null;
-  const gridFracs = [0, 0.25, 0.5, 0.75, 1];
+  const isHovering = hoverTime !== null;
+  const activeTime = hoverTime ?? geom.lastTime;
+  const hoverWindow = Math.max(outageThresholdMs(range), 30 * 60_000);
+  const active =
+    nearestTimedPoint(geom.plotPoints, activeTime, isHovering ? hoverWindow : undefined) ??
+    geom.plotPoints[geom.plotPoints.length - 1]!;
+  const crosshairX = xFromTime(activeTime, geom.tMin, geom.tMax, geom.plotW);
+
   const overlayPos =
     svgRef.current && bodyRef.current
-      ? overlayPercent(svgRef.current, bodyRef.current, geom.xScale(activeIndex), active.y)
-      : { left: (active.x / W) * 100, top: (active.y / H) * 100 };
+      ? overlayPercent(svgRef.current, bodyRef.current, crosshairX, active.y)
+      : { left: (crosshairX / W) * 100, top: (active.y / H) * 100 };
   const lastOverlayPos =
     svgRef.current && bodyRef.current
       ? overlayPercent(svgRef.current, bodyRef.current, geom.lastX, geom.lastY)
@@ -363,7 +235,7 @@ export function TrendLineChartPanel({
   const badgeLeft = Math.min(Math.max(lastOverlayPos.left, 8), 72);
 
   return (
-    <div className="median-chart-panel" data-chart-version="premium-v2">
+    <div className="median-chart-panel" data-chart-version="premium-v3-time">
       <div className="median-chart-mini-stats" aria-label="خلاصه بازه نمودار">
         <div className="median-mini-stat">
           <span className="median-mini-stat-label">آخرین</span>
@@ -408,46 +280,62 @@ export function TrendLineChartPanel({
         >
           <defs>
             <linearGradient id={`medianFill-${uid}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={colors.blue} stopOpacity="0.52" />
-              <stop offset="55%" stopColor={colors.blue2} stopOpacity="0.22" />
+              <stop offset="0%" stopColor={colors.blue} stopOpacity="0.42" />
+              <stop offset="55%" stopColor={colors.blue2} stopOpacity="0.16" />
               <stop offset="100%" stopColor={colors.blue} stopOpacity="0.02" />
             </linearGradient>
             <linearGradient id={`medianGlass-${uid}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={colors.card} stopOpacity="0.75" />
+              <stop offset="0%" stopColor={colors.card} stopOpacity="0.55" />
               <stop offset="100%" stopColor={colors.card} stopOpacity="0" />
             </linearGradient>
             <linearGradient id={`medianLine-${uid}`} x1="0" y1="0" x2="1" y2="0">
               <stop offset="0%" stopColor={colors.blue} />
               <stop offset="100%" stopColor={colors.blue2} />
             </linearGradient>
+            <pattern
+              id={`medianGapHatch-${uid}`}
+              width="8"
+              height="8"
+              patternUnits="userSpaceOnUse"
+              patternTransform="rotate(35)"
+            >
+              <line x1="0" y1="0" x2="0" y2="8" stroke="currentColor" strokeWidth="1.5" opacity="0.12" />
+            </pattern>
             <filter id={`medianGlow-${uid}`} x="-80%" y="-80%" width="260%" height="260%">
-              <feGaussianBlur stdDeviation="3.5" result="blur" />
+              <feGaussianBlur stdDeviation="2.8" result="blur" />
               <feMerge>
                 <feMergeNode in="blur" />
                 <feMergeNode in="SourceGraphic" />
               </feMerge>
             </filter>
             <clipPath id={`medianPlot-${uid}`}>
-              <rect x={PAD_X} y={PAD_TOP} width={geom.plotW} height={geom.plotH} rx="8" />
+              <rect x={PAD_X} y={PAD_TOP} width={geom.plotW} height={geom.plotH} rx="10" />
             </clipPath>
           </defs>
 
-          <rect className="median-chart-plot-bg" x={PAD_X} y={PAD_TOP} width={geom.plotW} height={geom.plotH} rx="8" />
+          <rect
+            className="median-chart-plot-bg"
+            x={PAD_X}
+            y={PAD_TOP}
+            width={geom.plotW}
+            height={geom.plotH}
+            rx="10"
+          />
 
-          {gridFracs.map((frac) => {
-            const v = geom.max - frac * (geom.max - geom.min);
-            const yy = PAD_TOP + frac * geom.plotH;
+          {geom.yTicks.map((v, i) => {
+            const yy = yFromValue(v, geom.min, geom.max, geom.plotH);
+            const edge = i === 0 || i === geom.yTicks.length - 1;
             return (
-              <g key={frac} className="median-grid">
+              <g key={i} className="median-grid">
                 <line
                   x1={PAD_X}
                   y1={yy}
                   x2={W - PAD_RIGHT}
                   y2={yy}
                   className="median-grid-line"
-                  strokeDasharray={frac === 0 || frac === 1 ? "none" : "5 7"}
+                  strokeDasharray={edge ? "none" : "4 6"}
                 />
-                <text x={PAD_X - 12} y={yy + 4} textAnchor="end" className="median-axis">
+                <text x={PAD_X - 10} y={yy + 4} textAnchor="end" className="median-axis">
                   {formatAxisValue(v)}
                 </text>
               </g>
@@ -455,14 +343,29 @@ export function TrendLineChartPanel({
           })}
 
           <line x1={PAD_X} y1={PAD_TOP} x2={PAD_X} y2={geom.baseY} className="median-axis-y-line" />
-          <text x={PAD_X} y={H - 10} textAnchor="start" className="median-axis median-axis-x">
-            {axisLabel(points[0].t, range)}
-          </text>
-          <text x={W - PAD_RIGHT} y={H - 10} textAnchor="end" className="median-axis median-axis-x">
-            {axisLabel(points[points.length - 1].t, range)}
-          </text>
+
+          {geom.xTicks.map((ms, i) => {
+            const x = xFromTime(ms, geom.tMin, geom.tMax, geom.plotW);
+            const anchor = i === 0 ? "start" : i === geom.xTicks.length - 1 ? "end" : "middle";
+            return (
+              <text key={i} x={x} y={H - 10} textAnchor={anchor} className="median-axis median-axis-x">
+                {axisLabelMs(ms, range)}
+              </text>
+            );
+          })}
 
           <g clipPath={`url(#medianPlot-${uid})`}>
+            {geom.bands.map((band, i) => (
+              <rect
+                key={i}
+                x={band.x}
+                y={PAD_TOP}
+                width={band.width}
+                height={geom.plotH}
+                className="chart-outage-band"
+                fill={`url(#medianGapHatch-${uid})`}
+              />
+            ))}
             {geom.areaPaths.map((path, index) => (
               <path key={`area-${index}`} d={path} fill={`url(#medianFill-${uid})`} className="median-chart-area" />
             ))}
@@ -480,7 +383,7 @@ export function TrendLineChartPanel({
                 d={path}
                 fill="none"
                 stroke={`url(#medianLine-${uid})`}
-                strokeWidth="3.25"
+                strokeWidth="3"
                 strokeLinejoin="round"
                 strokeLinecap="round"
                 className="median-chart-line"
@@ -489,9 +392,9 @@ export function TrendLineChartPanel({
             ))}
             {isHovering ? (
               <line
-                x1={geom.xScale(activeIndex)}
+                x1={crosshairX}
                 y1={PAD_TOP}
-                x2={geom.xScale(activeIndex)}
+                x2={crosshairX}
                 y2={geom.baseY}
                 className="median-hover-line"
               />
@@ -507,8 +410,8 @@ export function TrendLineChartPanel({
             </g>
           ) : (
             <g className="median-hover-marker">
-              <circle cx={geom.xScale(activeIndex)} cy={active.y} r="6" className="median-hover-dot" />
-              <circle cx={geom.xScale(activeIndex)} cy={active.y} r="2.75" fill="var(--bg)" />
+              <circle cx={active.x} cy={active.y} r="6" className="median-hover-dot" />
+              <circle cx={active.x} cy={active.y} r="2.75" fill="var(--bg)" />
             </g>
           )}
         </svg>
@@ -516,22 +419,18 @@ export function TrendLineChartPanel({
         {!isHovering ? (
           <div
             className={`median-chart-live-badge ${up ? "up" : "down"}`}
-            style={{
-              left: `${badgeLeft}%`,
-              top: `${lastOverlayPos.top}%`
-            }}
+            style={{ left: `${badgeLeft}%`, top: `${lastOverlayPos.top}%` }}
           >
             <span className="median-chart-live-badge-label">آخرین قیمت</span>
-            <span className="median-chart-live-badge-value number">{formatters.formatValue(geom.lastV)}</span>
+            <span className="median-chart-live-badge-value number">
+              {formatters.formatValue(geom.lastV)}
+            </span>
           </div>
         ) : null}
 
         <div
           className={`median-chart-tooltip ${isHovering ? "visible" : ""}`}
-          style={{
-            left: `${overlayPos.left}%`,
-            top: `${overlayPos.top}%`
-          }}
+          style={{ left: `${overlayPos.left}%`, top: `${overlayPos.top}%` }}
         >
           <span className="median-chart-tooltip-time">{tooltipLabel(active.t, range)}</span>
           <span className="median-chart-tooltip-value number">{formatters.formatValue(active.v)}</span>
@@ -539,6 +438,30 @@ export function TrendLineChartPanel({
       </div>
     </div>
   );
+}
+
+function connectAll(
+  plotPoints: Array<{ x: number; y: number }>,
+  mode: "linear" | "smooth"
+): string[] {
+  if (plotPoints.length < 2) return [];
+  // Always linear for continuous mode — avoids inventing prices across real outages
+  void mode;
+  let d = `M ${plotPoints[0]!.x} ${plotPoints[0]!.y}`;
+  for (let i = 1; i < plotPoints.length; i++) d += ` L ${plotPoints[i]!.x} ${plotPoints[i]!.y}`;
+  return [d];
+}
+
+function connectAllArea(
+  plotPoints: Array<{ x: number; y: number }>,
+  baseY: number,
+  mode: "linear" | "smooth"
+): string[] {
+  const lines = connectAll(plotPoints, mode);
+  if (!lines[0] || plotPoints.length < 2) return [];
+  const first = plotPoints[0]!;
+  const last = plotPoints[plotPoints.length - 1]!;
+  return [`${lines[0]} L ${last.x} ${baseY} L ${first.x} ${baseY} Z`];
 }
 
 export type MedianChartRangeOption<T extends string> = { key: T; label: string };

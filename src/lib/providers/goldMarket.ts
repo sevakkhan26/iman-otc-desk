@@ -513,7 +513,10 @@ function kickGoldBackgroundRefresh(settings: DeskSettings): void {
       lastFetchAt = Date.now();
       const fresh = await fetchFresh(settings);
       if (fresh.quotes.some(quoteHasValidPrice)) {
-        void recordGoldHistory(fresh.quotes);
+        // Never append offline/stale cache ticks — they flatten history charts.
+        if (!fresh.stale) {
+          void recordGoldHistory(fresh.quotes);
+        }
         memCache = fresh;
         return fresh;
       }

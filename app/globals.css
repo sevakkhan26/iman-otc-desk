@@ -3572,6 +3572,27 @@ a.exch-name-link:focus-visible {
   vector-effect: non-scaling-stroke;
 }
 
+.chart-outage-band {
+  color: var(--muted-2);
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.gold-chart-legend-gap {
+  opacity: 0.85;
+}
+
+.gold-chart-legend-swatch-gap {
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--muted-2) 55%, transparent),
+    color-mix(in srgb, var(--muted-2) 55%, transparent) 2px,
+    transparent 2px,
+    transparent 5px
+  ) !important;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+}
+
 .median-chart-area {
   opacity: 1;
 }

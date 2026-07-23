@@ -126,21 +126,31 @@ export async function getGoldHistory(range: GoldHistoryRange, instrument: GoldIn
   const now = Date.now();
   const windowMs = range === "7d" ? 7 * 24 * 60 * 60_000 : 24 * 60 * 60_000;
   const maxPoints = range === "7d" ? 84 : 96;
-  const inWindow = samples
-    .filter((sample) => sample.instrument === instrument && now - sample.t <= windowMs)
+  const instrumentSamples = samples
+    .filter((sample) => sample.instrument === instrument)
     .sort((a, b) => a.t - b.t);
+
+  let inWindow = instrumentSamples.filter((sample) => now - sample.t <= windowMs);
+  // Match median chart: if 24h is sparse after outage, still paint from recent history.
+  if (inWindow.length < 2 && instrumentSamples.length >= 2) {
+    inWindow = instrumentSamples.slice(-Math.min(maxPoints * 3, instrumentSamples.length));
+  }
 
   const series: GoldHistorySeries[] = (["navasan", "bonbast", "talavest"] as const)
     .map((source) => {
-      const sourceSamples = downsample(
-        inWindow.filter((sample) => sample.source === source),
-        maxPoints
-      );
+      let sourceSamples = inWindow.filter((sample) => sample.source === source);
+      if (sourceSamples.length < 2) {
+        const allForSource = instrumentSamples.filter((s) => s.source === source);
+        if (allForSource.length >= 2) {
+          sourceSamples = allForSource.slice(-Math.min(maxPoints, allForSource.length));
+        }
+      }
+      sourceSamples = downsample(sourceSamples, maxPoints);
       if (!sourceSamples.length) return null;
       return {
         source,
         sourceName: SOURCE_NAMES[source],
-        unit: sourceSamples[0].unit,
+        unit: sourceSamples[0]!.unit,
         points: sourceSamples.map((sample) => ({ t: new Date(sample.t).toISOString(), v: sample.v }))
       };
     })

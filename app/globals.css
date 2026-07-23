@@ -3652,6 +3652,14 @@ a.exch-name-link:focus-visible {
   place-items: center;
 }
 
+.desk-chart-sparse-note {
+  margin: 0;
+  padding: 0 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
 .desk-chart-legend {
   margin-top: 2px;
 }

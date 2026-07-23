@@ -75,13 +75,39 @@ function downsample(samples: Sample[], max: number): Sample[] {
   return out;
 }
 
+/**
+ * Prefer strict time window; if sparse (outage stopped sampling), pad with the
+ * most recent prior samples so 24h never blanks while 7d still has history.
+ */
+function selectRangeSamples(samples: Sample[], range: MedianHistoryRange, now: number): Sample[] {
+  const windowMs = range === "7d" ? 7 * 24 * 60 * 60_000 : 24 * 60 * 60_000;
+  const maxPoints = range === "7d" ? 84 : 96;
+  const minDraw = 2;
+  const sorted = [...samples].sort((a, b) => a.t - b.t);
+  let inWindow = sorted.filter((s) => now - s.t <= windowMs);
+
+  // Sparse window (e.g. only 1 tick in last 24h after network outage):
+  // pull enough recent samples ending at the newest so the chart can draw.
+  if (inWindow.length < minDraw && sorted.length >= minDraw) {
+    const need = Math.min(maxPoints, Math.max(minDraw, sorted.length));
+    inWindow = sorted.slice(-need);
+  } else if (inWindow.length === 1 && sorted.length >= 2) {
+    // Exactly one in window — prepend previous sample so change/line is visible
+    const only = inWindow[0]!;
+    const idx = sorted.findIndex((s) => s.t === only.t);
+    if (idx > 0) {
+      inWindow = [sorted[idx - 1]!, only];
+    }
+  }
+
+  return downsample(inWindow, maxPoints);
+}
+
 export async function getMedianHistory(range: MedianHistoryRange): Promise<MedianHistoryResponse> {
   const samples = await readSamples();
   const now = Date.now();
-  const windowMs = range === "7d" ? 7 * 24 * 60 * 60_000 : 24 * 60 * 60_000;
-  const maxPoints = range === "7d" ? 84 : 96;
-  const inWindow = samples.filter((s) => now - s.t <= windowMs).sort((a, b) => a.t - b.t);
-  const points = downsample(inWindow, maxPoints).map((s) => ({
+  const selected = selectRangeSamples(samples, range, now);
+  const points = selected.map((s) => ({
     t: new Date(s.t).toISOString(),
     v: s.v
   }));

@@ -311,16 +311,30 @@ export function DeskAreaChart({
     [cleaned]
   );
 
-  const stats = useMemo(() => statsFromValues(rows.map((r) => r.v)), [rows]);
+  // One sample still draws: synthetic twin so Recharts has a segment (honest flat).
+  const plotRows = useMemo(() => {
+    if (rows.length >= 2) return rows;
+    if (rows.length === 1) {
+      const only = rows[0]!;
+      return [
+        { ...only, ms: only.ms - 60_000 },
+        only
+      ];
+    }
+    return rows;
+  }, [rows]);
+
+  const stats = useMemo(() => statsFromValues(plotRows.map((r) => r.v)), [plotRows]);
   const axisFmt = formatAxisValue ?? ((v: number) => formatValue(v));
 
-  if (!stats || rows.length < 2) {
+  if (!stats || plotRows.length < 1) {
     return <EmptyChart message={emptyMessage} />;
   }
 
   const change = changePercent ?? stats.change;
   const stroke = tokens.blue;
   const gradId = `deskAreaFill-${uid}`;
+  const sparse = rows.length < 2;
 
   return (
     <div className="median-chart-panel desk-chart-panel" data-chart-engine="recharts" aria-label={ariaLabel}>
@@ -333,9 +347,14 @@ export function DeskAreaChart({
         formatValue={(v) => formatValue(v)}
         formatAverage={formatAverage}
       />
+      {sparse ? (
+        <p className="desk-chart-sparse-note muted small">
+          در این بازه نمونهٔ کم ثبت شده؛ آخرین داده‌های موجود نمایش داده می‌شود.
+        </p>
+      ) : null}
       <div className="median-chart-body desk-chart-body" style={{ height }}>
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={rows} margin={{ top: 12, right: 12, left: 4, bottom: 4 }}>
+          <AreaChart data={plotRows} margin={{ top: 12, right: 12, left: 4, bottom: 4 }}>
             <defs>
               <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor={stroke} stopOpacity={0.45} />
@@ -457,13 +476,14 @@ export function DeskMultiLineChart({
   const stats = useMemo(() => statsFromValues(primaryValues), [primaryValues]);
   const axisFmt = formatAxisValue ?? ((v: number) => formatValue(v));
 
-  if (!stats || rows.length < 2 || !cleanedSeries.length) {
+  if (!stats || rows.length < 1 || !cleanedSeries.length) {
     return <EmptyChart message={emptyMessage} />;
   }
 
   const change = changePercent ?? stats.change;
   const colorById = new Map(cleanedSeries.map((s) => [s.id, s.color]));
   const nameById = new Map(cleanedSeries.map((s) => [s.id, s.name]));
+  const sparse = rows.length < 2;
 
   return (
     <div className="median-chart-panel desk-chart-panel" data-chart-engine="recharts" aria-label={ariaLabel}>
@@ -476,6 +496,11 @@ export function DeskMultiLineChart({
         formatValue={(v) => formatValue(v)}
         formatAverage={formatAverage}
       />
+      {sparse ? (
+        <p className="desk-chart-sparse-note muted small">
+          در این بازه نمونهٔ کم ثبت شده؛ آخرین داده‌های موجود نمایش داده می‌شود.
+        </p>
+      ) : null}
       <div className="gold-chart-legend desk-chart-legend" aria-label="منابع">
         {cleanedSeries.map((s) => (
           <span className="gold-chart-legend-item" key={s.id}>

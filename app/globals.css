@@ -3572,25 +3572,92 @@ a.exch-name-link:focus-visible {
   vector-effect: non-scaling-stroke;
 }
 
-.chart-outage-band {
-  color: var(--muted-2);
-  opacity: 0.9;
-  pointer-events: none;
+/* ===== Recharts desk charts ===== */
+.desk-chart-panel {
+  gap: 12px;
 }
 
-.gold-chart-legend-gap {
-  opacity: 0.85;
+.desk-chart-body {
+  min-height: 240px;
+  padding: 8px 6px 4px;
+  border-radius: 16px;
+  border: 1px solid var(--line-soft);
+  background:
+    radial-gradient(120% 80% at 100% 0%, color-mix(in srgb, var(--blue) 10%, transparent), transparent 55%),
+    linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+  box-shadow: var(--glass-inner), var(--glass-shadow-sm);
 }
 
-.gold-chart-legend-swatch-gap {
-  background: repeating-linear-gradient(
-    -45deg,
-    color-mix(in srgb, var(--muted-2) 55%, transparent),
-    color-mix(in srgb, var(--muted-2) 55%, transparent) 2px,
-    transparent 2px,
-    transparent 5px
-  ) !important;
-  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+.desk-chart-body .recharts-cartesian-axis-tick-value {
+  direction: ltr;
+}
+
+.desk-chart-body .recharts-default-legend {
+  display: none;
+}
+
+.desk-chart-tooltip {
+  min-width: 140px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--desk-tt-border, var(--line));
+  background: var(--desk-tt-bg, var(--card));
+  color: var(--desk-tt-text, var(--text));
+  box-shadow: var(--glass-shadow-sm);
+  backdrop-filter: var(--glass-blur);
+}
+
+.desk-chart-tooltip-time {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--desk-tt-muted, var(--muted-2));
+  margin-bottom: 6px;
+  direction: ltr;
+  text-align: start;
+}
+
+.desk-chart-tooltip-rows {
+  display: grid;
+  gap: 6px;
+}
+
+.desk-chart-tooltip-row {
+  display: grid;
+  grid-template-columns: 10px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.desk-chart-tooltip-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+}
+
+.desk-chart-tooltip-name {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.desk-chart-tooltip-value {
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  direction: ltr;
+}
+
+.desk-chart-empty {
+  min-height: 200px;
+  display: grid;
+  place-items: center;
+}
+
+.desk-chart-legend {
+  margin-top: 2px;
+}
+
+.median-chart-tall .desk-chart-body {
+  min-height: 380px;
 }
 
 .median-chart-area {

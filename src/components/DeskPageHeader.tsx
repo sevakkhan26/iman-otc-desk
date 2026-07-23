@@ -93,10 +93,10 @@ export function DeskPageHeader({
       <div className="header-center header-center--inline" aria-live="polite">
         <div className="clock" title="تاریخ و ساعت سرور (تهران)">
           <Clock aria-hidden="true" size={15} />
-          <span className="clock-time number">
+          <span className="clock-time number" suppressHydrationWarning>
             {mounted && clockMs != null ? clockTimeFmt.format(clockMs) : "—"}
           </span>
-          <span className="clock-date">
+          <span className="clock-date" suppressHydrationWarning>
             {mounted && clockMs != null ? clockDateFmt.format(clockMs) : "—"}
           </span>
         </div>

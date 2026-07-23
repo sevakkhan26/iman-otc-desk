@@ -9,6 +9,8 @@ const inflightClient = new Map<string, Promise<unknown>>();
 /**
  * Tab-lifetime last-good payloads so menu switches paint instantly
  * (dashboard ↔ tether ↔ gold) without re-waiting for the network.
+ * Memory-only is safe after mount; never seed useState from sessionStorage
+ * (that caused React #418 hydration text mismatches).
  */
 const clientLastGood = new Map<string, { data: unknown; at: number }>();
 
@@ -41,6 +43,16 @@ function seedFromCaches<T>(url: string): T | null {
   const mem = clientLastGood.get(url);
   if (mem) return mem.data as T;
   return readSessionCache<T>(url);
+}
+
+function applySeedTimes(
+  seeded: unknown,
+  setServerNow: (v: string | null) => void,
+  setLastUpdated: (v: number | null) => void
+) {
+  const times = extractServerTimes(seeded);
+  setServerNow(times.serverNowIso);
+  setLastUpdated(times.lastUpdatedMs);
 }
 
 function clientFetchJson<T>(url: string): Promise<T> {
@@ -121,26 +133,22 @@ export function extractServerTimes(data: unknown): {
 }
 
 export function useApi<T>(url: string, refreshMs?: number) {
-  const seeded = seedFromCaches<T>(url);
-  const [data, setData] = useState<T | null>(seeded);
-  // Never block the whole page on skeleton if we already have a last-good payload
-  const [loading, setLoading] = useState(!seeded);
+  /**
+   * Always start empty on both server and client first paint.
+   * Seeding from sessionStorage in useState() made SSR HTML (skeleton) diverge
+   * from client HTML (cached prices) → React minified error #418.
+   */
+  const [data, setData] = useState<T | null>(null);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** Epoch ms from server snapshot (not browser receive time). */
-  const [lastUpdated, setLastUpdated] = useState<number | null>(() => {
-    if (!seeded) return null;
-    return extractServerTimes(seeded).lastUpdatedMs;
-  });
-  /** Latest serverNow ISO from payload — drives shared header clock. */
-  const [serverNow, setServerNow] = useState<string | null>(() => {
-    if (!seeded) return null;
-    return extractServerTimes(seeded).serverNowIso;
-  });
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const [serverNow, setServerNow] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
-  const hasDataRef = useRef(Boolean(seeded));
+  const hasDataRef = useRef(false);
   const mountedRef = useRef(true);
   const urlRef = useRef(url);
+  const hydratedRef = useRef(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -149,31 +157,28 @@ export function useApi<T>(url: string, refreshMs?: number) {
     };
   }, []);
 
-  // When URL changes (rare), re-seed from cache for that URL
-  useEffect(() => {
-    if (urlRef.current === url) return;
-    urlRef.current = url;
-    const next = seedFromCaches<T>(url);
-    if (next) {
-      setData(next);
-      hasDataRef.current = true;
-      const times = extractServerTimes(next);
-      setServerNow(times.serverNowIso);
-      setLastUpdated(times.lastUpdatedMs);
-      setLoading(false);
-      setError(null);
-    } else {
-      setData(null);
-      hasDataRef.current = false;
-      setLoading(true);
-    }
-  }, [url]);
-
+  // After mount: restore tab/session cache, then fetch (SWR style).
   useEffect(() => {
     let cancelled = false;
     setError(null);
 
-    if (hasDataRef.current) {
+    // Client-only seed (safe post-hydration)
+    if (!hydratedRef.current || urlRef.current !== url) {
+      hydratedRef.current = true;
+      urlRef.current = url;
+      const seeded = seedFromCaches<T>(url);
+      if (seeded) {
+        setData(seeded);
+        hasDataRef.current = true;
+        applySeedTimes(seeded, setServerNow, setLastUpdated);
+        setLoading(false);
+        setRefreshing(true);
+      } else {
+        hasDataRef.current = false;
+        setLoading(true);
+        setRefreshing(false);
+      }
+    } else if (hasDataRef.current) {
       setRefreshing(true);
       setLoading(false);
     } else {
@@ -195,13 +200,11 @@ export function useApi<T>(url: string, refreshMs?: number) {
       .catch((err: unknown) => {
         if (cancelled || !mountedRef.current) return;
         if (err instanceof Error && err.name === "AbortError") {
-          // Timeout: keep last-good UI if any; only error empty shell
           if (!hasDataRef.current) {
             setError("پاسخ سرور طول کشید — دوباره تلاش کنید");
           }
           return;
         }
-        // Keep previous data visible on 500 / network blips
         if (!hasDataRef.current) {
           setError(err instanceof Error ? err.message : "داده‌ای دریافت نشد");
         }

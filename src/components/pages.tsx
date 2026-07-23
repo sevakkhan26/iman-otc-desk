@@ -1460,16 +1460,8 @@ export function DashboardView() {
   const { data, loading, error, reload, lastUpdated, serverNow } = useApi<DashboardResponse>("/api/dashboard", DASHBOARD_REFRESH_MS);
   const { toasts, dismiss } = useConnectivityToasts(data?.tetherMarket.exchanges);
 
-  // ask once for OS-level notification permission (in-app toasts work regardless)
-  useEffect(() => {
-    try {
-      if (typeof Notification !== "undefined" && Notification.permission === "default") {
-        Notification.requestPermission().catch(() => {});
-      }
-    } catch {
-      /* ignore */
-    }
-  }, []);
+  // Do NOT request Notification permission on page load (Lighthouse + UX).
+  // OS banners only fire if already granted; in-app toasts always work.
 
   return (
     <>

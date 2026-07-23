@@ -18,12 +18,6 @@ import type {
 } from "@/lib/types";
 
 /**
- * Quote cache / display horizon (project dashboard MAX_STALE_PRICE_MS).
- * Quotes older than this are not used even as raw bubble inputs.
- */
-const MAX_STALE_MS = 6 * 60 * 60_000;
-
-/**
  * Soft “تأخیری” marker (dashboard FRESH_PRICE_MS / provider visual warn).
  * Does NOT by itself disable derived bubble — only marks health.stale.
  */
@@ -34,9 +28,18 @@ export const BUBBLE_WARN_AGE_MS = 15 * 60_000;
  * Prefer fresh data, but allow up to 48h so the page still paints from PostgreSQL
  * source caches during DNS/proxy outages (still marked stale in health/notes).
  * Override with BUBBLE_INPUT_MAX_AGE_HOURS (e.g. 2 for strict mode).
+ *
+ * IMPORTANT: Must match provider OFFLINE_DISPLAY_TTL_MS (gold/fx 48h).
+ * A shorter gate (e.g. 6h) silently empties /bubble while gold-prices/fx still paint.
  */
 export const BUBBLE_INPUT_MAX_AGE_MS =
   Math.max(1, Number(process.env.BUBBLE_INPUT_MAX_AGE_HOURS ?? 48) || 48) * 60 * 60_000;
+
+/**
+ * Quote eligibility window for bubble raw inputs — same as BUBBLE_INPUT_MAX_AGE_MS.
+ * Kept as an alias so findFx / gold collectors share one offline horizon with providers.
+ */
+const MAX_STALE_MS = BUBBLE_INPUT_MAX_AGE_MS;
 
 /**
  * Max allowed skew among ounce / dirham / mazane of the *same* provider.
@@ -158,7 +161,7 @@ function isWithinCacheWindow(iso: string | null | undefined, nowMs: number = Dat
 /**
  * Hard freshness for derived bubble.
  * Missing timestamp → allow (providers sometimes omit; value still present).
- * Present timestamp → age must be ≤ BUBBLE_INPUT_MAX_AGE_MS (2h).
+ * Present timestamp → age must be ≤ BUBBLE_INPUT_MAX_AGE_MS (default 48h).
  */
 export function isBubbleInputFresh(iso: string | null | undefined, nowMs: number = Date.now()): boolean {
   const age = ageMs(iso, nowMs);

@@ -505,7 +505,12 @@ function QuickDecisionCockpit({
 }
 
 const FRESH_PRICE_MS = 15 * 60_000;
-const MAX_STALE_PRICE_MS = 6 * 60 * 60_000;
+/**
+ * Hard max age for dashboard reference cards (dirham / paper USD / coin / 18k).
+ * Must match gold/FX OFFLINE_DISPLAY_TTL and bubble BUBBLE_INPUT_MAX_AGE (48h).
+ * A 6h gate hid valid disk-cache quotes during DNS/proxy outages while APIs still returned items.
+ */
+const MAX_STALE_PRICE_MS = 48 * 60 * 60_000;
 
 type MarketPriceTone = "good" | "warn" | "danger";
 

@@ -20,8 +20,8 @@ function readSessionCache<T>(url: string): T | null {
     const raw = sessionStorage.getItem(`otc:api:${url}`);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as { data: T; at: number };
-    // Keep for the whole browser tab session (max 6h safety)
-    if (Date.now() - parsed.at > 6 * 60 * 60_000) return null;
+    // Keep for the whole browser tab session (max 48h — matches offline gold/FX/bubble window)
+    if (Date.now() - parsed.at > 48 * 60 * 60_000) return null;
     return parsed.data;
   } catch {
     return null;

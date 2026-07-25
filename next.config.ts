@@ -1,10 +1,17 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { NextConfig } from "next";
 import packageJson from "./package.json";
+
+/** Pin project root — parent ~/package-lock.json made Next pick wrong workspace root. */
+const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   // Required for production Docker image (copies server.js + traced deps).
   output: "standalone",
+  // Keep tracing/dev root inside this package (not monorepo parent).
+  outputFileTracingRoot: projectRoot,
   // Optional isolated cache dir (e.g. OTC_NEXT_DIST=.next-preview) when .next is corrupted.
   ...(process.env.OTC_NEXT_DIST ? { distDir: process.env.OTC_NEXT_DIST } : {}),
   // Keep native/WASM DB drivers unbundled — bundling breaks PGlite path/WASM resolution
@@ -26,20 +33,25 @@ const nextConfig: NextConfig = {
    */
   async headers() {
     // Tight CSP for Next standalone (inline theme boot + React). No third-party scripts.
+    // Do NOT set upgrade-insecure-requests: breaks plain HTTP LAN/IP (no TLS on :443).
+    // Dev (webpack/React Refresh) needs 'unsafe-eval' or login client JS dies with EvalError.
+    const isDev = process.env.NODE_ENV !== "production";
+    const scriptSrc = isDev
+      ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+      : "script-src 'self' 'unsafe-inline'";
     const csp = [
       "default-src 'self'",
       "base-uri 'self'",
       "form-action 'self'",
       "frame-ancestors 'none'",
       "object-src 'none'",
-      "script-src 'self' 'unsafe-inline'",
+      scriptSrc,
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob:",
       "font-src 'self' data:",
       "connect-src 'self'",
       "worker-src 'self' blob:",
-      "manifest-src 'self'",
-      "upgrade-insecure-requests"
+      "manifest-src 'self'"
     ].join("; ");
 
     return [

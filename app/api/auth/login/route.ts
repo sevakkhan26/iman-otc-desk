@@ -61,16 +61,45 @@ export async function GET(request: NextRequest) {
   );
 }
 
-export async function POST(request: NextRequest) {
-  let body: { username?: unknown; password?: unknown } = {};
-  try {
-    body = (await request.json()) as typeof body;
-  } catch {
-    // fall through to the credential check with empty body
+async function readLoginBody(
+  request: NextRequest
+): Promise<{ username?: unknown; password?: unknown; viaForm: boolean }> {
+  const contentType = request.headers.get("content-type") ?? "";
+  // Native HTML form post (no JS / failed hydrate)
+  if (
+    contentType.includes("application/x-www-form-urlencoded") ||
+    contentType.includes("multipart/form-data")
+  ) {
+    try {
+      const form = await request.formData();
+      return {
+        username: form.get("username"),
+        password: form.get("password"),
+        viaForm: true
+      };
+    } catch {
+      return { viaForm: true };
+    }
   }
+  try {
+    const body = (await request.json()) as { username?: unknown; password?: unknown };
+    return { ...body, viaForm: false };
+  } catch {
+    return { viaForm: false };
+  }
+}
+
+export async function POST(request: NextRequest) {
+  const body = await readLoginBody(request);
 
   const identity = await verifyCredentials(body.username, body.password);
   if (!identity) {
+    if (body.viaForm) {
+      // Bounce back to login with a flag the page can show (no JS required)
+      const url = new URL("/login", request.url);
+      url.searchParams.set("error", "1");
+      return NextResponse.redirect(url, { status: 303, headers: NO_STORE_HEADERS });
+    }
     return NextResponse.json(
       { ok: false, message: INVALID_CREDENTIALS_MESSAGE },
       { status: 401, headers: NO_STORE_HEADERS }
@@ -83,10 +112,26 @@ export async function POST(request: NextRequest) {
     identity.passwordVersion
   );
   if (!token) {
+    if (body.viaForm) {
+      const url = new URL("/login", request.url);
+      url.searchParams.set("error", "1");
+      return NextResponse.redirect(url, { status: 303, headers: NO_STORE_HEADERS });
+    }
     return NextResponse.json(
       { ok: false, message: INVALID_CREDENTIALS_MESSAGE },
       { status: 401, headers: NO_STORE_HEADERS }
     );
+  }
+
+  // Form POST: full redirect so browser stores cookie and lands on dashboard without JS.
+  // JSON fetch (React): keep { ok: true } for window.location.replace("/dashboard").
+  if (body.viaForm) {
+    const response = NextResponse.redirect(new URL("/dashboard", request.url), {
+      status: 303,
+      headers: NO_STORE_HEADERS
+    });
+    response.cookies.set(AUTH_COOKIE_NAME, token, authCookieSetOptions(request, COOKIE_MAX_AGE_S));
+    return response;
   }
 
   // Never put the session token in JSON — only in HttpOnly cookie

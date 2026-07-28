@@ -5,9 +5,11 @@ import { Clock, RefreshCw } from "lucide-react";
 import { AlertsHeaderButton } from "@/components/AlertsHeaderButton";
 import { ProfileMenu } from "@/components/ProfileMenu";
 import { ThemeToggleButton } from "@/components/ThemeToggleButton";
+import { GlassIconButton } from "@/components/ui/GlassIconButton";
 import { useServerClock } from "@/hooks/useServerClock";
 
-const clockDateFmt = new Intl.DateTimeFormat("fa-IR", {
+/* Latin digits (nu-latn) — matches kit financial presentation + SSR/CSR stability */
+const clockDateFmt = new Intl.DateTimeFormat("fa-IR-u-nu-latn", {
   weekday: "short",
   year: "numeric",
   month: "2-digit",
@@ -15,7 +17,7 @@ const clockDateFmt = new Intl.DateTimeFormat("fa-IR", {
   timeZone: "Asia/Tehran"
 });
 
-const clockTimeFmt = new Intl.DateTimeFormat("fa-IR", {
+const clockTimeFmt = new Intl.DateTimeFormat("fa-IR-u-nu-latn", {
   hour: "2-digit",
   minute: "2-digit",
   second: "2-digit",
@@ -74,21 +76,21 @@ export function DeskPageHeader({
 
   const refreshButton =
     onRefresh != null ? (
-      <button
-        type="button"
-        className="icon-button icon-button--compact last-update-refresh"
+      <GlassIconButton
+        label="بروزرسانی"
+        tooltip="بروزرسانی"
         onClick={onRefresh}
-        title="بروزرسانی"
-        aria-label="بروزرسانی"
         disabled={loading}
+        aria-busy={loading}
+        className="glass-icon-button--compact last-update-refresh"
       >
-        <RefreshCw aria-hidden="true" className={loading ? "spinning" : undefined} />
-      </button>
+        <RefreshCw size={16} strokeWidth={1.75} className={loading ? "spinning" : undefined} />
+      </GlassIconButton>
     ) : null;
 
   return (
-    <header className="page-header page-header--desk">
-      <h2 className="page-title">{title}</h2>
+    <header className="page-header page-header--desk glass-toolbar">
+      <h2 className="page-title text-page-title">{title}</h2>
 
       <div className="header-center header-center--inline" aria-live="polite">
         <div className="clock" title="تاریخ و ساعت سرور (تهران)">

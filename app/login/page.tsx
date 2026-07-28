@@ -58,8 +58,8 @@ export default function LoginPage() {
         action="/api/auth/login"
         onSubmit={submit}
       >
-        <h1 className="login-title">ورود به داشبورد</h1>
-        <div className="login-subtitle muted">OTC Dealing Desk</div>
+        <h1 className="login-title text-page-title">ورود به داشبورد</h1>
+        <div className="login-subtitle text-caption">OTC Dealing Desk</div>
         <div className="field">
           <label htmlFor="login-username">نام کاربری</label>
           <input

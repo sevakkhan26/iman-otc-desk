@@ -122,10 +122,10 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <div className={`shell collapsed${mobileOpen ? " mobile-drawer-open" : ""}`}>
       {/* Compact mobile top bar — not the full nav list */}
-      <header className="mobile-topbar">
+      <header className="mobile-topbar glass-nav">
         <div className="brand mobile-topbar-brand">
           <h1 className="brand-title">OTC Desk</h1>
-          <div className="brand-subtitle">داشبورد عملیاتی Dealing Desk</div>
+          <div className="brand-subtitle text-caption">داشبورد عملیاتی Dealing Desk</div>
         </div>
         <button
           ref={menuButtonRef}
@@ -150,7 +150,7 @@ export function Shell({ children }: Readonly<{ children: React.ReactNode }>) {
       <aside
         ref={drawerRef}
         id={sidebarId}
-        className={`sidebar${mobileOpen ? " is-open" : ""}`}
+        className={`sidebar glass-nav${mobileOpen ? " is-open" : ""}`}
         aria-label="منوی اصلی"
         {...(isMobile ? { role: "dialog" as const, "aria-modal": true as const } : {})}
         inert={isMobile && !mobileOpen ? true : undefined}

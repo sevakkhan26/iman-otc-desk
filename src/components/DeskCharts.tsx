@@ -44,32 +44,33 @@ type ThemeTokens = {
   grid: string;
 };
 
+/* iOS 27 kit chart palette (matches ios27-design-system tokens) */
 const FALLBACK_DARK: ThemeTokens = {
-  blue: "#4aa9f0",
-  blue2: "#35d0e0",
-  green: "#22d07a",
-  yellow: "#f2c14e",
-  red: "#ff6b74",
-  muted: "#9db0c5",
-  muted2: "#7a8fa8",
-  line: "rgba(157, 176, 197, 0.22)",
-  card: "rgba(18, 36, 56, 0.94)",
-  text: "#e8eef6",
-  grid: "rgba(157, 176, 197, 0.12)"
+  blue: "#0a84ff",
+  blue2: "#4aa9f0",
+  green: "#10b981",
+  yellow: "#f2c94c",
+  red: "#f85268",
+  muted: "#a0a8b8",
+  muted2: "#7a8498",
+  line: "rgba(255, 255, 255, 0.1)",
+  card: "rgba(16, 24, 40, 0.94)",
+  text: "#f5f6fa",
+  grid: "rgba(255, 255, 255, 0.07)"
 };
 
 const FALLBACK_LIGHT: ThemeTokens = {
-  blue: "#1774d1",
-  blue2: "#0fb5d6",
-  green: "#0c9c56",
-  yellow: "#a9750f",
-  red: "#dc2f3a",
-  muted: "#5a6b7d",
-  muted2: "#7a8b9c",
-  line: "rgba(90, 107, 125, 0.2)",
-  card: "rgba(255, 255, 255, 0.96)",
-  text: "#142033",
-  grid: "rgba(90, 107, 125, 0.12)"
+  blue: "#0070d7",
+  blue2: "#0a84ff",
+  green: "#059669",
+  yellow: "#926908",
+  red: "#dc263c",
+  muted: "#48443e",
+  muted2: "#6b655c",
+  line: "rgba(40, 30, 10, 0.12)",
+  card: "rgba(255, 253, 250, 0.96)",
+  text: "#12100e",
+  grid: "rgba(40, 30, 10, 0.08)"
 };
 
 const faTime = new Intl.DateTimeFormat("fa-IR", {

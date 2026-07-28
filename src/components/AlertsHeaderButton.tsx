@@ -1,12 +1,12 @@
 "use client";
 
-import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Bell } from "lucide-react";
+import { GlassIconButton } from "@/components/ui/GlassIconButton";
 
 /**
- * Header alerts control — same /alerts route and unread poll as the former sidebar item.
+ * Header alerts control — glass icon + unread badge, links to /alerts.
  */
 export function AlertsHeaderButton() {
   const pathname = usePathname();
@@ -37,19 +37,24 @@ export function AlertsHeaderButton() {
     };
   }, [pathname]);
 
+  const label = unread > 0 ? `هشدارها، ${unread} اعلان خوانده‌نشده` : "هشدارها";
+
   return (
-    <Link
+    <GlassIconButton
       href="/alerts"
-      className={`icon-button header-alerts-button${active ? " is-active" : ""}`}
-      title="هشدارها"
-      aria-label={unread > 0 ? `هشدارها، ${unread} اعلان خوانده‌نشده` : "هشدارها"}
+      label={label}
+      tooltip="هشدارها"
+      active={active}
+      className="header-alerts-button"
+      badge={
+        unread > 0 ? (
+          <span className="header-alerts-badge" aria-hidden="true">
+            {unread > 99 ? "99+" : unread}
+          </span>
+        ) : null
+      }
     >
-      <Bell aria-hidden="true" />
-      {unread > 0 ? (
-        <span className="header-alerts-badge" aria-hidden="true">
-          {unread > 99 ? "99+" : unread}
-        </span>
-      ) : null}
-    </Link>
+      <Bell size={18} strokeWidth={1.75} />
+    </GlassIconButton>
   );
 }

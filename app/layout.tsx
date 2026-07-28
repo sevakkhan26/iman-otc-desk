@@ -1,4 +1,6 @@
 import type { Metadata, Viewport } from "next";
+/* iOS 27 kit tokens first, then desk structural styles */
+import "./ios27-design-system.css";
 import "./globals.css";
 
 export const metadata: Metadata = {

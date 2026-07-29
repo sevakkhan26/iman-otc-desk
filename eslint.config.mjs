@@ -10,8 +10,17 @@ const compat = new FlatCompat({
 });
 
 const eslintConfig = [
-  { ignores: [".next/**", ".next-preview/**", "node_modules/**", "out/**", "next-env.d.ts"] },
-  ...compat.extends("next/core-web-vitals", "next/typescript")
+  {
+    // ".next-*" covers the scratch build dirs (.next-preview, .next-shadow-build, …)
+    // that are build output, not source.
+    ignores: [".next/**", ".next-*/**", "node_modules/**", "out/**", "next-env.d.ts"]
+  },
+  ...compat.extends("next/core-web-vitals", "next/typescript"),
+  {
+    // CommonJS Node preloads (e.g. the postgres socket shim) must use require().
+    files: ["**/*.cjs"],
+    rules: { "@typescript-eslint/no-require-imports": "off" }
+  }
 ];
 
 export default eslintConfig;

@@ -579,9 +579,12 @@ async function main() {
     assert.equal(threw, true);
     process.env.DATABASE_URL = prev;
     await closeDb();
-    // re-init connection for remaining tests
-    const { getDb } = await import("../src/db/client.ts");
-    getDb();
+    // Re-init the connection for the remaining tests.
+    // Must be the async initializer: the sync getDb() deliberately throws
+    // "Database is initializing" for PGlite URLs, which would fail this test's
+    // teardown on a local PGlite setup even though the assertion above passed.
+    const { getDbAsync } = await import("../src/db/client.ts");
+    await getDbAsync();
     await __resetStoreMemoryForTests();
   });
 

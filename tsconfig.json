@@ -31,11 +31,14 @@
   "include": [
     "**/*.ts",
     "**/*.tsx",
+    ".next-fix-build/types/**/*.ts",
     ".next-ios27-preview/types/**/*.ts",
     ".next-preview/types/**/*.ts",
+    ".next-shadow-build/types/**/*.ts",
     ".next/types/**/*.ts",
     "next-env.d.ts",
-    ".next-fix-build/types/**/*.ts"
+    ".next-local/types/**/*.ts",
+    ".next-verify/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

@@ -34,7 +34,11 @@ Statuses: `COMPLETE` · `RUNNING` · `BLOCKED_BY_TIME` · `BLOCKED_BY_CREDENTIAL
 | `587b561` | Stage 1 artifacts: production collector service, health endpoint, CDN-safe headers, backup script, runbook |
 | `262df82` | Stage 2: redesigned Persian admin dashboard |
 
-All commits are local only — this environment has no push access (see §2).
+**Pushed** to `sevakkhan26/iman-otc-desk` on branch **`shadow-arbitrage-master`**
+(head `6f4bdad`) on 2026-07-30. `main` is deliberately untouched and still at the
+rollback point `393b756`, because a push to `main` auto-deploys within ~30–60 s
+and the mandatory production database backup cannot be run or verified from this
+machine (see §2).
 
 ### Rollback instructions
 
@@ -91,6 +95,7 @@ rewritten, so reverting the code leaves the extra tables unused and harmless.
 | `git push` to any remote | ❌ `git@ssh.github.com: Permission denied (publickey)` for `origin`, `iman-otc`, `sevak`; `ssh-add -l` → "The agent has no identities" |
 | Production database backup | ❌ requires server access |
 | Verify worker on the server | ❌ requires server access or production admin credentials |
+| `git push` (after `gh auth login --web`) | ✅ authenticated as `ImanH96`, WRITE on the repo, credential in the macOS keychain |
 
 **Consequence:** stage 1 cannot be executed or verified from here. All of its
 artifacts are prepared and committed so that a single push (or one command on the

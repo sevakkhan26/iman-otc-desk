@@ -140,8 +140,11 @@ docker compose exec -T otc-postgres pg_restore -U otc_app -d otc_desk --clean --
 
 Prepared and committed:
 
-* `docker-compose.yml` — new `iman-otc-shadow-worker` service: same image, runs
-  `pnpm shadow:worker`, `restart: unless-stopped`, no published ports (never
+* `docker-compose.yml` — new `iman-otc-shadow-worker` service: same image started
+  with `SHADOW_COLLECTOR=1` (the production image is a Next standalone build with
+  no tsx and no .mts files, so `pnpm shadow:worker` cannot run there; the
+  collector runs through the server's instrumentation hook instead),
+  `restart: unless-stopped`, no published ports (never
   exposed to the internet), shares the app's `DATABASE_URL`, log rotation via the
   json-file driver.
 * `scripts/backup-production-db.sh` — pre-migration backup + row-count report.

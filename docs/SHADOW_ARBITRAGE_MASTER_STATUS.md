@@ -7,7 +7,7 @@ resume after an interruption.
 Statuses: `COMPLETE` · `RUNNING` · `BLOCKED_BY_TIME` · `BLOCKED_BY_CREDENTIALS` ·
 `BLOCKED_BY_ACCESS` · `DISABLED_FOR_SAFETY` · `NOT_STARTED`
 
-**Last updated:** 2026-07-30 (local session)
+**Last updated:** 2026-07-30 — stages 1 (prepared), 2 (complete), 3 (running) done; 4–7 pending
 
 ---
 
@@ -29,8 +29,12 @@ Statuses: `COMPLETE` · `RUNNING` · `BLOCKED_BY_TIME` · `BLOCKED_BY_CREDENTIAL
 | Ref | Meaning |
 | --- | --- |
 | `393b756` | **Rollback point** — last commit before any Shadow Arbitrage work (`v3.6.0`) |
-| `3becb6b` | Phase 2 system (schema, migrations 0001+0002, adapters, engine, APIs, UI, tests) |
+| `3becb6b` | Phase 2 system (schema, migrations 0001+0002, adapters, engine, APIs, tests) |
 | `7fbed2f` | Unified local environment + PGlite single-writer safety |
+| `587b561` | Stage 1 artifacts: production collector service, health endpoint, CDN-safe headers, backup script, runbook |
+| `262df82` | Stage 2: redesigned Persian admin dashboard |
+
+All commits are local only — this environment has no push access (see §2).
 
 ### Rollback instructions
 
@@ -121,9 +125,9 @@ docker compose exec -T otc-postgres pg_restore -U otc_app -d otc_desk --clean --
 | Stage | Title | Status | Notes |
 | --- | --- | --- | --- |
 | 1 | Always-on production operation | `BLOCKED_BY_ACCESS` | Artifacts committed (compose worker service, backup script, runbook, cache/security headers, admin health endpoint). Cannot push or reach the LAN host from this environment. |
-| 2 | Complete UI/UX redesign | `COMPLETE` | Persian RTL dashboard rebuilt: observation header, summary cards, filterable opportunity table, details drawer, source/account table, analytics. |
-| 3 | 14-day observation workflow | `RUNNING` | Auto start/resume, true server elapsed time, coverage, restart survival all working; automatic final report generator implemented. Cannot be `COMPLETE` until 14 real days elapse — see `BLOCKED_BY_TIME`. |
-| 4 | Account-readiness layer | `BLOCKED_BY_CREDENTIALS` | Read-only interface + admin UI section prepared; no credentials requested or stored. |
+| 2 | Complete UI/UX redesign | `COMPLETE` | Sections A–F rebuilt in Persian RTL: observation header, 8 summary cards, filterable/sortable/searchable opportunity table, details drawer, source & account table, analytics. Dark/light via theme tokens, responsive to 414px, skeleton/empty/stale/error states, compact yellow warning chip only. |
+| 3 | 14-day observation workflow | `RUNNING` / `BLOCKED_BY_TIME` | Auto start/resume, true server elapsed time excluding pauses, cycle + data coverage, restart and deploy survival all working and verified (176 cycles recorded locally across many restarts, one session, zero duplicates). Cannot become `COMPLETE` until 14 real days elapse. The automatic final report generator is **not yet written** — next session. |
+| 4 | Account-readiness layer | `BLOCKED_BY_CREDENTIALS` | Verified accounts (Nobitex, Wallex, Tabdeal) and the six that need opening are surfaced in the UI with evidence-based priority. Server-side authenticated interfaces are **not implemented** — deliberately, until read-only credentials arrive out of chat. |
 | 5 | Capital and rebalancing simulator | `NOT_STARTED` | Next session. Purely theoretical, 50,000,000 toman. |
 | 6 | Paper execution engine | `NOT_STARTED` | Next session. Paper records only. |
 | 7 | Guarded live-readiness architecture | `NOT_STARTED` | Next session. Interfaces only, `DISABLED_FOR_SAFETY` by construction. |
@@ -159,18 +163,34 @@ Remaining to complete the stage (needs someone with push or host access):
 
 ### Stage 2 — UI/UX redesign · `COMPLETE`
 
-See `src/components/shadowArbitrage/*`. Sections A–F implemented per spec, Persian
-RTL, dark/light, responsive, with skeleton/empty/stale/error states and the
-permanent «حالت آزمایشی — هیچ سفارش یا انتقال واقعی انجام نمی‌شود» banner.
+Files: `src/components/shadowArbitrage/{labels,types,ObservationHeader,SummaryCards,OpportunityTable,OpportunityDrawer,SourceTable,AnalyticsPanels}.tsx`,
+`src/components/ShadowArbitrageView.tsx`, `app/globals.css`.
 
-### Stage 3 — 14-day observation workflow · `RUNNING`
+Verified: typecheck, lint (0 errors), isolated production build, 46 unit tests
+including blocked-code translation completeness, collector-state derivation,
+Persian formatting, freshness buckets, account priority and the permanent banner.
+Rendered live at `http://127.0.0.1:3000/shadow-arbitrage` with an admin session
+(HTTP 200) while the collector recorded cycles.
 
-Working: automatic start/resume, real server elapsed time excluding paused
-periods, cycle and data coverage, restart/deploy survival, degraded detection.
-Added: `buildObservationReport()` and the report section in the analytics API,
-which refuses to emit a final report before 14 real days have elapsed and never
-backfills observations. Local session start: see the observation row in the DB
-(`shadow_observation_sessions`), currently a fresh session created 2026-07-30.
+**Not verified:** pixel-level dark/light and responsive rendering. This
+environment has no browser automation (no Playwright/Puppeteer, and Node 20's
+experimental WebSocket would not attach to Chrome DevTools Protocol). Both themes
+and the 720px breakpoint are implemented against the existing theme tokens and
+reviewed in CSS, but no screenshots were taken.
+
+### Stage 3 — 14-day observation workflow · `RUNNING` / `BLOCKED_BY_TIME`
+
+Working and verified: automatic start/resume, real server elapsed time excluding
+paused periods, cycle and data coverage, restart survival, degraded detection,
+pause/resume without losing progress. The local session created on 2026-07-30 has
+recorded 176 cycles across roughly a dozen app restarts with a single session id
+and zero duplicate cycles.
+
+Still to build (next session): `buildObservationReport()` — the automatic final
+report after 14 real days (unique lifecycles, route frequency, duration and edge
+distributions, PnL by size, source uptime/errors, coverage, fee confidence,
+exchange ranking, unusable routes and why). It must refuse to emit before 14 real
+days have elapsed and must never backfill observations.
 
 ### Stage 4 — Account readiness · `BLOCKED_BY_CREDENTIALS`
 
@@ -187,12 +207,13 @@ start read-only with no withdrawal, transfer or order permission.
 
 | Check | Result |
 | --- | --- |
-| `npm test` (12 suites) | 254 assertions, 0 failures |
-| `pnpm test:shadow` | 40 unit + 14 persistence, 0 failures |
+| `npm test` (12 suites) | 261 assertions, 0 failures |
+| `pnpm test:shadow` | 46 unit + 14 persistence, 0 failures |
 | `pnpm typecheck` | clean |
 | `pnpm lint` | 0 errors (17 pre-existing warnings in unrelated files) |
 | `pnpm build:verify` | isolated build OK, `.next` and `.next-local` untouched |
-| Local always-on | `pnpm shadow:local` — app + collector, one Ctrl+C; 77 cycles across restarts, 0 duplicates |
+| Local always-on | `pnpm shadow:local` — app + collector, one Ctrl+C; 176 cycles across restarts, 0 duplicates, single PGlite writer |
+| Production design proof | standalone build (what production runs) started the collector and recorded 3 cycles; health 401 unauthenticated; CDN headers confirmed |
 
 ---
 

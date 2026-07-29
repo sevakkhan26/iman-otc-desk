@@ -3,16 +3,12 @@ import { isSession } from "@/lib/requireApiAuth";
 import { requireAdminSession } from "@/lib/requireAdmin";
 import { runShadowMatrix } from "@/lib/shadowArbitrage";
 import { SHADOW_BANNER } from "@/lib/shadowArbitrage/config";
+import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const NO_STORE = {
-  "cache-control": "no-store, no-cache, must-revalidate, max-age=0",
-  pragma: "no-cache",
-  "content-type": "application/json; charset=utf-8"
-} as const;
 
 /**
  * GET /api/shadow-arbitrage/matrix[?refresh=1]
@@ -30,7 +26,7 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const manualRefresh = url.searchParams.get("refresh") === "1";
     const body = await runShadowMatrix(manualRefresh);
-    return new NextResponse(JSON.stringify(body), { status: 200, headers: NO_STORE });
+    return new NextResponse(JSON.stringify(body), { status: 200, headers: SHADOW_NO_STORE });
   } catch (error) {
     console.error("[shadow-arbitrage/matrix]", error instanceof Error ? error.message : error);
     return new NextResponse(
@@ -39,7 +35,7 @@ export async function GET(request: Request) {
         message: error instanceof Error ? error.message : "ماتریس سایه در دسترس نیست",
         banner: SHADOW_BANNER
       }),
-      { status: 503, headers: NO_STORE }
+      { status: 503, headers: SHADOW_NO_STORE }
     );
   }
 }

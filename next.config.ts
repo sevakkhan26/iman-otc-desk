@@ -82,6 +82,38 @@ const nextConfig: NextConfig = {
         headers: [
           { key: "Cache-Control", value: "no-store, no-cache, must-revalidate, private" }
         ]
+      },
+      {
+        // Shadow Arbitrage is admin-only. Never let ArvanCloud/CDN or any shared
+        // cache retain an authenticated admin response, and never index it.
+        source: "/shadow-arbitrage",
+        headers: [
+          { key: "Cache-Control", value: "private, no-store, no-cache, must-revalidate, max-age=0" },
+          { key: "CDN-Cache-Control", value: "no-store" },
+          { key: "Surrogate-Control", value: "no-store" },
+          { key: "Vary", value: "Cookie" },
+          { key: "X-Robots-Tag", value: "noindex, nofollow" }
+        ]
+      },
+      {
+        source: "/shadow-arbitrage/:path*",
+        headers: [
+          { key: "Cache-Control", value: "private, no-store, no-cache, must-revalidate, max-age=0" },
+          { key: "CDN-Cache-Control", value: "no-store" },
+          { key: "Surrogate-Control", value: "no-store" },
+          { key: "Vary", value: "Cookie" },
+          { key: "X-Robots-Tag", value: "noindex, nofollow" }
+        ]
+      },
+      {
+        source: "/api/shadow-arbitrage/:path*",
+        headers: [
+          { key: "Cache-Control", value: "private, no-store, no-cache, must-revalidate, max-age=0" },
+          { key: "CDN-Cache-Control", value: "no-store" },
+          { key: "Surrogate-Control", value: "no-store" },
+          { key: "Vary", value: "Cookie" },
+          { key: "X-Robots-Tag", value: "noindex, nofollow" }
+        ]
       }
     ];
   }

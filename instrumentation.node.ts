@@ -28,8 +28,17 @@ function log(message: string, extra?: unknown) {
 /** Guard against double registration within a single process. */
 const globalFlag = globalThis as typeof globalThis & { __shadowCollectorStarted?: boolean };
 
+/**
+ * Enabled by `SHADOW_COLLECTOR=1` (production worker container) or
+ * `SHADOW_LOCAL_COLLECTOR=1` (`pnpm shadow:local`). Absent → this file does
+ * nothing, so the public app container never collects.
+ */
+function collectorEnabled(): boolean {
+  return process.env.SHADOW_COLLECTOR === "1" || process.env.SHADOW_LOCAL_COLLECTOR === "1";
+}
+
 async function start(): Promise<void> {
-  if (process.env.SHADOW_LOCAL_COLLECTOR !== "1") return;
+  if (!collectorEnabled()) return;
   if (globalFlag.__shadowCollectorStarted) {
     log("collector already started in this process — skipping duplicate");
     return;

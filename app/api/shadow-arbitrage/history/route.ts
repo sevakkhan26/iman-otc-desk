@@ -3,14 +3,11 @@ import { isSession } from "@/lib/requireApiAuth";
 import { requireAdminSession } from "@/lib/requireAdmin";
 import { loadHistory } from "@/lib/shadowArbitrage";
 import { SHADOW_BANNER } from "@/lib/shadowArbitrage/config";
+import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const NO_STORE = {
-  "cache-control": "no-store",
-  "content-type": "application/json; charset=utf-8"
-} as const;
 
 export async function GET(request: Request) {
   const session = await requireAdminSession();
@@ -39,6 +36,6 @@ export async function GET(request: Request) {
       count: items.length,
       opportunities: items
     }),
-    { status: 200, headers: NO_STORE }
+    { status: 200, headers: SHADOW_NO_STORE }
   );
 }

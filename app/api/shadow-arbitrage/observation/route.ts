@@ -18,14 +18,11 @@ import {
   SHADOW_POLL_MIN_MS,
   SHADOW_SOURCES
 } from "@/lib/shadowArbitrage/config";
+import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const NO_STORE = {
-  "cache-control": "no-store",
-  "content-type": "application/json; charset=utf-8"
-} as const;
 
 /**
  * Observation + worker + source certification status.
@@ -103,7 +100,7 @@ export async function GET() {
       costRecords: SHADOW_COST_RECORDS,
       workerCommand: "pnpm shadow:worker"
     }),
-    { status: 200, headers: NO_STORE }
+    { status: 200, headers: SHADOW_NO_STORE }
   );
 }
 
@@ -125,7 +122,7 @@ export async function POST(request: Request) {
   } catch {
     return new NextResponse(JSON.stringify({ error: "bad_request", message: "بدنهٔ JSON نامعتبر" }), {
       status: 400,
-      headers: NO_STORE
+      headers: SHADOW_NO_STORE
     });
   }
 
@@ -133,7 +130,7 @@ export async function POST(request: Request) {
   if (typeof action !== "string" || !allowed.includes(action as (typeof allowed)[number])) {
     return new NextResponse(
       JSON.stringify({ error: "bad_request", message: `action باید یکی از ${allowed.join("، ")} باشد` }),
-      { status: 400, headers: NO_STORE }
+      { status: 400, headers: SHADOW_NO_STORE }
     );
   }
 
@@ -144,7 +141,7 @@ export async function POST(request: Request) {
     );
     return new NextResponse(
       JSON.stringify({ banner: SHADOW_BANNER, shadowMode: true, observation }),
-      { status: 200, headers: NO_STORE }
+      { status: 200, headers: SHADOW_NO_STORE }
     );
   } catch (error) {
     return new NextResponse(
@@ -152,7 +149,7 @@ export async function POST(request: Request) {
         error: "unavailable",
         message: error instanceof Error ? error.message : "تغییر وضعیت مشاهده ممکن نشد"
       }),
-      { status: 503, headers: NO_STORE }
+      { status: 503, headers: SHADOW_NO_STORE }
     );
   }
 }

@@ -47,10 +47,22 @@ import {
   parseWorkerId
 } from "../src/lib/shadowArbitrage/workerIdentity.ts";
 import type {
+  BlockedReasonCode,
   NormalizedSourceSnapshot,
   ShadowOpportunity,
   ShadowSourceId
 } from "../src/lib/shadowArbitrage/types.ts";
+import {
+  BLOCKED_FA,
+  SHADOW_WARNING_FA,
+  accountPriorityLabel,
+  blockedShort,
+  deriveCollectorState,
+  formatDurationFa,
+  formatPercentFa,
+  freshnessLabel,
+  toFaDigits
+} from "../src/components/shadowArbitrage/labels.ts";
 
 let passed = 0;
 let failed = 0;
@@ -798,6 +810,117 @@ await test("rate-limited snapshot cannot be certified live", () => {
   );
   assert.ok(snap.sourceBlockedReasons.includes("rate_limited"));
   assert.equal(certifyFromSnapshot(snap).status, "LIVE_DEGRADED");
+});
+
+/* ── dashboard presentation logic ─────────────────────────────────────────── */
+
+await test("every blocked code has a plain-Persian explanation", () => {
+  // Any code the engine can emit must be translatable, or the UI would show a
+  // raw identifier to a non-technical admin.
+  const codes: BlockedReasonCode[] = [
+    "fee_unknown",
+    "stale_buy_source",
+    "stale_sell_source",
+    "insufficient_buy_depth",
+    "insufficient_sell_depth",
+    "account_required",
+    "reference_only",
+    "source_unhealthy",
+    "quote_direction_unverified",
+    "market_data_missing",
+    "same_venue",
+    "non_positive_net",
+    "depth_unverified",
+    "quote_max_unverified",
+    "units_ambiguous",
+    "rate_limited",
+    "source_not_certified"
+  ];
+  for (const c of codes) {
+    assert.ok(BLOCKED_FA[c], `missing translation for ${c}`);
+    assert.ok(BLOCKED_FA[c].short.length > 2, `short label too thin for ${c}`);
+    assert.ok(BLOCKED_FA[c].detail.length > 20, `detail too thin for ${c}`);
+    assert.notEqual(blockedShort(c), c, `${c} must not surface as a raw code`);
+  }
+  // Unknown codes degrade to the code itself rather than throwing.
+  assert.equal(blockedShort("something_new"), "something_new");
+});
+
+await test("collector state reflects the honest situation", () => {
+  assert.equal(
+    deriveCollectorState({
+      observationStatus: "RUNNING",
+      workerRunning: true,
+      workerStale: false,
+      lastSuccessAgeMs: 5_000,
+      pollIntervalMs: 30_000
+    }),
+    "watching"
+  );
+  assert.equal(
+    deriveCollectorState({ observationStatus: "PAUSED", workerRunning: true, workerStale: false }),
+    "stopped"
+  );
+  assert.equal(
+    deriveCollectorState({ observationStatus: "RUNNING", workerRunning: false, workerStale: true }),
+    "stopped"
+  );
+  // Worker alive but nothing succeeded for far longer than the interval.
+  assert.equal(
+    deriveCollectorState({
+      observationStatus: "RUNNING",
+      workerRunning: true,
+      workerStale: false,
+      lastSuccessAgeMs: 20 * 60_000,
+      pollIntervalMs: 30_000
+    }),
+    "stale"
+  );
+  assert.equal(
+    deriveCollectorState({
+      observationStatus: "DEGRADED",
+      workerRunning: true,
+      workerStale: false,
+      lastSuccessAgeMs: 5_000,
+      pollIntervalMs: 30_000
+    }),
+    "degraded"
+  );
+  assert.equal(deriveCollectorState({ observationStatus: "COMPLETED" }), "completed");
+});
+
+await test("Persian formatting helpers", () => {
+  assert.equal(toFaDigits(1234), "۱۲۳۴");
+  assert.equal(formatPercentFa(1.2345, 2), "۱٫۲۳٪".replace("٫", "."));
+  assert.equal(formatPercentFa(null), "—");
+  assert.equal(formatDurationFa(45_000), "۴۵ ثانیه");
+  assert.equal(formatDurationFa(3 * 60_000), "۳ دقیقه");
+  assert.equal(formatDurationFa(2 * 3_600_000), "۲ ساعت");
+  assert.equal(formatDurationFa(26 * 3_600_000), "۱ روز و ۲ ساعت");
+  assert.equal(formatDurationFa(null), "—");
+});
+
+await test("freshness buckets follow the poll interval", () => {
+  assert.equal(freshnessLabel(10_000, 30_000).tone, "good");
+  assert.equal(freshnessLabel(90_000, 30_000).tone, "warn");
+  assert.equal(freshnessLabel(10 * 60_000, 30_000).tone, "danger");
+  assert.equal(freshnessLabel(null, 30_000).label, "نامشخص");
+});
+
+await test("account-opening priority needs evidence", () => {
+  assert.equal(accountPriorityLabel(null).label, "بدون شواهد کافی");
+  assert.equal(accountPriorityLabel(0).label, "بدون شواهد کافی");
+  assert.equal(accountPriorityLabel(0.6).label, "اولویت بالا");
+  assert.equal(accountPriorityLabel(0.3).label, "اولویت متوسط");
+  assert.equal(accountPriorityLabel(0.05).label, "اولویت پایین");
+});
+
+await test("permanent trial-mode warning text is exact", () => {
+  assert.equal(SHADOW_WARNING_FA, "حالت آزمایشی — هیچ سفارش یا انتقال واقعی انجام نمی‌شود");
+  const view = readFileSync(new URL("../src/components/ShadowArbitrageView.tsx", import.meta.url), "utf8");
+  assert.ok(view.includes("SHADOW_WARNING_FA"), "the dashboard must render the warning");
+  // It must not be conditional on data or state.
+  assert.ok(/className="sa-warning"/.test(view));
 });
 
 /* ── storage volume ───────────────────────────────────────────────────────── */

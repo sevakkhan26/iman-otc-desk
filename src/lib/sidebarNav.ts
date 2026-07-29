@@ -3,6 +3,7 @@ import {
   ChartCandlestick,
   Coins,
   Gauge,
+  GitCompareArrows,
   Newspaper,
   Percent,
   type LucideIcon
@@ -21,6 +22,12 @@ export const sidebarNavItems: SidebarNavItem[] = [
   { href: "/tether-market", label: "بازار تتر ایران", icon: ChartCandlestick },
   { href: "/gold", label: "بازار طلا", icon: Coins },
   { href: "/bubble", label: "حباب", icon: Percent },
+  {
+    href: "/shadow-arbitrage",
+    label: "آربیتراژ سایه",
+    icon: GitCompareArrows,
+    adminOnly: true
+  },
   { href: "/impact-news", label: "خبرهای اثرگذار", icon: Newspaper },
   { href: "/forex", label: "اخبار فارکس", icon: CalendarClock }
 ];

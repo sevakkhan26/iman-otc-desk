@@ -1,0 +1,471 @@
+#!/usr/bin/env npx tsx
+/**
+ * Shadow Arbitrage persistence tests — real database, no exchange network.
+ *
+ * Runs against a throwaway PGlite instance and drives the repository directly
+ * with synthetic snapshots, so idempotency, worker locking, restart continuity
+ * and retention are tested without touching a venue.
+ */
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+let passed = 0;
+let failed = 0;
+
+async function test(name: string, fn: () => void | Promise<void>) {
+  try {
+    await fn();
+    console.log(`  PASS  ${name}`);
+    passed += 1;
+  } catch (e) {
+    console.log(`  FAIL  ${name}`);
+    console.log(`        ${e instanceof Error ? (e.stack ?? e.message) : e}`);
+    failed += 1;
+  }
+}
+
+const dir = await mkdtemp(path.join(tmpdir(), "otc-shadow-persist-"));
+process.env.DATABASE_URL = `pglite:${path.join(dir, "pglite")}`;
+
+const { closeDb } = await import("../src/db/client.ts");
+const { runMigrations } = await import("../src/db/migrate.ts");
+const repo = await import("../src/db/repositories/shadowArbitrage.ts");
+const { buildOpportunitiesDetailed } = await import("../src/lib/shadowArbitrage/calculate.ts");
+const { certifyFromSnapshot, resetCertifications } = await import(
+  "../src/lib/shadowArbitrage/certification.ts"
+);
+const { bucketIdempotencyKey } = await import("../src/lib/shadowArbitrage/collector.ts");
+const types = await import("../src/lib/shadowArbitrage/types.ts");
+void types;
+
+type Snap = Awaited<ReturnType<typeof repo.loadLatestSourceSnapshots>>[number];
+void ({} as Snap);
+
+import type {
+  NormalizedSourceSnapshot,
+  ShadowSourceId
+} from "../src/lib/shadowArbitrage/types.ts";
+
+function snap(
+  id: string,
+  buy: number,
+  sell: number,
+  over?: Partial<NormalizedSourceSnapshot>
+): NormalizedSourceSnapshot {
+  const now = new Date().toISOString();
+  return {
+    sourceId: id as ShadowSourceId,
+    sourceName: id,
+    marketModel: "ORDER_BOOK",
+    accountStatus: "verified",
+    eligibilityBase: "EXECUTABLE_NOW",
+    bestBidToman: sell,
+    bestAskToman: buy,
+    userBuyPriceToman: buy,
+    userSellPriceToman: sell,
+    sizeExecutables: [5, 10, 20, 25].map((sizeUsdt) => ({
+      sizeUsdt: sizeUsdt as 5 | 10 | 20 | 25,
+      userBuyVwapToman: buy,
+      userSellVwapToman: sell,
+      buyFillable: true,
+      sellFillable: true,
+      buyFilledUsdt: sizeUsdt,
+      sellFilledUsdt: sizeUsdt
+    })),
+    depthUsdtBid: 500,
+    depthUsdtAsk: 500,
+    maxExecutableUsdt: 500,
+    marketFeeBps: 25,
+    feeStatus: "provisional",
+    feeLabel: "test",
+    feeReferenceUrl: null,
+    feeVerifiedAt: null,
+    sourceTimestamp: now,
+    receivedAt: now,
+    ageMs: 0,
+    health: "healthy",
+    errorReason: null,
+    degradedReason: null,
+    stale: false,
+    meta: {
+      endpoint: "https://example.test",
+      httpStatus: 200,
+      latencyMs: 120,
+      attempts: 1,
+      rateLimited: false,
+      timedOut: false,
+      depthAvailable: true,
+      directionVerified: true,
+      priceUnit: "IRT",
+      normalizationNote: null
+    },
+    sourceBlockedReasons: [],
+    ...over
+  };
+}
+
+/** Record one synthetic cycle the same way the collector does. */
+async function recordCycle(opts?: {
+  idempotencyKey?: string;
+  sources?: NormalizedSourceSnapshot[];
+  pollIntervalMs?: number;
+  workerId?: string;
+}): Promise<{ runId: string; duplicate: boolean; activeCount: number }> {
+  const pollIntervalMs = opts?.pollIntervalMs ?? 15_000;
+  const sources =
+    opts?.sources ?? [snap("nobitex", 100_000, 99_500), snap("wallex", 101_000, 100_500)];
+  const session = await repo.ensureObservationSession(pollIntervalMs);
+  const { runId, duplicate } = await repo.beginCollectionRun({
+    sessionId: session.id,
+    idempotencyKey: opts?.idempotencyKey ?? `key-${Date.now()}-${Math.round(Math.random() * 1e9)}`,
+    workerId: opts?.workerId ?? "test-worker",
+    pollIntervalMs,
+    sourcesTotal: sources.length
+  });
+  if (duplicate) return { runId, duplicate, activeCount: 0 };
+
+  const nowIso = new Date().toISOString();
+  const previous = await repo.loadLifecyclesForMerge();
+  const built = buildOpportunitiesDetailed(sources, previous, nowIso);
+  const certBySource = Object.fromEntries(
+    sources.map((s) => [s.sourceId, certifyFromSnapshot(s)])
+  );
+  const failedCount = sources.filter((s) => s.health === "unavailable").length;
+
+  await repo.completeCollectionRun({
+    runId,
+    sessionId: session.id,
+    status: failedCount === 0 ? "success" : failedCount === sources.length ? "failed" : "partial",
+    sourcesOk: sources.length - failedCount,
+    sourcesFailed: failedCount,
+    sourcesTotal: sources.length,
+    opportunityCount: built.opportunities.filter((o) => o.isActive).length,
+    durationMs: 12,
+    pollIntervalMs,
+    sources,
+    certBySource,
+    opportunities: built.opportunities,
+    transitions: built.transitions,
+    healthEvents: sources.map((s) => ({
+      sourceId: s.sourceId,
+      fromHealth: null,
+      toHealth: s.health,
+      fromCertStatus: null,
+      toCertStatus: certBySource[s.sourceId]?.status ?? null,
+      reason: s.errorReason,
+      httpStatus: s.meta.httpStatus,
+      latencyMs: s.meta.latencyMs
+    }))
+  });
+  await repo.upsertRouteMetrics(built.drafts, nowIso);
+  return {
+    runId,
+    duplicate,
+    activeCount: built.opportunities.filter((o) => o.isActive).length
+  };
+}
+
+console.log("\nShadow Arbitrage persistence tests (temp PGlite)\n");
+
+await test("migrations create the Phase 2 tables", async () => {
+  const result = await runMigrations();
+  assert.ok(result.applied.includes("0001_shadow_arbitrage.sql"));
+  assert.ok(result.applied.includes("0002_shadow_arbitrage_phase2.sql"));
+  // Re-running is a no-op, not a destructive rewrite.
+  const again = await runMigrations();
+  assert.deepEqual(again.applied, []);
+  assert.ok(again.skipped.includes("0002_shadow_arbitrage_phase2.sql"));
+});
+
+await test("observation session is created once and reused", async () => {
+  const first = await repo.ensureObservationSession(30_000);
+  const second = await repo.ensureObservationSession(30_000);
+  assert.equal(first.id, second.id, "must not create a second session");
+  assert.equal(first.status, "RUNNING");
+  assert.ok(first.startedAt);
+  assert.equal(first.targetDurationMs, 14 * 24 * 60 * 60_000);
+});
+
+await test("collection run persists rows across all Phase 2 tables", async () => {
+  resetCertifications();
+  const { duplicate, activeCount } = await recordCycle();
+  assert.equal(duplicate, false);
+  assert.ok(activeCount > 0, "expected at least one material opportunity");
+
+  const snapshots = await repo.countSnapshots();
+  assert.ok(snapshots >= 2, `expected snapshots, got ${snapshots}`);
+  const events = await repo.countLifecycleEvents();
+  assert.ok(events > 0, "lifecycle transitions must be recorded");
+  const latest = await repo.loadLatestSourceSnapshots();
+  assert.equal(latest.length, 2);
+  assert.ok(latest.every((s) => s.userBuy !== null && s.latencyMs !== null));
+  const metrics = await repo.loadRouteMetrics();
+  assert.ok(metrics.length > 0, "route aggregates must be written");
+  assert.ok(metrics.every((m) => m.samples > 0));
+});
+
+await test("duplicate idempotency key does not create a second run", async () => {
+  const key = bucketIdempotencyKey(1_700_000_000_000, 30_000);
+  const before = (await repo.loadRunStats()).runCount;
+  const a = await recordCycle({ idempotencyKey: key });
+  const b = await recordCycle({ idempotencyKey: key });
+  assert.equal(a.duplicate, false);
+  assert.equal(b.duplicate, true, "same bucket must be rejected as duplicate");
+  assert.equal(b.runId, a.runId, "duplicate must resolve to the original run");
+  const after = await repo.loadRunStats();
+  assert.equal(after.runCount, before + 1, "only one run recorded");
+  assert.equal(after.duplicateIdempotencyKeys, 0, "unique index holds");
+});
+
+await test("a persistent opportunity stays one lifecycle across cycles", async () => {
+  const activeBefore = await repo.loadActiveOpportunitiesDb();
+  const ids = new Set(activeBefore.map((o) => o.id));
+  await recordCycle();
+  await recordCycle();
+  const activeAfter = await repo.loadActiveOpportunitiesDb();
+  const routeCounts = new Map<string, number>();
+  for (const o of activeAfter) routeCounts.set(o.routeKey, (routeCounts.get(o.routeKey) ?? 0) + 1);
+  for (const [route, count] of routeCounts) {
+    assert.equal(count, 1, `${route} must have exactly one active lifecycle row`);
+  }
+  const same = activeAfter.filter((o) => ids.has(o.id));
+  assert.ok(same.length > 0, "existing lifecycles must be updated, not replaced");
+  assert.ok(
+    same.every((o) => (o.observationCount ?? 1) >= 2),
+    "observation count must accumulate"
+  );
+});
+
+await test("lifecycle close and reappearance are persisted", async () => {
+  // No sources → all active routes close.
+  const session = await repo.ensureObservationSession(15_000);
+  const active = await repo.loadActiveOpportunitiesDb();
+  assert.ok(active.length > 0);
+  const closedRoute = active[0]!.routeKey;
+  const closedId = active[0]!.id;
+
+  const nowIso = new Date().toISOString();
+  const previous = await repo.loadLifecyclesForMerge();
+  const built = buildOpportunitiesDetailed([], previous, nowIso);
+  const { runId } = await repo.beginCollectionRun({
+    sessionId: session.id,
+    idempotencyKey: `close-${Date.now()}`,
+    workerId: "test-worker",
+    pollIntervalMs: 15_000,
+    sourcesTotal: 0
+  });
+  await repo.completeCollectionRun({
+    runId,
+    sessionId: session.id,
+    status: "failed",
+    sourcesOk: 0,
+    sourcesFailed: 0,
+    sourcesTotal: 0,
+    opportunityCount: 0,
+    durationMs: 5,
+    pollIntervalMs: 15_000,
+    sources: [],
+    opportunities: built.opportunities,
+    transitions: built.transitions
+  });
+
+  const stillActive = await repo.loadActiveOpportunitiesDb();
+  assert.equal(
+    stillActive.some((o) => o.id === closedId),
+    false,
+    "closed lifecycle must not remain active"
+  );
+
+  // Same route returns → new lifecycle id, old one retained as history.
+  await recordCycle();
+  const reopened = await repo.loadActiveOpportunitiesDb();
+  const back = reopened.find((o) => o.routeKey === closedRoute);
+  assert.ok(back, "route should reappear");
+  assert.notEqual(back!.id, closedId, "reappearance must open a new lifecycle");
+  const history = await repo.loadHistoryDb(2000);
+  assert.ok(
+    history.some((o) => o.id === closedId),
+    "closed lifecycle must be kept as history"
+  );
+});
+
+await test("observation counters and coverage survive a simulated restart", async () => {
+  const before = await repo.getObservation();
+  assert.ok(before);
+  const cyclesBefore = before!.completedCycles;
+  assert.ok(cyclesBefore > 0);
+
+  // Close every handle, then re-open — the same process restarting the worker.
+  await closeDb();
+  const after = await repo.getObservation();
+  assert.ok(after, "session must be readable after reconnect");
+  assert.equal(after!.id, before!.id, "restart must not create a new session");
+  assert.equal(after!.completedCycles, cyclesBefore, "counters must survive");
+  assert.equal(after!.startedAt, before!.startedAt, "start time must survive");
+
+  const survivingActive = await repo.loadActiveOpportunitiesDb();
+  assert.ok(survivingActive.length > 0, "lifecycle data must survive a restart");
+
+  // And a new cycle continues the same session rather than starting over.
+  await recordCycle();
+  const continued = await repo.getObservation();
+  assert.equal(continued!.id, before!.id);
+  assert.equal(continued!.completedCycles, cyclesBefore + 1);
+});
+
+await test("worker lease blocks a second worker until it expires", async () => {
+  const first = await repo.claimWorkerLease({ workerId: "worker-A", pollIntervalMs: 30_000 });
+  assert.equal(first.acquired, true);
+  const second = await repo.claimWorkerLease({ workerId: "worker-B", pollIntervalMs: 30_000 });
+  assert.equal(second.acquired, false, "a second worker must be refused");
+  assert.equal(second.heldBy, "worker-A");
+
+  // The holder can always renew its own lease.
+  const renew = await repo.claimWorkerLease({ workerId: "worker-A", pollIntervalMs: 30_000 });
+  assert.equal(renew.acquired, true);
+
+  // After a graceful release the lease is free again.
+  await repo.releaseWorkerLease("worker-A");
+  const third = await repo.claimWorkerLease({ workerId: "worker-B", pollIntervalMs: 30_000 });
+  assert.equal(third.acquired, true, "released lease must be claimable");
+
+  const hb = await repo.getWorkerHeartbeat();
+  assert.equal(hb?.workerId, "worker-B");
+  assert.equal(hb?.leaseHeld, true);
+  assert.equal(hb?.stale, false);
+
+  // Leave the lease free for the following tests.
+  await repo.releaseWorkerLease("worker-B");
+  assert.equal((await repo.getWorkerHeartbeat())?.leaseHeld, false);
+});
+
+await test("a lease left by a dead local process is reclaimed at once", async () => {
+  const { makeWorkerId } = await import("../src/lib/shadowArbitrage/workerIdentity.ts");
+  // A worker id for a pid that cannot exist: the app can be SIGTERM'd before it
+  // releases the lease, and collection must not stall until the lease expires.
+  const ghost = makeWorkerId("inproc", 2_147_483_1);
+  const held = await repo.claimWorkerLease({ workerId: ghost, pollIntervalMs: 300_000 });
+  assert.equal(held.acquired, true);
+
+  const successor = makeWorkerId("inproc");
+  const takeover = await repo.claimWorkerLease({ workerId: successor, pollIntervalMs: 30_000 });
+  assert.equal(takeover.acquired, true, "must reclaim a lease owned by a dead local pid");
+  assert.equal(takeover.heldBy, successor);
+
+  // A live holder is still respected.
+  const other = await repo.claimWorkerLease({ workerId: "worker-live", pollIntervalMs: 30_000 });
+  assert.equal(other.acquired, false, "a live holder must not be displaced");
+  await repo.releaseWorkerLease(successor);
+});
+
+await test("overlapping cycles are prevented by the shadow lock", async () => {
+  let concurrent = 0;
+  let maxConcurrent = 0;
+  const body = async () => {
+    concurrent += 1;
+    maxConcurrent = Math.max(maxConcurrent, concurrent);
+    await new Promise((r) => setTimeout(r, 40));
+    concurrent -= 1;
+    return true;
+  };
+  const results = await Promise.all([
+    repo.withShadowLock(body),
+    repo.withShadowLock(body),
+    repo.withShadowLock(body)
+  ]);
+  assert.equal(maxConcurrent, 1, "cycle bodies must never overlap");
+  assert.ok(results.every((r) => r.acquired));
+});
+
+await test("pause / resume changes status without losing progress", async () => {
+  const before = await repo.getObservation();
+  const paused = await repo.setObservationStatus("pause");
+  assert.equal(paused.status, "PAUSED");
+  assert.ok(paused.pausedAt);
+  assert.equal(paused.completedCycles, before!.completedCycles);
+
+  // ensureObservationSession must not silently resume a paused session.
+  const stillPaused = await repo.ensureObservationSession(15_000);
+  assert.equal(stillPaused.status, "PAUSED");
+
+  await new Promise((r) => setTimeout(r, 30));
+  const resumed = await repo.setObservationStatus("resume");
+  assert.equal(resumed.status, "RUNNING");
+  assert.equal(resumed.pausedAt, null);
+  assert.ok(resumed.pausedTotalMs > 0, "paused time must be accounted for");
+  assert.equal(resumed.completedCycles, before!.completedCycles);
+});
+
+await test("partial source failure is recorded without losing the cycle", async () => {
+  const sources = [
+    snap("nobitex", 0, 0, {
+      health: "unavailable",
+      errorReason: "HTTP 503",
+      userBuyPriceToman: null,
+      userSellPriceToman: null,
+      sourceBlockedReasons: ["source_unhealthy", "market_data_missing"]
+    }),
+    snap("wallex", 100_000, 99_500),
+    snap("tabdeal", 101_000, 100_500)
+  ];
+  const before = await repo.loadRunStats();
+  const { duplicate, activeCount } = await recordCycle({ sources });
+  assert.equal(duplicate, false);
+  assert.ok(activeCount > 0, "healthy pair still produced opportunities");
+  const after = await repo.loadRunStats();
+  assert.equal(after.partialRuns, before.partialRuns + 1, "cycle recorded as partial");
+
+  const stats = await repo.loadSourceStats();
+  const dead = stats.find((s) => s.sourceId === "nobitex")!;
+  assert.ok(dead.errorSamples > 0, "error samples must be counted");
+  assert.ok(dead.lastError?.includes("503"));
+});
+
+await test("retention cleanup removes only data past the window", async () => {
+  const activeBefore = (await repo.loadActiveOpportunitiesDb()).length;
+  const runsBefore = (await repo.loadRunStats()).runCount;
+  const removed = await repo.retentionCleanup();
+  assert.equal(removed.runs, 0, "nothing inside the 14-day window may be deleted");
+  assert.equal(removed.lifecycles, 0);
+  const runsAfter = (await repo.loadRunStats()).runCount;
+  assert.equal(runsAfter, runsBefore, "recent runs survive");
+  assert.equal((await repo.loadActiveOpportunitiesDb()).length, activeBefore);
+
+  // Age one run past the window and confirm it (and its snapshots) go away.
+  const { getDbAsync } = await import("../src/db/client.ts");
+  const { sql } = await import("drizzle-orm");
+  const db = await getDbAsync();
+  const old = new Date(Date.now() - 20 * 24 * 60 * 60_000).toISOString();
+  await db.execute(
+    sql`UPDATE shadow_collection_runs SET started_at = ${old} WHERE id = (SELECT id FROM shadow_collection_runs ORDER BY started_at ASC LIMIT 1)`
+  );
+  const snapsBefore = await repo.countSnapshots();
+  const second = await repo.retentionCleanup();
+  assert.equal(second.runs, 1, "the aged run must be deleted");
+  const snapsAfter = await repo.countSnapshots();
+  assert.ok(snapsAfter <= snapsBefore, "its snapshots cascade away");
+  assert.ok((await repo.loadActiveOpportunitiesDb()).length > 0, "active lifecycles untouched");
+});
+
+await test("run and source stats expose coverage inputs", async () => {
+  const stats = await repo.loadRunStats();
+  assert.ok(stats.runCount > 0);
+  assert.ok(stats.firstRunAt && stats.lastRunAt);
+  const sources = await repo.loadSourceStats();
+  assert.ok(sources.length > 0);
+  for (const s of sources) {
+    assert.ok(s.samples > 0);
+    assert.ok(s.latencyP50Ms === null || s.latencyP50Ms >= 0);
+  }
+  const obs = await repo.getObservation();
+  assert.ok(obs!.cycleCoveragePercent >= 0 && obs!.cycleCoveragePercent <= 100);
+  assert.ok(obs!.expectedCycles >= 1);
+});
+
+await closeDb().catch(() => undefined);
+await rm(dir, { recursive: true, force: true });
+
+console.log(`\nResult: ${passed} passed, ${failed} failed\n`);
+if (failed) process.exit(1);

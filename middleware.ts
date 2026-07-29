@@ -40,6 +40,10 @@ export async function middleware(request: NextRequest) {
     if (pathname === "/settings" || pathname.startsWith("/settings/")) {
       return NextResponse.redirect(new URL("/dashboard", request.url));
     }
+    // Shadow Arbitrage Phase 1 — admin only
+    if (pathname === "/shadow-arbitrage" || pathname.startsWith("/shadow-arbitrage/")) {
+      return NextResponse.redirect(new URL("/dashboard", request.url));
+    }
 
     // Admin-only APIs (even GET must not leak user list / password endpoints)
     if (pathname === "/api/settings" || pathname.startsWith("/api/settings/")) {
@@ -50,6 +54,9 @@ export async function middleware(request: NextRequest) {
     }
     if (pathname === "/api/admin" || pathname.startsWith("/api/admin/")) {
       return NextResponse.json({ error: "forbidden", message: "دسترسی مجاز نیست" }, { status: 403 });
+    }
+    if (pathname === "/api/shadow-arbitrage" || pathname.startsWith("/api/shadow-arbitrage/")) {
+      return NextResponse.json({ error: "forbidden", message: "فقط مدیر سیستم" }, { status: 403 });
     }
 
     if (pathname.startsWith("/api/") && !READ_METHODS.has(method)) {

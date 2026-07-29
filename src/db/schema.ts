@@ -292,3 +292,226 @@ export const schemaMeta = pgTable("schema_meta", {
   value: text("value").notNull(),
   updatedAt: ts("updated_at").notNull().defaultNow()
 });
+
+/* ── Shadow Arbitrage Phase 2 (no OMPFinex) ───────────────── */
+
+export const shadowObservationSessions = pgTable("shadow_observation_sessions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  status: text("status").notNull().default("NOT_STARTED"),
+  targetDurationMs: bigint("target_duration_ms", { mode: "number" }).notNull().default(1_209_600_000),
+  startedAt: ts("started_at"),
+  endedAt: ts("ended_at"),
+  lastHeartbeatAt: ts("last_heartbeat_at"),
+  lastSuccessAt: ts("last_success_at"),
+  completedCycles: integer("completed_cycles").notNull().default(0),
+  successfulCycles: integer("successful_cycles").notNull().default(0),
+  failedCycles: integer("failed_cycles").notNull().default(0),
+  partialCycles: integer("partial_cycles").notNull().default(0),
+  pollIntervalMs: integer("poll_interval_ms").notNull().default(30_000),
+  workerId: text("worker_id"),
+  /** Set while status = PAUSED; cleared on resume. */
+  pausedAt: ts("paused_at"),
+  /** Accumulated paused time so 14-day progress excludes deliberate pauses. */
+  pausedTotalMs: bigint("paused_total_ms", { mode: "number" }).notNull().default(0),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  updatedAt: ts("updated_at").notNull().defaultNow()
+});
+
+export const shadowCollectionRuns = pgTable(
+  "shadow_collection_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: uuid("session_id").references(() => shadowObservationSessions.id, {
+      onDelete: "set null"
+    }),
+    idempotencyKey: text("idempotency_key").notNull(),
+    startedAt: ts("started_at").notNull(),
+    finishedAt: ts("finished_at"),
+    status: text("status").notNull().default("running"),
+    sourcesOk: integer("sources_ok").notNull().default(0),
+    sourcesFailed: integer("sources_failed").notNull().default(0),
+    opportunityCount: integer("opportunity_count").notNull().default(0),
+    durationMs: integer("duration_ms"),
+    errorMessage: text("error_message"),
+    workerId: text("worker_id"),
+    /** Sources attempted this cycle (for honest coverage math). */
+    sourcesTotal: integer("sources_total").notNull().default(0),
+    /** sourcesOk / sourcesTotal for this cycle. */
+    coveragePercent: numeric("coverage_percent", { precision: 6, scale: 2 }),
+    pollIntervalMs: integer("poll_interval_ms"),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [
+    uniqueIndex("shadow_runs_idempotency_uidx").on(t.idempotencyKey),
+    index("shadow_runs_started_idx").on(t.startedAt)
+  ]
+);
+
+export const shadowSourceSnapshots = pgTable(
+  "shadow_source_snapshots",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => shadowCollectionRuns.id, { onDelete: "cascade" }),
+    sourceId: text("source_id").notNull(),
+    receivedAt: ts("received_at").notNull(),
+    sourceTimestamp: ts("source_timestamp"),
+    health: text("health").notNull(),
+    marketModel: text("market_model").notNull(),
+    certStatus: text("cert_status"),
+    userBuyToman: numeric("user_buy_toman", { precision: 24, scale: 0 }),
+    userSellToman: numeric("user_sell_toman", { precision: 24, scale: 0 }),
+    latencyMs: integer("latency_ms"),
+    httpStatus: integer("http_status"),
+    /** False when the venue only exposes a headline quote (no walkable book). */
+    depthAvailable: boolean("depth_available"),
+    maxExecutableUsdt: numeric("max_executable_usdt", { precision: 18, scale: 4 }),
+    feeStatus: text("fee_status"),
+    /** Snapshot age exceeded the staleness budget at collection time. */
+    stale: boolean("stale").notNull().default(false),
+    payload: jsonb("payload").$type<Record<string, unknown>>().default({}).notNull(),
+    errorReason: text("error_reason"),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [
+    index("shadow_src_snap_source_time_idx").on(t.sourceId, t.receivedAt),
+    index("shadow_src_snap_run_idx").on(t.runId)
+  ]
+);
+
+export const shadowOpportunityLifecycles = pgTable(
+  "shadow_opportunity_lifecycles",
+  {
+    id: text("id").primaryKey(),
+    routeKey: text("route_key").notNull(),
+    buySourceId: text("buy_source_id").notNull(),
+    sellSourceId: text("sell_source_id").notNull(),
+    sizeUsdt: numeric("size_usdt", { precision: 12, scale: 4 }).notNull(),
+    eligibility: text("eligibility").notNull(),
+    isActive: boolean("is_active").notNull().default(true),
+    firstSeenAt: ts("first_seen_at").notNull(),
+    lastSeenAt: ts("last_seen_at").notNull(),
+    endedAt: ts("ended_at"),
+    buyVwapToman: numeric("buy_vwap_toman", { precision: 24, scale: 0 }).notNull(),
+    sellVwapToman: numeric("sell_vwap_toman", { precision: 24, scale: 0 }).notNull(),
+    rawSpreadPercent: numeric("raw_spread_percent", { precision: 18, scale: 8 }).notNull(),
+    netEdgePercent: numeric("net_edge_percent", { precision: 18, scale: 8 }).notNull(),
+    netProfitToman: numeric("net_profit_toman", { precision: 24, scale: 0 }).notNull(),
+    maxNetEdgePercent: numeric("max_net_edge_percent", { precision: 18, scale: 8 }).notNull(),
+    maxNetProfitToman: numeric("max_net_profit_toman", { precision: 24, scale: 0 }).notNull(),
+    maxRawSpreadPercent: numeric("max_raw_spread_percent", { precision: 18, scale: 8 }),
+    /** True when either venue's fee is unverified — net figures are raw potential only. */
+    feeUnknown: boolean("fee_unknown").notNull().default(false),
+    /** Cycles this lifecycle has been observed in (one lifecycle, many observations). */
+    observationCount: integer("observation_count").notNull().default(1),
+    blockedReasons: jsonb("blocked_reasons").$type<string[]>().default([]).notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().default({}).notNull(),
+    updatedAt: ts("updated_at").notNull().defaultNow()
+  },
+  (t) => [
+    index("shadow_opp_route_active_idx").on(t.routeKey, t.isActive),
+    index("shadow_opp_last_seen_idx").on(t.lastSeenAt),
+    index("shadow_opp_active_idx").on(t.isActive)
+  ]
+);
+
+export const shadowWorkerHeartbeat = pgTable("shadow_worker_heartbeat", {
+  id: text("id").primaryKey().default("primary"),
+  workerId: text("worker_id").notNull(),
+  status: text("status").notNull().default("idle"),
+  lastHeartbeatAt: ts("last_heartbeat_at").notNull(),
+  lastCycleAt: ts("last_cycle_at"),
+  lastCycleStatus: text("last_cycle_status"),
+  pollIntervalMs: integer("poll_interval_ms").notNull().default(30_000),
+  /** Cooperative lease: a second worker may take over only after this passes. */
+  leaseExpiresAt: ts("lease_expires_at"),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}).notNull(),
+  updatedAt: ts("updated_at").notNull().defaultNow()
+});
+
+/**
+ * Health transition log — one row per change of source health/certification,
+ * not one row per cycle. Keeps 14 days of source reliability cheap to query.
+ */
+export const shadowSourceHealthEvents = pgTable(
+  "shadow_source_health_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sourceId: text("source_id").notNull(),
+    runId: uuid("run_id"),
+    occurredAt: ts("occurred_at").notNull(),
+    fromHealth: text("from_health"),
+    toHealth: text("to_health").notNull(),
+    fromCertStatus: text("from_cert_status"),
+    toCertStatus: text("to_cert_status"),
+    reason: text("reason"),
+    httpStatus: integer("http_status"),
+    latencyMs: integer("latency_ms"),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [
+    index("shadow_health_evt_source_time_idx").on(t.sourceId, t.occurredAt),
+    index("shadow_health_evt_time_idx").on(t.occurredAt)
+  ]
+);
+
+/** Lifecycle transition records — opened / eligibility change / closed / reappeared. */
+export const shadowOpportunityEvents = pgTable(
+  "shadow_opportunity_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    lifecycleId: text("lifecycle_id").notNull(),
+    routeKey: text("route_key").notNull(),
+    occurredAt: ts("occurred_at").notNull(),
+    eventType: text("event_type").notNull(), // opened | eligibility_change | closed | reappeared
+    fromEligibility: text("from_eligibility"),
+    toEligibility: text("to_eligibility"),
+    netEdgePercent: numeric("net_edge_percent", { precision: 18, scale: 8 }),
+    netProfitToman: numeric("net_profit_toman", { precision: 24, scale: 0 }),
+    rawSpreadPercent: numeric("raw_spread_percent", { precision: 18, scale: 8 }),
+    blockedReasons: jsonb("blocked_reasons").$type<string[]>().default([]).notNull(),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [
+    index("shadow_opp_evt_lifecycle_idx").on(t.lifecycleId, t.occurredAt),
+    index("shadow_opp_evt_time_idx").on(t.occurredAt),
+    index("shadow_opp_evt_route_idx").on(t.routeKey)
+  ]
+);
+
+/**
+ * Compact per-route/per-size/per-day aggregate so 14-day analytics never scans
+ * the full snapshot history.
+ */
+export const shadowRouteMetrics = pgTable(
+  "shadow_route_metrics",
+  {
+    /** `${routeKey}|${bucketDate}` — deterministic, so upserts stay idempotent. */
+    id: text("id").primaryKey(),
+    routeKey: text("route_key").notNull(),
+    buySourceId: text("buy_source_id").notNull(),
+    sellSourceId: text("sell_source_id").notNull(),
+    sizeUsdt: numeric("size_usdt", { precision: 12, scale: 4 }).notNull(),
+    bucketDate: text("bucket_date").notNull(), // UTC YYYY-MM-DD
+    samples: integer("samples").notNull().default(0),
+    positiveRawSamples: integer("positive_raw_samples").notNull().default(0),
+    positiveNetSamples: integer("positive_net_samples").notNull().default(0),
+    sumRawSpreadPercent: numeric("sum_raw_spread_percent", { precision: 24, scale: 8 }).notNull().default("0"),
+    maxRawSpreadPercent: numeric("max_raw_spread_percent", { precision: 18, scale: 8 }),
+    sumNetEdgePercent: numeric("sum_net_edge_percent", { precision: 24, scale: 8 }).notNull().default("0"),
+    maxNetEdgePercent: numeric("max_net_edge_percent", { precision: 18, scale: 8 }),
+    maxNetProfitToman: numeric("max_net_profit_toman", { precision: 24, scale: 0 }),
+    feeUnknown: boolean("fee_unknown").notNull().default(false),
+    blockedCounts: jsonb("blocked_counts").$type<Record<string, number>>().default({}).notNull(),
+    firstSeenAt: ts("first_seen_at").notNull(),
+    lastSeenAt: ts("last_seen_at").notNull(),
+    updatedAt: ts("updated_at").notNull().defaultNow()
+  },
+  (t) => [
+    index("shadow_route_metrics_route_idx").on(t.routeKey),
+    index("shadow_route_metrics_bucket_idx").on(t.bucketDate)
+  ]
+);
+

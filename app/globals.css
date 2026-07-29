@@ -5603,3 +5603,128 @@ table th {
   font-size: 12px;
   font-weight: 500;
 }
+
+/* ===== Shadow Arbitrage (admin) ===== */
+.shadow-arb-page {
+  display: grid;
+  gap: 16px;
+}
+.shadow-banner {
+  padding: 14px 18px;
+  border-radius: var(--radius-xl, 22px);
+  border: 1px solid color-mix(in srgb, var(--yellow) 45%, var(--line));
+  background: color-mix(in srgb, var(--yellow) 14%, var(--card));
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+  box-shadow: var(--shadow-card);
+}
+.shadow-banner strong {
+  letter-spacing: 0.04em;
+  color: var(--yellow);
+}
+.shadow-banner-fa {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.shadow-section {
+  overflow: visible;
+}
+.shadow-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: flex-end;
+  padding-bottom: 8px !important;
+}
+.shadow-filters label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.shadow-filters select {
+  min-height: 40px;
+  min-width: 140px;
+  border-radius: var(--radius-md, 14px);
+  border: 1px solid var(--line);
+  background: var(--input-bg);
+  color: var(--text);
+  padding: 6px 10px;
+}
+.shadow-check {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+}
+.shadow-raw-spread {
+  color: var(--muted);
+  font-weight: 600;
+}
+.shadow-net-pos {
+  color: var(--green) !important;
+  font-weight: 700;
+}
+.shadow-net-neg {
+  color: var(--muted);
+  font-weight: 600;
+}
+.shadow-analytics .metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+.shadow-obs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+.shadow-obs-actions {
+  display: flex;
+  gap: 8px;
+}
+.shadow-progress {
+  margin-top: 14px;
+  height: 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--line) 60%, transparent);
+  overflow: hidden;
+}
+.shadow-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent, var(--green)), var(--green));
+  transition: width 400ms ease;
+}
+.shadow-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.shadow-endpoint {
+  direction: ltr;
+  unicode-bidi: embed;
+  word-break: break-all;
+  color: var(--muted);
+  opacity: 0.75;
+}
+.shadow-note-cell {
+  max-width: 320px;
+  white-space: normal;
+  line-height: 1.5;
+}
+.shadow-blocked-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 4px 16px;
+  list-style: none;
+  padding: 0;
+  margin-top: 8px;
+}

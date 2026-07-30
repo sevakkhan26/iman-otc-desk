@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Clock, RefreshCw } from "lucide-react";
 import { AlertsHeaderButton } from "@/components/AlertsHeaderButton";
 import { ProfileMenu } from "@/components/ProfileMenu";
+import { ShadowArbitrageHeaderButton } from "@/components/ShadowArbitrageHeaderButton";
 import { ThemeToggleButton } from "@/components/ThemeToggleButton";
 import { GlassIconButton } from "@/components/ui/GlassIconButton";
 import { useServerClock } from "@/hooks/useServerClock";
@@ -120,6 +121,7 @@ export function DeskPageHeader({
         <AlertsHeaderButton />
         <span className="header-actions-divider" aria-hidden="true" />
         <ProfileMenu />
+        <ShadowArbitrageHeaderButton />
         <span className="header-actions-divider" aria-hidden="true" />
         <ThemeToggleButton />
       </div>

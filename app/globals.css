@@ -6548,3 +6548,89 @@ table th {
     background: color-mix(in srgb, #d92d20 22%, transparent);
   }
 }
+
+/* ── Shadow Arbitrage · Phase 7A.1 readiness tables (RTL, no overlap) ─────── */
+/*
+ * Long Persian blocker/evidence/action text must wrap, never overlap and never
+ * push the page into horizontal scroll. Fixed layout + explicit column widths
+ * make wrapping deterministic instead of content-dependent.
+ */
+.sa-readiness-table {
+  table-layout: fixed;
+  width: 100%;
+  min-width: 780px;
+  border-collapse: collapse;
+}
+.sa-readiness-table th,
+.sa-readiness-table td {
+  padding: 9px 10px;
+  text-align: start;
+  vertical-align: top;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  hyphens: auto;
+  line-height: 1.75;
+  border-bottom: 1px solid var(--line);
+}
+.sa-readiness-table col.sa-col-gate { width: 20%; }
+.sa-readiness-table col.sa-col-status { width: 10%; }
+.sa-readiness-table col.sa-col-evidence { width: 18%; }
+.sa-readiness-table col.sa-col-expiry { width: 12%; }
+.sa-readiness-table col.sa-col-blocker { width: 22%; }
+.sa-readiness-table col.sa-col-action { width: 18%; }
+.sa-readiness-table col.sa-col-value { width: 12%; }
+.sa-readiness-table col.sa-col-who { width: 16%; }
+.sa-readiness-table col.sa-col-edit { width: 22%; }
+.sa-readiness-table .sa-reason {
+  display: block;
+  margin-top: 3px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Tablet: drop the least critical column rather than squeeze every cell. */
+@media (max-width: 1024px) {
+  .sa-readiness-table { min-width: 620px; }
+  .sa-readiness-table .sa-col-optional,
+  .sa-readiness-table td.sa-col-optional,
+  .sa-readiness-table th.sa-col-optional {
+    display: none;
+  }
+}
+
+/* Mobile: stack every row into labelled lines — columns cannot overlap when
+   there are no columns. */
+@media (max-width: 720px) {
+  .sa-readiness-table,
+  .sa-readiness-table thead,
+  .sa-readiness-table tbody,
+  .sa-readiness-table tr,
+  .sa-readiness-table td {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+  .sa-readiness-table thead { display: none; }
+  .sa-readiness-table colgroup { display: none; }
+  .sa-readiness-table tr {
+    margin-bottom: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md, 12px);
+  }
+  .sa-readiness-table td {
+    border-bottom: 0;
+    padding: 4px 0;
+  }
+  .sa-readiness-table td::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--muted);
+    margin-bottom: 2px;
+  }
+  .sa-readiness-table td:empty { display: none; }
+  .sa-cell-input { max-width: 100%; }
+}

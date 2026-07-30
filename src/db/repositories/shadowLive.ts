@@ -97,6 +97,8 @@ export async function loadRiskPolicyValues(): Promise<RiskPolicyValue[]> {
       latest.set(r.policyKey, {
         key: r.policyKey as RiskPolicyValue["key"],
         value: num(r.value),
+        provenance: "ADMIN_APPROVED",
+        validForDays: r.validForDays ?? null,
         setBy: r.setBy,
         setAt: r.setAt,
         note: r.note
@@ -121,6 +123,8 @@ export async function loadRiskPolicyHistory(policyKey?: string, limit = 100) {
     return rows.map((r) => ({
       policyKey: r.policyKey,
       value: num(r.value),
+      provenance: r.provenance,
+      validForDays: r.validForDays ?? null,
       setBy: r.setBy,
       setAt: r.setAt,
       note: r.note
@@ -134,6 +138,8 @@ export async function recordRiskPolicy(input: {
   policyKey: string;
   value: number;
   setBy: string;
+  /** Chosen by the approver. Null means they stated no expiry. */
+  validForDays?: number | null;
   note?: string | null;
 }): Promise<RiskPolicyValue> {
   try {
@@ -144,6 +150,8 @@ export async function recordRiskPolicy(input: {
       id: randomUUID(),
       policyKey: input.policyKey,
       value: String(input.value),
+      provenance: "ADMIN_APPROVED",
+      validForDays: input.validForDays ?? null,
       setBy: input.setBy,
       setAt: now,
       note: input.note ?? null,
@@ -153,6 +161,8 @@ export async function recordRiskPolicy(input: {
     return {
       key: input.policyKey as RiskPolicyValue["key"],
       value: input.value,
+      provenance: "ADMIN_APPROVED",
+      validForDays: input.validForDays ?? null,
       setBy: input.setBy,
       setAt: now,
       note: row.note

@@ -1,0 +1,74 @@
+# =============================================================================
+# Automatic backup scheduler — TEMPLATE, DISABLED BY DEFAULT.
+#
+# This file is NOT installed and NOT active. Nothing in this repository
+# schedules anything, and no deployment step reads this file. Installing it
+# requires shell access to the production host and a deliberate decision by
+# whoever owns that host.
+#
+# Read docs/OPS-BACKUP-RUNBOOK.md before installing.
+# =============================================================================
+
+# ── Option A — systemd timer (preferred on the Ubuntu host) ──────────────────
+# Write these two units, then enable the timer. Adjust paths and the user.
+#
+# /etc/systemd/system/otc-backup.service
+# ---------------------------------------------------------------------------
+# [Unit]
+# Description=OTC desk PostgreSQL verified backup
+# After=docker.service
+# Requires=docker.service
+#
+# [Service]
+# Type=oneshot
+# User=REPLACE_WITH_DEPLOY_USER
+# WorkingDirectory=/REPLACE/WITH/REPO/PATH
+# Environment=OTC_BACKUP_DIR=/REPLACE/WITH/BACKUP/PATH
+# ExecStart=/usr/bin/env bash scripts/backup-production-db.sh
+# # A backup that cannot be restored is not a backup: rehearse the newest one.
+# ExecStartPost=/usr/bin/env bash -c 'newest=$(ls -1t "$OTC_BACKUP_DIR"/*.dump 2>/dev/null | head -1); [ -n "$newest" ] && bash scripts/restore-drill.sh "$newest"'
+#
+# [Install]
+# WantedBy=multi-user.target
+# ---------------------------------------------------------------------------
+#
+# /etc/systemd/system/otc-backup.timer
+# ---------------------------------------------------------------------------
+# [Unit]
+# Description=Run the OTC desk backup on a schedule
+#
+# [Timer]
+# # Choose your own cadence. No cadence is assumed here.
+# OnCalendar=REPLACE_WITH_SCHEDULE
+# Persistent=true
+# RandomizedDelaySec=300
+#
+# [Install]
+# WantedBy=timers.target
+# ---------------------------------------------------------------------------
+#
+# Enable ONLY when you have decided to:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now otc-backup.timer
+#   systemctl list-timers otc-backup.timer
+#
+# Disable again:
+#   sudo systemctl disable --now otc-backup.timer
+
+# ── Option B — cron (if systemd is unavailable) ──────────────────────────────
+# Add with `crontab -e` as the deploy user. Replace the schedule and paths.
+#
+# REPLACE_WITH_SCHEDULE cd /REPLACE/WITH/REPO/PATH && OTC_BACKUP_DIR=/REPLACE/WITH/BACKUP/PATH \
+#   bash scripts/backup-production-db.sh >> /REPLACE/WITH/LOG/PATH/backup.log 2>&1
+#
+# Note: the backup script writes nothing sensitive to stdout, but the log file
+# should still be root- or deploy-user-owned with 0600 permissions.
+
+# ── Health gate for the scheduler ────────────────────────────────────────────
+# Have the scheduler react to `pnpm ops:check` exit codes rather than to text:
+#   0 healthy · 10 database · 11 stale collector · 12 failed cycles
+#   13 duplicate keys · 14 backup failure · 15 paper reconciliation · 16 migrations
+#
+# There is deliberately no notification integration here: no webhook URL, no bot
+# token, no SMTP credential. Wire the exit code into whatever the desk already
+# uses for alerting, on the host, outside this repository.

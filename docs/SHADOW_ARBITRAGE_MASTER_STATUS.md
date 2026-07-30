@@ -888,3 +888,158 @@ key-permission checklist, incident runbook and rollback procedure.
 12/12 suites green, 375 assertions, 0 failures · isolated standalone build
 succeeds and emits the `live-readiness` route · collector, paper and capital
 modules byte-identical to v4.9.1; observation and paper sessions untouched.
+
+---
+
+## 18. Phase 7A.1 — Readiness hardening (branch `shadow-phase7a1-readiness-hardening`, not merged)
+
+Built on v4.10.0. **Not merged, not tagged, not deployed.**
+
+**Invented thresholds removed.** `MIN_PAPER_CYCLES = 500` and
+`MIN_PAPER_TRADES = 20` are gone. The readiness engine now contains no numeric
+minimum at all — a test scans the source for `500`, for `const MIN_… = <number>`
+and for any `?? <number>` fallback, and asserts none exist.
+
+**Six new required-but-unset evidence policies:** `min_observation_duration_days`,
+`min_successful_cycles`, `min_paper_fills`, `max_paper_failures`,
+`max_duplicate_idempotency_keys`, `max_reconciliation_mismatches`. No numeric
+value is chosen anywhere; policies carry a `category` of RISK or EVIDENCE and
+eighteen are now required in total. Unset means BLOCKED, and **zero is an
+explicit choice** — the duplicate-key tolerance must be stated, not assumed.
+
+**New gate `reconciliation_integrity`** checks the existing paper ledger
+read-only (`cashPnl − sellFeeValue === economicNetPnl`, and a fill must carry the
+balances it produced). An unmeasured ledger blocks; twelve gates in total.
+
+**Provenance and expiry.** Each policy value records `ADMIN_APPROVED`
+provenance, approver, approval date and an approver-chosen validity period. The
+expiry is derived from that period — the code never picks a duration. **An
+expired policy is treated exactly like an unset one.** Storage stays append-only;
+migration `0009` adds two nullable/defaulted columns to the existing table (no
+drops, no type changes, no inserts), and existing rows keep their meaning.
+
+**RTL layout.** All readiness tables use a fixed layout with explicit column
+widths, `overflow-wrap: anywhere`, `word-break: break-word`, `vertical-align:
+top` and RTL-safe `text-align: start`. Tablet (≤1024px) drops optional columns
+instead of squeezing cells; mobile (≤720px) stacks every row into labelled lines,
+so columns cannot overlap because there are no columns. A test asserts every
+table opts into the style, every `<td>` carries a `data-label`, and the CSS
+contains each wrapping and media rule.
+
+**Unchanged:** `LIVE_EXECUTION_IMPLEMENTED` is still a compile-time false with no
+environment read in any live module; `effectiveState` is still `DISARMED` with
+all gates passing; collector, runner, instrumentation, paper modules, paper
+repository, capital engine and config are byte-identical to v4.10.0.
+
+**Verification:** typecheck clean · ESLint 0 errors (17 pre-existing warnings) ·
+12/12 suites green, 383 assertions, 0 failures · isolated standalone build OK.
+
+---
+
+## 19. Phase 7A.2 — Production hardening (branch `shadow-phase7a2-production-hardening`, not merged)
+
+Backend/ops only, on top of `35451fb`. **Not merged, not deployed.** No UI or CSS
+change. No collector or Paper runtime change — the diff against `35451fb` for
+`src/lib/shadowArbitrage/` and both shadow repositories is empty.
+
+**Audit first.** Four ops scripts already existed. Nothing new was duplicated:
+`backup-production-db.sh` was hardened as the canonical path, `pg-backup.sh`
+was demoted to a documented legacy convenience, and `deploy-production.sh` and
+`pg-restore.sh` were left alone.
+
+**Probes.** `/api/health/live` (process only) and `/api/health/ready`
+(database reachable, every migration applied, collector lease held with a fresh
+heartbeat). Unauthenticated by necessity and deliberately thin: check names and
+short details only — a test asserts the payload contains no URL, credential,
+worker id or database string. Full diagnostics stay admin-only. Both share one
+module with `ops:check` rather than becoming a second health system.
+
+**Backup hardening.** Dump written to `*.dump.partial` and renamed only after
+`pg_restore --list` succeeds, so an interrupted run leaves nothing that looks
+finished; a trap removes the partial. SHA-256 sidecar plus `meta.json` written
+after publication. Existing artefacts are never overwritten. `set +x` and
+`umask 077`; no password variable is handled at all.
+
+**Restore drill.** `scripts/restore-drill.sh` verifies the checksum and the TOC
+*before* creating anything, then restores into `otc_restore_drill_<ts>_<pid>` —
+a name generated internally, never taken from the caller, re-validated against a
+strict pattern before every statement, and refused if it lacks the prefix or
+matches the live or a system database. It verifies migrations, row counts,
+`observation.id`, the Paper session and status, non-negative balances, ledger
+idempotency and paper PnL reconciliation, then drops only the drill database
+(including on interrupt). The live database is never connected to.
+
+**Scheduling.** `scripts/backup-scheduler.template` is fully commented and
+inactive, proposes no cadence, and contains no URL or credential — asserted by a
+test that also checks `deploy-production.sh` never installs it.
+`docs/OPS-BACKUP-RUNBOOK.md` covers backup, drill, scheduling, retention,
+monitoring and probes.
+
+**Storage report.** `pnpm ops:storage` reports rows, oldest/newest record and
+size per Shadow table plus observed growth per day. Every statement is a SELECT
+— a test strips comments and asserts no `DELETE`/`DROP`/`TRUNCATE`/`ALTER` is
+executed. `--retention` is dry-run only and refuses to assume a window.
+
+**Ops check.** `pnpm ops:check` exits 0/10/11/12/13/14/15/16 for healthy,
+database, stale collector, failed cycles, duplicate keys, backup, paper
+reconciliation and pending migrations. An unmeasured ledger fails rather than
+passes; an unset backup-age limit reports "not checked" instead of passing
+silently. No webhook, token or notification integration exists.
+
+**Verification:** typecheck clean · ESLint 0 errors · 13/13 suites green,
+399 assertions, 0 failures (new `test-ops-hardening` covers outage, pending
+migrations, stale lease, restart continuity, backup corruption, restore
+mismatch, template inactivity and credential absence) · isolated standalone
+build OK. `LIVE_EXECUTION_IMPLEMENTED` remains a compile-time false; no
+migration was added.
+
+### Requires production-host access (not done here)
+
+* Installing the scheduler template and choosing a cadence.
+* Switching the Compose healthcheck to `/api/health/ready` (documented, not
+  committed into the running Compose file — it changes restart behaviour).
+* Running the first real backup, checksum verification and restore drill against
+  production data.
+* Setting `OPS_MAX_BACKUP_AGE_HOURS` and wiring `ops:check` exit codes into the
+  desk's existing alerting.
+
+---
+
+## 20. v4.11.0 — Phase 7A.2 released; application-level infrastructure FROZEN
+
+Merged `shadow-phase7a2-production-hardening` (`edadbb9`) into main with
+`--no-ff`. Pre-merge verification, all confirmed on the merged tree:
+
+* migration `0009` is two `ADD COLUMN IF NOT EXISTS` statements and nothing else
+  — zero drops, deletes, inserts, column alterations or renames;
+* `LIVE_EXECUTION_IMPLEMENTED` is still a compile-time `false` and no module
+  under `live/` reads an environment variable;
+* collector, runner, instrumentation, adapters, paper modules, paper repository,
+  capital engine and config are byte-identical to v4.10.0 — the observation and
+  Paper runtime are untouched;
+* the changed source contains no credential value, no exchange host, no
+  authenticated call and no order or transfer function. The only URLs are
+  `example.test` loopback fixtures in tests and same-origin admin fetches in the
+  readiness panel.
+
+### Deferred by the desk owner — not done, not blockers
+
+Recorded here so they are never mistaken for completed work. All four are
+host-side activation of code that is already shipped and tested:
+
+1. Real production backup and isolated restore drill.
+2. Backup scheduler installation (intended cadence: daily 03:00 Asia/Tehran).
+3. Switching the running Compose healthcheck to `/api/health/ready`.
+4. `OPS_MAX_BACKUP_AGE_HOURS=36` and wiring `ops:check` exit codes into the
+   desk's existing internal admin alerting.
+
+No external notification credential, webhook or e-mail token exists anywhere in
+the repository, and none is required for the deferred work.
+
+### Freeze
+
+With v4.11.0 the **application-level infrastructure is frozen**: probes, backup
+tooling, restore drill, storage reporting, ops check, readiness engine, risk and
+evidence policies, and the guarded live-execution architecture are complete.
+Further work is host-side activation or a new phase, not more application
+plumbing. Phase 7B has not started.

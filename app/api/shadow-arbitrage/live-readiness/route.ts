@@ -10,7 +10,11 @@ import {
   loadLatestSourceSnapshots,
   loadRunStats
 } from "@/db/repositories/shadowArbitrage";
-import { getActivePaperSession, loadPaperStats } from "@/db/repositories/shadowPaper";
+import {
+  getActivePaperSession,
+  loadPaperLedger,
+  loadPaperStats
+} from "@/db/repositories/shadowPaper";
 import {
   loadAttestations,
   loadReadinessReviews,
@@ -151,6 +155,22 @@ async function buildReport() {
 
   const paperStats = paperSession ? await loadPaperStats(paperSession.id) : null;
 
+  // Read-only ledger integrity check over rows Phase 6 already wrote. A fill
+  // must satisfy cashPnl - sellFeeValue == economicNetPnl and must carry the
+  // balances it produced; anything else is a mismatch. Null when unmeasurable.
+  let reconciliationMismatches: number | null = null;
+  if (paperSession) {
+    const fills = await loadPaperLedger(paperSession.id, { outcome: "FILLED", limit: 500 });
+    reconciliationMismatches = fills.filter((f) => {
+      const cash = f.cashPnlIrtToman;
+      const feeValue = f.sellFeeValueToman;
+      const economic = f.economicNetPnlToman;
+      if (cash === null || feeValue === null || economic === null) return true;
+      if (cash - feeValue !== economic) return true;
+      return f.balancesAfter.length === 0;
+    }).length;
+  }
+
   const report = evaluateReadiness({
     observation: observation
       ? {
@@ -165,6 +185,7 @@ async function buildReport() {
           running: Boolean(!worker.stale && worker.leaseHeld),
           heartbeatStale: Boolean(worker.stale),
           duplicateIdempotencyKeys: runStats.duplicateIdempotencyKeys,
+          successfulCycles: runStats.successfulRuns,
           lastCycleStatus: worker.lastCycleStatus
         }
       : null,
@@ -175,9 +196,11 @@ async function buildReport() {
           status: paperSession.status,
           cyclesEvaluated: paperSession.cyclesEvaluated,
           tradesExecuted: paperStats?.filled ?? 0,
+          failedDecisions: paperStats?.skipped ?? 0,
           economicNetPnlToman: paperStats?.economicNetPnlToman ?? 0
         }
       : null,
+    reconciliationMismatches,
     venueStates,
     policies,
     attestations,
@@ -263,10 +286,21 @@ export async function POST(request: Request) {
     const value = Number(body.value);
     const check = validatePolicyValue(policyKey, value);
     if (!check.ok) return bad(check.messageFa);
+    // The approver states the validity period; the code never picks one.
+    const rawValidity = body.validForDays;
+    let validForDays: number | null = null;
+    if (rawValidity !== undefined && rawValidity !== null) {
+      const n = Number(rawValidity);
+      if (!Number.isFinite(n) || n < 1 || n > 3_650) {
+        return bad("مدت اعتبار باید بین ۱ تا ۳۶۵۰ روز باشد یا اصلاً تعیین نشود");
+      }
+      validForDays = Math.round(n);
+    }
     await recordRiskPolicy({
       policyKey,
       value,
       setBy: session.u ?? "admin",
+      validForDays,
       note: typeof body.note === "string" ? body.note.slice(0, 500) : null
     });
   }

@@ -59,6 +59,22 @@ function prepareSql(sqlText: string, pglite: boolean): string {
   return out;
 }
 
+/**
+ * Read-only migration status: what is on disk versus what has been applied.
+ * Used by the readiness probe; it never applies anything.
+ */
+export async function migrationStatus(): Promise<{
+  onDisk: string[];
+  applied: string[];
+  pending: string[];
+}> {
+  const dir = path.join(process.cwd(), "drizzle");
+  const onDisk = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
+  const appliedSet = await getApplied();
+  const applied = onDisk.filter((f) => appliedSet.has(f));
+  return { onDisk, applied, pending: onDisk.filter((f) => !appliedSet.has(f)) };
+}
+
 export async function runMigrations(): Promise<{ applied: string[]; skipped: string[] }> {
   const url = getDatabaseUrl();
   const pglite = isPgliteUrl(url);

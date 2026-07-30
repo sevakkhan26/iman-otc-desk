@@ -10,12 +10,24 @@
 #   1. custom-format dump  (pg_dump -Fc)  → restorable with pg_restore
 #   2. plain schema-only dump             → easy diffing
 #   3. per-table row counts before the migration
-#   4. verifies the dump is readable (pg_restore --list)
-#   5. prints the exact restore command
+#   4. verifies the dump is readable (pg_restore --list) and checksums it
+#   5. publishes the backup atomically and prints the exact restore command
 #
-# It never writes to the database, never drops anything, and never deletes an
-# existing backup.
+# It never writes to the database, never drops anything, and never deletes or
+# overwrites an existing backup.
+#
+# Hardening (v7A.2):
+#   * the dump is written to a .partial file and renamed only after every
+#     verification passes, so a crashed run can never leave a file that looks
+#     like a complete backup;
+#   * a SHA-256 checksum is written next to each artefact;
+#   * the timestamp is checked for collision and the run aborts rather than
+#     overwrite anything;
+#   * tracing is disabled and no credential is ever echoed.
 set -euo pipefail
+# Never trace: a traced pg_dump line can leak a connection string.
+set +x
+umask 077
 
 CONTAINER="${OTC_PG_CONTAINER:-otc-postgres}"
 DB_NAME="${POSTGRES_DB:-otc_desk}"
@@ -36,21 +48,44 @@ fi
 
 mkdir -p "${OUT_DIR}"
 
+# Never overwrite: if this exact stamp already exists, stop rather than clobber.
+for existing in "${PREFIX}".*; do
+  [ -e "${existing}" ] && die "backup artefact already exists: ${existing} — refusing to overwrite"
+done
+
+# Atomic publication: everything is written here and renamed only on success.
+PARTIAL="${PREFIX}.dump.partial"
+cleanup_partial() {
+  # A failed run leaves nothing that could be mistaken for a good backup.
+  [ -e "${PARTIAL}" ] && rm -f "${PARTIAL}"
+}
+trap cleanup_partial EXIT
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | cut -d' ' -f1
+  else
+    echo "unavailable"
+  fi
+}
+
 log "container=${CONTAINER} db=${DB_NAME} user=${DB_USER}"
 log "readiness check"
 docker exec "${CONTAINER}" pg_isready -U "${DB_USER}" -d "${DB_NAME}" >/dev/null \
   || die "database is not accepting connections"
 
-log "1/5 custom-format dump → ${PREFIX}.dump"
+log "1/6 custom-format dump → ${PARTIAL}"
 docker exec "${CONTAINER}" pg_dump -U "${DB_USER}" -d "${DB_NAME}" -Fc --no-owner --no-privileges \
-  > "${PREFIX}.dump"
-[ -s "${PREFIX}.dump" ] || die "dump is empty — aborting"
+  > "${PARTIAL}"
+[ -s "${PARTIAL}" ] || die "dump is empty — aborting"
 
-log "2/5 schema-only dump → ${PREFIX}.schema.sql"
+log "2/6 schema-only dump → ${PREFIX}.schema.sql"
 docker exec "${CONTAINER}" pg_dump -U "${DB_USER}" -d "${DB_NAME}" --schema-only --no-owner \
   > "${PREFIX}.schema.sql"
 
-log "3/5 row counts → ${PREFIX}.rowcounts.txt"
+log "3/6 row counts → ${PREFIX}.rowcounts.txt"
 docker exec -i "${CONTAINER}" psql -U "${DB_USER}" -d "${DB_NAME}" -At -F$'\t' <<'SQL' \
   > "${PREFIX}.rowcounts.txt"
 SELECT
@@ -65,13 +100,31 @@ WHERE c.relkind = 'r' AND n.nspname = 'public'
 ORDER BY c.relname;
 SQL
 
-log "4/5 verifying the dump is readable"
-docker exec -i "${CONTAINER}" pg_restore --list < "${PREFIX}.dump" > "${PREFIX}.toc.txt" \
+log "4/6 verifying the dump is readable"
+docker exec -i "${CONTAINER}" pg_restore --list < "${PARTIAL}" > "${PREFIX}.toc.txt" \
   || die "pg_restore could not read the dump — DO NOT DEPLOY"
 TOC_LINES="$(wc -l < "${PREFIX}.toc.txt" | tr -d ' ')"
 [ "${TOC_LINES}" -gt 5 ] || die "dump table of contents looks empty — DO NOT DEPLOY"
 
-log "5/5 done"
+log "5/6 publishing atomically and checksumming"
+# Only now does a file named like a finished backup appear.
+mv "${PARTIAL}" "${PREFIX}.dump"
+trap - EXIT
+DUMP_SHA="$(sha256_of "${PREFIX}.dump")"
+printf '%s  %s\n' "${DUMP_SHA}" "$(basename "${PREFIX}.dump")" > "${PREFIX}.dump.sha256"
+cat > "${PREFIX}.meta.json" <<META
+{
+  "createdAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "database": "${DB_NAME}",
+  "format": "pg_dump -Fc",
+  "bytes": $(wc -c < "${PREFIX}.dump" | tr -d ' '),
+  "sha256": "${DUMP_SHA}",
+  "tocEntries": ${TOC_LINES},
+  "verified": true
+}
+META
+
+log "6/6 done"
 printf '\n'
 log "files:"
 ls -lh "${PREFIX}".* | sed 's/^/    /'
@@ -85,4 +138,8 @@ cat <<EOF
       --clean --if-exists < ${PREFIX}.dump
 EOF
 printf '\n'
+log "checksum: ${DUMP_SHA}"
+log "verify later with: shasum -a 256 -c ${PREFIX}.dump.sha256"
+log "restore DRILL (isolated, never touches production):"
+log "  bash scripts/restore-drill.sh ${PREFIX}.dump"
 log "backup complete — safe to deploy the additive Shadow migrations"

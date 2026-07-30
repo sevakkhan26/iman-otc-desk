@@ -16,6 +16,13 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
+  // Container probes must answer without a session — Docker cannot log in.
+  // They expose only check names and short non-sensitive details; every real
+  // diagnostic stays behind the admin gate at /api/shadow-arbitrage/health.
+  if (pathname === "/api/health/live" || pathname === "/api/health/ready") {
+    return NextResponse.next();
+  }
+
   // External market-data APIs — Bearer API key only (no panel session)
   if (pathname === "/api/v1" || pathname.startsWith("/api/v1/")) {
     return NextResponse.next();

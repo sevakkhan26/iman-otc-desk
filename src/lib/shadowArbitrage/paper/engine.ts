@@ -24,24 +24,48 @@ import {
   type VenueBalance
 } from "@/lib/shadowArbitrage/paper/broker";
 import { PAPER_REJECTION_FA } from "@/lib/shadowArbitrage/paper/broker";
+import {
+  normalizeReasons,
+  primaryReason,
+  reasonLabel,
+  reasonsFromOpportunity,
+  type PaperReasonCode
+} from "@/lib/shadowArbitrage/paper/reasons";
 import type {
   NormalizedSourceSnapshot,
   ShadowOpportunity,
   ShadowSourceId
 } from "@/lib/shadowArbitrage/types";
 
-export type PaperSkipCode =
-  | PaperRejectionCode
-  | "already_executed"
-  | "blocked_opportunity"
-  | "size_not_selected";
+/**
+ * Every reason is exact. `PaperRejectionCode` values from the broker are a
+ * subset of `PaperReasonCode`, so a broker rejection keeps its own precise
+ * cause rather than being flattened into a generic message.
+ */
+export type PaperSkipCode = PaperReasonCode;
 
-export const PAPER_SKIP_FA: Record<string, string> = {
-  ...PAPER_REJECTION_FA,
-  already_executed: "این فرصت قبلاً یک‌بار در همین نشست اجرا شده است",
-  blocked_opportunity: "فرصت در همین چرخه مسدود بوده است",
-  size_not_selected: "حجم بهتری برای همین مسیر انتخاب شد"
+export const PAPER_SKIP_FA: Record<string, string> = { ...PAPER_REJECTION_FA };
+
+/** Broker rejection codes translated to the shared exact-reason vocabulary. */
+const FROM_BROKER: Record<PaperRejectionCode, PaperReasonCode> = {
+  same_venue: "same_venue",
+  venue_not_executable: "venue_not_executable",
+  fee_unknown: "fee_unknown",
+  fee_settlement_unknown: "fee_settlement_unknown",
+  fee_settlement_unsupported: "fee_settlement_unsupported",
+  stale_market_data: "stale_market_data",
+  insufficient_depth: "insufficient_depth",
+  not_net_positive: "net_non_positive",
+  insufficient_irt: "insufficient_irt",
+  insufficient_usdt: "insufficient_usdt",
+  negative_balance_guard: "negative_balance_guard",
+  no_balance_record: "no_balance_record",
+  mark_price_unavailable: "mark_price_unavailable"
 };
+
+export function fromBrokerCode(code: PaperRejectionCode): PaperReasonCode {
+  return FROM_BROKER[code];
+}
 
 export type PaperCandidate = {
   lifecycleId: string;
@@ -62,7 +86,10 @@ export type PaperDecision =
   | {
       kind: "SKIP";
       candidate: PaperCandidate;
+      /** Deterministic primary cause. */
       code: PaperSkipCode;
+      /** Every cause that applied, canonically ordered. */
+      codes: PaperSkipCode[];
       reasonFa: string;
       requiredRebalance: {
         sourceId: ShadowSourceId;
@@ -190,12 +217,16 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
   const stateById = new Map(input.venueStates.map((v) => [v.sourceId as string, v]));
   const decisions: PaperDecision[] = [];
 
-  const skip = (candidate: PaperCandidate, code: PaperSkipCode): void => {
+  /** Records a skip with every exact cause, never a generic substitute. */
+  const skip = (candidate: PaperCandidate, causes: PaperReasonCode[]): void => {
+    const codes = normalizeReasons(causes);
+    const code = primaryReason(codes);
     decisions.push({
       kind: "SKIP",
       candidate,
       code,
-      reasonFa: PAPER_SKIP_FA[code] ?? code,
+      codes,
+      reasonFa: codes.map(reasonLabel).join(" · "),
       requiredRebalance: null
     });
   };
@@ -223,19 +254,45 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
   for (const c of raw) {
     const o = byId.get(c.lifecycleId);
     if (input.executedLifecycleIds.has(c.lifecycleId)) {
-      skip(c, "already_executed");
+      skip(c, ["lifecycle_already_processed"]);
       continue;
     }
+    const buyState = stateById.get(c.buySourceId);
+    const sellState = stateById.get(c.sellSourceId);
+
+    // Carry the upstream causes through verbatim — this is the whole point.
     if (!o || o.eligibility !== "EXECUTABLE_NOW" || o.blockedReasons.length > 0) {
-      skip(c, "blocked_opportunity");
+      const causes = o
+        ? reasonsFromOpportunity({
+            eligibility: o.eligibility,
+            blockedReasons: o.blockedReasons,
+            feeUnknown: o.feeUnknown,
+            buyFeeStale: buyState?.feeStale,
+            sellFeeStale: sellState?.feeStale
+          })
+        : ["market_data_missing" as PaperReasonCode];
+      skip(c, causes.length ? causes : ["market_data_missing"]);
       continue;
     }
-    if (!stateById.get(c.buySourceId)?.executable || !stateById.get(c.sellSourceId)?.executable) {
-      skip(c, "venue_not_executable");
+    if (!buyState?.executable || !sellState?.executable) {
+      // Say WHY the venue is not executable, not merely that it is not.
+      const causes: PaperReasonCode[] = [];
+      for (const st of [buyState, sellState]) {
+        if (!st || st.executable) continue;
+        if (st.capitalClass === "REFERENCE_ONLY") causes.push("reference_only");
+        else if (st.takerFeeBps === null || st.feeProvenance === "UNKNOWN") causes.push("fee_unknown");
+        else if (st.feeStale) causes.push("fee_stale");
+        else causes.push("account_not_ready");
+      }
+      skip(c, causes.length ? causes : ["venue_not_executable"]);
       continue;
     }
     if (o.feeUnknown || c.buyFeeBps === null || c.sellFeeBps === null) {
-      skip(c, "fee_unknown");
+      skip(c, ["fee_unknown"]);
+      continue;
+    }
+    if (buyState.feeStale || sellState.feeStale) {
+      skip(c, ["fee_stale"]);
       continue;
     }
     // Settlement is per venue AND per side: the buy side of one venue and the
@@ -244,13 +301,14 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       !settlementUsable(settlementFor(c.buySourceId, "buy")) ||
       !settlementUsable(settlementFor(c.sellSourceId, "sell"))
     ) {
-      skip(c, "fee_settlement_unknown");
+      skip(c, ["fee_settlement_unknown"]);
       continue;
     }
     const buySnap = sourceById.get(c.buySourceId);
     const sellSnap = sourceById.get(c.sellSourceId);
     if (!snapshotUsable(buySnap) || !snapshotUsable(sellSnap)) {
-      skip(c, "stale_market_data");
+      const unhealthy = [buySnap, sellSnap].some((x) => x?.health === "unavailable");
+      skip(c, unhealthy ? ["source_unhealthy"] : ["stale_market_data"]);
       continue;
     }
     if (
@@ -258,11 +316,11 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       !depthUsable(sellSnap, c.sizeUsdt, "sell") ||
       !SHADOW_TRADE_SIZES.includes(c.sizeUsdt as (typeof SHADOW_TRADE_SIZES)[number])
     ) {
-      skip(c, "insufficient_depth");
+      skip(c, ["insufficient_depth"]);
       continue;
     }
     if (c.netProfitToman <= 0) {
-      skip(c, "not_net_positive");
+      skip(c, ["net_non_positive"]);
       continue;
     }
     viable.push(c);
@@ -287,11 +345,13 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       slippageBufferToman: c.slippageBufferToman
     });
     if (!plan.ok) {
+      const code = fromBrokerCode(plan.code);
       decisions.push({
         kind: "SKIP",
         candidate: c,
-        code: plan.code,
-        reasonFa: plan.reasonFa,
+        code,
+        codes: [code],
+        reasonFa: reasonLabel(code),
         requiredRebalance: plan.requiredRebalance
       });
       continue;
@@ -301,7 +361,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
 
   // 3. One size per route, then a total order across the whole cycle.
   const { selected, dropped } = selectBestPerRoute(priced);
-  for (const d of dropped) skip(d.candidate, "size_not_selected");
+  for (const d of dropped) skip(d.candidate, ["size_not_selected"]);
 
   // 4. Apply in rank order against the evolving virtual book.
   let book: VenueBalance[] = input.balances.map((b) => ({ ...b }));
@@ -310,11 +370,13 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
   for (const { candidate: c, plan } of selected) {
     const applied = applyFill(plan, book);
     if (!applied.ok) {
+      const code = fromBrokerCode(applied.code);
       decisions.push({
         kind: "SKIP",
         candidate: c,
-        code: applied.code,
-        reasonFa: applied.reasonFa,
+        code,
+        codes: [code],
+        reasonFa: reasonLabel(code),
         requiredRebalance: applied.requiredRebalance
       });
       continue;

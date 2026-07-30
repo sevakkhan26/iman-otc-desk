@@ -81,6 +81,12 @@ import {
   type VenueBalance
 } from "../src/lib/shadowArbitrage/paper/broker.ts";
 import {
+  normalizeReasons,
+  primaryReason,
+  reasonKey,
+  reasonsFromOpportunity
+} from "../src/lib/shadowArbitrage/paper/reasons.ts";
+import {
   balancesFromAllocations,
   evaluateCycle,
   rankPricedCandidates,
@@ -2260,7 +2266,7 @@ await test("Phase 6 executes a lifecycle at most once, however long it stays ope
   assert.equal(second.executedCount, 0);
   assert.equal(second.decisions[0].kind, "SKIP");
   if (second.decisions[0].kind === "SKIP") {
-    assert.equal(second.decisions[0].code, "already_executed");
+    assert.equal(second.decisions[0].code, "lifecycle_already_processed");
   }
   assert.deepEqual(second.balancesAfter, first.balancesAfter, "a skipped cycle changes nothing");
 });
@@ -2314,7 +2320,9 @@ await test("Phase 6 skips stale data, thin depth and ineligible venues with a re
     balances: [...book, { sourceId: "bitpin" as ShadowSourceId, irtToman: 10_000_000, usdtMicros: usdtToMicros(100) }]
   });
   assert.equal(ineligible.executedCount, 0);
-  assert.ok(ineligible.decisions.some((d) => d.kind === "SKIP" && d.code === "venue_not_executable"));
+  // The reason is the venue's ACTUAL problem — bitpin has no confirmed fee —
+  // not a generic "not executable".
+  assert.ok(ineligible.decisions.some((d) => d.kind === "SKIP" && d.code === "fee_unknown"));
 
   // A blocked opportunity is never executed regardless of the book.
   const blockedOpp = evaluateCycle({
@@ -2325,7 +2333,8 @@ await test("Phase 6 skips stale data, thin depth and ineligible venues with a re
     balances: book
   });
   assert.equal(blockedOpp.executedCount, 0);
-  assert.ok(blockedOpp.decisions.some((d) => d.kind === "SKIP" && d.code === "blocked_opportunity"));
+  // The upstream cause survives verbatim instead of becoming a generic message.
+  assert.ok(blockedOpp.decisions.some((d) => d.kind === "SKIP" && d.code === "fee_unknown"));
 });
 
 await test("Phase 6 blocks on thin inventory and reports the required rebalance", () => {
@@ -2436,6 +2445,119 @@ await test("Phase 6 never runs on a venue outside the nine Shadow sources", () =
   });
   assert.equal(result.executedCount, 0);
   assert.ok(result.decisions.some((d) => d.kind === "SKIP" && d.code === "venue_not_executable"));
+});
+
+
+/* ── v4.9.1 — exact decision reasons ─────────────────────────────────────── */
+
+await test("v4.9.1 upstream blocking reasons are propagated, never genericised", () => {
+  const cases: Array<[BlockedReasonCode, string]> = [
+    ["account_required", "account_not_ready"],
+    ["fee_unknown", "fee_unknown"],
+    ["non_positive_net", "net_non_positive"],
+    ["insufficient_buy_depth", "insufficient_depth"],
+    ["insufficient_sell_depth", "insufficient_depth"],
+    ["depth_unverified", "insufficient_depth"],
+    ["reference_only", "reference_only"],
+    ["source_unhealthy", "source_unhealthy"],
+    ["source_not_certified", "source_unhealthy"],
+    ["stale_buy_source", "stale_market_data"],
+    ["rate_limited", "rate_limited"],
+    ["units_ambiguous", "market_data_unverified"],
+    ["same_venue", "same_venue"]
+  ];
+  for (const [upstream, expected] of cases) {
+    const out = reasonsFromOpportunity({
+      eligibility: "BLOCKED",
+      blockedReasons: [upstream],
+      feeUnknown: false
+    });
+    assert.ok(out.includes(expected as never), `${upstream} must map to ${expected}`);
+    assert.equal(out.includes("blocked_opportunity" as never), false, "no generic reason survives");
+  }
+
+  // Stale fee evidence is its own cause, distinct from an unknown fee.
+  const stale = reasonsFromOpportunity({
+    eligibility: "EXECUTABLE_NOW",
+    blockedReasons: [],
+    feeUnknown: false,
+    sellFeeStale: true
+  });
+  assert.deepEqual(stale, ["fee_stale"]);
+
+  // Eligibility alone is enough to name a cause.
+  assert.deepEqual(
+    reasonsFromOpportunity({ eligibility: "REFERENCE_ONLY", blockedReasons: [], feeUnknown: false }),
+    ["reference_only"]
+  );
+  assert.deepEqual(
+    reasonsFromOpportunity({ eligibility: "ACCOUNT_REQUIRED", blockedReasons: [], feeUnknown: false }),
+    ["account_not_ready"]
+  );
+});
+
+await test("v4.9.1 multi-cause candidates get a deterministic primary reason", () => {
+  const codes = normalizeReasons(["net_non_positive", "account_not_ready", "insufficient_depth"]);
+  // Most fundamental first: the account has to exist before depth matters.
+  assert.equal(primaryReason(codes), "account_not_ready");
+  assert.deepEqual(codes, ["account_not_ready", "insufficient_depth", "net_non_positive"]);
+
+  // Order of the input never changes the outcome.
+  assert.equal(
+    primaryReason(normalizeReasons(["insufficient_depth", "account_not_ready", "net_non_positive"])),
+    "account_not_ready"
+  );
+  assert.equal(reasonKey("SKIPPED", codes), reasonKey("SKIPPED", [...codes].reverse()));
+  assert.notEqual(reasonKey("SKIPPED", codes), reasonKey("SKIPPED", ["fee_unknown"]));
+});
+
+await test("v4.9.1 the engine reports the exact upstream cause on every skip", () => {
+  const blocked = evaluateCycle({
+    opportunities: [
+      paperOpportunity({
+        id: "lc-blocked",
+        eligibility: "ACCOUNT_REQUIRED",
+        blockedReasons: ["account_required", "insufficient_buy_depth"] as BlockedReasonCode[]
+      })
+    ],
+    sources: paperSources(),
+    venueStates: paperReadiness(),
+    executedLifecycleIds: new Set(),
+    balances: paperBalances()
+  });
+  const skip = blocked.decisions.find((d) => d.kind === "SKIP");
+  assert.ok(skip && skip.kind === "SKIP");
+  if (skip?.kind === "SKIP") {
+    assert.equal(skip.code, "account_not_ready", "the primary cause is the exact upstream one");
+    assert.deepEqual(skip.codes, ["account_not_ready", "insufficient_depth"]);
+    assert.ok(skip.reasonFa.includes("حساب"), "the Persian text names the real cause");
+    assert.equal(/مسدود بوده/.test(skip.reasonFa), false, "no generic wording");
+  }
+
+  // A venue that is unusable says WHY, not merely that it is unusable.
+  const refOnly = evaluateCycle({
+    opportunities: [
+      paperOpportunity({ id: "lc-ref", sellSourceId: "arzinja", routeKey: "nobitex->arzinja@25" })
+    ],
+    sources: [...paperSources(), mockSource("arzinja", "ارزینجا", 103_000, 102_000)],
+    venueStates: paperReadiness(),
+    executedLifecycleIds: new Set(),
+    balances: [...paperBalances(), { sourceId: "arzinja" as ShadowSourceId, irtToman: 0, usdtMicros: 0 }]
+  });
+  assert.ok(
+    refOnly.decisions.some((d) => d.kind === "SKIP" && d.codes.includes("reference_only")),
+    "a reference-only venue is named as such"
+  );
+
+  // Already-processed uses its own precise code.
+  const done = evaluateCycle({
+    opportunities: [paperOpportunity({ id: "lc-done" })],
+    sources: paperSources(),
+    venueStates: paperReadiness(),
+    executedLifecycleIds: new Set(["lc-done"]),
+    balances: paperBalances()
+  });
+  assert.ok(done.decisions.some((d) => d.kind === "SKIP" && d.code === "lifecycle_already_processed"));
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

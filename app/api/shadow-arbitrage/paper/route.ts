@@ -13,9 +13,12 @@ import {
   getActivePaperSession,
   getPaperSession,
   listPaperSessions,
+  loadCandidateStates,
+  loadCycleSummaries,
   loadPaperBalances,
   loadPaperLedger,
   loadPaperStats,
+  loadReasonBreakdown,
   setPaperSessionStatus,
   type PaperSessionMode
 } from "@/db/repositories/shadowPaper";
@@ -84,23 +87,35 @@ function deriveValuationPrice(
   return Math.round(mids.length % 2 ? mids[mid] : (mids[mid - 1] + mids[mid]) / 2);
 }
 
-async function snapshot() {
+async function snapshot(reasonFilter: string | null = null) {
   const session = await getActivePaperSession();
   if (!session) {
     return {
       session: null,
       balances: [],
       trades: [],
-      skipped: [],
+      transitions: [],
+      candidates: [],
+      reasonBreakdown: [],
+      cycleSummaries: [],
       stats: null
     };
   }
-  const [balances, trades, skipped, stats] = await Promise.all([
-    loadPaperBalances(session.id),
-    loadPaperLedger(session.id, { outcome: "FILLED", limit: 200 }),
-    loadPaperLedger(session.id, { outcome: "SKIPPED", limit: 200 }),
-    loadPaperStats(session.id)
-  ]);
+  const [balances, trades, transitions, stats, reasonBreakdown, candidates, cycleSummaries] =
+    await Promise.all([
+      loadPaperBalances(session.id),
+      loadPaperLedger(session.id, { outcome: "FILLED", limit: 200 }),
+      // Only state transitions are stored now, so this list is already compact.
+      loadPaperLedger(session.id, { outcome: "SKIPPED", limit: 100 }),
+      loadPaperStats(session.id),
+      loadReasonBreakdown(session.id),
+      loadCandidateStates(session.id, {
+        reason: reasonFilter ?? undefined,
+        openOnly: true,
+        limit: 200
+      }),
+      loadCycleSummaries(session.id, 60)
+    ]);
 
   // Inventory drift: where the virtual book stands versus how it opened.
   const opening = new Map(
@@ -133,7 +148,10 @@ async function snapshot() {
       };
     }),
     trades,
-    skipped,
+    transitions,
+    candidates,
+    reasonBreakdown,
+    cycleSummaries,
     stats: {
       ...stats,
       feeUsdtTotal: microsToUsdt(stats.feeUsdtMicrosTotal),
@@ -158,11 +176,13 @@ function envelope(extra: Record<string, unknown>) {
   };
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   const session = await requireAdminSession();
   if (!isSession(session)) return session;
 
-  const [snap, history] = await Promise.all([snapshot(), listPaperSessions(20)]);
+  // Optional server-side filter so a large session never ships every candidate.
+  const reason = new URL(request.url).searchParams.get("reason");
+  const [snap, history] = await Promise.all([snapshot(reason), listPaperSessions(20)]);
   return new NextResponse(JSON.stringify(envelope({ ...snap, history })), {
     status: 200,
     headers: SHADOW_NO_STORE

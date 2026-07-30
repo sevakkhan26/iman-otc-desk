@@ -754,3 +754,80 @@ succeeds and emits the
 30-second cadence unchanged; `observation.id` is read only.
 
 **Phase 7 has not started.**
+
+---
+
+## 16. v4.9.1 — exact decision reasons and bounded paper-event volume
+
+The live v4.9.0 session exposed an acceptance problem, not a correctness one: one
+cycle recorded **242 rejected candidates, all with the same generic reason**
+("opportunity was blocked in this cycle"). Persisting that every 30 seconds
+projects to roughly **697,000 rejection rows per day**, and the generic wording
+destroyed the only evidence that would have made a rejection actionable.
+
+### 1. Exact reasons, never a generic substitute
+
+`src/lib/shadowArbitrage/paper/reasons.ts` defines one vocabulary and maps every
+upstream `BlockedReasonCode` onto it — `account_not_ready`, `fee_unknown`,
+`fee_stale`, `net_non_positive`, `insufficient_depth`, `reference_only`,
+`source_unhealthy`, `stale_market_data`, `market_data_missing`,
+`market_data_unverified`, `rate_limited`, `same_venue`,
+`mark_price_unavailable`, `insufficient_irt`, `insufficient_usdt`,
+`lifecycle_already_processed`, `size_not_selected` and the settlement codes.
+A candidate carrying several causes keeps **all** of them plus a deterministic
+primary chosen by a fixed priority order, so the same set of causes always
+yields the same primary and the compact counts stay stable. A venue that is not
+executable now reports *why* (no confirmed fee, stale fee, reference-only,
+account missing) instead of "not executable".
+
+### 2. Detailed events only on change
+
+New table `shadow_paper_candidate_state` holds one row per (session, lifecycle)
+with a `decisionKey` = `outcome:sorted reason codes`. An immutable ledger row is
+written only when that key is new (`FIRST_SEEN`), changes (`CHANGED`), the
+candidate fills (`FILLED`), or it leaves the market (`CLOSED`, written once).
+An unchanged blocked candidate only increments `occurrences` on its state row.
+
+### 3. One compact summary per cycle
+
+New table `shadow_paper_cycle_summaries` stores per cycle: candidates evaluated,
+filled, skipped, detailed rows actually written, and `reasonCounts` grouped by
+exact reason. Per-cycle volume is now constant instead of proportional to the
+candidate count — about 2,880 summary rows per day regardless of market breadth.
+
+### 4. UI
+
+Grouped block reasons with candidate and observation counts, a one-click filter
+per reason (applied server-side so a large session never ships every candidate),
+an open-candidates table showing primary and full reason lists with observation
+counts, a recent state-transitions table labelled by event type, a compact
+cycle-summary table, and the unchanged per-trade calculation drawer for
+candidates that reached pricing.
+
+### 5. Proof
+
+A test runs **100 identical cycles with 12 unchanged blocked candidates** and
+asserts: 12 detailed rows in total (all `FIRST_SEEN`), zero detail rows on every
+cycle after the first, exactly 100 compact summaries, `occurrences = 100` per
+candidate, and exact grouped reasons. The old design would have written 1,200
+rows for the same input. A second test proves a changed reason writes exactly
+one `CHANGED` row, a departure writes exactly one `CLOSED` row, and a further
+quiet cycle writes nothing but its summary.
+
+### Migration and operational safety
+
+`drizzle/0007_shadow_paper_decision_events.sql` is strictly additive: two new
+tables plus two new nullable/defaulted columns on the existing ledger. No drops,
+no column type changes, no deletes — every existing record is preserved.
+Deployment still cannot create, start or resume a session: `createPaperSession`
+and `setPaperSessionStatus` are called only from the admin-authenticated route,
+and session status lives in the database, so a **PAUSED** session stays paused
+across restarts. Collector, instrumentation, `observation.id`, cadence and the
+virtual balances are untouched.
+
+### Verification
+
+typecheck clean · ESLint 0 errors (17 pre-existing warnings) · 12/12 suites
+green, 344 assertions, 0 failures · isolated standalone build succeeds.
+
+**Phase 7 has not started.**

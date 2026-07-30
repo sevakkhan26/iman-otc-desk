@@ -11,11 +11,13 @@
  * serialization wrapper.
  */
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { asDbError, getDbAsync } from "@/db/client";
 import { runSerialized } from "@/db/repositories/shadowArbitrage";
 import {
   shadowPaperBalances,
+  shadowPaperCandidateState,
+  shadowPaperCycleSummaries,
   shadowPaperLedger,
   shadowPaperSessions
 } from "@/db/schema";
@@ -53,6 +55,8 @@ export type PaperBalanceRow = {
 
 export type PaperLedgerRow = {
   id: string;
+  eventType: string | null;
+  reasonCodes: string[];
   sessionId: string;
   runId: string | null;
   lifecycleId: string;
@@ -373,22 +377,58 @@ export type PaperSkipRecord = {
   buySourceId: string;
   sellSourceId: string;
   sizeUsdt: number;
+  /** Deterministic primary cause — never a generic message. */
   rejectionCode: string;
+  /** Every exact cause that applied, canonically ordered. */
+  reasonCodes: string[];
   rejectionReason: string;
   requiredRebalance: string | null;
 };
 
+export type PaperCandidateStateRow = {
+  lifecycleId: string;
+  routeKey: string;
+  buySourceId: string;
+  sellSourceId: string;
+  sizeUsdt: number;
+  decisionKey: string;
+  outcome: string;
+  primaryReason: string | null;
+  reasonCodes: string[];
+  occurrences: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastChangedAt: string;
+  closedAt: string | null;
+};
+
+export type PaperCycleSummaryRow = {
+  id: string;
+  occurredAt: string;
+  candidatesEvaluated: number;
+  filled: number;
+  skipped: number;
+  detailedEventsWritten: number;
+  reasonCounts: Record<string, number>;
+};
+
+function decisionKeyOf(outcome: string, reasonCodes: string[]): string {
+  return `${outcome}:${[...reasonCodes].sort().join(",")}`;
+}
+
 /**
  * Commit one cycle's decisions.
  *
- * Fills and balance updates happen inside a single transaction, so a fill can
- * never be recorded without its balance change or the other way round. The
- * unique index on `idempotency_key` refuses a second fill of the same lifecycle
- * in the same session, which is what stops a still-open opportunity from being
- * re-filled every 30 seconds.
+ * Volume discipline (v4.9.1): a detailed, immutable ledger row is written ONLY
+ * when something actually changed for a candidate — it is seen for the first
+ * time, its decision key changes, it fills, or it disappears from the market.
+ * An unchanged blocked candidate only bumps a counter on its state row, so a
+ * steady state costs one compact summary per cycle instead of one row per
+ * candidate per cycle.
  *
- * Returns how many fills were actually committed — a duplicate is reported, not
- * thrown, because a duplicate simply means another cycle got there first.
+ * Fills and balance updates still happen inside a single transaction, and the
+ * unique index on the idempotency key still refuses a second fill of the same
+ * lifecycle.
  */
 export async function commitPaperCycle(input: {
   sessionId: string;
@@ -396,14 +436,90 @@ export async function commitPaperCycle(input: {
   occurredAt: string;
   fills: PaperFillRecord[];
   skips: PaperSkipRecord[];
-}): Promise<{ filled: number; skipped: number; duplicates: number }> {
+}): Promise<{
+  filled: number;
+  skipped: number;
+  duplicates: number;
+  detailedEventsWritten: number;
+  reasonCounts: Record<string, number>;
+}> {
   const db = await getDbAsync();
   let filled = 0;
   let duplicates = 0;
+  let detailedEventsWritten = 0;
+  const reasonCounts: Record<string, number> = {};
 
   try {
     await serial(async () => {
+      // Existing decision state for this session, keyed by lifecycle.
+      const stateRows = await db
+        .select()
+        .from(shadowPaperCandidateState)
+        .where(eq(shadowPaperCandidateState.sessionId, input.sessionId));
+      const stateByLifecycle = new Map(stateRows.map((r) => [r.lifecycleId, r]));
+      const seen = new Set<string>();
+
+      const upsertState = async (
+        rec: {
+          lifecycleId: string;
+          routeKey: string;
+          buySourceId: string;
+          sellSourceId: string;
+          sizeUsdt: number;
+        },
+        outcome: string,
+        primary: string | null,
+        codes: string[]
+      ): Promise<"NEW" | "CHANGED" | "UNCHANGED"> => {
+        const key = decisionKeyOf(outcome, codes);
+        const existing = stateByLifecycle.get(rec.lifecycleId);
+        if (!existing) {
+          await db.insert(shadowPaperCandidateState).values({
+            id: `${input.sessionId}|${rec.lifecycleId}`,
+            sessionId: input.sessionId,
+            lifecycleId: rec.lifecycleId,
+            routeKey: rec.routeKey,
+            buySourceId: rec.buySourceId,
+            sellSourceId: rec.sellSourceId,
+            sizeUsdt: String(rec.sizeUsdt),
+            decisionKey: key,
+            outcome,
+            primaryReason: primary,
+            reasonCodes: codes,
+            occurrences: 1,
+            firstSeenAt: input.occurredAt,
+            lastSeenAt: input.occurredAt,
+            lastChangedAt: input.occurredAt,
+            closedAt: null
+          });
+          return "NEW";
+        }
+        if (existing.decisionKey === key && !existing.closedAt) {
+          // Nothing changed: only the observation counter moves.
+          await db
+            .update(shadowPaperCandidateState)
+            .set({ occurrences: existing.occurrences + 1, lastSeenAt: input.occurredAt })
+            .where(eq(shadowPaperCandidateState.id, `${input.sessionId}|${rec.lifecycleId}`));
+          return "UNCHANGED";
+        }
+        await db
+          .update(shadowPaperCandidateState)
+          .set({
+            decisionKey: key,
+            outcome,
+            primaryReason: primary,
+            reasonCodes: codes,
+            occurrences: existing.occurrences + 1,
+            lastSeenAt: input.occurredAt,
+            lastChangedAt: input.occurredAt,
+            closedAt: null
+          })
+          .where(eq(shadowPaperCandidateState.id, `${input.sessionId}|${rec.lifecycleId}`));
+        return "CHANGED";
+      };
+
       for (const f of input.fills) {
+        seen.add(f.lifecycleId);
         const key = `${input.sessionId}|${f.lifecycleId}`;
         try {
           await db.transaction(async (tx) => {
@@ -415,6 +531,8 @@ export async function commitPaperCycle(input: {
               lifecycleId: f.lifecycleId,
               routeKey: f.routeKey,
               outcome: "FILLED",
+              eventType: "FILLED",
+              reasonCodes: [],
               rejectionCode: null,
               rejectionReason: null,
               requiredRebalance: null,
@@ -463,45 +581,99 @@ export async function commitPaperCycle(input: {
             }
           });
           filled += 1;
+          detailedEventsWritten += 1;
         } catch (e) {
           // A duplicate simply means this lifecycle was already filled — that is
           // the idempotency guard working, not a failure. Anything else is real.
           if (isUniqueViolation(e)) {
             duplicates += 1;
-            continue;
+          } else {
+            throw e;
           }
-          throw e;
         }
+        await upsertState(f, "FILLED", null, []);
       }
 
-      for (const s of input.skips) {
+      for (const k of input.skips) {
+        seen.add(k.lifecycleId);
+        const codes = k.reasonCodes?.length ? k.reasonCodes : [k.rejectionCode];
+        reasonCounts[k.rejectionCode] = (reasonCounts[k.rejectionCode] ?? 0) + 1;
+
+        const transition = await upsertState(k, "SKIPPED", k.rejectionCode, codes);
+        // THE volume rule: an unchanged blocked candidate writes no detail row.
+        if (transition === "UNCHANGED") continue;
+
         await db.insert(shadowPaperLedger).values({
           id: randomUUID(),
           sessionId: input.sessionId,
           runId: input.runId,
-          // Skips are informational, so they carry no idempotency key.
+          // Skips carry no idempotency key: several transitions are legitimate.
           idempotencyKey: null,
-          lifecycleId: s.lifecycleId,
-          routeKey: s.routeKey,
+          lifecycleId: k.lifecycleId,
+          routeKey: k.routeKey,
           outcome: "SKIPPED",
-          rejectionCode: s.rejectionCode,
-          rejectionReason: s.rejectionReason,
-          requiredRebalance: s.requiredRebalance,
-          buySourceId: s.buySourceId,
-          sellSourceId: s.sellSourceId,
-          sizeUsdt: String(s.sizeUsdt),
+          eventType: transition === "NEW" ? "FIRST_SEEN" : "CHANGED",
+          reasonCodes: codes,
+          rejectionCode: k.rejectionCode,
+          rejectionReason: k.rejectionReason,
+          requiredRebalance: k.requiredRebalance,
+          buySourceId: k.buySourceId,
+          sellSourceId: k.sellSourceId,
+          sizeUsdt: String(k.sizeUsdt),
           balancesAfter: [],
           occurredAt: input.occurredAt,
           createdAt: input.occurredAt
         });
+        detailedEventsWritten += 1;
       }
+
+      // Candidates that vanished from the market: one CLOSED event each, once.
+      for (const row of stateRows) {
+        if (seen.has(row.lifecycleId) || row.closedAt) continue;
+        await db
+          .update(shadowPaperCandidateState)
+          .set({ closedAt: input.occurredAt })
+          .where(eq(shadowPaperCandidateState.id, row.id));
+        await db.insert(shadowPaperLedger).values({
+          id: randomUUID(),
+          sessionId: input.sessionId,
+          runId: input.runId,
+          idempotencyKey: null,
+          lifecycleId: row.lifecycleId,
+          routeKey: row.routeKey,
+          outcome: "SKIPPED",
+          eventType: "CLOSED",
+          reasonCodes: [],
+          rejectionCode: null,
+          rejectionReason: "فرصت از بازار خارج شد",
+          requiredRebalance: null,
+          buySourceId: row.buySourceId,
+          sellSourceId: row.sellSourceId,
+          sizeUsdt: String(row.sizeUsdt),
+          balancesAfter: [],
+          occurredAt: input.occurredAt,
+          createdAt: input.occurredAt
+        });
+        detailedEventsWritten += 1;
+      }
+
+      // One compact summary per cycle, regardless of candidate count.
+      await db.insert(shadowPaperCycleSummaries).values({
+        id: randomUUID(),
+        sessionId: input.sessionId,
+        runId: input.runId,
+        occurredAt: input.occurredAt,
+        candidatesEvaluated: input.fills.length + input.skips.length,
+        filled,
+        skipped: input.skips.length,
+        detailedEventsWritten,
+        reasonCounts,
+        createdAt: input.occurredAt
+      });
 
       await db
         .update(shadowPaperSessions)
-        .set({
-          lastCycleAt: input.occurredAt,
-          updatedAt: input.occurredAt
-        })
+        .set({ lastCycleAt: input.occurredAt, updatedAt: input.occurredAt })
         .where(eq(shadowPaperSessions.id, input.sessionId));
     });
   } catch (error) {
@@ -509,7 +681,109 @@ export async function commitPaperCycle(input: {
   }
 
   await bumpSessionCounters(input.sessionId, filled, input.skips.length);
-  return { filled, skipped: input.skips.length, duplicates };
+  return { filled, skipped: input.skips.length, duplicates, detailedEventsWritten, reasonCounts };
+}
+
+/** Current decision state per candidate — the grouped view the UI reads. */
+export async function loadCandidateStates(
+  sessionId: string,
+  options: { reason?: string; openOnly?: boolean; limit?: number } = {}
+): Promise<PaperCandidateStateRow[]> {
+  try {
+    const db = await getDbAsync();
+    const rows = await serial(async () => {
+      const filters = [eq(shadowPaperCandidateState.sessionId, sessionId)];
+      if (options.reason) filters.push(eq(shadowPaperCandidateState.primaryReason, options.reason));
+      if (options.openOnly) filters.push(isNull(shadowPaperCandidateState.closedAt));
+      return db
+        .select()
+        .from(shadowPaperCandidateState)
+        .where(and(...filters))
+        .orderBy(desc(shadowPaperCandidateState.lastSeenAt))
+        .limit(Math.min(500, Math.max(1, options.limit ?? 200)));
+    });
+    return rows.map((r) => ({
+      lifecycleId: r.lifecycleId,
+      routeKey: r.routeKey,
+      buySourceId: r.buySourceId,
+      sellSourceId: r.sellSourceId,
+      sizeUsdt: num(r.sizeUsdt),
+      decisionKey: r.decisionKey,
+      outcome: r.outcome,
+      primaryReason: r.primaryReason,
+      reasonCodes: Array.isArray(r.reasonCodes) ? r.reasonCodes : [],
+      occurrences: r.occurrences,
+      firstSeenAt: r.firstSeenAt,
+      lastSeenAt: r.lastSeenAt,
+      lastChangedAt: r.lastChangedAt,
+      closedAt: r.closedAt
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/** Grouped block reasons with counts — computed from state, not from raw rows. */
+export async function loadReasonBreakdown(
+  sessionId: string
+): Promise<Array<{ code: string; candidates: number; observations: number }>> {
+  try {
+    const db = await getDbAsync();
+    const rows = await serial(async () =>
+      db
+        .select({
+          code: shadowPaperCandidateState.primaryReason,
+          candidates: sql<number>`count(*)`,
+          observations: sql<number>`sum(${shadowPaperCandidateState.occurrences})`
+        })
+        .from(shadowPaperCandidateState)
+        .where(
+          and(
+            eq(shadowPaperCandidateState.sessionId, sessionId),
+            eq(shadowPaperCandidateState.outcome, "SKIPPED")
+          )
+        )
+        .groupBy(shadowPaperCandidateState.primaryReason)
+    );
+    return rows
+      .filter((r) => r.code)
+      .map((r) => ({
+        code: String(r.code),
+        candidates: num(r.candidates),
+        observations: num(r.observations)
+      }))
+      .sort((a, b) => b.observations - a.observations || a.code.localeCompare(b.code));
+  } catch {
+    return [];
+  }
+}
+
+export async function loadCycleSummaries(
+  sessionId: string,
+  limit = 100
+): Promise<PaperCycleSummaryRow[]> {
+  try {
+    const db = await getDbAsync();
+    const rows = await serial(async () =>
+      db
+        .select()
+        .from(shadowPaperCycleSummaries)
+        .where(eq(shadowPaperCycleSummaries.sessionId, sessionId))
+        .orderBy(desc(shadowPaperCycleSummaries.occurredAt))
+        .limit(Math.min(500, Math.max(1, limit)))
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      occurredAt: r.occurredAt,
+      candidatesEvaluated: r.candidatesEvaluated,
+      filled: r.filled,
+      skipped: r.skipped,
+      detailedEventsWritten: r.detailedEventsWritten,
+      reasonCounts: (r.reasonCounts ?? {}) as Record<string, number>
+    }));
+  } catch {
+    return [];
+  }
 }
 
 async function bumpSessionCounters(sessionId: string, filled: number, skipped: number) {
@@ -561,6 +835,8 @@ export async function loadPaperLedger(
     });
     return rows.map((r) => ({
       id: r.id,
+      eventType: r.eventType,
+      reasonCodes: Array.isArray(r.reasonCodes) ? r.reasonCodes : [],
       sessionId: r.sessionId,
       runId: r.runId,
       lifecycleId: r.lifecycleId,

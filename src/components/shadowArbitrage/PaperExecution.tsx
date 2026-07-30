@@ -62,14 +62,39 @@ type Trade = {
   occurredAt: string;
 };
 
-type Skipped = {
+type Transition = {
   id: string;
   routeKey: string;
   sizeUsdt: number;
+  eventType: string | null;
+  reasonCodes: string[];
   rejectionCode: string | null;
   rejectionReason: string | null;
   requiredRebalance: string | null;
   occurredAt: string;
+};
+
+type CandidateState = {
+  lifecycleId: string;
+  routeKey: string;
+  sizeUsdt: number;
+  primaryReason: string | null;
+  reasonCodes: string[];
+  occurrences: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastChangedAt: string;
+};
+
+type ReasonGroup = { code: string; candidates: number; observations: number };
+
+type CycleSummary = {
+  id: string;
+  occurredAt: string;
+  candidatesEvaluated: number;
+  filled: number;
+  skipped: number;
+  detailedEventsWritten: number;
 };
 
 type Stats = {
@@ -93,7 +118,10 @@ type Payload = {
   session: SessionRow | null;
   balances: Balance[];
   trades: Trade[];
-  skipped: Skipped[];
+  transitions: Transition[];
+  candidates: CandidateState[];
+  reasonBreakdown: ReasonGroup[];
+  cycleSummaries: CycleSummary[];
   stats: Stats | null;
   history?: SessionRow[];
   message?: string;
@@ -117,6 +145,43 @@ const MODE_FA: Record<SessionRow["mode"], string> = {
   PROVISIONAL_EVALUATION: "ارزیابی موقت (غیرنهایی)",
   APPROVED_PLAN: "طرح تأییدشدهٔ فاز ۵"
 };
+
+const REASON_FA: Record<string, string> = {
+  account_not_ready: "حساب کاربری صرافی آماده نیست",
+  fee_unknown: "کارمزد تأییدنشده",
+  fee_stale: "اعتبار کارمزد منقضی شده",
+  fee_settlement_unknown: "تسویهٔ کارمزد تأییدنشده",
+  fee_settlement_unsupported: "ترکیب تسویهٔ کارمزد نامعتبر",
+  net_non_positive: "سود اقتصادی مثبت نیست",
+  insufficient_depth: "عمق دفتر ناکافی",
+  reference_only: "منبع فقط مرجع",
+  source_unhealthy: "منبع ناسالم یا گواهی‌نشده",
+  stale_market_data: "دادهٔ بازار کهنه",
+  market_data_missing: "دادهٔ بازار موجود نیست",
+  market_data_unverified: "واحد یا جهت قیمت تأییدنشده",
+  rate_limited: "محدودیت نرخ درخواست",
+  same_venue: "یک صرافی",
+  mark_price_unavailable: "قیمت مرجع در دسترس نیست",
+  insufficient_irt: "موجودی تومانی ناکافی",
+  insufficient_usdt: "موجودی تتری ناکافی",
+  negative_balance_guard: "موجودی منفی می‌شد",
+  no_balance_record: "موجودی مجازی ثبت نشده",
+  lifecycle_already_processed: "قبلاً پردازش شده",
+  size_not_selected: "حجم بهتری انتخاب شد",
+  venue_not_executable: "صرافی اجراپذیر نیست"
+};
+
+const EVENT_FA: Record<string, string> = {
+  FIRST_SEEN: "نخستین مشاهده",
+  CHANGED: "تغییر وضعیت",
+  FILLED: "اجرا",
+  CLOSED: "خروج از بازار"
+};
+
+function reasonFa(code: string | null | undefined): string {
+  if (!code) return "—";
+  return REASON_FA[code] ?? code;
+}
 
 const ASSET_FA: Record<string, string> = { IRT: "تومان", USDT: "تتر", UNKNOWN: "نامشخص" };
 
@@ -168,15 +233,17 @@ export function PaperExecution() {
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<Trade | null>(null);
+  const [reasonFilter, setReasonFilter] = useState<string>("");
 
   const load = useCallback(async () => {
-    const res = await fetch("/api/shadow-arbitrage/paper", {
+    const q = reasonFilter ? `?reason=${encodeURIComponent(reasonFilter)}` : "";
+    const res = await fetch(`/api/shadow-arbitrage/paper${q}`, {
       cache: "no-store",
       credentials: "same-origin"
     });
     if (!res.ok) return;
     setData((await res.json()) as Payload);
-  }, []);
+  }, [reasonFilter]);
 
   useEffect(() => {
     if (!open) return;
@@ -473,12 +540,87 @@ export function PaperExecution() {
             </div>
           ) : null}
 
-          {data?.skipped?.length ? (
+          {data?.reasonBreakdown?.length ? (
             <div className="panel-body sa-table-wrap">
-              <div className="sa-subpanel-title">نامزدهای ردشده و دلیل</div>
+              <div className="sa-subpanel-title">
+                دلایل رد شدن — گروه‌بندی‌شده بر اساس علت دقیق
+              </div>
               <table className="sa-table">
                 <thead>
                   <tr>
+                    <th>دلیل</th>
+                    <th className="num">تعداد نامزد</th>
+                    <th className="num">تعداد مشاهده</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.reasonBreakdown.map((r) => (
+                    <tr key={r.code}>
+                      <td>{reasonFa(r.code)}</td>
+                      <td className="num">{formatCountFa(r.candidates)}</td>
+                      <td className="num">{formatCountFa(r.observations)}</td>
+                      <td>
+                        <button
+                          type="button"
+                          className="sa-linkish"
+                          onClick={() => setReasonFilter(reasonFilter === r.code ? "" : r.code)}
+                        >
+                          {reasonFilter === r.code ? "حذف فیلتر" : "فیلتر"}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="sa-footnote">
+                «تعداد مشاهده» یعنی این نامزد در چند چرخه با همین وضعیت دیده شده است؛ برای هر
+                چرخه ردیف تازه‌ای ذخیره نمی‌شود.
+              </div>
+            </div>
+          ) : null}
+
+          {data?.candidates?.length ? (
+            <div className="panel-body sa-table-wrap">
+              <div className="sa-subpanel-title">
+                نامزدهای باز{reasonFilter ? ` — فیلتر: ${reasonFa(reasonFilter)}` : ""}
+              </div>
+              <table className="sa-table">
+                <thead>
+                  <tr>
+                    <th>مسیر</th>
+                    <th className="num">حجم</th>
+                    <th>دلیل اصلی</th>
+                    <th>همهٔ دلایل</th>
+                    <th className="num">مشاهده</th>
+                    <th>آخرین تغییر</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.candidates.slice(0, 50).map((c) => (
+                    <tr key={c.lifecycleId}>
+                      <td className="sa-route-cell">{c.routeKey}</td>
+                      <td className="num">{usdtText(c.sizeUsdt)}</td>
+                      <td>{reasonFa(c.primaryReason)}</td>
+                      <td className="sa-wrap-cell">
+                        {c.reasonCodes.map(reasonFa).join(" · ") || "—"}
+                      </td>
+                      <td className="num">{formatCountFa(c.occurrences)}</td>
+                      <td className="text-micro">{formatTehran(c.lastChangedAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+
+          {data?.transitions?.length ? (
+            <div className="panel-body sa-table-wrap">
+              <div className="sa-subpanel-title">آخرین تغییرات وضعیت</div>
+              <table className="sa-table">
+                <thead>
+                  <tr>
+                    <th>رویداد</th>
                     <th>مسیر</th>
                     <th className="num">حجم</th>
                     <th>دلیل</th>
@@ -487,19 +629,56 @@ export function PaperExecution() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.skipped.slice(0, 50).map((k) => (
-                    <tr key={k.id}>
-                      <td className="sa-route-cell">{k.routeKey}</td>
-                      <td className="num">{usdtText(k.sizeUsdt)}</td>
-                      <td className="sa-wrap-cell">{k.rejectionReason ?? k.rejectionCode ?? "—"}</td>
+                  {data.transitions.slice(0, 40).map((t) => (
+                    <tr key={t.id}>
+                      <td>
+                        <span className="sa-chip sa-chip-sm sa-chip-muted">
+                          {EVENT_FA[t.eventType ?? ""] ?? t.eventType ?? "—"}
+                        </span>
+                      </td>
+                      <td className="sa-route-cell">{t.routeKey}</td>
+                      <td className="num">{usdtText(t.sizeUsdt)}</td>
                       <td className="sa-wrap-cell">
-                        {k.requiredRebalance ? (
-                          <span className="sa-reason">{k.requiredRebalance}</span>
+                        {t.reasonCodes?.length
+                          ? t.reasonCodes.map(reasonFa).join(" · ")
+                          : (t.rejectionReason ?? reasonFa(t.rejectionCode))}
+                      </td>
+                      <td className="sa-wrap-cell">
+                        {t.requiredRebalance ? (
+                          <span className="sa-reason">{t.requiredRebalance}</span>
                         ) : (
                           "—"
                         )}
                       </td>
-                      <td className="text-micro">{formatTehran(k.occurredAt)}</td>
+                      <td className="text-micro">{formatTehran(t.occurredAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+
+          {data?.cycleSummaries?.length ? (
+            <div className="panel-body sa-table-wrap">
+              <div className="sa-subpanel-title">خلاصهٔ فشردهٔ چرخه‌ها</div>
+              <table className="sa-table">
+                <thead>
+                  <tr>
+                    <th>زمان</th>
+                    <th className="num">نامزد بررسی‌شده</th>
+                    <th className="num">اجراشده</th>
+                    <th className="num">ردشده</th>
+                    <th className="num">ردیف جزئی نوشته‌شده</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.cycleSummaries.slice(0, 20).map((c) => (
+                    <tr key={c.id}>
+                      <td className="text-micro">{formatTehran(c.occurredAt)}</td>
+                      <td className="num">{formatCountFa(c.candidatesEvaluated)}</td>
+                      <td className="num">{formatCountFa(c.filled)}</td>
+                      <td className="num">{formatCountFa(c.skipped)}</td>
+                      <td className="num">{formatCountFa(c.detailedEventsWritten)}</td>
                     </tr>
                   ))}
                 </tbody>

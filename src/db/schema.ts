@@ -686,6 +686,10 @@ export const shadowPaperLedger = pgTable(
     sellFeeValueToman: bigint("sell_fee_value_toman", { mode: "number" }),
     economicNetPnlToman: bigint("economic_net_pnl_toman", { mode: "number" }),
     riskAdjustedPnlToman: bigint("risk_adjusted_pnl_toman", { mode: "number" }),
+    /** FIRST_SEEN | CHANGED | FILLED | CLOSED — why this row exists at all. */
+    eventType: text("event_type"),
+    /** Every exact cause that applied, canonically ordered. */
+    reasonCodes: jsonb("reason_codes").$type<string[]>().default([]).notNull(),
     /** Balances of both touched venues immediately after the fill. */
     balancesAfter: jsonb("balances_after")
       .$type<Array<{ sourceId: string; irtToman: number; usdtMicros: number }>>()
@@ -699,4 +703,64 @@ export const shadowPaperLedger = pgTable(
     index("shadow_paper_ledger_session_time_idx").on(t.sessionId, t.occurredAt),
     index("shadow_paper_ledger_outcome_idx").on(t.sessionId, t.outcome)
   ]
+);
+
+/**
+ * v4.9.1 — per-candidate decision state.
+ *
+ * One row per (session, lifecycle). A detailed ledger event is written only
+ * when this row's decision key changes, so an unchanged blocked candidate does
+ * not produce a new row every 30 seconds.
+ */
+export const shadowPaperCandidateState = pgTable(
+  "shadow_paper_candidate_state",
+  {
+    /** `${sessionId}|${lifecycleId}` — deterministic, so upserts stay idempotent. */
+    id: text("id").primaryKey(),
+    sessionId: uuid("session_id").notNull(),
+    lifecycleId: text("lifecycle_id").notNull(),
+    routeKey: text("route_key").notNull(),
+    buySourceId: text("buy_source_id").notNull(),
+    sellSourceId: text("sell_source_id").notNull(),
+    sizeUsdt: numeric("size_usdt", { precision: 12, scale: 4 }).notNull(),
+    /** `${outcome}:${sorted reason codes}` — the change detector. */
+    decisionKey: text("decision_key").notNull(),
+    outcome: text("outcome").notNull(),
+    primaryReason: text("primary_reason"),
+    reasonCodes: jsonb("reason_codes").$type<string[]>().default([]).notNull(),
+    /** Cycles this candidate was observed in, including unchanged ones. */
+    occurrences: integer("occurrences").notNull().default(1),
+    firstSeenAt: ts("first_seen_at").notNull(),
+    lastSeenAt: ts("last_seen_at").notNull(),
+    lastChangedAt: ts("last_changed_at").notNull(),
+    closedAt: ts("closed_at")
+  },
+  (t) => [
+    index("shadow_paper_state_session_idx").on(t.sessionId, t.lastSeenAt),
+    index("shadow_paper_state_reason_idx").on(t.sessionId, t.primaryReason)
+  ]
+);
+
+/**
+ * v4.9.1 — one compact summary per paper cycle, with counts grouped by exact
+ * reason. This is what makes per-cycle volume constant instead of proportional
+ * to the number of evaluated candidates.
+ */
+export const shadowPaperCycleSummaries = pgTable(
+  "shadow_paper_cycle_summaries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: uuid("session_id").notNull(),
+    runId: uuid("run_id"),
+    occurredAt: ts("occurred_at").notNull(),
+    candidatesEvaluated: integer("candidates_evaluated").notNull().default(0),
+    filled: integer("filled").notNull().default(0),
+    skipped: integer("skipped").notNull().default(0),
+    /** Detailed rows this cycle actually wrote — normally 0 in a steady state. */
+    detailedEventsWritten: integer("detailed_events_written").notNull().default(0),
+    /** { reasonCode: count } for this cycle. */
+    reasonCounts: jsonb("reason_counts").$type<Record<string, number>>().default({}).notNull(),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [index("shadow_paper_cycle_summary_idx").on(t.sessionId, t.occurredAt)]
 );

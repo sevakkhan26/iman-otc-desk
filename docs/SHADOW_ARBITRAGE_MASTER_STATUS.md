@@ -464,3 +464,91 @@ restart test covered) · isolated standalone build succeeds and emits the
 **Still outstanding:** the production database backup has never been run or
 verified — the LAN host stays unreachable. Protection remains the `pre-v4.6.1`
 tag plus strictly additive migrations. Phase 5 has not started.
+
+---
+
+## 14. Phase 5 — Capital Allocation Simulator (branch `shadow-phase5-capital`, not merged)
+
+Built on top of v4.7.0 after the user verified production healthy. **Not merged,
+not tagged and not deployed** — awaiting explicit approval for v4.8.0.
+
+**Scope — admin-only, Shadow Mode only, no execution.** Every balance is
+virtual. Nothing in this phase contacts an exchange, accepts credentials, places
+an order or moves funds, and automatic paper execution is deliberately absent
+(that is Phase 6).
+
+### Rules the engine enforces
+
+* **Portfolio conservation.** Allocated value plus reserve always equals the
+  stated capital, to the toman, by construction. `conservationResidualToman` is
+  reported on every simulation and is asserted to be exactly zero.
+* **No negative balances.** Negative IRT or USDT, duplicate venues, non-finite
+  amounts, out-of-range capital and over-allocation are all structural
+  violations; a violating plan produces no metrics at all rather than
+  authoritative-looking numbers, and cannot be saved.
+* **No invented numbers.** Unknown or stale fees, a missing valuation price and
+  an unconfirmed transfer cost each yield `UNKNOWN`/`BLOCKED` through a typed
+  `Estimate<T>`. The configured rebalance cost is a provisional zero, which is
+  not evidence, so **estimated monthly rebalancing cost is UNKNOWN today** and
+  is not replaced by a default.
+* **No profit is claimed.** The simulator reports what an allocation could have
+  funded from observed route data; it never asserts realised or expected profit.
+
+### Venues
+
+Executable venues are exactly those with a verified account **and** a fee that
+is known and fresh — today nobitex, wallex and tabdeal, gated through Phase 4's
+`venueUsableForNetProfit` so there is one definition in the codebase. bitpin,
+abantether, ramzinex, tetherland and bit24 stay `WHATIF_DISABLED`: capital may
+be placed there for exploration, but it never counts toward utilization and can
+never fund a covered route until the account and fee land. arzinja is
+`REFERENCE_ONLY` and its inputs are disabled in the UI. OMPFinex is not a valid
+venue id and is rejected as `unknown_venue`.
+
+### Metrics
+
+Capital utilization (executable share of capital), opportunity coverage (funded
+route samples ÷ observed route samples, plus funded-of-structurally-executable),
+unused reserve, concentration risk (HHI over venue shares with LOW/MODERATE/HIGH
+bands) and estimated monthly rebalancing cost. Coverage returns UNKNOWN when the
+observation has no route data; concentration returns UNKNOWN when nothing is
+allocated. Unfunded routes are always reported with a reason, never dropped.
+
+### Allocation modes
+
+Manual entry per venue, and a **provisional optimized** split that is fully
+deterministic: capital follows venues that actually appeared on the profitable
+side of observed routes (net-positive samples, falling back to raw-positive,
+falling back to an explicitly labelled equal split when there is no evidence).
+Integer largest-remainder splitting keeps the portfolio exact. An explicit
+`reservePercent` is honoured and defaults to 0 so no reserve policy is invented.
+
+### Lock
+
+`recommendation.status` is permanently `PROVISIONAL` with `locked: true`. The
+14-day gate (`COMPLETED` **and** ≥80% success coverage) is reported separately as
+`observationGatePassed`; passing it does not unlock the recommendation.
+
+### Files
+
+* `src/lib/shadowArbitrage/capital.ts` — pure engine, no database import.
+* `app/api/shadow-arbitrage/capital/route.ts` — admin-only GET/POST
+  (`simulate` / `optimize` / `save`); rejects `apiKey`, `api_key`, `secret`,
+  `apiSecret`, `token`, `password`, `passphrase`, `privateKey`, `mnemonic`.
+* `drizzle/0004_shadow_capital_plans.sql` + `shadowCapitalPlans` — one additive
+  table, append-only plan history, no drops or alters.
+* `src/components/shadowArbitrage/CapitalSimulator.tsx` + RTL Persian styles.
+* `REQUIRED_SUCCESS_COVERAGE_PERCENT` moved to `config.ts` and re-exported from
+  the repository, so the pure engine can gate on it without the database layer.
+
+The collector, runner, instrumentation and the running observation session are
+untouched; `observation.id` is read only.
+
+### Verification
+
+typecheck clean · ESLint 0 errors (17 pre-existing warnings, none new) ·
+12/12 suites green, 288 assertions, 0 failures — including 19 new deterministic
+accounting tests and 1 new persistence test · isolated standalone build succeeds
+and emits the `capital` route.
+
+**Phase 6 (automatic paper execution) has not started.**

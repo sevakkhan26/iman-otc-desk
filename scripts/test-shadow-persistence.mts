@@ -521,6 +521,50 @@ await test("restart during a live lease: B waits, then takes over after expiry",
   }
 });
 
+await test("capital plans persist append-only and preserve virtual balances", async () => {
+  const before = await repo.loadCapitalPlans();
+
+  const saved = await repo.saveCapitalPlan({
+    name: "طرح آزمایشی",
+    mode: "MANUAL",
+    totalCapitalToman: 50_000_000,
+    valuationPriceToman: 100_000,
+    reservePercent: 0,
+    allocations: [
+      { sourceId: "nobitex", irtToman: 10_000_000, usdtUnits: 50 },
+      { sourceId: "wallex", irtToman: 5_000_000, usdtUnits: 100 }
+    ],
+    createdBy: "admin",
+    note: "شبیه‌سازی"
+  });
+  assert.ok(saved.id, "saved plan must have an id");
+  assert.equal(saved.totalCapitalToman, 50_000_000);
+  assert.equal(saved.allocations.length, 2);
+
+  const latest = await repo.loadLatestCapitalPlan();
+  assert.equal(latest?.id, saved.id, "latest plan is the most recent save");
+  assert.equal(latest?.allocations[0]?.usdtUnits, 50, "virtual USDT balance round-trips");
+
+  // Append-only: a second save adds a row and never mutates the first.
+  const second = await repo.saveCapitalPlan({
+    name: "طرح دوم",
+    mode: "OPTIMIZED",
+    totalCapitalToman: 60_000_000,
+    valuationPriceToman: 100_000,
+    reservePercent: 20,
+    allocations: [{ sourceId: "tabdeal", irtToman: 1_000_000, usdtUnits: 0 }],
+    createdBy: "admin",
+    note: null
+  });
+  const after = await repo.loadCapitalPlans();
+  assert.equal(after.length, before.length + 2, "both saves are retained");
+  const original = after.find((p) => p.id === saved.id);
+  assert.equal(original?.totalCapitalToman, 50_000_000, "the earlier plan is unchanged");
+  assert.equal(after[0]?.id, second.id, "history is newest first");
+  assert.equal(after[0]?.mode, "OPTIMIZED");
+  assert.equal(after[0]?.reservePercent, 20);
+});
+
 await closeDb().catch(() => undefined);
 await rm(dir, { recursive: true, force: true });
 

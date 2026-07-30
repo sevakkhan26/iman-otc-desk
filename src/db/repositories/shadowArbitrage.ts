@@ -25,13 +25,15 @@ import {
   shadowSourceHealthEvents,
   shadowSourceSnapshots,
   shadowWorkerHeartbeat,
-  shadowFeeConfirmations
+  shadowFeeConfirmations,
+  shadowCapitalPlans
 } from "@/db/schema";
 import type { NormalizedSourceSnapshot, ShadowOpportunity } from "@/lib/shadowArbitrage/types";
 import type { SourceCertification } from "@/lib/shadowArbitrage/certification";
 import type { LifecycleTransition } from "@/lib/shadowArbitrage/lifecycle";
 import { isDeadLocalWorker } from "@/lib/shadowArbitrage/workerIdentity";
 import {
+  REQUIRED_SUCCESS_COVERAGE_PERCENT,
   SHADOW_LEASE_MULTIPLIER,
   SHADOW_OBSERVATION_TARGET_MS,
   SHADOW_RETENTION_DAYS,
@@ -73,8 +75,12 @@ export type ObservationSnapshot = {
   workerId: string | null;
 };
 
-/** A 14-day observation only counts as complete with enough real coverage. */
-export const REQUIRED_SUCCESS_COVERAGE_PERCENT = 80;
+/**
+ * A 14-day observation only counts as complete with enough real coverage.
+ * Re-exported from the config module so existing importers keep working while
+ * the pure capital simulator can read it without the database layer.
+ */
+export { REQUIRED_SUCCESS_COVERAGE_PERCENT };
 
 function num(v: string | number | null | undefined): number {
   if (v === null || v === undefined) return 0;
@@ -1516,4 +1522,85 @@ export async function recordFeeConfirmation(input: {
     confirmedAt: row.confirmedAt,
     note: row.note
   };
+}
+
+/* ── Phase 5 — virtual capital allocation plans ───────────────────────────── */
+
+export type CapitalPlanRow = {
+  id: string;
+  name: string;
+  mode: "MANUAL" | "OPTIMIZED";
+  totalCapitalToman: number;
+  valuationPriceToman: number;
+  reservePercent: number;
+  allocations: Array<{ sourceId: string; irtToman: number; usdtUnits: number }>;
+  createdBy: string;
+  note: string | null;
+  createdAt: string;
+};
+
+function toPlanRow(r: typeof shadowCapitalPlans.$inferSelect): CapitalPlanRow {
+  return {
+    id: r.id,
+    name: r.name,
+    mode: r.mode === "OPTIMIZED" ? "OPTIMIZED" : "MANUAL",
+    totalCapitalToman: num(r.totalCapitalToman),
+    valuationPriceToman: num(r.valuationPriceToman),
+    reservePercent: num(r.reservePercent),
+    allocations: Array.isArray(r.allocations) ? r.allocations : [],
+    createdBy: r.createdBy,
+    note: r.note,
+    createdAt: r.createdAt
+  };
+}
+
+/** Saved plans, newest first. Append-only: nothing is ever updated or deleted. */
+export async function loadCapitalPlans(limit = 50): Promise<CapitalPlanRow[]> {
+  try {
+    const db = await getDbAsync();
+    const rows = await serial(async () =>
+      db
+        .select()
+        .from(shadowCapitalPlans)
+        .orderBy(desc(shadowCapitalPlans.createdAt))
+        .limit(Math.min(200, Math.max(1, limit)))
+    );
+    return rows.map(toPlanRow);
+  } catch {
+    return [];
+  }
+}
+
+/** The plan the simulator should show by default — the most recent save. */
+export async function loadLatestCapitalPlan(): Promise<CapitalPlanRow | null> {
+  const rows = await loadCapitalPlans(1);
+  return rows[0] ?? null;
+}
+
+export async function saveCapitalPlan(input: {
+  name: string;
+  mode: "MANUAL" | "OPTIMIZED";
+  totalCapitalToman: number;
+  valuationPriceToman: number;
+  reservePercent: number;
+  allocations: Array<{ sourceId: string; irtToman: number; usdtUnits: number }>;
+  createdBy: string;
+  note?: string | null;
+}): Promise<CapitalPlanRow> {
+  const db = await getDbAsync();
+  const now = new Date().toISOString();
+  const row = {
+    id: randomUUID(),
+    name: input.name,
+    mode: input.mode,
+    totalCapitalToman: Math.round(input.totalCapitalToman),
+    valuationPriceToman: Math.round(input.valuationPriceToman),
+    reservePercent: Math.round(input.reservePercent),
+    allocations: input.allocations,
+    createdBy: input.createdBy,
+    note: input.note ?? null,
+    createdAt: now
+  };
+  await serial(async () => db.insert(shadowCapitalPlans).values(row));
+  return toPlanRow(row as typeof shadowCapitalPlans.$inferSelect);
 }

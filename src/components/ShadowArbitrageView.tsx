@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { DeskPageHeader } from "@/components/DeskPageHeader";
 import { AccountReadiness } from "@/components/shadowArbitrage/AccountReadiness";
 import { AnalyticsPanels } from "@/components/shadowArbitrage/AnalyticsPanels";
+import { CapitalSimulator } from "@/components/shadowArbitrage/CapitalSimulator";
 import { ObservationHeader } from "@/components/shadowArbitrage/ObservationHeader";
 import { OpportunityDrawer } from "@/components/shadowArbitrage/OpportunityDrawer";
 import { OpportunityTable } from "@/components/shadowArbitrage/OpportunityTable";
@@ -189,6 +190,8 @@ export function ShadowArbitrageView() {
       />
 
       <AccountReadiness />
+
+      <CapitalSimulator />
 
       <AnalyticsPanels
         analytics={analytics}

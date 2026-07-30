@@ -42,6 +42,11 @@ import {
 import { crossCheckUnits } from "../src/lib/shadowArbitrage/adapters/index.ts";
 import { bucketIdempotencyKey } from "../src/lib/shadowArbitrage/collector.ts";
 import {
+  FEE_REVERIFY_DAYS,
+  buildAllReadiness,
+  venueUsableForNetProfit
+} from "../src/lib/shadowArbitrage/accounts.ts";
+import {
   isDeadLocalWorker,
   makeWorkerId,
   parseWorkerId
@@ -943,6 +948,109 @@ await test("14-day storage estimate stays in the designed budget", () => {
   assert.ok(snapshots < 5_000_000);
   // Naively persisting every pair every cycle is what this design avoids:
   assert.ok(cycles * sources * (sources - 1) * 4 > 10_000_000);
+});
+
+/* ── Phase 4: account and fee readiness ───────────────────────────────────── */
+
+await test("account gating: only verified accounts with known fees are usable", () => {
+  const all = buildAllReadiness([]);
+  assert.equal(all.length, 9);
+  const verified = all.filter((v) => v.accountState === "VERIFIED").map((v) => v.sourceId).sort();
+  assert.deepEqual(verified, ["nobitex", "tabdeal", "wallex"]);
+  const needs = all.filter((v) => v.accountState === "NEEDS_ACCOUNT").map((v) => v.sourceId).sort();
+  assert.deepEqual(needs, ["abantether", "bit24", "bitpin", "ramzinex", "tetherland"]);
+  assert.equal(all.find((v) => v.sourceId === "arzinja")!.accountState, "REFERENCE_ONLY");
+
+  // Reference-only and account-less venues can never back net profit.
+  for (const v of all) {
+    if (v.accountState !== "VERIFIED") assert.equal(venueUsableForNetProfit(v), false);
+  }
+});
+
+await test("fee provenance is never invented", () => {
+  const all = buildAllReadiness([]);
+  for (const v of all) {
+    if (v.feeProvenance === "UNKNOWN") {
+      assert.equal(v.takerFeeBps, null, `${v.sourceId} must not carry a fee it cannot source`);
+      assert.ok(v.blockingReason, `${v.sourceId} must explain why it is blocked`);
+    } else {
+      assert.ok(v.takerFeeBps !== null);
+    }
+    // A provisional value must never be presented as official.
+    if (v.sourceId === "bitpin") assert.equal(v.feeProvenance, "UNKNOWN");
+  }
+});
+
+await test("unknown fee blocks a venue from net-positive routes", () => {
+  const unknown = buildAllReadiness([]).find((v) => v.feeProvenance === "UNKNOWN")!;
+  assert.equal(venueUsableForNetProfit(unknown), false);
+  // And the engine agrees: an unknown fee marks the route fee_unknown.
+  const econ = computeRouteEconomics({
+    buySourceId: unknown.sourceId,
+    sellSourceId: "nobitex",
+    sizeUsdt: 5,
+    buyVwapToman: 100_000,
+    sellVwapToman: 110_000
+  });
+  assert.equal(econ.feeUnknown, true);
+  assert.ok(econ.blocked.includes("fee_unknown"));
+});
+
+await test("admin-confirmed fee overrides provisional and records provenance", () => {
+  const confirmedAt = new Date().toISOString();
+  const [v] = buildAllReadiness([
+    {
+      sourceId: "nobitex",
+      takerFeeBps: 13,
+      feeTier: "VIP 2",
+      sourceUrl: "https://nobitex.ir/fees/",
+      confirmedBy: "admin",
+      confirmedAt,
+      note: null
+    }
+  ]).filter((x) => x.sourceId === "nobitex");
+  assert.equal(v!.takerFeeBps, 13);
+  assert.equal(v!.feeProvenance, "ADMIN_CONFIRMED");
+  assert.equal(v!.feeTier, "VIP 2");
+  assert.equal(v!.feeStale, false);
+  assert.equal(venueUsableForNetProfit(v!), true);
+});
+
+await test("stale fee evidence requires re-verification and blocks usability", () => {
+  const old = new Date(Date.now() - (FEE_REVERIFY_DAYS + 5) * 86_400_000).toISOString();
+  const [v] = buildAllReadiness([
+    {
+      sourceId: "wallex",
+      takerFeeBps: 20,
+      feeTier: null,
+      sourceUrl: null,
+      confirmedBy: "admin",
+      confirmedAt: old,
+      note: null
+    }
+  ]).filter((x) => x.sourceId === "wallex");
+  assert.equal(v!.feeStale, true);
+  assert.ok(v!.requiredAction.includes("بازبینی"));
+  assert.equal(venueUsableForNetProfit(v!), false);
+});
+
+await test("Phase 4 surface excludes OMPFinex and never accepts credentials", () => {
+  const all = buildAllReadiness([]);
+  assert.equal(all.some((v) => /omp/i.test(v.sourceId) || /omp/i.test(v.nameFa)), false);
+  const route = readFileSync(
+    new URL("../app/api/shadow-arbitrage/accounts/route.ts", import.meta.url),
+    "utf8"
+  );
+  assert.ok(route.includes("requireAdminSession"), "accounts API must be admin-only");
+  assert.ok(route.includes("forbidden_field"), "accounts API must reject credential fields");
+  for (const secret of ["apiKey", "secret", "password", "passphrase"]) {
+    assert.ok(route.includes(secret), `must explicitly refuse ${secret}`);
+  }
+  const ui = readFileSync(
+    new URL("../src/components/shadowArbitrage/AccountReadiness.tsx", import.meta.url),
+    "utf8"
+  );
+  assert.equal(/ompfinex/i.test(ui), false);
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

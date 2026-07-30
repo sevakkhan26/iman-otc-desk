@@ -713,6 +713,7 @@ await test("paper fill commits both legs and the balance change together", async
         sellSourceId: "nobitex",
         sizeUsdt: 5,
         rejectionCode: "insufficient_usdt",
+        reasonCodes: ["insufficient_usdt"],
         rejectionReason: "موجودی تتری صرافی فروش کافی نیست",
         requiredRebalance: "انتقال شبیه‌سازی‌شدهٔ ۵ تتر لازم است."
       }
@@ -910,6 +911,168 @@ await test("a paused paper session stops executing without losing its book", asy
   assert.equal(resumed?.id, paperSessionId);
   const fills = await paperRepo.loadPaperLedger(paperSessionId, { outcome: "FILLED" });
   assert.equal(fills.length, 2);
+});
+
+await test("v4.9.1 100 identical cycles write one detail per candidate plus 100 summaries", async () => {
+  // A dedicated session so the counts are unambiguous.
+  const session = await paperRepo.createPaperSession({
+    observationId: null,
+    name: "حجم رویداد",
+    mode: "PROVISIONAL_EVALUATION",
+    totalCapitalToman: 50_000_000,
+    valuationPriceToman: 100_000,
+    openingAllocations: PAPER_OPENING,
+    approvalFingerprint: null,
+    createdBy: "admin",
+    note: null
+  });
+  await paperRepo.setPaperSessionStatus(session.id, "RUNNING");
+
+  // 12 blocked candidates whose situation never changes — the production shape.
+  const CANDIDATES = 12;
+  const skips = Array.from({ length: CANDIDATES }, (_, i) => ({
+    lifecycleId: `vol-${i}`,
+    routeKey: `nobitex->wallex@${5 + (i % 4) * 5}`,
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    sizeUsdt: 5 + (i % 4) * 5,
+    rejectionCode: i % 2 === 0 ? "fee_unknown" : "insufficient_depth",
+    reasonCodes: i % 2 === 0 ? ["fee_unknown"] : ["insufficient_depth"],
+    rejectionReason: i % 2 === 0 ? "کارمزد تأییدنشده" : "عمق دفتر ناکافی",
+    requiredRebalance: null
+  }));
+
+  const CYCLES = 100;
+  let totalDetailed = 0;
+  for (let c = 0; c < CYCLES; c += 1) {
+    const res = await paperRepo.commitPaperCycle({
+      sessionId: session.id,
+      runId: null,
+      occurredAt: new Date(Date.UTC(2026, 6, 30, 0, 0, c)).toISOString(),
+      fills: [],
+      skips
+    });
+    totalDetailed += res.detailedEventsWritten;
+    if (c === 0) {
+      assert.equal(res.detailedEventsWritten, CANDIDATES, "the first cycle records every candidate");
+    } else {
+      assert.equal(res.detailedEventsWritten, 0, `cycle ${c} must write no detail rows`);
+    }
+  }
+
+  // Exactly one detailed transition per candidate, for all 100 cycles.
+  assert.equal(totalDetailed, CANDIDATES);
+  const ledger = await paperRepo.loadPaperLedger(session.id, { limit: 500 });
+  assert.equal(ledger.length, CANDIDATES, "no duplicate detail rows accumulated");
+  assert.equal(
+    ledger.every((r) => r.eventType === "FIRST_SEEN"),
+    true
+  );
+
+  // ...and exactly one compact summary per cycle.
+  const summaries = await paperRepo.loadCycleSummaries(session.id, 500);
+  assert.equal(summaries.length, CYCLES);
+  assert.equal(summaries[0].candidatesEvaluated, CANDIDATES);
+  assert.equal(summaries[0].skipped, CANDIDATES);
+  assert.equal(summaries[0].detailedEventsWritten, 0, "a steady cycle writes only its summary");
+  assert.equal(summaries[0].reasonCounts.fee_unknown, CANDIDATES / 2);
+  assert.equal(summaries[0].reasonCounts.insufficient_depth, CANDIDATES / 2);
+
+  // Per-candidate observation counts still show the full history.
+  const states = await paperRepo.loadCandidateStates(session.id, { limit: 500 });
+  assert.equal(states.length, CANDIDATES);
+  assert.equal(states.every((st) => st.occurrences === CYCLES), true);
+
+  // Grouped reasons are exact, never generic.
+  const groups = await paperRepo.loadReasonBreakdown(session.id);
+  assert.deepEqual(
+    groups.map((g) => g.code).sort(),
+    ["fee_unknown", "insufficient_depth"]
+  );
+  for (const g of groups) {
+    assert.equal(g.candidates, CANDIDATES / 2);
+    assert.equal(g.observations, (CANDIDATES / 2) * CYCLES);
+  }
+
+  // Volume proof: the old design would have written 1,200 rows here.
+  assert.ok(ledger.length + summaries.length < CANDIDATES * CYCLES / 5);
+});
+
+await test("v4.9.1 a changed reason writes exactly one new transition", async () => {
+  const session = await paperRepo.createPaperSession({
+    observationId: null,
+    name: "تغییر دلیل",
+    mode: "PROVISIONAL_EVALUATION",
+    totalCapitalToman: 50_000_000,
+    valuationPriceToman: 100_000,
+    openingAllocations: PAPER_OPENING,
+    approvalFingerprint: null,
+    createdBy: "admin",
+    note: null
+  });
+  await paperRepo.setPaperSessionStatus(session.id, "RUNNING");
+
+  const skip = (code: string) => [
+    {
+      lifecycleId: "chg-1",
+      routeKey: "nobitex->wallex@25",
+      buySourceId: "nobitex",
+      sellSourceId: "wallex",
+      sizeUsdt: 25,
+      rejectionCode: code,
+      reasonCodes: [code],
+      rejectionReason: code,
+      requiredRebalance: null
+    }
+  ];
+
+  for (let i = 0; i < 5; i += 1) {
+    await paperRepo.commitPaperCycle({
+      sessionId: session.id,
+      runId: null,
+      occurredAt: new Date(Date.UTC(2026, 6, 30, 1, 0, i)).toISOString(),
+      fills: [],
+      skips: skip("fee_unknown")
+    });
+  }
+  assert.equal((await paperRepo.loadPaperLedger(session.id)).length, 1);
+
+  // The cause changes: exactly one CHANGED row is added.
+  const changed = await paperRepo.commitPaperCycle({
+    sessionId: session.id,
+    runId: null,
+    occurredAt: new Date(Date.UTC(2026, 6, 30, 1, 0, 5)).toISOString(),
+    fills: [],
+    skips: skip("insufficient_depth")
+  });
+  assert.equal(changed.detailedEventsWritten, 1);
+  const afterChange = await paperRepo.loadPaperLedger(session.id);
+  assert.equal(afterChange.length, 2);
+  assert.equal(afterChange[0].eventType, "CHANGED");
+  assert.equal(afterChange[0].rejectionCode, "insufficient_depth");
+
+  // The candidate leaving the market records one CLOSED event, once.
+  const closedCycle = await paperRepo.commitPaperCycle({
+    sessionId: session.id,
+    runId: null,
+    occurredAt: new Date(Date.UTC(2026, 6, 30, 1, 0, 6)).toISOString(),
+    fills: [],
+    skips: []
+  });
+  assert.equal(closedCycle.detailedEventsWritten, 1);
+  const afterClose = await paperRepo.loadPaperLedger(session.id);
+  assert.equal(afterClose[0].eventType, "CLOSED");
+
+  // A further empty cycle adds nothing but its summary.
+  const quiet = await paperRepo.commitPaperCycle({
+    sessionId: session.id,
+    runId: null,
+    occurredAt: new Date(Date.UTC(2026, 6, 30, 1, 0, 7)).toISOString(),
+    fills: [],
+    skips: []
+  });
+  assert.equal(quiet.detailedEventsWritten, 0);
+  assert.equal((await paperRepo.loadPaperLedger(session.id)).length, 3);
 });
 
 await closeDb().catch(() => undefined);

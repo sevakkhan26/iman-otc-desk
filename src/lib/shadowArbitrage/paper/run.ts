@@ -33,6 +33,8 @@ export type PaperCycleOutcome = {
   skipped?: number;
   duplicates?: number;
   eligibleCandidates?: number;
+  /** Detailed rows this cycle wrote — normally 0 once the market is steady. */
+  detailedEventsWritten?: number;
   error?: string;
 };
 
@@ -131,6 +133,7 @@ export async function runPaperExecutionForCycle(input: {
       sellSourceId: d.candidate.sellSourceId,
       sizeUsdt: d.candidate.sizeUsdt,
       rejectionCode: d.code,
+      reasonCodes: d.codes,
       rejectionReason: d.reasonFa,
       requiredRebalance: describeRebalance(d.requiredRebalance)
     });
@@ -150,6 +153,7 @@ export async function runPaperExecutionForCycle(input: {
     filled: committed.filled,
     skipped: committed.skipped,
     duplicates: committed.duplicates,
+    detailedEventsWritten: committed.detailedEventsWritten,
     eligibleCandidates: evaluation.eligibleCandidates
   };
 }

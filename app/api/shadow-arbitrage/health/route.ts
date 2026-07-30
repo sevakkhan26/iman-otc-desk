@@ -7,6 +7,7 @@ import {
   loadRunStats,
   loadSourceStats
 } from "@/db/repositories/shadowArbitrage";
+import { getActivePaperSession, loadPaperStats } from "@/db/repositories/shadowPaper";
 import { SHADOW_BANNER, SHADOW_SOURCES } from "@/lib/shadowArbitrage/config";
 import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
 
@@ -24,12 +25,33 @@ export async function GET() {
   const session = await requireAdminSession();
   if (!isSession(session)) return session;
 
-  const [observation, worker, runStats, sourceStats] = await Promise.all([
+  const [observation, worker, runStats, sourceStats, paperSession] = await Promise.all([
     getObservation(),
     getWorkerHeartbeat(),
     loadRunStats(),
-    loadSourceStats()
+    loadSourceStats(),
+    getActivePaperSession()
   ]);
+
+  // Phase 6 status. Reported behind the same admin gate as everything else —
+  // this adds a field, it does not add an unauthenticated surface.
+  const paperStats = paperSession ? await loadPaperStats(paperSession.id) : null;
+  const paper = {
+    engine: "paper_only" as const,
+    realOrders: false as const,
+    sessionPresent: Boolean(paperSession),
+    sessionId: paperSession?.id ?? null,
+    status: paperSession?.status ?? "NONE",
+    mode: paperSession?.mode ?? null,
+    provisional: paperSession?.mode === "PROVISIONAL_EVALUATION",
+    observationId: paperSession?.observationId ?? null,
+    lastCycleAt: paperSession?.lastCycleAt ?? null,
+    cyclesEvaluated: paperSession?.cyclesEvaluated ?? 0,
+    tradesExecuted: paperStats?.filled ?? 0,
+    candidatesSkipped: paperStats?.skipped ?? 0,
+    realizedPnlToman: paperStats?.realizedPnlToman ?? 0,
+    lastFillAt: paperStats?.lastFillAt ?? null
+  };
 
   const pollIntervalMs = worker?.pollIntervalMs ?? observation?.pollIntervalMs ?? 30_000;
   const nextExpectedCycleAt = worker?.lastCycleAt
@@ -65,6 +87,7 @@ export async function GET() {
       shadowMode: true,
       status,
       serverNow: new Date().toISOString(),
+      paper,
       collector: {
         running: collectorRunning,
         workerId: worker?.workerId ?? null,

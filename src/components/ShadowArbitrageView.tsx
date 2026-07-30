@@ -8,6 +8,7 @@ import { CapitalSimulator } from "@/components/shadowArbitrage/CapitalSimulator"
 import { ObservationHeader } from "@/components/shadowArbitrage/ObservationHeader";
 import { OpportunityDrawer } from "@/components/shadowArbitrage/OpportunityDrawer";
 import { OpportunityTable } from "@/components/shadowArbitrage/OpportunityTable";
+import { PaperExecution } from "@/components/shadowArbitrage/PaperExecution";
 import { SourceTable } from "@/components/shadowArbitrage/SourceTable";
 import { SHADOW_WARNING_FA } from "@/components/shadowArbitrage/labels";
 import { SummaryCards } from "@/components/shadowArbitrage/SummaryCards";
@@ -192,6 +193,8 @@ export function ShadowArbitrageView() {
       <AccountReadiness />
 
       <CapitalSimulator />
+
+      <PaperExecution />
 
       <AnalyticsPanels
         analytics={analytics}

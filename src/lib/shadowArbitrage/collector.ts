@@ -36,6 +36,7 @@ import {
   withShadowLock,
   type ObservationSnapshot
 } from "@/db/repositories/shadowArbitrage";
+import { runPaperExecutionIsolated } from "@/lib/shadowArbitrage/paper/run";
 import { persistShadowCycle, saveCertifications } from "@/lib/shadowArbitrage/store";
 import type {
   NormalizedSourceSnapshot,
@@ -52,6 +53,15 @@ export type CycleResult = {
   status?: "success" | "partial" | "failed";
   runId?: string;
   error?: string;
+  /** Phase 6 paper-execution outcome for this cycle, when a session is running. */
+  paper?: {
+    ran: boolean;
+    reason?: string;
+    sessionId?: string;
+    filled?: number;
+    skipped?: number;
+    duplicates?: number;
+  };
   /** Cache payload flushed after the lock is released. */
   pendingCache?: {
     serverNow: string;
@@ -235,6 +245,20 @@ async function runCycleLocked(input: {
   // Compact aggregates cover every evaluated pair without a row per pair.
   await upsertRouteMetrics(built.drafts, serverNow);
 
+  // Phase 6 — paper execution on this cycle's data. Fully isolated: the helper
+  // never throws, so a paper failure cannot stop the collector, the heartbeat
+  // or the 14-day observation. It is a no-op unless an admin started a session.
+  const paper = await runPaperExecutionIsolated(
+    {
+      runId,
+      occurredAt: serverNow,
+      cycleStatus: status,
+      sources: aged,
+      opportunities: activeOpportunities
+    },
+    (message, extra) => console.error(message, extra)
+  );
+
   if (input.ownsHeartbeat) {
     await touchHeartbeat({
       workerId,
@@ -263,6 +287,14 @@ async function runCycleLocked(input: {
     matrix,
     status,
     runId,
+    paper: {
+      ran: paper.ran,
+      reason: paper.reason,
+      sessionId: paper.sessionId,
+      filled: paper.filled,
+      skipped: paper.skipped,
+      duplicates: paper.duplicates
+    },
     observation: (await getObservation()) ?? session,
     // Written after the lock is released: the key/value cache helpers use the
     // PGlite serialization queue directly, which would deadlock nested inside it.

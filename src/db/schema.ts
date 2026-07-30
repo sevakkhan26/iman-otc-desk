@@ -582,3 +582,111 @@ export const shadowCapitalApprovals = pgTable(
   },
   (t) => [index("shadow_capital_approvals_time_idx").on(t.approvedAt)]
 );
+
+/* ── Shadow Arbitrage Phase 6 — paper execution (simulated, never real) ───── */
+
+/**
+ * A paper trading session. Append-only in spirit: rows are created by an admin
+ * and only their lifecycle status/timestamps change. Nothing here represents a
+ * real exchange account, order or transfer.
+ */
+export const shadowPaperSessions = pgTable(
+  "shadow_paper_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    observationId: uuid("observation_id"),
+    name: text("name").notNull(),
+    /** PROVISIONAL_EVALUATION | APPROVED_PLAN */
+    mode: text("mode").notNull(),
+    /** NOT_STARTED | RUNNING | PAUSED | STOPPED */
+    status: text("status").notNull().default("NOT_STARTED"),
+    totalCapitalToman: bigint("total_capital_toman", { mode: "number" }).notNull(),
+    valuationPriceToman: integer("valuation_price_toman").notNull(),
+    /** Opening book, kept so inventory drift can be measured against it. */
+    openingAllocations: jsonb("opening_allocations")
+      .$type<Array<{ sourceId: string; irtToman: number; usdtUnits: number }>>()
+      .notNull(),
+    /** Fingerprint of the Phase 5 approval this session was started from. */
+    approvalFingerprint: text("approval_fingerprint"),
+    createdBy: text("created_by").notNull(),
+    startedAt: ts("started_at"),
+    pausedAt: ts("paused_at"),
+    stoppedAt: ts("stopped_at"),
+    lastCycleAt: ts("last_cycle_at"),
+    cyclesEvaluated: integer("cycles_evaluated").notNull().default(0),
+    tradesExecuted: integer("trades_executed").notNull().default(0),
+    candidatesSkipped: integer("candidates_skipped").notNull().default(0),
+    note: text("note"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow()
+  },
+  (t) => [index("shadow_paper_sessions_status_idx").on(t.status, t.createdAt)]
+);
+
+/** Current virtual balances per venue for a session. Integer units only. */
+export const shadowPaperBalances = pgTable(
+  "shadow_paper_balances",
+  {
+    /** `${sessionId}|${sourceId}` — deterministic, so upserts stay idempotent. */
+    id: text("id").primaryKey(),
+    sessionId: uuid("session_id").notNull(),
+    sourceId: text("source_id").notNull(),
+    irtToman: bigint("irt_toman", { mode: "number" }).notNull().default(0),
+    usdtMicros: bigint("usdt_micros", { mode: "number" }).notNull().default(0),
+    updatedAt: ts("updated_at").notNull().defaultNow()
+  },
+  (t) => [index("shadow_paper_balances_session_idx").on(t.sessionId)]
+);
+
+/**
+ * Immutable paper ledger. One row per decision — filled or skipped — so the
+ * reason a candidate did not trade is as auditable as a trade itself.
+ * `idempotencyKey` makes a lifecycle executable at most once per session.
+ */
+export const shadowPaperLedger = pgTable(
+  "shadow_paper_ledger",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: uuid("session_id").notNull(),
+    runId: uuid("run_id"),
+    /** `${sessionId}|${lifecycleId}` for fills; unique, so refills are refused. */
+    idempotencyKey: text("idempotency_key"),
+    lifecycleId: text("lifecycle_id").notNull(),
+    routeKey: text("route_key").notNull(),
+    /** FILLED | SKIPPED */
+    outcome: text("outcome").notNull(),
+    rejectionCode: text("rejection_code"),
+    rejectionReason: text("rejection_reason"),
+    requiredRebalance: text("required_rebalance"),
+    buySourceId: text("buy_source_id").notNull(),
+    sellSourceId: text("sell_source_id").notNull(),
+    sizeUsdt: numeric("size_usdt", { precision: 12, scale: 4 }).notNull(),
+    buyVwapToman: bigint("buy_vwap_toman", { mode: "number" }),
+    sellVwapToman: bigint("sell_vwap_toman", { mode: "number" }),
+    buyNotionalToman: bigint("buy_notional_toman", { mode: "number" }),
+    sellNotionalToman: bigint("sell_notional_toman", { mode: "number" }),
+    buyFeeBps: integer("buy_fee_bps"),
+    sellFeeBps: integer("sell_fee_bps"),
+    buyFeeBasis: text("buy_fee_basis"),
+    sellFeeBasis: text("sell_fee_basis"),
+    feeTomanTotal: bigint("fee_toman_total", { mode: "number" }),
+    feeUsdtMicrosTotal: bigint("fee_usdt_micros_total", { mode: "number" }),
+    slippageBufferToman: bigint("slippage_buffer_toman", { mode: "number" }),
+    grossSpreadToman: bigint("gross_spread_toman", { mode: "number" }),
+    netPnlToman: bigint("net_pnl_toman", { mode: "number" }),
+    netPnlAfterBufferToman: bigint("net_pnl_after_buffer_toman", { mode: "number" }),
+    usdtDriftMicros: bigint("usdt_drift_micros", { mode: "number" }),
+    /** Balances of both touched venues immediately after the fill. */
+    balancesAfter: jsonb("balances_after")
+      .$type<Array<{ sourceId: string; irtToman: number; usdtMicros: number }>>()
+      .default([])
+      .notNull(),
+    occurredAt: ts("occurred_at").notNull(),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [
+    uniqueIndex("shadow_paper_ledger_idem_idx").on(t.idempotencyKey),
+    index("shadow_paper_ledger_session_time_idx").on(t.sessionId, t.occurredAt),
+    index("shadow_paper_ledger_outcome_idx").on(t.sessionId, t.outcome)
+  ]
+);

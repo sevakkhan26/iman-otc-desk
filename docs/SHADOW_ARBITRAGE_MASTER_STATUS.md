@@ -597,3 +597,101 @@ accounting and gate-boundary tests plus 2 persistence tests · isolated standalo
 build succeeds and emits the `capital` route.
 
 **Phase 6 (automatic paper execution) has not started.**
+
+---
+
+## 15. Phase 6 — Automatic Paper Execution Engine (branch `shadow-phase6-paper-execution`, not merged)
+
+Built on top of v4.8.0 after the user verified production healthy. **Not merged,
+not tagged and not deployed** — awaiting explicit approval for v4.9.0.
+
+### Safety posture
+
+Paper/Shadow only. No authenticated exchange API, no credentials, no balances
+from a venue, no deposits, withdrawals, transfers or real orders anywhere in the
+path. `broker.ts` and `engine.ts` are pure modules with no network client and no
+adapter import; a structural test asserts that, and also scans every Phase 6
+file for `placeOrder`, `submitOrder`, `createOrder`, `cancelOrder`, `withdraw`,
+`deposit`, `transferFunds`, `signRequest` and `privateApi`. The API refuses
+`apiKey`, `api_key`, `secret`, `apiSecret`, `token`, `password`, `passphrase`,
+`privateKey` and `mnemonic`. OMPFinex is not a valid venue and is rejected.
+
+### Sessions
+
+Admin creates, starts, pauses and resumes a session; creation alone never starts
+execution, so a deployment cannot begin paper trading on its own (a test asserts
+`status = NOT_STARTED` with `startedAt = null` on create). All session state,
+balances and the filled-lifecycle memory live in the database, so a restarted
+container resumes the same session with the same book and re-fills nothing.
+
+Two modes: `PROVISIONAL_EVALUATION`, which runs on a draft 50,000,000-toman
+virtual plan and is labelled non-final in the UI, and `APPROVED_PLAN`, which is
+refused unless the Phase 5 recommendation currently resolves to
+`APPROVED_SIMULATION_PLAN`.
+
+### Execution engine
+
+Runs after each successful collection cycle through `runPaperExecutionIsolated`,
+which never throws — a paper failure cannot stop the collector, the heartbeat or
+the 14-day observation (asserted by a test that feeds the wrapper malformed
+input). Decisions use only same-cycle inputs: that cycle's order books, VWAP
+depth for the traded size, fees that are known and fresh, the slippage buffer,
+account readiness and the virtual balances.
+
+Only `EXECUTABLE_NOW` opportunities with no blocked reasons and positive net
+profit are considered. Size variants are grouped per route and exactly one size
+is chosen deterministically (highest net profit, ties toward the larger size,
+then route key). Each lifecycle fills at most once per session, enforced both by
+the in-memory filled set and by a unique index on `(session, lifecycle)`, so a
+still-open opportunity is not re-filled every 30 seconds.
+
+### Accounting
+
+Separate virtual IRT and USDT per venue; toman is integer and USDT is integer
+micros. Buy decreases IRT and increases USDT; sell decreases USDT and increases
+IRT. Fees are charged in the venue's own fee currency: `QUOTE_IRT` adds the fee
+to what is paid and takes it out of proceeds, `BASE_USDT` takes it out of the
+USDT received and adds it to the USDT sold. **`UNKNOWN` blocks execution** — only
+the three venues with verified accounts have an established basis.
+
+Both legs are priced first and applied together; if either fails, nothing is
+written and the caller's book is not mutated. The database layer refuses a
+negative balance inside the transaction, so a partial fill cannot survive. The
+slippage buffer is reported and tightens the execution gate but moves no cash,
+which keeps conservation exact: total USDT is unchanged by a round trip and
+total toman changes by exactly the net result. Rebalancing stays simulated: when
+inventory is short the trade is blocked and the required transfer is reported.
+
+Every decision — filled or skipped — becomes an immutable ledger row carrying
+both legs, VWAPs, fees, basis, buffer, gross spread, net PnL and the rejection
+reason.
+
+### UI and health
+
+Admin-only Persian RTL panel with a permanent
+`PAPER EXECUTION — NO REAL ORDERS OR TRANSFERS` banner, session status, virtual
+balances, trades, skipped candidates with reasons, realized theoretical PnL,
+fees, inventory drift, opportunity capture rate, block reasons, pause/resume
+controls and a per-trade calculation drawer. Admin health gained a `paper`
+block behind the same admin gate — a new field, not a new unauthenticated
+surface.
+
+### Files
+
+`src/lib/shadowArbitrage/paper/broker.ts`, `.../engine.ts`, `.../run.ts`,
+`src/db/repositories/shadowPaper.ts`, `app/api/shadow-arbitrage/paper/route.ts`,
+`src/components/shadowArbitrage/PaperExecution.tsx`,
+`drizzle/0006_shadow_paper_execution.sql` (three new tables, additive only, no
+drops or alters). `runSerialized` is now exported from the Phase 2 repository
+and reused by the paper repository on purpose: on PGlite the advisory lock *is*
+the serialization queue, so a second private queue wrapper would deadlock.
+
+### Verification
+
+typecheck clean · ESLint 0 errors (17 pre-existing warnings, none new) ·
+12/12 suites green, 316 assertions, 0 failures — 13 new engine/broker tests and
+9 new persistence tests · isolated standalone build succeeds and emits the
+`paper` route · v4.8.0 collector, runner, instrumentation, capital engine and
+30-second cadence unchanged; `observation.id` is read only.
+
+**Phase 7 has not started.**

@@ -120,6 +120,14 @@ async function serial<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
+ * The same reentrancy-aware wrapper, for other repositories that run inside a
+ * collection cycle. They must share this context: a second AsyncLocalStorage
+ * would not see that the PGlite queue is already held and would deadlock,
+ * because on PGlite the advisory lock IS the serialization queue.
+ */
+export const runSerialized = serial;
+
+/**
  * Single-flight guard for a collection cycle.
  * On PostgreSQL this is a real advisory lock, so a second worker is refused.
  * On PGlite it degrades to the serialization queue (one process, one file).

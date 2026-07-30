@@ -61,10 +61,26 @@ import {
   usdtValueToman,
   validateCapitalPlan,
   type ApprovalRecord,
-  type VenueCapitalState,
   type CapitalPlanInput,
-  type RouteEvidence
+  type RouteEvidence,
+  type VenueCapitalState
 } from "../src/lib/shadowArbitrage/capital.ts";
+import {
+  PAPER_FEE_BASIS,
+  applyFill,
+  microsToUsdt,
+  planFill,
+  portfolioValueToman,
+  usdtToMicros,
+  type FeeBasis,
+  type VenueBalance
+} from "../src/lib/shadowArbitrage/paper/broker.ts";
+import {
+  balancesFromAllocations,
+  evaluateCycle,
+  selectBestPerRoute,
+  type PaperCandidate
+} from "../src/lib/shadowArbitrage/paper/engine.ts";
 import {
   isDeadLocalWorker,
   makeWorkerId,
@@ -1678,6 +1694,502 @@ await test("Phase 5 surface is admin-only, credential-free and has no execution 
   );
   assert.equal(/ompfinex/i.test(ui), false);
   assert.ok(ui.includes("موجودی‌ها مجازی‌اند"), "UI must state the balances are virtual");
+});
+
+
+/* ── Phase 6 — paper execution engine ────────────────────────────────────── */
+
+const PX = 100_000;
+const paperReadiness = () => classifyAllVenues(buildAllReadiness([], CAP_NOW));
+
+function paperBalances(over: Partial<Record<string, [number, number]>> = {}): VenueBalance[] {
+  const base: Record<string, [number, number]> = {
+    nobitex: [20_000_000, 100],
+    wallex: [20_000_000, 100],
+    tabdeal: [10_000_000, 50],
+    ...over
+  };
+  return Object.entries(base).map(([sourceId, [irt, usdt]]) => ({
+    sourceId: sourceId as ShadowSourceId,
+    irtToman: irt,
+    usdtMicros: usdtToMicros(usdt)
+  }));
+}
+
+function paperOpportunity(over: Partial<ShadowOpportunity> = {}): ShadowOpportunity {
+  const now = new Date(CAP_NOW).toISOString();
+  const size = (over.sizeUsdt ?? 25) as 5 | 10 | 20 | 25;
+  return {
+    id: over.id ?? `lc-${over.routeKey ?? "nobitex->wallex@25"}`,
+    routeKey: over.routeKey ?? `nobitex->wallex@${size}`,
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    buySourceName: "نوبیتکس",
+    sellSourceName: "والکس",
+    sizeUsdt: size,
+    buyVwapToman: 100_000,
+    sellVwapToman: 102_000,
+    rawSpreadPercent: 2,
+    buyFeeToman: 0,
+    sellFeeToman: 0,
+    buyFeeBps: 25,
+    sellFeeBps: 35,
+    totalFeePercent: 0.6,
+    slippageBufferToman: 1_000,
+    rebalanceCostToman: 0,
+    netProfitToman: 30_000,
+    netEdgePercent: 1.2,
+    buyCostToman: 2_500_000,
+    sellProceedsToman: 2_550_000,
+    eligibility: "EXECUTABLE_NOW",
+    blockedReasons: [],
+    firstSeenAt: now,
+    lastSeenAt: now,
+    endedAt: null,
+    durationMs: 0,
+    maxNetEdgePercent: 1.2,
+    maxNetProfitToman: 30_000,
+    maxRawSpreadPercent: 2,
+    feeUnknown: false,
+    observationCount: 1,
+    isActive: true,
+    buyAgeMs: 0,
+    sellAgeMs: 0,
+    ...over
+  };
+}
+
+const paperSources = (over: Partial<Record<string, Partial<NormalizedSourceSnapshot>>> = {}) => [
+  mockSource("nobitex", "نوبیتکس", 100_000, 99_000, over.nobitex),
+  mockSource("wallex", "والکس", 103_000, 102_000, over.wallex),
+  mockSource("tabdeal", "تبدیل", 101_000, 100_500, over.tabdeal)
+];
+
+await test("Phase 6 buy and sell legs move the right assets in the right direction", () => {
+  const plan = planFill({
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    sizeUsdt: 25,
+    buyVwapToman: 100_000,
+    sellVwapToman: 102_000,
+    buyFeeBps: 25,
+    sellFeeBps: 35,
+    buyFeeBasis: "QUOTE_IRT",
+    sellFeeBasis: "QUOTE_IRT",
+    slippageBufferToman: 1_000
+  });
+  assert.equal(plan.ok, true);
+  if (!plan.ok) return;
+
+  // Buy: 25 × 100,000 = 2,500,000 toman, fee 0.25% = 6,250 charged in toman.
+  assert.equal(plan.buyLeg.notionalToman, 2_500_000);
+  assert.equal(plan.buyLeg.feeToman, 6_250);
+  assert.equal(plan.buyLeg.deltaIrtToman, -2_506_250, "buy decreases IRT by cost plus fee");
+  assert.equal(plan.buyLeg.deltaUsdtMicros, usdtToMicros(25), "buy increases USDT");
+
+  // Sell: 25 × 102,000 = 2,550,000 toman, fee 0.35% = 8,925 out of the proceeds.
+  assert.equal(plan.sellLeg.notionalToman, 2_550_000);
+  assert.equal(plan.sellLeg.feeToman, 8_925);
+  assert.equal(plan.sellLeg.deltaUsdtMicros, -usdtToMicros(25), "sell decreases USDT");
+  assert.equal(plan.sellLeg.deltaIrtToman, 2_541_075, "sell increases IRT net of fee");
+
+  assert.equal(plan.grossSpreadToman, 50_000);
+  assert.equal(plan.totalFeeToman, 15_175);
+  assert.equal(plan.netPnlToman, 2_541_075 - 2_506_250);
+  assert.equal(plan.netPnlToman, 34_825);
+  assert.equal(plan.netPnlAfterBufferToman, 33_825);
+});
+
+await test("Phase 6 fees are charged in the venue's own fee currency", () => {
+  const plan = planFill({
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    sizeUsdt: 10,
+    buyVwapToman: 100_000,
+    sellVwapToman: 105_000,
+    buyFeeBps: 100,
+    sellFeeBps: 200,
+    buyFeeBasis: "BASE_USDT",
+    sellFeeBasis: "BASE_USDT",
+    slippageBufferToman: 0
+  });
+  assert.equal(plan.ok, true);
+  if (!plan.ok) return;
+
+  // Buy with a USDT-denominated fee: pay the full notional, receive 1% less USDT.
+  assert.equal(plan.buyLeg.feeToman, 0);
+  assert.equal(plan.buyLeg.feeUsdtMicros, usdtToMicros(0.1));
+  assert.equal(plan.buyLeg.deltaIrtToman, -1_000_000);
+  assert.equal(plan.buyLeg.deltaUsdtMicros, usdtToMicros(9.9));
+
+  // Sell with a USDT-denominated fee: give up 2% more USDT, receive full proceeds.
+  assert.equal(plan.sellLeg.feeToman, 0);
+  assert.equal(plan.sellLeg.feeUsdtMicros, usdtToMicros(0.2));
+  assert.equal(plan.sellLeg.deltaUsdtMicros, -usdtToMicros(10.2));
+  assert.equal(plan.sellLeg.deltaIrtToman, 1_050_000);
+  assert.equal(plan.totalFeeToman, 0);
+  assert.equal(plan.totalFeeUsdtMicros, usdtToMicros(0.3));
+});
+
+await test("Phase 6 blocks execution when the fee currency is unknown", () => {
+  const unknownBasis = planFill({
+    buySourceId: "nobitex",
+    sellSourceId: "bitpin",
+    sizeUsdt: 25,
+    buyVwapToman: 100_000,
+    sellVwapToman: 102_000,
+    buyFeeBps: 25,
+    sellFeeBps: 35,
+    buyFeeBasis: "QUOTE_IRT",
+    sellFeeBasis: "UNKNOWN" as FeeBasis,
+    slippageBufferToman: 0
+  });
+  assert.equal(unknownBasis.ok, false);
+  if (unknownBasis.ok) return;
+  assert.equal(unknownBasis.code, "fee_basis_unknown");
+
+  // An unknown fee value blocks it too, and separately.
+  const unknownFee = planFill({
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    sizeUsdt: 25,
+    buyVwapToman: 100_000,
+    sellVwapToman: 102_000,
+    buyFeeBps: null,
+    sellFeeBps: 35,
+    buyFeeBasis: "QUOTE_IRT",
+    sellFeeBasis: "QUOTE_IRT",
+    slippageBufferToman: 0
+  });
+  assert.equal(unknownFee.ok, false);
+  if (!unknownFee.ok) assert.equal(unknownFee.code, "fee_unknown");
+
+  // Only venues with a verified account have an established basis.
+  assert.equal(PAPER_FEE_BASIS.nobitex, "QUOTE_IRT");
+  for (const id of ["bitpin", "abantether", "ramzinex", "tetherland", "bit24", "arzinja"]) {
+    assert.equal(PAPER_FEE_BASIS[id as ShadowSourceId], "UNKNOWN");
+  }
+});
+
+await test("Phase 6 accounting conserves the book: only fees leave it", () => {
+  const before = paperBalances();
+  const plan = planFill({
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    sizeUsdt: 25,
+    buyVwapToman: 100_000,
+    sellVwapToman: 102_000,
+    buyFeeBps: 25,
+    sellFeeBps: 35,
+    buyFeeBasis: "QUOTE_IRT",
+    sellFeeBasis: "QUOTE_IRT",
+    slippageBufferToman: 1_000
+  });
+  assert.equal(plan.ok, true);
+  if (!plan.ok) return;
+
+  const applied = applyFill(plan, before);
+  assert.equal(applied.ok, true);
+  if (!applied.ok) return;
+
+  const after = before.map((b) => applied.balancesAfter.find((x) => x.sourceId === b.sourceId) ?? b);
+  const irtBefore = before.reduce((s, b) => s + b.irtToman, 0);
+  const irtAfter = after.reduce((s, b) => s + b.irtToman, 0);
+  const usdtBefore = before.reduce((s, b) => s + b.usdtMicros, 0);
+  const usdtAfter = after.reduce((s, b) => s + b.usdtMicros, 0);
+
+  // Toman changes by exactly the round-trip result; USDT is unchanged in total
+  // because the buy adds what the sell removes. No money appears from nowhere.
+  assert.equal(irtAfter - irtBefore, plan.netPnlToman);
+  assert.equal(usdtAfter - usdtBefore, 0);
+  assert.equal(plan.usdtDriftMicros, 0);
+
+  // Inventory moved between venues even though the total did not.
+  const nobitex = after.find((b) => b.sourceId === "nobitex")!;
+  const wallex = after.find((b) => b.sourceId === "wallex")!;
+  assert.equal(microsToUsdt(nobitex.usdtMicros), 125);
+  assert.equal(microsToUsdt(wallex.usdtMicros), 75);
+  assert.ok(portfolioValueToman(after, PX) > 0);
+});
+
+await test("Phase 6 makes no balance change when either leg cannot be funded", () => {
+  const plan = planFill({
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    sizeUsdt: 25,
+    buyVwapToman: 100_000,
+    sellVwapToman: 102_000,
+    buyFeeBps: 25,
+    sellFeeBps: 35,
+    buyFeeBasis: "QUOTE_IRT",
+    sellFeeBasis: "QUOTE_IRT",
+    slippageBufferToman: 0
+  });
+  assert.equal(plan.ok, true);
+  if (!plan.ok) return;
+
+  // Buy leg fails: not enough toman on the buy venue.
+  const poorIrt = paperBalances({ nobitex: [1_000, 100] });
+  const snapshotIrt = JSON.stringify(poorIrt);
+  const r1 = applyFill(plan, poorIrt);
+  assert.equal(r1.ok, false);
+  if (!r1.ok) {
+    assert.equal(r1.code, "insufficient_irt");
+    assert.equal(r1.requiredRebalance?.sourceId, "nobitex");
+    assert.ok((r1.requiredRebalance?.irtTomanShort ?? 0) > 0);
+  }
+  assert.equal(JSON.stringify(poorIrt), snapshotIrt, "a failed fill must not mutate the book");
+
+  // Sell leg fails: no USDT inventory on the sell venue.
+  const poorUsdt = paperBalances({ wallex: [20_000_000, 0] });
+  const snapshotUsdt = JSON.stringify(poorUsdt);
+  const r2 = applyFill(plan, poorUsdt);
+  assert.equal(r2.ok, false);
+  if (!r2.ok) {
+    assert.equal(r2.code, "insufficient_usdt");
+    assert.equal(r2.requiredRebalance?.sourceId, "wallex");
+  }
+  assert.equal(JSON.stringify(poorUsdt), snapshotUsdt, "the second leg failing rolls back the first");
+});
+
+await test("Phase 6 refuses a round trip that is not net positive after the buffer", () => {
+  const plan = planFill({
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    sizeUsdt: 25,
+    buyVwapToman: 100_000,
+    sellVwapToman: 100_100,
+    buyFeeBps: 25,
+    sellFeeBps: 35,
+    buyFeeBasis: "QUOTE_IRT",
+    sellFeeBasis: "QUOTE_IRT",
+    slippageBufferToman: 1_000
+  });
+  assert.equal(plan.ok, false);
+  if (!plan.ok) assert.equal(plan.code, "not_net_positive");
+});
+
+await test("Phase 6 picks exactly one deterministic size per route", () => {
+  const mk = (size: number, net: number): PaperCandidate => ({
+    lifecycleId: `lc-${size}`,
+    routeKey: `nobitex->wallex@${size}`,
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    sizeUsdt: size,
+    buyVwapToman: 100_000,
+    sellVwapToman: 102_000,
+    netProfitToman: net,
+    slippageBufferToman: 0,
+    buyFeeBps: 25,
+    sellFeeBps: 35
+  });
+  const { selected, dropped } = selectBestPerRoute([mk(5, 10), mk(25, 90), mk(10, 30), mk(20, 90)]);
+  assert.equal(selected.length, 1, "one size per route");
+  assert.equal(selected[0].sizeUsdt, 25, "ties break toward the larger size");
+  assert.equal(dropped.length, 3);
+  // Deterministic across input orderings.
+  const again = selectBestPerRoute([mk(20, 90), mk(10, 30), mk(25, 90), mk(5, 10)]);
+  assert.equal(again.selected[0].lifecycleId, selected[0].lifecycleId);
+});
+
+await test("Phase 6 executes a lifecycle at most once, however long it stays open", () => {
+  const o = paperOpportunity();
+  const first = evaluateCycle({
+    opportunities: [o],
+    sources: paperSources(),
+    venueStates: paperReadiness(),
+    executedLifecycleIds: new Set(),
+    balances: paperBalances()
+  });
+  assert.equal(first.executedCount, 1);
+
+  // The same unchanged opportunity in the next cycle must not refill.
+  const second = evaluateCycle({
+    opportunities: [o],
+    sources: paperSources(),
+    venueStates: paperReadiness(),
+    executedLifecycleIds: new Set([o.id]),
+    balances: first.balancesAfter
+  });
+  assert.equal(second.executedCount, 0);
+  assert.equal(second.decisions[0].kind, "SKIP");
+  if (second.decisions[0].kind === "SKIP") {
+    assert.equal(second.decisions[0].code, "already_executed");
+  }
+  assert.deepEqual(second.balancesAfter, first.balancesAfter, "a skipped cycle changes nothing");
+});
+
+await test("Phase 6 skips stale data, thin depth and ineligible venues with a reason", () => {
+  const states = paperReadiness();
+  const book = paperBalances();
+
+  const staleCycle = evaluateCycle({
+    opportunities: [paperOpportunity()],
+    sources: paperSources({ wallex: { stale: true } }),
+    venueStates: states,
+    executedLifecycleIds: new Set(),
+    balances: book
+  });
+  assert.equal(staleCycle.executedCount, 0);
+  assert.equal(
+    staleCycle.decisions.find((d) => d.kind === "SKIP" && d.code === "stale_market_data")?.kind,
+    "SKIP"
+  );
+
+  // mockSource always builds a full depth ladder, so thin the sell side directly.
+  const thinSources = paperSources().map((src) =>
+    src.sourceId === "wallex"
+      ? {
+          ...src,
+          sizeExecutables: src.sizeExecutables.map((x) =>
+            x.sizeUsdt === 25
+              ? { ...x, sellFillable: false, userSellVwapToman: null, sellFilledUsdt: 0 }
+              : x
+          )
+        }
+      : src
+  );
+  const thin = evaluateCycle({
+    opportunities: [paperOpportunity()],
+    sources: thinSources,
+    venueStates: states,
+    executedLifecycleIds: new Set(),
+    balances: book
+  });
+  assert.equal(thin.executedCount, 0);
+  assert.ok(thin.decisions.some((d) => d.kind === "SKIP" && d.code === "insufficient_depth"));
+
+  // A venue with no usable account can never be traded, even with a live book.
+  const ineligible = evaluateCycle({
+    opportunities: [paperOpportunity({ sellSourceId: "bitpin", routeKey: "nobitex->bitpin@25" })],
+    sources: [...paperSources(), mockSource("bitpin", "بیت‌پین", 103_000, 102_000)],
+    venueStates: states,
+    executedLifecycleIds: new Set(),
+    balances: [...book, { sourceId: "bitpin" as ShadowSourceId, irtToman: 10_000_000, usdtMicros: usdtToMicros(100) }]
+  });
+  assert.equal(ineligible.executedCount, 0);
+  assert.ok(ineligible.decisions.some((d) => d.kind === "SKIP" && d.code === "venue_not_executable"));
+
+  // A blocked opportunity is never executed regardless of the book.
+  const blockedOpp = evaluateCycle({
+    opportunities: [paperOpportunity({ blockedReasons: ["fee_unknown"] as BlockedReasonCode[] })],
+    sources: paperSources(),
+    venueStates: states,
+    executedLifecycleIds: new Set(),
+    balances: book
+  });
+  assert.equal(blockedOpp.executedCount, 0);
+  assert.ok(blockedOpp.decisions.some((d) => d.kind === "SKIP" && d.code === "blocked_opportunity"));
+});
+
+await test("Phase 6 blocks on thin inventory and reports the required rebalance", () => {
+  const result = evaluateCycle({
+    opportunities: [paperOpportunity()],
+    sources: paperSources(),
+    venueStates: paperReadiness(),
+    executedLifecycleIds: new Set(),
+    balances: paperBalances({ wallex: [20_000_000, 1] })
+  });
+  assert.equal(result.executedCount, 0);
+  const skip = result.decisions.find((d) => d.kind === "SKIP");
+  assert.ok(skip && skip.kind === "SKIP");
+  if (skip && skip.kind === "SKIP") {
+    assert.equal(skip.code, "insufficient_usdt");
+    assert.equal(skip.requiredRebalance?.sourceId, "wallex");
+    assert.ok((skip.requiredRebalance?.usdtMicrosShort ?? 0) > 0);
+  }
+  // Rebalancing stays simulated: the engine never moves inventory itself.
+  assert.deepEqual(result.balancesAfter, paperBalances({ wallex: [20_000_000, 1] }));
+});
+
+await test("Phase 6 opening book comes from the plan with integer micros", () => {
+  const book = balancesFromAllocations([
+    { sourceId: "nobitex", irtToman: 10_000_000.4, usdtUnits: 12.345678 },
+    { sourceId: "wallex", irtToman: -5, usdtUnits: -2 }
+  ]);
+  assert.equal(book[0].irtToman, 10_000_000);
+  assert.equal(book[0].usdtMicros, 12_345_678);
+  assert.equal(book[1].irtToman, 0, "a negative opening balance is clamped, never stored");
+  assert.equal(book[1].usdtMicros, 0);
+});
+
+await test("Phase 6 modules are structurally incapable of trading", () => {
+  const files = {
+    broker: readFileSync(new URL("../src/lib/shadowArbitrage/paper/broker.ts", import.meta.url), "utf8"),
+    engine: readFileSync(new URL("../src/lib/shadowArbitrage/paper/engine.ts", import.meta.url), "utf8"),
+    run: readFileSync(new URL("../src/lib/shadowArbitrage/paper/run.ts", import.meta.url), "utf8"),
+    route: readFileSync(new URL("../app/api/shadow-arbitrage/paper/route.ts", import.meta.url), "utf8"),
+    ui: readFileSync(new URL("../src/components/shadowArbitrage/PaperExecution.tsx", import.meta.url), "utf8")
+  };
+
+  // The pure modules must not be able to reach the network at all.
+  for (const key of ["broker", "engine"] as const) {
+    const src = files[key];
+    assert.equal(/from ["'][^"']*adapters/.test(src), false, `${key} must not import an adapter`);
+    assert.equal(/\bfetch\s*\(/.test(src), false, `${key} must not call fetch`);
+    assert.equal(/node:https?|axios|undici|XMLHttpRequest/.test(src), false, `${key} must not import a client`);
+  }
+
+  // No Phase 6 file may reach an order, transfer or withdrawal function.
+  const forbidden = [
+    "placeOrder",
+    "submitOrder",
+    "createOrder",
+    "cancelOrder",
+    "withdraw",
+    "deposit",
+    "transferFunds",
+    "signRequest",
+    "privateApi"
+  ];
+  for (const [name, src] of Object.entries(files)) {
+    for (const term of forbidden) {
+      assert.equal(src.includes(term), false, `${name} must not reference ${term}`);
+    }
+    // An explicit "OMPFinex is excluded" note is documentation, not a reference.
+    const withoutExclusionNote = src.replace(/OMPFinex is (not|intentionally)[^\n]*/gi, "");
+    assert.equal(
+      /ompfinex/i.test(withoutExclusionNote),
+      false,
+      `${name} must not reference OMPFinex`
+    );
+  }
+
+  // The control surface is admin-only and refuses credentials outright.
+  assert.ok(files.route.includes("requireAdminSession"));
+  assert.ok(files.route.includes("forbidden_field"));
+  for (const secret of ["apiKey", "secret", "token", "password", "passphrase"]) {
+    assert.ok(files.route.includes(secret), `paper API must explicitly refuse ${secret}`);
+  }
+
+  // The banner is permanent, not conditional.
+  assert.ok(files.ui.includes("PAPER EXECUTION — NO REAL ORDERS OR TRANSFERS"));
+
+  // The collector must call the isolated wrapper, never the raw engine.
+  const collector = readFileSync(
+    new URL("../src/lib/shadowArbitrage/collector.ts", import.meta.url),
+    "utf8"
+  );
+  assert.ok(collector.includes("runPaperExecutionIsolated"));
+  assert.equal(collector.includes("runPaperExecutionForCycle"), false);
+});
+
+await test("Phase 6 never runs on a venue outside the nine Shadow sources", () => {
+  const result = evaluateCycle({
+    opportunities: [
+      paperOpportunity({
+        buySourceId: "ompfinex" as ShadowSourceId,
+        routeKey: "ompfinex->wallex@25",
+        id: "lc-omp"
+      })
+    ],
+    sources: paperSources(),
+    venueStates: paperReadiness(),
+    executedLifecycleIds: new Set(),
+    balances: paperBalances()
+  });
+  assert.equal(result.executedCount, 0);
+  assert.ok(result.decisions.some((d) => d.kind === "SKIP" && d.code === "venue_not_executable"));
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

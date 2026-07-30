@@ -246,7 +246,7 @@ start read-only with no withdrawal, transfer or order permission.
 | `shadow-arbitrage-master` | `5d367a3` |
 | Tag `v4.6.1` | → `37921ec` |
 | Tag `pre-v4.6.1` | → `393b756` (previous production commit) |
-| Production version observed | **`3.6.0`** — the release has **not** deployed |
+| Production version observed | **`4.6.1`** — deployed and verified 2026-07-30 |
 | Production health | HTTP 200, existing dashboard unaffected, no regression |
 
 ### What is verified vs not
@@ -289,3 +289,36 @@ curl -s localhost:3000/login | grep -o '4\.6\.1'
 Then re-check: version `4.6.1` on the login footer, `CDN-Cache-Control` on the
 shadow APIs, exactly one `iman-otc-shadow-worker`, and ≥3 recorded cycles via the
 admin health endpoint.
+
+
+### Deployment outcome (updated)
+
+`4.6.1` **is live**. It applied after the compose fix `5d367a3` (the worker
+service previously had `image:` with no `build:`, so a pull attempt aborted the
+deploy). Total time from the first `main` push to a verified live version was
+longer than the ~30–60 s the poller comment suggests, because the host performed
+a full image rebuild.
+
+Verified externally at <http://price-monitoring.blumarkets.com> (cache-busted,
+`X-Cache: BYPASS`):
+
+* login footer reports `4.6.1`
+* `/api/shadow-arbitrage/*` now emit `private, no-store`, `CDN-Cache-Control`,
+  `Surrogate-Control`, `Vary: Cookie`, `X-Robots-Tag` — the new build's headers
+* unauthenticated: page `307` → login, all five shadow APIs and the observation
+  POST `401`
+* existing dashboard unaffected (`/login` 200, `/dashboard` 307)
+
+Still **not** verified (needs production admin credentials or host access, which
+this machine does not have):
+
+* admin and viewer login behaviour on production
+* the Persian dashboard rendered while authenticated
+* collector heartbeat, production cycle count, duplicate-key count, one-collector
+  check, and PostgreSQL-vs-PGlite confirmation via
+  `GET /api/shadow-arbitrage/health`
+* whether `iman-otc-shadow-worker` is actually running on the host
+
+The production **database backup was never run or verified** — the host stayed
+unreachable. Protection remains the `pre-v4.6.1` tag plus the strictly additive
+migrations.

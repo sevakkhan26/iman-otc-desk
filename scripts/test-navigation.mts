@@ -201,10 +201,8 @@ await test("no page, layout, API, database or backend logic was touched", () => 
   const view = read("src/components/ShadowArbitrageView.tsx");
   for (const panel of [
     "ObservationHeader",
-    "SummaryCards",
-    "OpportunityTable",
-    "SourceTable",
-    "AccountReadiness",
+    "OpportunitiesPanel",
+    "SourcesPanel",
     "CapitalSimulator",
     "PaperExecution",
     "LiveReadiness"
@@ -275,10 +273,8 @@ await test("8A every existing section survives, in its correct tab", () => {
   const view = read("src/components/ShadowArbitrageView.tsx");
   const sectionTab: Array<[string, string]> = [
     ["OverviewPanel", "overview"],
-    ["SummaryCards", "opportunities"],
-    ["OpportunityTable", "opportunities"],
-    ["SourceTable", "sources"],
-    ["AccountReadiness", "sources"],
+    ["OpportunitiesPanel", "opportunities"],
+    ["SourcesPanel", "sources"],
     ["CapitalSimulator", "capital"],
     ["PaperExecution", "paper"],
     ["LiveReadiness", "live"],
@@ -445,11 +441,12 @@ await test("8A the tab bar is a real tablist and stays keyboard reachable", () =
 
 await test("8A no API, database, calculation or safety logic changed", () => {
   const view = read("src/components/ShadowArbitrageView.tsx");
-  // The same read-only endpoints as before, plus two summary reads.
+  // The same read-only endpoints as before, plus the summary reads. Phase 8B
+  // added the existing accounts read; no endpoint was created or changed.
   const endpoints = [...view.matchAll(/\/api\/shadow-arbitrage\/([a-z-]+)/g)].map((m) => m[1]);
   assert.deepEqual(
     [...new Set(endpoints)].sort(),
-    ["analytics", "history", "live-readiness", "matrix", "observation", "paper"]
+    ["accounts", "analytics", "history", "live-readiness", "matrix", "observation", "paper"]
   );
   // The only mutating call is the pre-existing pause/resume control.
   const posts = view.match(/method: "POST"/g) ?? [];
@@ -493,7 +490,15 @@ function stripComments(src: string): string {
 /** Only the Phase 8A section of the stylesheet — never an unrelated rule. */
 function phase8aCss(): string {
   const css = read("app/globals.css");
-  return css.slice(css.indexOf("Phase 8A shell and overview"));
+  const start = css.indexOf("Phase 8A shell and overview");
+  const end = css.indexOf("Phase 8B opportunities and sources");
+  return css.slice(start, end > start ? end : undefined);
+}
+
+/** Only the Phase 8B section — the two redesigned tabs. */
+function phase8bCss(): string {
+  const css = read("app/globals.css");
+  return css.slice(css.indexOf("Phase 8B opportunities and sources"));
 }
 
 await test("8A polish: the desktop tab strip uses the full content width", () => {
@@ -743,7 +748,9 @@ await test("preview harness renders the production shell, not a rebuilt one", ()
 
   // It drives the real standalone build over HTTP; it does not assemble markup.
   assert.ok(preview.includes("standalone"), "it boots the production bundle");
-  assert.ok(preview.includes("/shadow-arbitrage?tab=overview"), "it navigates the real route");
+  // It navigates the real route; the tab is a parameter, defaulting to Overview.
+  assert.ok(preview.includes("/shadow-arbitrage?tab=${shot.tab}"), "it navigates the real route");
+  assert.ok(preview.includes('process.env.PREVIEW_TABS ?? "overview"'));
   assert.ok(preview.includes("Page.captureScreenshot"), "a real browser takes the picture");
 
   // No substitute shell, sidebar, header or icon list may exist here.
@@ -812,6 +819,657 @@ await test("preview does not modify production shell, header or tokens", () => {
     read("src/components/ShadowArbitrageHeaderButton.tsx").includes('role !== "admin"'),
     "and it is still admin-only"
   );
+});
+
+
+/* ══ Phase 8B — Opportunities and Sources/Fees ═══════════════════════════════ */
+
+const {
+  DEFAULT_OPPORTUNITY_FILTERS,
+  OPPORTUNITY_SORTS,
+  activeFilterCount,
+  evidenceFor,
+  filterOpportunities,
+  groupOpportunities,
+  indexPaperEvidence,
+  primaryBlockingReason,
+  sortOpportunities,
+  summarizeOpportunities
+} = await import("../src/components/shadowArbitrage/opportunityModel.ts");
+
+const { buildVenueRows, summarizeVenues, feeExpiryIso, settlementFor } = await import(
+  "../src/components/shadowArbitrage/sourcesModel.ts"
+);
+
+type AnyRecord = Record<string, unknown>;
+
+/** A complete opportunity row; every test overrides only what it cares about. */
+function opp(over: AnyRecord = {}): AnyRecord {
+  return {
+    id: "lc-1",
+    routeKey: "nobitex->wallex@25",
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    buySourceName: "نوبیتکس",
+    sellSourceName: "والکس",
+    sizeUsdt: 25,
+    buyVwapToman: 100_000,
+    sellVwapToman: 101_000,
+    rawSpreadPercent: 1,
+    buyFeeToman: 6_250,
+    sellFeeToman: 8_837,
+    buyFeeBps: 25,
+    sellFeeBps: 35,
+    totalFeePercent: 0.6,
+    slippageBufferToman: 1_250,
+    rebalanceCostToman: 0,
+    netProfitToman: 8_663,
+    netEdgePercent: 0.34,
+    buyCostToman: 2_500_000,
+    sellProceedsToman: 2_525_000,
+    eligibility: "EXECUTABLE_NOW",
+    blockedReasons: [],
+    firstSeenAt: "2026-07-30T10:00:00.000Z",
+    lastSeenAt: "2026-07-30T10:05:00.000Z",
+    endedAt: null,
+    durationMs: 300_000,
+    maxNetEdgePercent: 0.4,
+    maxNetProfitToman: 9_000,
+    maxRawSpreadPercent: 1.2,
+    feeUnknown: false,
+    observationCount: 10,
+    isActive: true,
+    buyAgeMs: 4_000,
+    sellAgeMs: 6_000,
+    ...over
+  };
+}
+
+/** A paper ledger row with the five recorded PnL figures. */
+function ledger(over: AnyRecord = {}): AnyRecord {
+  return {
+    lifecycleId: "lc-1",
+    routeKey: "nobitex->wallex@25",
+    outcome: "FILLED",
+    sizeUsdt: 25,
+    rejectionCode: null,
+    rejectionReason: null,
+    buyFeeAsset: "IRT",
+    buyFeeDebitMode: "ADD_TO_DEBIT",
+    buyFeeProvenance: "ADMIN_CONFIRMED",
+    sellFeeAsset: "USDT",
+    sellFeeDebitMode: "ADD_TO_DEBIT",
+    sellFeeProvenance: "ADMIN_CONFIRMED",
+    markPriceToman: 100_000,
+    grossSpreadToman: 25_000,
+    slippageBufferToman: 1_250,
+    cashPnlIrtToman: 43_750,
+    inventoryDeltaUsdtMicros: -87_500,
+    sellFeeValueToman: 8_750,
+    economicNetPnlToman: 35_000,
+    riskAdjustedPnlToman: 33_750,
+    occurredAt: "2026-07-30T10:05:00.000Z",
+    ...over
+  };
+}
+
+await test("8B filters are exact and combine without surprises", () => {
+  const rows = [
+    opp({ id: "a", sizeUsdt: 5, buySourceId: "nobitex", sellSourceId: "wallex" }),
+    opp({
+      id: "b",
+      sizeUsdt: 25,
+      buySourceId: "bitpin",
+      sellSourceId: "tabdeal",
+      buySourceName: "بیت‌پین",
+      sellSourceName: "تبدیل",
+      eligibility: "ACCOUNT_REQUIRED"
+    }),
+    opp({ id: "c", sizeUsdt: 25, isActive: false }),
+    opp({ id: "d", sizeUsdt: 25, feeUnknown: true, netProfitToman: 0 })
+  ];
+  const f = DEFAULT_OPPORTUNITY_FILTERS;
+
+  // Completed lifecycles are hidden until asked for.
+  assert.deepEqual(filterOpportunities(rows, f).map((o) => o.id), ["a", "b", "d"]);
+  assert.deepEqual(
+    filterOpportunities(rows, { ...f, includeCompleted: true }).map((o) => o.id),
+    ["a", "b", "c", "d"]
+  );
+  // Size, venue, account and net-positive filters.
+  assert.deepEqual(filterOpportunities(rows, { ...f, size: "5" }).map((o) => o.id), ["a"]);
+  assert.deepEqual(filterOpportunities(rows, { ...f, sourceId: "tabdeal" }).map((o) => o.id), ["b"]);
+  assert.deepEqual(
+    filterOpportunities(rows, { ...f, currentAccountsOnly: true }).map((o) => o.id),
+    ["a", "d"]
+  );
+  // A fee-unknown row is never counted as net positive; a route that merely
+  // needs an account still is, because its fees and net result are known.
+  assert.deepEqual(
+    filterOpportunities(rows, { ...f, netPositiveOnly: true }).map((o) => o.id),
+    ["a", "b"]
+  );
+  // Search matches the Persian venue name and the ascii id alike.
+  assert.deepEqual(filterOpportunities(rows, { ...f, query: "تبدیل" }).map((o) => o.id), ["b"]);
+  assert.deepEqual(filterOpportunities(rows, { ...f, query: "bitpin" }).map((o) => o.id), ["b"]);
+  assert.deepEqual(filterOpportunities(rows, { ...f, query: "والکس" }).map((o) => o.id), ["a", "d"]);
+  assert.deepEqual(filterOpportunities(rows, { ...f, query: "هیچ" }).map((o) => o.id), []);
+  assert.equal(activeFilterCount(f), 0);
+  assert.equal(activeFilterCount({ ...f, size: "5", netPositiveOnly: true }), 2);
+});
+
+await test("8B sorting is deterministic and never invents a missing metric", () => {
+  const rows = [
+    opp({ id: "low", rawSpreadPercent: 0.2, durationMs: 10, buyAgeMs: 1, sellAgeMs: 1 }),
+    opp({ id: "high", rawSpreadPercent: 0.9, durationMs: 90, buyAgeMs: 50, sellAgeMs: 50 }),
+    opp({ id: "mid", rawSpreadPercent: 0.5, durationMs: 50, buyAgeMs: 20, sellAgeMs: 20 })
+  ];
+  const evidence = indexPaperEvidence([
+    ledger({ lifecycleId: "mid", riskAdjustedPnlToman: 10_000, economicNetPnlToman: 12_000 }),
+    ledger({ lifecycleId: "low", riskAdjustedPnlToman: 90_000, economicNetPnlToman: 95_000 })
+  ]);
+
+  // Rows with no recorded figure sort last — they are not treated as zero.
+  assert.deepEqual(
+    sortOpportunities(rows, "riskAdjusted", evidence).map((o) => o.id),
+    ["low", "mid", "high"]
+  );
+  assert.deepEqual(
+    sortOpportunities(rows, "economic", evidence).map((o) => o.id),
+    ["low", "mid", "high"]
+  );
+  assert.deepEqual(
+    sortOpportunities(rows, "grossSpread", evidence).map((o) => o.id),
+    ["high", "mid", "low"]
+  );
+  assert.deepEqual(
+    sortOpportunities(rows, "freshness", evidence).map((o) => o.id),
+    ["low", "mid", "high"]
+  );
+  assert.deepEqual(
+    sortOpportunities(rows, "duration", evidence).map((o) => o.id),
+    ["high", "mid", "low"]
+  );
+
+  // A tie is broken by raw spread and then by lifecycle id, so repeated renders
+  // of the same data are byte-identical.
+  const tied = [
+    opp({ id: "z", rawSpreadPercent: 0.5, durationMs: 5 }),
+    opp({ id: "a", rawSpreadPercent: 0.5, durationMs: 5 }),
+    opp({ id: "m", rawSpreadPercent: 0.5, durationMs: 5 })
+  ];
+  const once = sortOpportunities(tied, "duration", new Map()).map((o) => o.id);
+  const twice = sortOpportunities([...tied].reverse(), "duration", new Map()).map((o) => o.id);
+  assert.deepEqual(once, ["a", "m", "z"]);
+  assert.deepEqual(once, twice, "input order must not change the result");
+  // Sorting never mutates the caller's array.
+  assert.deepEqual(tied.map((o) => o.id), ["z", "a", "m"]);
+  // Every offered sort key is implemented.
+  for (const s of OPPORTUNITY_SORTS) {
+    assert.equal(sortOpportunities(rows, s.key, evidence).length, rows.length);
+  }
+});
+
+await test("8B paper evidence is joined exactly, or not at all", () => {
+  const index = indexPaperEvidence([
+    ledger({ lifecycleId: "lc-1", outcome: "SKIPPED", riskAdjustedPnlToman: 1 }),
+    ledger({ lifecycleId: "lc-1", outcome: "FILLED", riskAdjustedPnlToman: 2 })
+  ]);
+  // A settled fill always wins over a skip, whatever the input order.
+  assert.equal(index.get("lc-1")!.outcome, "FILLED");
+  assert.equal(index.get("lc-1")!.riskAdjustedPnlToman, 2);
+
+  // Micros are converted to USDT, never rounded to zero.
+  assert.equal(index.get("lc-1")!.inventoryDeltaUsdt, -0.0875);
+
+  // The size must match: a figure recorded for another size is not borrowed.
+  assert.equal(evidenceFor(opp({ id: "lc-1", sizeUsdt: 25 }), index)!.economicNetPnlToman, 35_000);
+  assert.equal(evidenceFor(opp({ id: "lc-1", sizeUsdt: 10 }), index), null);
+  assert.equal(evidenceFor(opp({ id: "other" }), index), null);
+
+  // Two skips: the later timestamp wins, deterministically.
+  const skips = indexPaperEvidence([
+    ledger({ outcome: "SKIPPED", occurredAt: "2026-07-30T09:00:00.000Z", rejectionCode: "old" }),
+    ledger({ outcome: "SKIPPED", occurredAt: "2026-07-30T11:00:00.000Z", rejectionCode: "new" })
+  ]);
+  assert.equal(skips.get("lc-1")!.rejectionCode, "new");
+});
+
+await test("8B the three categories keep their exact membership", () => {
+  const rows = [
+    opp({ id: "valid" }),
+    opp({ id: "raw", feeUnknown: true, eligibility: "ACCOUNT_REQUIRED", rawSpreadPercent: 0.4 }),
+    opp({ id: "blocked", eligibility: "BLOCKED", blockedReasons: ["fee_unknown", "stale_buy_source"] })
+  ];
+  const groups = groupOpportunities(rows);
+  assert.deepEqual(groups.valid.map((o) => o.id), ["valid"]);
+  assert.deepEqual(groups.raw.map((o) => o.id), ["raw"]);
+  assert.deepEqual(groups.blocked.map((o) => o.id), ["blocked"]);
+
+  const summary = summarizeOpportunities(groups);
+  assert.equal(summary.valid, 1);
+  assert.equal(summary.raw, 1);
+  assert.equal(summary.blocked, 1);
+  assert.equal(summary.shown, 3);
+  assert.equal(summary.bestValidNetToman, 8_663);
+  // With no valid row there is no "best" — null, never zero.
+  assert.equal(summarizeOpportunities(groupOpportunities([rows[2]])).bestValidNetToman, null);
+});
+
+await test("8B the exact blocking reasons are preserved, never summarised away", () => {
+  const reasons = ["stale_sell_source", "fee_unknown", "insufficient_buy_depth"];
+  const o = opp({ eligibility: "BLOCKED", blockedReasons: reasons });
+  // The first recorded reason leads; the rest stay available in order.
+  assert.equal(primaryBlockingReason(o), "stale_sell_source");
+  assert.equal(primaryBlockingReason(opp({ blockedReasons: [] })), null);
+
+  const panel = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
+  // The complete list is rendered, not a truncated slice of it.
+  assert.ok(panel.includes("o.blockedReasons.slice(1)"), "every remaining reason is listed");
+  assert.equal(/slice\(0,\s*\d\)/.test(panel), false, "reasons must not be capped");
+  // No generic catch-all sentence replaces a real reason.
+  assert.equal(panel.includes("مسدود شده است"), false);
+  // Technical codes stay out of the primary UI: only the drawer prints them.
+  assert.equal(/<code/.test(panel), false, "codes belong in the details drawer");
+  assert.ok(read("src/components/shadowArbitrage/OpportunityDrawer.tsx").includes('className="sa-code"'));
+  // Each reason chip carries the plain-Persian explanation as its tooltip.
+  assert.ok(panel.includes("title={blockedDetail(primary)}"));
+});
+
+await test("8B missing figures render as an em dash with a reason, never as zero", () => {
+  const panel = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
+  // The money renderer has exactly one path for null, and it is the em dash.
+  const money = panel.slice(panel.indexOf("function Money("));
+  assert.ok(money.includes("if (value === null)"));
+  assert.ok(money.includes("—"));
+  assert.ok(money.includes("title={unknownHint}"), "and it says why it is missing");
+  // Nothing falls back to a number.
+  assert.equal(/\?\?\s*0\b/.test(panel), false, "no zero fallback for a missing metric");
+
+  const sources = read("src/components/shadowArbitrage/SourcesPanel.tsx");
+  assert.equal(/\?\?\s*0\b/.test(sources), false);
+  assert.ok(sources.includes('title="کارمزد این صرافی هنوز تأیید نشده است"'));
+});
+
+await test("8B the sources tab keeps health and readiness apart, with per-side settlement", () => {
+  const rows = buildVenueRows({
+    certifications: [
+      {
+        sourceId: "nobitex",
+        sourceName: "نوبیتکس",
+        status: "LIVE_VERIFIED",
+        marketSymbol: "USDTIRT",
+        marketModel: "ORDER_BOOK",
+        lastProbeAt: "2026-07-30T10:00:00.000Z",
+        lastError: null
+      },
+      {
+        sourceId: "arzinja",
+        sourceName: "آرزینجا",
+        status: "REFERENCE_ONLY",
+        marketSymbol: "USDT",
+        marketModel: "REFERENCE",
+        lastProbeAt: "2026-07-30T10:00:00.000Z",
+        lastError: null
+      }
+    ] as never,
+    health: [
+      {
+        sourceId: "nobitex",
+        sourceName: "نوبیتکس",
+        samples: 100,
+        uptimePercent: 99.5,
+        errorRatePercent: 0.5,
+        freshnessPercent: 98,
+        latencyP50Ms: 120,
+        latencyP95Ms: 400,
+        lastError: null,
+        lastErrorAt: null,
+        rateLimitNote: ""
+      }
+    ] as never,
+    snapshots: [{ sourceId: "nobitex", sourceName: "نوبیتکس", health: "healthy", ageMs: 4_000 }] as never,
+    venues: [
+      {
+        sourceId: "nobitex",
+        nameFa: "نوبیتکس",
+        accountState: "VERIFIED",
+        takerFeeBps: 25,
+        feeProvenance: "ADMIN_CONFIRMED",
+        feeTier: null,
+        officialSourceUrl: null,
+        feeVerifiedAt: "2026-07-01T00:00:00.000Z",
+        feeStale: false,
+        apiCapabilities: ["PUBLIC_MARKET_DATA"],
+        requiredAction: "اقدامی لازم نیست.",
+        blockingReason: null,
+        notes: ""
+      },
+      {
+        sourceId: "arzinja",
+        nameFa: "آرزینجا",
+        accountState: "REFERENCE_ONLY",
+        takerFeeBps: null,
+        feeProvenance: "UNKNOWN",
+        feeTier: null,
+        officialSourceUrl: null,
+        feeVerifiedAt: null,
+        feeStale: true,
+        apiCapabilities: ["NONE_VERIFIED"],
+        requiredAction: "اقدامی لازم نیست — این منبع فقط برای مقایسه است.",
+        blockingReason: "منبع فقط مرجع است و اجرای آن تأیید نشده.",
+        notes: ""
+      }
+    ] as never,
+    feeReverifyDays: 90
+  });
+
+  const nobitex = rows.find((r) => r.sourceId === "nobitex")!;
+  const arzinja = rows.find((r) => r.sourceId === "arzinja")!;
+
+  // Health facts and readiness facts live on the same row but never merge.
+  assert.equal(nobitex.health, "healthy");
+  assert.equal(nobitex.latencyP95Ms, 400);
+  assert.equal(nobitex.accountState, "VERIFIED");
+  assert.equal(nobitex.takerFeeBps, 25);
+
+  // Settlement is per venue AND per side, from the admin-confirmed table.
+  assert.equal(nobitex.buySettlement.feeAsset, "IRT");
+  assert.equal(nobitex.sellSettlement.feeAsset, "USDT");
+  assert.equal(nobitex.buySettlement.provenance, "ADMIN_CONFIRMED");
+  assert.equal(arzinja.buySettlement.feeAsset, "UNKNOWN");
+  assert.equal(arzinja.sellSettlement.provenance, "UNKNOWN");
+  assert.deepEqual(settlementFor("bit24", "sell"), {
+    feeAsset: "UNKNOWN",
+    debitMode: "UNKNOWN",
+    provenance: "UNKNOWN"
+  });
+
+  // Arzinja is marked reference-only, semantically and visually.
+  assert.equal(arzinja.referenceOnly, true);
+  assert.ok(read("src/components/shadowArbitrage/SourcesPanel.tsx").includes("فقط مرجع"));
+
+  // Expiry comes from the confirmation date plus the reported window.
+  assert.equal(nobitex.feeExpiresAt, "2026-09-29T00:00:00.000Z");
+  assert.equal(feeExpiryIso(null, 90), null);
+  assert.equal(feeExpiryIso("2026-07-01T00:00:00.000Z", null), null);
+
+  // A venue the accounts endpoint never described keeps nulls, not defaults.
+  const partial = buildVenueRows({
+    certifications: [],
+    health: [],
+    snapshots: [{ sourceId: "bit24", sourceName: "بیت۲۴", health: "degraded", ageMs: 1 }] as never,
+    venues: [],
+    feeReverifyDays: null
+  });
+  assert.equal(partial[0].takerFeeBps, null);
+  assert.equal(partial[0].accountState, null);
+  assert.equal(partial[0].requiredAction, null);
+
+  const summary = summarizeVenues(rows);
+  assert.equal(summary.total, 2);
+  assert.equal(summary.healthy, 1);
+  assert.equal(summary.accountsReady, 1);
+  assert.equal(summary.feesCurrent, 1);
+  assert.equal(summary.feesUnknown, 1);
+  assert.equal(summary.referenceOnly, 1);
+});
+
+await test("8B both tabs reuse the shared glass primitives and add no material", () => {
+  const op = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
+  const sr = read("src/components/shadowArbitrage/SourcesPanel.tsx");
+
+  const surfaces: Array<[string, string, string]> = [
+    ["opportunity summary", op, 'className="panel sa-panel sa-op-summary"'],
+    ["filter rail", op, 'className="panel sa-panel sa-op-filterbar"'],
+    ["category group", op, "panel sa-panel sa-op-group"],
+    ["size segmented control", op, 'className="sa-op-segmented glass-tabbar"'],
+    ["active segment", op, "is-active glass-control"],
+    ["filter input", op, "sa-input glass-control sa-op-control"],
+    ["filter select", op, "sa-select glass-control sa-op-control"],
+    ["mobile card", op, 'className="sa-op-card glass-control"'],
+    ["clear action", op, 'className="sa-op-clear glass-control"'],
+    ["sources summary", sr, 'className="panel sa-panel sa-sr-summary"'],
+    ["health table panel", sr, 'className="panel sa-panel" aria-label="سلامت منبع و داده"'],
+    ["readiness table panel", sr, 'className="panel sa-panel" aria-label="آمادگی حساب و کارمزد"']
+  ];
+  for (const [name, src, needle] of surfaces) {
+    assert.ok(src.includes(needle), `${name} must reuse a shared primitive (${needle})`);
+  }
+  // Panel structure comes from the shared header/body classes.
+  assert.ok(op.includes("panel-header sa-panel-header") && op.includes('className="panel-body'));
+  assert.ok(sr.includes("panel-header sa-panel-header") && sr.includes('className="panel-body'));
+  // No inline styling sneaks a surface in through the back door.
+  for (const src of [op, sr]) {
+    assert.equal(/style=\{\{/.test(src), false, "no inline styles");
+  }
+});
+
+await test("8B Phase 8B CSS declares layout only — no forked material", () => {
+  const css = stripComments(phase8bCss());
+
+  assert.equal(/backdrop-filter\s*:/.test(css), false, "blur must come from the primitives");
+  assert.equal(/box-shadow\s*:/.test(css), false, "shadows must come from the primitives");
+
+  // Backgrounds: only the reset and the semantic status rail.
+  const backgrounds = [...css.matchAll(/background\s*:\s*([^;]+);/g)].map((m) => m[1].trim());
+  const allowed = ["none", "var(--green)", "var(--yellow)", "var(--red)", "var(--line)"];
+  for (const bg of backgrounds) {
+    assert.ok(allowed.includes(bg), `unexpected surface background in Phase 8B CSS: ${bg}`);
+  }
+  // Colours are tokens or mixes of tokens — no new literals.
+  assert.deepEqual([...new Set([...css.matchAll(/#[0-9a-fA-F]{3,8}/g)].map((m) => m[0]))], []);
+  assert.equal(/rgba?\(\s*\d/.test(css), false, "no raw rgb()/rgba() values");
+  // Borders and radii are structural or token-derived only.
+  const borders = [...css.matchAll(/border[a-z-]*\s*:\s*([^;]+);/g)].map((m) => m[1].trim());
+  for (const b of borders) {
+    assert.ok(
+      b === "0" || b.includes("999px") || b.includes("var(--radius"),
+      `unexpected border declaration: ${b}`
+    );
+  }
+});
+
+await test("8B every new selector is scoped under .sa-*", () => {
+  const css = stripComments(phase8bCss());
+  // Collect each selector group: lines accumulate until one opens a block.
+  const selectors: string[] = [];
+  let buffer: string[] = [];
+  for (const raw of css.split("\n")) {
+    const line = raw.trim();
+    if (!line || line === "}" || line.endsWith(";")) {
+      buffer = [];
+      continue;
+    }
+    if (line.endsWith("{")) {
+      const group = [...buffer, line.slice(0, -1)].join(" ").trim();
+      buffer = [];
+      if (group.startsWith("@") || !group) continue;
+      for (const one of group.split(",")) {
+        const selector = one.trim();
+        if (selector) selectors.push(selector);
+      }
+      continue;
+    }
+    buffer.push(line);
+  }
+  assert.ok(selectors.length > 30, "the section must actually contain rules");
+  for (const selector of selectors) {
+    assert.ok(selector.includes(".sa-"), `unscoped selector leaked into globals: ${selector}`);
+  }
+});
+
+await test("8B the page never scrolls sideways — only tables and rails do", () => {
+  const css = phase8bCss();
+
+  // Grid tracks can shrink, so a long cell cannot push the page wider.
+  const gridTracks = [...css.matchAll(/grid-template-columns\s*:\s*([^;]+);/g)].map((m) =>
+    m[1].trim()
+  );
+  for (const track of gridTracks) {
+    assert.ok(
+      track.includes("minmax(0,") || track.includes("minmax(190px, 1fr)"),
+      `grid track must be able to shrink: ${track}`
+    );
+  }
+  // Containers opt out of the min-content floor.
+  assert.ok(css.includes("min-width: 0"));
+  // Horizontal scrolling is delegated to the table wrapper and the segmented rail.
+  assert.ok(read("app/globals.css").includes(".sa-table-wrap {"));
+  const segmented = css.slice(css.indexOf(".sa-op-segmented {"), css.indexOf(".sa-op-seg {"));
+  assert.ok(segmented.includes("overflow-x: auto"));
+
+  // Below 768px the wide table is replaced by cards instead of being squeezed.
+  const mobile = css.slice(css.indexOf("@media (max-width: 768px)"));
+  assert.ok(mobile.slice(0, 700).includes(".sa-op-table-wrap"));
+  assert.ok(mobile.slice(0, 700).includes("display: none"));
+  assert.ok(mobile.slice(0, 700).includes(".sa-op-cards"));
+  assert.ok(css.includes(".sa-op-cards {\n  display: none;\n}"), "cards are desktop-hidden");
+});
+
+await test("8B RTL numbers, ratios and route strings are bidi-isolated", () => {
+  const css = phase8bCss();
+  const rule = css.slice(css.indexOf(".sa-bidi {"));
+  assert.ok(rule.slice(0, 120).includes("direction: ltr"));
+  assert.ok(rule.slice(0, 120).includes("unicode-bidi: isolate"));
+
+  const bidi = read("src/components/shadowArbitrage/Bidi.tsx");
+  assert.ok(bidi.includes('className="sa-bidi"'));
+
+  // Both tabs use it for percentages, ratios and latency figures.
+  const op = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
+  const sr = read("src/components/shadowArbitrage/SourcesPanel.tsx");
+  assert.ok(op.includes("<Bidi>{formatPercentFa(o.rawSpreadPercent, 3, true)}</Bidi>"));
+  assert.ok(sr.includes("<Bidi>{formatPercentFa(r.availabilityPercent, 1)}</Bidi>"));
+  assert.ok(sr.includes("p50 ${toFaDigits(r.latencyP50Ms)}ms"));
+  assert.ok(sr.includes("toFaDigits(summary.healthy)} / ${toFaDigits(summary.total)"));
+});
+
+await test("8B the tabs are keyboard reachable and labelled", () => {
+  const op = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
+  const sr = read("src/components/shadowArbitrage/SourcesPanel.tsx");
+
+  // Rows and cards are operable with a keyboard, not click-only.
+  assert.equal((op.match(/tabIndex=\{0\}/g) ?? []).length, 2, "table row and mobile card");
+  assert.ok(op.includes('e.key === "Enter" || e.key === " "'));
+  assert.ok(op.includes("aria-label={`جزئیات محاسبهٔ خرید از"));
+  // Filters announce themselves.
+  assert.ok(op.includes('role="group" aria-label="حجم معامله"'));
+  assert.ok(op.includes('aria-label="فیلترها و مرتب‌سازی"'));
+  assert.ok(op.includes("aria-pressed="));
+  // Tables carry scoped headers and section labels.
+  assert.ok((sr.match(/scope="col"/g) ?? []).length > 10);
+  assert.ok(sr.includes('aria-expanded={editing === r.sourceId}'));
+  // Focus is visible for every custom control.
+  const css = phase8bCss();
+  assert.ok(css.includes(".sa-op-seg:focus-visible"));
+  assert.ok(css.includes(".sa-op-card:focus-visible"));
+});
+
+await test("8B every data state is explicit and none of them fabricates data", () => {
+  const op = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
+  const sr = read("src/components/shadowArbitrage/SourcesPanel.tsx");
+
+  for (const [name, src] of [["opportunities", op], ["sources", sr]] as const) {
+    assert.ok(src.includes("if (error)"), `${name} has an error state`);
+    assert.ok(src.includes("loading &&"), `${name} has a loading state`);
+    assert.ok(src.includes("sa-empty"), `${name} has an empty state`);
+    assert.ok(src.includes('aria-busy'), `${name} announces loading`);
+  }
+  // Stale and partial data are called out rather than presented as current.
+  assert.ok(op.includes("stale ?") && op.includes("بودجهٔ تازگی"));
+  assert.ok(sr.includes("const partial = venues.length === 0"));
+  assert.ok(sr.includes("سلامت منابع همچنان معتبر است"));
+});
+
+await test("8B the redesign adds no order, credential, balance or transfer path", () => {
+  const files = [
+    "src/components/shadowArbitrage/OpportunitiesPanel.tsx",
+    "src/components/shadowArbitrage/SourcesPanel.tsx",
+    "src/components/shadowArbitrage/opportunityModel.ts",
+    "src/components/shadowArbitrage/sourcesModel.ts",
+    "src/components/shadowArbitrage/Bidi.tsx",
+    "src/components/ShadowArbitrageView.tsx"
+  ];
+  const banned = [
+    /placeOrder/i,
+    /cancelOrder/i,
+    /createOrder/i,
+    /\bwithdraw/i,
+    /\bdeposit\(/i,
+    /transferFunds/i,
+    /apiKey/i,
+    /apiSecret/i,
+    /privateKey/i,
+    /passphrase/i,
+    /fetchBalance/i,
+    /signRequest/i
+  ];
+  for (const file of files) {
+    const src = stripComments(read(file));
+    for (const pattern of banned) {
+      assert.equal(pattern.test(src), false, `${file} must not contain ${pattern}`);
+    }
+  }
+
+  // The only write the redesigned tabs perform is the existing fee-evidence POST.
+  const sr = read("src/components/shadowArbitrage/SourcesPanel.tsx");
+  const posts = [...sr.matchAll(/method:\s*"([A-Z]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(posts, ["POST"]);
+  const endpoints = [...sr.matchAll(/fetch\("([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(endpoints, ["/api/shadow-arbitrage/accounts"]);
+  // And it still refuses to carry a secret.
+  assert.ok(sr.includes("هیچ کلید API، رمز یا دسترسی حسابی"));
+
+  // Real execution stays unimplemented and disarmed.
+  const capability = read("src/lib/shadowArbitrage/live/capability.ts");
+  assert.ok(capability.includes("export const LIVE_EXECUTION_IMPLEMENTED = false as const"));
+  assert.equal(/process\.env/.test(capability), false);
+});
+
+await test("8B the redesign touches presentation only — backend files are untouched", async () => {
+  // Structural boundary: no Shadow UI file may reach into the server layer.
+  const uiFiles = [
+    "src/components/shadowArbitrage/OpportunitiesPanel.tsx",
+    "src/components/shadowArbitrage/SourcesPanel.tsx",
+    "src/components/shadowArbitrage/opportunityModel.ts",
+    "src/components/shadowArbitrage/sourcesModel.ts"
+  ];
+  for (const file of uiFiles) {
+    const src = read(file);
+    for (const forbidden of ["@/db/", "next/server", "drizzle-orm", "@/lib/requireAdmin"]) {
+      assert.equal(src.includes(forbidden), false, `${file} must not import ${forbidden}`);
+    }
+  }
+
+  // And the released backend really is byte-identical, proven by git.
+  const { execFileSync } = await import("node:child_process");
+  const paths = [
+    "app/api",
+    "src/db",
+    "drizzle",
+    "src/lib/shadowArbitrage",
+    "src/lib/ops",
+    "middleware.ts",
+    "instrumentation.node.ts",
+    "next.config.ts"
+  ];
+  let baseline = "";
+  try {
+    baseline = execFileSync("git", ["rev-parse", "--verify", "v4.12.0^{commit}"], {
+      encoding: "utf8"
+    }).trim();
+  } catch {
+    baseline = "";
+  }
+  if (baseline) {
+    const changed = execFileSync("git", ["diff", "--name-only", baseline, "--", ...paths], {
+      encoding: "utf8"
+    }).trim();
+    assert.equal(changed, "", `backend files changed since v4.12.0: ${changed}`);
+  } else {
+    console.log("        (note: tag v4.12.0 unavailable — import boundary checked only)");
+  }
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

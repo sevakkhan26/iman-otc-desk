@@ -7169,3 +7169,441 @@ table th {
   min-width: 0;
   max-width: 100%;
 }
+
+/* ── Shadow Arbitrage · Phase 8B opportunities and sources ────────────────── */
+/*
+ * LAYOUT ONLY — same contract as the Phase 8A section above.
+ *
+ * Every surface takes its material from the shared OTC Liquid Glass primitives:
+ * `.panel` for cards, `.glass-tabbar` for the segmented container, and
+ * `.glass-control` for the active segment, toggles, inputs and action pills.
+ * Nothing here declares a background, border colour, box-shadow, blur or radius
+ * token of its own — doing so would fork the design system. The only colour
+ * this section owns is the 3px semantic status rail, which is a status marker
+ * and not card material.
+ *
+ * Everything below is grid, spacing, sizing, typography scale and the
+ * table/card breakpoint. Both tabs are scoped: `.sa-op-*` and `.sa-sr-*`.
+ */
+
+/* Bidi isolation for ratios, percentages, latencies and route strings. */
+.sa-bidi {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/* Semantic status rail — a marker on the inline-start edge, never a surface. */
+.sa-rail-good,
+.sa-rail-warn,
+.sa-rail-danger,
+.sa-rail-muted {
+  position: relative;
+  padding-inline-start: 12px;
+}
+.sa-rail-good::before,
+.sa-rail-warn::before,
+.sa-rail-danger::before,
+.sa-rail-muted::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: 0;
+  inset-block: 2px;
+  width: 3px;
+  border-radius: 999px;
+}
+.sa-rail-good::before {
+  background: var(--green);
+}
+.sa-rail-warn::before {
+  background: var(--yellow);
+}
+.sa-rail-danger::before {
+  background: var(--red);
+}
+.sa-rail-muted::before {
+  background: var(--line);
+}
+
+/* ── «فرصت‌ها» ─────────────────────────────────────────────────────────────── */
+.sa-op,
+.sa-sr {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+.sa-op-skeleton {
+  display: grid;
+  gap: 10px;
+}
+
+.sa-op-summary-grid,
+.sa-sr-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+.sa-op-stat,
+.sa-sr-stat {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.sa-op-stat-label,
+.sa-sr-stat-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.sa-op-stat-value,
+.sa-sr-stat-value {
+  font-size: 19px;
+  font-weight: 800;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+}
+.sa-op-stat-hint,
+.sa-sr-stat-hint {
+  font-size: 11px;
+  line-height: 1.65;
+  color: var(--muted);
+}
+
+/* Filter rail */
+.sa-op-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px 14px;
+  align-items: end;
+}
+.sa-op-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.sa-op-field-search {
+  grid-column: span 2;
+}
+.sa-op-field-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.sa-op-control {
+  width: 100%;
+  min-width: 0;
+}
+.sa-op-segmented {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.sa-op-segmented::-webkit-scrollbar {
+  display: none;
+}
+.sa-op-seg {
+  flex: 1 1 auto;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 0;
+  background: none;
+  border-radius: var(--radius-md);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sa-op-seg.is-active {
+  color: var(--text);
+}
+.sa-op-seg:focus-visible,
+.sa-op-toggle:focus-within,
+.sa-op-clear:focus-visible {
+  outline: 2px solid rgb(var(--brand) / 0.55);
+  outline-offset: 1px;
+}
+.sa-op-toggles {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.sa-op-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+}
+.sa-op-toggle.is-on {
+  color: var(--text);
+}
+.sa-op-clear {
+  padding: 6px 12px;
+  border: 0;
+  background: none;
+  border-radius: 999px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  cursor: pointer;
+}
+.sa-op-filter-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 0 !important;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.sa-op-note {
+  line-height: 1.7;
+}
+
+/* Desktop table */
+.sa-op-table-wrap,
+.sa-sr-table-wrap {
+  min-width: 0;
+}
+.sa-op-table th,
+.sa-op-table td,
+.sa-sr-table th,
+.sa-sr-table td {
+  vertical-align: top;
+}
+.sa-op-stack,
+.sa-sr-stack {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.sa-op-sub,
+.sa-sr-sub {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.sa-op-route {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.sa-op-route-line {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  white-space: nowrap;
+}
+.sa-op-route-key {
+  font-size: 11px;
+  color: var(--muted);
+}
+.sa-op-fees {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.sa-op-fee-leg {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  gap: 2px 8px;
+  align-items: baseline;
+}
+.sa-op-fee-label {
+  font-size: 11px;
+  color: var(--muted);
+}
+.sa-op-fee-value {
+  font-variant-numeric: tabular-nums;
+}
+.sa-op-fee-meta {
+  grid-column: 1 / -1;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.sa-op-fee-prov.is-stale {
+  color: color-mix(in srgb, var(--red) 70%, var(--text));
+  font-weight: 700;
+}
+.sa-op-status {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+  min-width: 0;
+}
+.sa-op-primary-reason {
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+.sa-op-reasons > summary {
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  list-style: none;
+}
+.sa-op-reasons > summary::-webkit-details-marker {
+  display: none;
+}
+.sa-op-reasons ul {
+  margin: 4px 0 0;
+  padding-inline-start: 14px;
+  display: grid;
+  gap: 2px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.sa-op-unknown {
+  color: var(--muted);
+  cursor: help;
+}
+.sa-op-strong {
+  font-weight: 800;
+}
+
+/* Mobile cards — hidden until the table stops being readable. */
+.sa-op-cards {
+  display: none;
+}
+.sa-op-card {
+  display: grid;
+  gap: 10px;
+  padding: 13px 14px;
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+}
+.sa-op-card:focus-visible {
+  outline: 2px solid rgb(var(--brand) / 0.55);
+  outline-offset: 2px;
+}
+.sa-op-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.sa-op-card-size {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.sa-op-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin: 0;
+}
+.sa-op-card-line {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.sa-op-card-line dt {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.sa-op-card-line dd {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.sa-op-card-fees,
+.sa-op-card-foot {
+  min-width: 0;
+}
+
+/* ── «منابع و کارمزدها» ───────────────────────────────────────────────────── */
+.sa-sr-venue {
+  display: grid;
+  gap: 2px;
+  /* Start-aligned: a chip must hug its label, not stretch across the column. */
+  justify-items: start;
+  min-width: 0;
+}
+.sa-sr-reference {
+  margin-inline-start: 6px;
+}
+.sa-sr-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px 14px;
+  align-items: end;
+}
+
+/* Calculation drawer — hierarchy only; the drawer material is unchanged. */
+.sa-dw-headline-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.sa-dw-head-stat {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.sa-dw-head-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.sa-dw-head-value {
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+/* ── responsive ───────────────────────────────────────────────────────────── */
+@media (max-width: 1180px) {
+  .sa-op-summary-grid,
+  .sa-sr-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .sa-op-table-wrap {
+    display: none;
+  }
+  .sa-op-cards {
+    display: grid;
+    gap: 10px;
+  }
+  .sa-op-field-search {
+    grid-column: 1 / -1;
+  }
+  .sa-op-filter-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .sa-op-summary-grid,
+  .sa-sr-summary-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .sa-op-card-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sa-dw-headline-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

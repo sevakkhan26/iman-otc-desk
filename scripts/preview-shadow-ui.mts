@@ -37,12 +37,27 @@ const CHROME =
   process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
 /** Shots to take: the production breakpoints this preview is judged at. */
-const SHOTS = [
+const VIEWPORTS = [
   { name: "desktop-light", width: 1440, height: 900, theme: "light", mobile: false },
   { name: "desktop-dark", width: 1440, height: 900, theme: "dark", mobile: false },
   { name: "mobile-light", width: 390, height: 1200, theme: "light", mobile: true },
   { name: "mobile-dark", width: 390, height: 1200, theme: "dark", mobile: true }
 ] as const;
+
+/**
+ * Tabs to photograph. `PREVIEW_TABS` narrows the list; the default is the tab
+ * shell's own default so an unchanged run keeps producing the same four files.
+ */
+const TABS = (process.env.PREVIEW_TABS ?? "overview").split(",").map((t) => t.trim()).filter(Boolean);
+
+const SHOTS = TABS.flatMap((tab) =>
+  VIEWPORTS.map((v) => ({
+    ...v,
+    tab,
+    // A single-tab run keeps the historical file names.
+    file: TABS.length === 1 && tab === "overview" ? v.name : `${tab}-${v.name}`
+  }))
+);
 
 /** Test-only identity; it has no password and cannot log in. */
 const PREVIEW_ADMIN = "preview-admin";
@@ -159,6 +174,22 @@ async function main() {
     maxBuffer: 16 * 1024 * 1024
   });
 
+  /*
+   * Optional demo data. `PREVIEW_SEED=1` populates the throwaway database
+   * through the production repositories and the real engines; the raw order
+   * books it feeds in are invented, so the resulting figures are a
+   * demonstration and never observed market data.
+   */
+  if (process.env.PREVIEW_SEED === "1") {
+    log("seeding the throwaway database with demonstration data (not market data)");
+    const seeded = await execFileAsync("npx", ["--yes", "tsx", "scripts/preview-seed-shadow.mts"], {
+      cwd: repoRoot,
+      env,
+      maxBuffer: 16 * 1024 * 1024
+    });
+    process.stdout.write(seeded.stdout);
+  }
+
   const serverEntry = path.join(repoRoot, DIST, "standalone", "server.js");
   if (!existsSync(serverEntry)) {
     log(`building the production bundle into ${DIST} (first run)`);
@@ -240,7 +271,7 @@ async function main() {
       });
 
       await cdp.send("Page.navigate", {
-        url: `http://127.0.0.1:${PORT}/shadow-arbitrage?tab=overview`
+        url: `http://127.0.0.1:${PORT}/shadow-arbitrage?tab=${shot.tab}`
       });
       // Let the client mount, resolve the role and settle its first paint.
       await new Promise((r) => setTimeout(r, 6_000));
@@ -251,12 +282,61 @@ async function main() {
 
       const { data } = await cdp.send<{ data: string }>("Page.captureScreenshot", {
         format: "png",
-        captureBeyondViewport: false
+        // PREVIEW_FULLPAGE=1 captures the whole tab, not just the first screen.
+        captureBeyondViewport: process.env.PREVIEW_FULLPAGE === "1"
       });
-      const file = path.join(OUT_DIR, `${shot.name}.png`);
+      const file = path.join(OUT_DIR, `${shot.file}.png`);
       await writeFile(file, Buffer.from(data, "base64"));
-      log(`captured ${shot.name} → ${file}`);
+      log(`captured ${shot.file} → ${file}`);
       cdp.close();
+    }
+    /*
+     * Objective layout check: the page itself must never scroll sideways at any
+     * supported width. Only an inner table or rail may. Reported, not asserted,
+     * so a preview run never silently "passes" a broken layout.
+     */
+    if (process.env.PREVIEW_MEASURE === "1") {
+      for (const tab of TABS) {
+        for (const width of [1920, 1440, 1024, 768, 390]) {
+          const target = (await (
+            await fetch("http://127.0.0.1:9333/json/new?about:blank", { method: "PUT" })
+          ).json()) as { webSocketDebuggerUrl: string };
+          const cdp = await Cdp.connect(target.webSocketDebuggerUrl);
+          await cdp.send("Network.enable");
+          await cdp.send("Page.enable");
+          await cdp.send("Emulation.setDeviceMetricsOverride", {
+            width,
+            height: 900,
+            deviceScaleFactor: 1,
+            mobile: width <= 430
+          });
+          await cdp.send("Network.setCookie", {
+            name: "otc-auth",
+            value: mintAdminSession(secret),
+            domain: "127.0.0.1",
+            path: "/",
+            httpOnly: true,
+            sameSite: "Lax"
+          });
+          await cdp.send("Page.navigate", {
+            url: `http://127.0.0.1:${PORT}/shadow-arbitrage?tab=${tab}`
+          });
+          await new Promise((r) => setTimeout(r, 5_000));
+          const measured = await cdp.send<{ result: { value: string } }>("Runtime.evaluate", {
+            expression: `JSON.stringify({
+              client: document.documentElement.clientWidth,
+              scroll: document.documentElement.scrollWidth,
+              bodyScroll: document.body.scrollWidth,
+              cards: document.querySelectorAll(".sa-op-card").length,
+              tableVisible: [...document.querySelectorAll(".sa-op-table-wrap")]
+                .filter((el) => getComputedStyle(el).display !== "none").length
+            })`,
+            returnByValue: true
+          });
+          log(`measure ${tab} @${width}px → ${measured.result.value}`);
+          cdp.close();
+        }
+      }
     }
   } finally {
     server.kill("SIGTERM");

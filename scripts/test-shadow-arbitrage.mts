@@ -101,6 +101,7 @@ import {
 import {
   REQUIRED_RISK_POLICIES,
   buildPolicyState,
+  policyValueOrNull,
   unsetPolicies,
   validatePolicyValue
 } from "../src/lib/shadowArbitrage/live/policy.ts";
@@ -120,6 +121,7 @@ import {
 import {
   ATTESTATION_VALID_DAYS,
   evaluateReadiness,
+  type ReadinessGate,
   type AttestationRecord,
   type ReadinessInput
 } from "../src/lib/shadowArbitrage/live/readiness.ts";
@@ -2596,15 +2598,18 @@ await test("v4.9.1 the engine reports the exact upstream cause on every skip", (
 const LIVE_NOW = Date.parse("2026-07-30T00:00:00Z");
 const DAY = 86_400_000;
 
-function allPolicies() {
+function allPolicies(overrides: Partial<Record<string, number>> = {}) {
   return buildPolicyState(
     REQUIRED_RISK_POLICIES.map((d) => ({
       key: d.key,
-      value: d.key === "global_kill_switch" ? 1 : d.min,
+      value: overrides[d.key] ?? (d.key === "global_kill_switch" ? 1 : d.min),
+      provenance: "ADMIN_APPROVED" as const,
+      validForDays: null,
       setBy: "admin",
       setAt: new Date(LIVE_NOW).toISOString(),
       note: null
-    }))
+    })),
+    LIVE_NOW
   );
 }
 
@@ -2630,6 +2635,7 @@ function fullyReady(over: Partial<ReadinessInput> = {}): ReadinessInput {
       running: true,
       heartbeatStale: false,
       duplicateIdempotencyKeys: 0,
+      successfulCycles: 5_000,
       lastCycleStatus: "success"
     },
     capitalRecommendation: { status: "APPROVED_SIMULATION_PLAN", reasonFa: "تأییدشده" },
@@ -2638,8 +2644,10 @@ function fullyReady(over: Partial<ReadinessInput> = {}): ReadinessInput {
       status: "PAUSED",
       cyclesEvaluated: 900,
       tradesExecuted: 42,
+      failedDecisions: 0,
       economicNetPnlToman: 120_000
     },
+    reconciliationMismatches: 0,
     venueStates: classifyAllVenues(buildAllReadiness([], LIVE_NOW)),
     policies: allPolicies(),
     attestations: [
@@ -2709,8 +2717,9 @@ await test("7A readiness fails closed for every missing gate", () => {
     capitalRecommendation: null,
     paper: null,
     venueStates: [],
-    policies: buildPolicyState([]),
+    policies: buildPolicyState([], LIVE_NOW),
     attestations: [],
+    reconciliationMismatches: null,
     nowMs: LIVE_NOW
   });
   assert.equal(empty.gateState, "DISARMED");
@@ -2731,6 +2740,8 @@ await test("7A each gate blocks on its own exact evidence gap", () => {
   // 14 days short by one millisecond.
   const shortWindow = blockedGate(
     fullyReady({
+      // The required duration is an admin policy, so the test states it too.
+      policies: allPolicies({ min_observation_duration_days: 14 }),
       observation: {
         status: "RUNNING",
         elapsedMs: 14 * DAY - 1,
@@ -2765,6 +2776,7 @@ await test("7A each gate blocks on its own exact evidence gap", () => {
         running: true,
         heartbeatStale: false,
         duplicateIdempotencyKeys: 1,
+        successfulCycles: 5_000,
         lastCycleStatus: "success"
       }
     }),
@@ -2788,6 +2800,7 @@ await test("7A each gate blocks on its own exact evidence gap", () => {
         status: "RUNNING",
         cyclesEvaluated: 10,
         tradesExecuted: 0,
+        failedDecisions: 0,
         economicNetPnlToman: 0
       }
     }),
@@ -2801,10 +2814,13 @@ await test("7A each gate blocks on its own exact evidence gap", () => {
     REQUIRED_RISK_POLICIES.slice(1).map((d) => ({
       key: d.key,
       value: d.min,
+      provenance: "ADMIN_APPROVED" as const,
+      validForDays: null,
       setBy: "admin",
       setAt: new Date(LIVE_NOW).toISOString(),
       note: null
-    }))
+    })),
+    LIVE_NOW
   );
   const policyGate = blockedGate(fullyReady({ policies: onePolicyMissing }), "risk_policies");
   assert.equal(policyGate.status, "BLOCKED");
@@ -2880,6 +2896,7 @@ await test("7A collector or paper failure can never arm live mode", () => {
         running: false,
         heartbeatStale: true,
         duplicateIdempotencyKeys: 3,
+        successfulCycles: 0,
         lastCycleStatus: "failed"
       }
     })
@@ -2893,7 +2910,7 @@ await test("7A collector or paper failure can never arm live mode", () => {
 });
 
 await test("7A risk policies are required and never defaulted", () => {
-  const none = buildPolicyState([]);
+  const none = buildPolicyState([], LIVE_NOW);
   assert.equal(none.length, REQUIRED_RISK_POLICIES.length);
   assert.equal(unsetPolicies(none).length, REQUIRED_RISK_POLICIES.length);
   for (const p of none) {
@@ -3235,6 +3252,217 @@ await test("7A the readiness API exposes no arming action at all", () => {
   assert.ok(route.includes("501"));
   // Credential-shaped claim names are refused as well as body keys.
   assert.ok(route.includes("نام فیلد تأیید مجاز نیست"));
+});
+
+
+/* ── Phase 7A.1 — readiness hardening ────────────────────────────────────── */
+
+await test("7A.1 no evidence threshold is chosen anywhere in the source", () => {
+  const readinessSrc = readFileSync(
+    new URL("../src/lib/shadowArbitrage/live/readiness.ts", import.meta.url),
+    "utf8"
+  );
+  // The invented paper thresholds are gone entirely.
+  assert.equal(readinessSrc.includes("MIN_PAPER_CYCLES"), false);
+  assert.equal(readinessSrc.includes("MIN_PAPER_TRADES"), false);
+  assert.equal(/\b500\b/.test(readinessSrc), false, "the hard-coded 500 must not exist");
+  assert.equal(/\bconst MIN_[A-Z_]+ = \d/.test(readinessSrc), false, "no numeric minimum constants");
+
+  // Every evidence threshold is read from policy, never assumed.
+  for (const key of [
+    "min_observation_duration_days",
+    "min_successful_cycles",
+    "min_paper_fills",
+    "max_paper_failures",
+    "max_duplicate_idempotency_keys",
+    "max_reconciliation_mismatches"
+  ]) {
+    assert.ok(readinessSrc.includes(key), `${key} must be consulted by the engine`);
+    assert.ok(
+      REQUIRED_RISK_POLICIES.some((d) => d.key === key),
+      `${key} must be a required policy`
+    );
+  }
+
+  // The definitions still declare no default of any kind.
+  const policySrc = readFileSync(
+    new URL("../src/lib/shadowArbitrage/live/policy.ts", import.meta.url),
+    "utf8"
+  );
+  assert.equal(/^\s*default:/m.test(policySrc), false);
+  assert.equal(/\?\?\s*\d/.test(policySrc), false, "no numeric fallback may exist");
+});
+
+await test("7A.1 unset evidence policies fail closed with their own reason", () => {
+  const noPolicies = buildPolicyState([], LIVE_NOW);
+  const report = evaluateReadiness(fullyReady({ policies: noPolicies }));
+
+  const gate = (id: string) => report.gates.find((g) => g.id === id) as ReadinessGate;
+  // Even with perfect observation, paper and collector data, unset thresholds block.
+  assert.equal(gate("observation_window").status, "BLOCKED");
+  assert.ok(gate("observation_window").blockerFa?.includes("حداقل مدت مشاهده"));
+  assert.equal(gate("collector_health").status, "BLOCKED");
+  assert.ok(gate("collector_health").blockerFa?.includes("کلید تکراری"));
+  assert.equal(gate("paper_evidence").status, "BLOCKED");
+  assert.ok(gate("paper_evidence").blockerFa?.includes("حداقل معاملهٔ کاغذی"));
+  assert.equal(gate("reconciliation_integrity").status, "BLOCKED");
+  assert.equal(report.effectiveState, "DISARMED");
+
+  // Each evidence policy alone is enough to re-block its gate.
+  const cases: Array<[string, string]> = [
+    ["min_observation_duration_days", "observation_window"],
+    ["min_paper_fills", "paper_evidence"],
+    ["max_paper_failures", "paper_evidence"],
+    ["max_duplicate_idempotency_keys", "collector_health"],
+    ["max_reconciliation_mismatches", "reconciliation_integrity"]
+  ];
+  for (const [key, gateId] of cases) {
+    const partial = buildPolicyState(
+      REQUIRED_RISK_POLICIES.filter((d) => d.key !== key).map((d) => ({
+        key: d.key,
+        value: d.key === "global_kill_switch" ? 1 : d.min,
+        provenance: "ADMIN_APPROVED" as const,
+        validForDays: null,
+        setBy: "admin",
+        setAt: new Date(LIVE_NOW).toISOString(),
+        note: null
+      })),
+      LIVE_NOW
+    );
+    const r = evaluateReadiness(fullyReady({ policies: partial }));
+    const g = r.gates.find((x) => x.id === gateId) as ReadinessGate;
+    assert.equal(g.status, "BLOCKED", `${key} unset must block ${gateId}`);
+    assert.equal(policyValueOrNull(partial, key as never), null);
+  }
+});
+
+await test("7A.1 zero is an explicit choice, not an assumption", () => {
+  // A duplicate-key tolerance of zero must be STATED, and then it enforces zero.
+  const strict = allPolicies({ max_duplicate_idempotency_keys: 0 });
+  const clean = evaluateReadiness(fullyReady({ policies: strict }));
+  assert.equal(clean.gates.find((g) => g.id === "collector_health")?.status, "PASSED");
+
+  const dirty = evaluateReadiness(
+    fullyReady({
+      policies: strict,
+      collector: {
+        running: true,
+        heartbeatStale: false,
+        duplicateIdempotencyKeys: 1,
+        successfulCycles: 5_000,
+        lastCycleStatus: "success"
+      }
+    })
+  );
+  assert.equal(dirty.gates.find((g) => g.id === "collector_health")?.status, "BLOCKED");
+
+  // An unmeasured reconciliation count blocks even when the ceiling is set.
+  const unmeasured = evaluateReadiness(fullyReady({ reconciliationMismatches: null }));
+  const gate = unmeasured.gates.find((g) => g.id === "reconciliation_integrity") as ReadinessGate;
+  assert.equal(gate.status, "BLOCKED");
+  assert.ok(gate.blockerFa?.includes("اندازه‌گیری نشده"));
+});
+
+await test("7A.1 policy provenance, approver, date and expiry are reported", () => {
+  const setAt = new Date(LIVE_NOW - 10 * DAY).toISOString();
+  const state = buildPolicyState(
+    [
+      {
+        key: "max_order_size_usdt",
+        value: 25,
+        provenance: "ADMIN_APPROVED",
+        validForDays: 30,
+        setBy: "admin",
+        setAt,
+        note: null
+      },
+      {
+        key: "max_daily_loss_toman",
+        value: 1_000_000,
+        provenance: "ADMIN_APPROVED",
+        validForDays: 5,
+        setBy: "admin",
+        setAt,
+        note: null
+      }
+    ],
+    LIVE_NOW
+  );
+
+  const live = state.find((p) => p.definition.key === "max_order_size_usdt")!;
+  assert.equal(live.value, 25);
+  assert.equal(live.provenance, "ADMIN_APPROVED");
+  assert.equal(live.setBy, "admin");
+  assert.equal(live.setAt, setAt);
+  assert.ok(live.expiresAt, "an expiry is derived from the approver's own validity period");
+  assert.equal(live.expired, false);
+  assert.equal(live.configured, true);
+
+  // Expired evidence is treated exactly like unset evidence.
+  const stale = state.find((p) => p.definition.key === "max_daily_loss_toman")!;
+  assert.equal(stale.expired, true);
+  assert.equal(stale.configured, false, "an expired policy is not a configured policy");
+  assert.ok(stale.blockerFa?.includes("منقضی"));
+  assert.ok(stale.requiredActionFa.includes("بازتأیید"));
+  assert.equal(policyValueOrNull(state, "max_daily_loss_toman"), null);
+
+  // Unset entries carry provenance UNSET and an exact required action.
+  const unset = state.find((p) => p.definition.key === "min_paper_fills")!;
+  assert.equal(unset.provenance, "UNSET");
+  assert.equal(unset.value, null);
+  assert.ok(unset.requiredActionFa.includes("هیچ مقدار پیش‌فرضی"));
+
+  // Every definition declares a category, so the UI can group them honestly.
+  for (const d of REQUIRED_RISK_POLICIES) {
+    assert.ok(["RISK", "EVIDENCE"].includes(d.category), `${d.key} needs a category`);
+  }
+});
+
+await test("7A.1 readiness tables cannot overlap structurally", () => {
+  const ui = readFileSync(
+    new URL("../src/components/shadowArbitrage/LiveReadiness.tsx", import.meta.url),
+    "utf8"
+  );
+  const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+
+  // Every readiness table opts into the fixed-layout, wrapping style.
+  const tableOpens = ui.match(/<table className="sa-table[^"]*"/g) ?? [];
+  assert.ok(tableOpens.length >= 4, "the panel renders several tables");
+  for (const t of tableOpens) {
+    assert.ok(t.includes("sa-readiness-table"), `table must use the wrapping style: ${t}`);
+  }
+
+  // Wrapping is enforced in CSS, not left to the content.
+  const rules = css.slice(css.indexOf(".sa-readiness-table"));
+  assert.ok(rules.includes("table-layout: fixed"));
+  assert.ok(rules.includes("overflow-wrap: anywhere"));
+  assert.ok(rules.includes("word-break: break-word"));
+  assert.ok(rules.includes("white-space: normal"));
+  assert.ok(rules.includes("vertical-align: top"));
+  // RTL-safe alignment rather than a hard-coded left/right.
+  assert.ok(rules.includes("text-align: start"));
+
+  // Responsive: tablet drops optional columns, mobile stacks rows entirely.
+  assert.ok(rules.includes("@media (max-width: 1024px)"));
+  assert.ok(rules.includes("@media (max-width: 720px)"));
+  assert.ok(rules.includes("display: block"), "mobile stacks the table");
+  assert.ok(rules.includes("content: attr(data-label)"), "stacked cells stay labelled");
+
+  // Every stacked cell carries its label, otherwise mobile rows are unreadable.
+  const cells = ui.match(/<td[^>]*>/g) ?? [];
+  const unlabelled = cells.filter((c) => !c.includes("data-label"));
+  assert.equal(unlabelled.length, 0, `every td needs data-label: ${unlabelled.join(" ")}`);
+
+  // The horizontal scroll container is still present for wide desktop tables.
+  assert.ok(ui.includes("sa-table-wrap"));
+});
+
+await test("7A.1 hardening did not weaken the structural guarantees", () => {
+  assert.equal(LIVE_EXECUTION_IMPLEMENTED, false);
+  const ready = evaluateReadiness(fullyReady());
+  assert.equal(ready.blockedCount, 0, "the fixture still passes every gate");
+  assert.equal(ready.effectiveState, "DISARMED", "and is still disarmed");
+  assert.equal(ready.gates.length, 12, "the reconciliation-integrity gate was added");
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

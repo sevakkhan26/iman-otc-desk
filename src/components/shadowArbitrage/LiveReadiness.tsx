@@ -20,6 +20,7 @@ type Gate = {
 
 type PolicyDefinition = {
   key: string;
+  category: "RISK" | "EVIDENCE";
   labelFa: string;
   unit: string;
   rationaleFa: string;
@@ -30,10 +31,14 @@ type PolicyDefinition = {
 type PolicyState = {
   definition: PolicyDefinition;
   value: number | null;
+  provenance: string;
   setBy: string | null;
   setAt: string | null;
+  expiresAt: string | null;
+  expired: boolean;
   configured: boolean;
   blockerFa: string | null;
+  requiredActionFa: string;
 };
 
 type Report = {
@@ -62,6 +67,8 @@ type Review = {
 type PolicyHistory = {
   policyKey: string;
   value: number;
+  provenance: string;
+  validForDays: number | null;
   setBy: string;
   setAt: string;
   note: string | null;
@@ -107,6 +114,16 @@ const GATE_STATE_FA: Record<string, string> = {
   MANUAL_CANARY_ELIGIBLE: "واجد شرایط آزمایش دستی محدود"
 };
 
+const PROVENANCE_FA: Record<string, string> = {
+  ADMIN_APPROVED: "تأیید مدیر",
+  UNSET: "تعیین‌نشده"
+};
+
+const CATEGORY_FA: Record<string, string> = {
+  RISK: "حدود ریسک",
+  EVIDENCE: "آستانه‌های شواهد"
+};
+
 const ATTESTATION_FA: Record<string, string> = {
   api_capability: "توان API و حداقل دسترسی",
   key_permissions: "محدودیت کلیدها",
@@ -126,6 +143,7 @@ export function LiveReadiness() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [draft, setDraft] = useState<Record<string, string>>({});
+  const [validity, setValidity] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     const res = await fetch("/api/shadow-arbitrage/live-readiness", {
@@ -231,13 +249,21 @@ export function LiveReadiness() {
           {report ? (
             <div className="panel-body sa-table-wrap">
               <div className="sa-subpanel-title">دروازه‌های آمادگی</div>
-              <table className="sa-table">
+              <table className="sa-table sa-readiness-table">
+                <colgroup>
+                  <col className="sa-col-gate" />
+                  <col className="sa-col-status" />
+                  <col className="sa-col-evidence" />
+                  <col className="sa-col-expiry" />
+                  <col className="sa-col-blocker" />
+                  <col className="sa-col-action" />
+                </colgroup>
                 <thead>
                   <tr>
                     <th>دروازه</th>
                     <th>وضعیت</th>
-                    <th>شواهد</th>
-                    <th>انقضا</th>
+                    <th className="sa-col-optional">شواهد</th>
+                    <th className="sa-col-optional">انقضا</th>
                     <th>مانع</th>
                     <th>اقدام لازم</th>
                   </tr>
@@ -245,23 +271,27 @@ export function LiveReadiness() {
                 <tbody>
                   {report.gates.map((g) => (
                     <tr key={g.id}>
-                      <td>
+                      <td data-label="دروازه">
                         <strong>{g.labelFa}</strong>
                       </td>
-                      <td>
+                      <td data-label="وضعیت">
                         <span className={`sa-chip sa-chip-sm sa-chip-${STATUS_TONE[g.status]}`}>
                           {STATUS_FA[g.status]}
                         </span>
                       </td>
-                      <td className="sa-wrap-cell text-micro">{g.evidenceFa}</td>
-                      <td className="text-micro">
-                        {g.expiresAt ? formatTehran(g.expiresAt) : "—"}
-                        {g.expired ? <div className="sa-reason">منقضی</div> : null}
+                      <td data-label="شواهد" className="sa-col-optional text-micro">
+                        {g.evidenceFa}
                       </td>
-                      <td className="sa-wrap-cell">
+                      <td data-label="انقضا" className="sa-col-optional text-micro">
+                        {g.expiresAt ? formatTehran(g.expiresAt) : "—"}
+                        {g.expired ? <span className="sa-reason">منقضی</span> : null}
+                      </td>
+                      <td data-label="مانع">
                         {g.blockerFa ? <span className="sa-reason">{g.blockerFa}</span> : "—"}
                       </td>
-                      <td className="sa-wrap-cell text-micro">{g.requiredActionFa}</td>
+                      <td data-label="اقدام لازم" className="text-micro">
+                        {g.requiredActionFa}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -272,41 +302,68 @@ export function LiveReadiness() {
           {data?.policies?.length ? (
             <div className="panel-body sa-table-wrap">
               <div className="sa-subpanel-title">
-                حدود ریسک — همه اجباری‌اند و هیچ مقدار پیش‌فرضی فرض نمی‌شود
+                سیاست‌های اجباری — هیچ مقدار پیش‌فرضی در کد وجود ندارد
               </div>
-              <table className="sa-table">
+              <table className="sa-table sa-readiness-table">
+                <colgroup>
+                  <col className="sa-col-gate" />
+                  <col className="sa-col-status" />
+                  <col className="sa-col-value" />
+                  <col className="sa-col-who" />
+                  <col className="sa-col-expiry" />
+                  <col className="sa-col-action" />
+                  <col className="sa-col-edit" />
+                </colgroup>
                 <thead>
                   <tr>
                     <th>سیاست</th>
-                    <th>واحد</th>
-                    <th className="num">مقدار</th>
-                    <th>وضعیت</th>
-                    <th>تعیین‌کننده</th>
-                    <th />
+                    <th>دسته</th>
+                    <th>مقدار</th>
+                    <th className="sa-col-optional">تأییدکننده و تاریخ</th>
+                    <th className="sa-col-optional">انقضا</th>
+                    <th>اقدام لازم</th>
+                    <th>ثبت مقدار</th>
                   </tr>
                 </thead>
                 <tbody>
                   {data.policies.map((p) => (
                     <tr key={p.definition.key}>
-                      <td>
+                      <td data-label="سیاست">
                         <strong>{p.definition.labelFa}</strong>
-                        {p.blockerFa ? <div className="sa-reason">{p.blockerFa}</div> : null}
+                        <span className="sa-reason">{p.definition.rationaleFa}</span>
                       </td>
-                      <td className="text-micro">{p.definition.unit}</td>
-                      <td className="num">
-                        {p.configured ? toFaDigits(p.value ?? 0) : <span className="sa-reason">تعیین‌نشده</span>}
+                      <td data-label="دسته" className="text-micro">
+                        {CATEGORY_FA[p.definition.category] ?? p.definition.category}
                       </td>
-                      <td>
-                        <span
-                          className={`sa-chip sa-chip-sm sa-chip-${p.configured ? "good" : "danger"}`}
-                        >
-                          {p.configured ? "پیکربندی‌شده" : "پیکربندی‌نشده"}
-                        </span>
+                      <td data-label="مقدار">
+                        {p.configured ? (
+                          <>
+                            <strong>{toFaDigits(p.value ?? 0)}</strong>{" "}
+                            <span className="text-micro">{p.definition.unit}</span>
+                            <span className="sa-reason">
+                              {PROVENANCE_FA[p.provenance] ?? p.provenance}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="sa-reason">
+                            تعیین‌نشده — {PROVENANCE_FA[p.provenance] ?? p.provenance}
+                          </span>
+                        )}
                       </td>
-                      <td className="text-micro">
+                      <td data-label="تأییدکننده و تاریخ" className="sa-col-optional text-micro">
                         {p.setBy ? `${p.setBy} · ${formatTehran(p.setAt)}` : "—"}
                       </td>
-                      <td>
+                      <td data-label="انقضا" className="sa-col-optional text-micro">
+                        {p.expiresAt ? formatTehran(p.expiresAt) : "بدون انقضا"}
+                        {p.expired ? <span className="sa-reason">منقضی</span> : null}
+                      </td>
+                      <td data-label="اقدام لازم" className="text-micro">
+                        {p.blockerFa ? (
+                          <span className="sa-reason">{p.blockerFa}</span>
+                        ) : null}
+                        {p.requiredActionFa}
+                      </td>
+                      <td data-label="ثبت مقدار">
                         <input
                           type="number"
                           className="sa-cell-input"
@@ -314,6 +371,15 @@ export function LiveReadiness() {
                           value={draft[p.definition.key] ?? ""}
                           onChange={(e) =>
                             setDraft((d) => ({ ...d, [p.definition.key]: e.target.value }))
+                          }
+                        />
+                        <input
+                          type="number"
+                          className="sa-cell-input"
+                          placeholder="اعتبار (روز، اختیاری)"
+                          value={validity[p.definition.key] ?? ""}
+                          onChange={(e) =>
+                            setValidity((d) => ({ ...d, [p.definition.key]: e.target.value }))
                           }
                         />
                         <button
@@ -325,9 +391,12 @@ export function LiveReadiness() {
                               {
                                 action: "set_policy",
                                 policyKey: p.definition.key,
-                                value: Number(draft[p.definition.key])
+                                value: Number(draft[p.definition.key]),
+                                validForDays: validity[p.definition.key]
+                                  ? Number(validity[p.definition.key])
+                                  : null
                               },
-                              "سیاست ریسک ثبت شد."
+                              "مقدار سیاست ثبت شد."
                             )
                           }
                         >
@@ -344,7 +413,7 @@ export function LiveReadiness() {
           {data?.attestations?.length ? (
             <div className="panel-body sa-table-wrap">
               <div className="sa-subpanel-title">تأییدیه‌های ثبت‌شده (بدون هیچ کلید یا رمزی)</div>
-              <table className="sa-table">
+              <table className="sa-table sa-readiness-table">
                 <thead>
                   <tr>
                     <th>نوع</th>
@@ -356,10 +425,12 @@ export function LiveReadiness() {
                 <tbody>
                   {data.attestations.slice(0, 20).map((a, i) => (
                     <tr key={`${a.kind}-${i}`}>
-                      <td>{ATTESTATION_FA[a.kind] ?? a.kind}</td>
-                      <td>{a.confirmedBy}</td>
-                      <td className="text-micro">{formatTehran(a.confirmedAt)}</td>
-                      <td className="sa-wrap-cell text-micro">
+                      <td data-label="نوع">{ATTESTATION_FA[a.kind] ?? a.kind}</td>
+                      <td data-label="تأییدکننده">{a.confirmedBy}</td>
+                      <td data-label="زمان" className="text-micro">
+                        {formatTehran(a.confirmedAt)}
+                      </td>
+                      <td data-label="موارد تأییدشده" className="text-micro">
                         {Object.entries(a.claims)
                           .filter(([, v]) => v === true)
                           .map(([k]) => k)
@@ -394,7 +465,7 @@ export function LiveReadiness() {
           {data?.reviews?.length ? (
             <div className="panel-body sa-table-wrap">
               <div className="sa-subpanel-title">سابقهٔ بازبینی‌ها</div>
-              <table className="sa-table">
+              <table className="sa-table sa-readiness-table">
                 <thead>
                   <tr>
                     <th>بازبین</th>
@@ -408,12 +479,18 @@ export function LiveReadiness() {
                 <tbody>
                   {data.reviews.map((r) => (
                     <tr key={r.id}>
-                      <td>{r.reviewedBy}</td>
-                      <td className="text-micro">{formatTehran(r.reviewedAt)}</td>
-                      <td>{GATE_STATE_FA[r.gateState] ?? r.gateState}</td>
-                      <td>{GATE_STATE_FA[r.effectiveState] ?? r.effectiveState}</td>
-                      <td className="num">{toFaDigits(r.passedCount)}</td>
-                      <td className="num">{toFaDigits(r.blockedCount)}</td>
+                      <td data-label="بازبین">{r.reviewedBy}</td>
+                      <td data-label="زمان" className="text-micro">
+                        {formatTehran(r.reviewedAt)}
+                      </td>
+                      <td data-label="وضعیت دروازه‌ها">
+                        {GATE_STATE_FA[r.gateState] ?? r.gateState}
+                      </td>
+                      <td data-label="وضعیت مؤثر">
+                        {GATE_STATE_FA[r.effectiveState] ?? r.effectiveState}
+                      </td>
+                      <td data-label="برقرار">{toFaDigits(r.passedCount)}</td>
+                      <td data-label="مسدود">{toFaDigits(r.blockedCount)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -424,11 +501,13 @@ export function LiveReadiness() {
           {data?.policyHistory?.length ? (
             <div className="panel-body sa-table-wrap">
               <div className="sa-subpanel-title">سابقهٔ تغییر سیاست‌های ریسک</div>
-              <table className="sa-table">
+              <table className="sa-table sa-readiness-table">
                 <thead>
                   <tr>
                     <th>سیاست</th>
-                    <th className="num">مقدار</th>
+                    <th>مقدار</th>
+                    <th className="sa-col-optional">منشأ</th>
+                    <th className="sa-col-optional">اعتبار</th>
                     <th>تعیین‌کننده</th>
                     <th>زمان</th>
                   </tr>
@@ -436,10 +515,20 @@ export function LiveReadiness() {
                 <tbody>
                   {data.policyHistory.slice(0, 30).map((h, i) => (
                     <tr key={`${h.policyKey}-${i}`}>
-                      <td className="text-micro">{h.policyKey}</td>
-                      <td className="num">{toFaDigits(h.value)}</td>
-                      <td>{h.setBy}</td>
-                      <td className="text-micro">{formatTehran(h.setAt)}</td>
+                      <td data-label="سیاست" className="text-micro">
+                        {h.policyKey}
+                      </td>
+                      <td data-label="مقدار">{toFaDigits(h.value)}</td>
+                      <td data-label="منشأ" className="sa-col-optional text-micro">
+                        {PROVENANCE_FA[h.provenance] ?? h.provenance}
+                      </td>
+                      <td data-label="اعتبار" className="sa-col-optional text-micro">
+                        {h.validForDays === null ? "بدون انقضا" : `${toFaDigits(h.validForDays)} روز`}
+                      </td>
+                      <td data-label="تعیین‌کننده">{h.setBy}</td>
+                      <td data-label="زمان" className="text-micro">
+                        {formatTehran(h.setAt)}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

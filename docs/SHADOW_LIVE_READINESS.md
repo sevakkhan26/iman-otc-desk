@@ -26,7 +26,9 @@ parameter or admin action can do it.**
 | T5 | Duplicate submission after a timeout | Double execution of the same intent | Deterministic `clientOrderId(planId, side, attempt)`; the surface port is idempotent on it and flags repeats |
 | T6 | Restart mid-flight | Silent retry of an order that may already exist | `RESTART_RECOVERY` maps every in-flight state to `RECONCILE`, never to `RESUME` |
 | T7 | Stale evidence treated as current | Readiness that passed months ago is not readiness | Attestations expire after `ATTESTATION_VALID_DAYS = 90` and expire the gate with them |
-| T8 | Invented risk thresholds | A default limit is an unreviewed limit | Every policy is required and starts unset; there is no `default` field in the definitions |
+| T8 | Invented risk or evidence thresholds | A default limit is an unreviewed limit | Every policy — risk **and** evidence — is required and starts unset; there is no `default` field and no numeric fallback in the definitions, asserted by a source scan |
+| T13 | Evidence that silently ages | A limit approved a year ago is not a current decision | The approver states the validity period; an expired policy is treated exactly like an unset one |
+| T14 | Unreadable readiness UI hiding a blocker | An overlapped blocker is an unread blocker | Fixed table layout, `overflow-wrap: anywhere`, RTL-safe `text-align: start`, optional columns dropped on tablet, full row stacking with labels on mobile — asserted structurally |
 | T9 | Rate-limit driven account lockout | Losing API access mid-position | `api_rate_limit_per_minute` policy is required; unset blocks |
 | T10 | Runaway loss | No automatic stop | `max_daily_loss_toman`, `global_kill_switch`, `per_venue_circuit_breaker_errors` are all required policies |
 | T11 | Viewer or unauthenticated access | Readiness data reveals operational posture | Every route is behind `requireAdminSession`; viewers and anonymous requests get 401/403 |
@@ -36,25 +38,36 @@ parameter or admin action can do it.**
 
 ## 2. Readiness gates
 
-All eleven must pass. Each fails closed with an exact, non-generic reason.
+All twelve must pass. Each fails closed with an exact, non-generic reason.
 
-1. `observation_window` — 14 real days **and** ≥80% success coverage.
-2. `collector_health` — running, fresh heartbeat, zero duplicate idempotency keys.
+**No threshold is chosen in code.** Every numeric requirement below comes from an
+admin-approved policy with a null default. An unset — or expired — policy is a
+blocker, and so is an unmeasured input. The engine contains no minimum constants
+at all; a test asserts the source has none.
+
+1. `observation_window` — elapsed time ≥ the admin-set `min_observation_duration_days`,
+   **and** ≥80% success coverage (the Phase 2 observation rule).
+2. `collector_health` — running, fresh heartbeat, duplicate idempotency keys within
+   the admin-set `max_duplicate_idempotency_keys`, successful cycles ≥
+   `min_successful_cycles`.
 3. `capital_plan_approved` — Phase 5 recommendation currently `APPROVED_SIMULATION_PLAN`.
-4. `paper_evidence` — a paper session with ≥500 cycles and ≥20 trades.
+4. `paper_evidence` — a paper session meeting the admin-set `min_successful_cycles`,
+   `min_paper_fills` and `max_paper_failures`.
 5. `account_fee_readiness` — at least one executable venue, no stale fees.
 6. `fee_settlement` — buy **and** sell settlement admin-confirmed per venue.
 7. `api_capability` — public data verified, private API documented, least privilege documented.
 8. `key_permissions` — trading-only keys, withdrawal disabled, IP whitelist confirmed.
 9. `transfer_costs` — transfer and rebalancing costs actually known.
 10. `risk_policies` — every required policy explicitly configured.
-11. `reconciliation_runbook` — reconciliation, incident runbook and rollback all approved.
+11. `reconciliation_integrity` — measured ledger mismatches within the admin-set
+    `max_reconciliation_mismatches`. An unmeasured ledger is not a reconciled one.
+12. `reconciliation_runbook` — reconciliation, incident runbook and rollback all approved.
 
 Gates 7–9 and 11 rest on **attestations**: dated, attributed human statements
 with structured claims. A missing claim blocks; it never defaults to true. An
 attestation older than 90 days expires and re-blocks its gate.
 
-Even with all eleven passing, `effectiveState` is `DISARMED`. `gateState` is
+Even with all twelve passing, `effectiveState` is `DISARMED`. `gateState` is
 reported separately so the readiness work is visible and auditable.
 
 ---

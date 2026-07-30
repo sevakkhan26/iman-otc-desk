@@ -18,7 +18,11 @@ import {
   LIVE_UNAVAILABLE_REASON_FA
 } from "@/lib/shadowArbitrage/live/capability";
 import type { LiveArmingState } from "@/lib/shadowArbitrage/live/executionPlan";
-import { unsetPolicies, type RiskPolicyState } from "@/lib/shadowArbitrage/live/policy";
+import {
+  policyValueOrNull,
+  unsetPolicies,
+  type RiskPolicyState
+} from "@/lib/shadowArbitrage/live/policy";
 import type { VenueCapitalState } from "@/lib/shadowArbitrage/capital";
 import { settlementFor, settlementUsable } from "@/lib/shadowArbitrage/paper/broker";
 
@@ -34,6 +38,7 @@ export type ReadinessGateId =
   | "key_permissions"
   | "transfer_costs"
   | "risk_policies"
+  | "reconciliation_integrity"
   | "reconciliation_runbook";
 
 export type GateStatus = "PASSED" | "BLOCKED" | "UNKNOWN";
@@ -86,6 +91,7 @@ export type ReadinessInput = {
     running: boolean;
     heartbeatStale: boolean;
     duplicateIdempotencyKeys: number;
+    successfulCycles: number;
     lastCycleStatus: string | null;
   } | null;
   capitalRecommendation: { status: string; reasonFa: string } | null;
@@ -94,17 +100,19 @@ export type ReadinessInput = {
     status: string;
     cyclesEvaluated: number;
     tradesExecuted: number;
+    failedDecisions: number;
     economicNetPnlToman: number;
   } | null;
+  /**
+   * Ledger consistency count. Null means it could not be measured, which is a
+   * blocker — an unmeasured ledger is not a reconciled one.
+   */
+  reconciliationMismatches: number | null;
   venueStates: VenueCapitalState[];
   policies: RiskPolicyState[];
   attestations: AttestationRecord[];
   nowMs: number;
 };
-
-/** Minimum paper evidence before live readiness may even be reviewed. */
-export const MIN_PAPER_CYCLES = 500;
-export const MIN_PAPER_TRADES = 20;
 
 function daysBetween(fromIso: string, toMs: number): number {
   const from = Date.parse(fromIso);
@@ -166,15 +174,21 @@ export function evaluateGates(input: ReadinessInput): ReadinessGate[] {
   // 1 — observation window
   {
     const o = input.observation;
-    const daysOk = Boolean(o && o.elapsedMs >= o.targetDurationMs);
+    // The required duration is an admin decision, not a constant in this file.
+    const requiredDays = policyValueOrNull(input.policies, "min_observation_duration_days");
+    const requiredMs = requiredDays === null ? null : requiredDays * 86_400_000;
+    const daysOk = Boolean(o && requiredMs !== null && o.elapsedMs >= requiredMs);
     const coverageOk = Boolean(o && o.successCoveragePercent >= REQUIRED_SUCCESS_COVERAGE_PERCENT);
     const blockers: string[] = [];
     if (!o) blockers.push("هیچ نشست مشاهده‌ای وجود ندارد.");
-    if (o && !daysOk) {
+    if (requiredDays === null) {
+      blockers.push("سیاست «حداقل مدت مشاهده» تعیین نشده است؛ هیچ مدتی فرض نمی‌شود.");
+    }
+    if (o && requiredMs !== null && !daysOk) {
       blockers.push(
         `دورهٔ مشاهده کامل نشده (${Math.floor(o.elapsedMs / 86_400_000)} روز از ${Math.round(
-          o.targetDurationMs / 86_400_000
-        )} روز).`
+          requiredDays ?? 0
+        )} روز لازم).`
       );
     }
     if (o && !coverageOk) {
@@ -203,15 +217,27 @@ export function evaluateGates(input: ReadinessInput): ReadinessGate[] {
     if (!c) blockers.push("وضعیت جمع‌آورنده در دسترس نیست.");
     if (c && !c.running) blockers.push("جمع‌آورنده در حال اجرا نیست.");
     if (c && c.heartbeatStale) blockers.push("ضربان جمع‌آورنده کهنه است.");
-    if (c && c.duplicateIdempotencyKeys > 0) {
-      blockers.push(`${c.duplicateIdempotencyKeys} چرخهٔ تکراری ثبت شده است.`);
+
+    const maxDuplicates = policyValueOrNull(input.policies, "max_duplicate_idempotency_keys");
+    const minCycles = policyValueOrNull(input.policies, "min_successful_cycles");
+    if (maxDuplicates === null) {
+      blockers.push("سیاست «حداکثر کلید تکراری مجاز» تعیین نشده است؛ حتی صفر هم باید انتخاب صریح باشد.");
+    } else if (c && c.duplicateIdempotencyKeys > maxDuplicates) {
+      blockers.push(
+        `${c.duplicateIdempotencyKeys} چرخهٔ تکراری ثبت شده که از سقف ${maxDuplicates} بیشتر است.`
+      );
+    }
+    if (minCycles === null) {
+      blockers.push("سیاست «حداقل چرخهٔ موفق» تعیین نشده است.");
+    } else if (c && c.successfulCycles < minCycles) {
+      blockers.push(`${c.successfulCycles} چرخهٔ موفق کمتر از حداقل ${minCycles} است.`);
     }
     gates.push({
       id: "collector_health",
       labelFa: "سلامت جمع‌آورنده و نبود چرخهٔ تکراری",
       status: blockers.length ? "BLOCKED" : "PASSED",
       evidenceFa: c
-        ? `اجرا=${c.running} · ضربان کهنه=${c.heartbeatStale} · تکراری=${c.duplicateIdempotencyKeys}`
+        ? `اجرا=${c.running} · ضربان کهنه=${c.heartbeatStale} · تکراری=${c.duplicateIdempotencyKeys} · چرخهٔ موفق=${c.successfulCycles}`
         : "بدون شواهد",
       expiresAt: null,
       expired: false,
@@ -240,19 +266,30 @@ export function evaluateGates(input: ReadinessInput): ReadinessGate[] {
   {
     const p = input.paper;
     const blockers: string[] = [];
+    // Every threshold below is an admin policy. None is chosen in this file.
+    const minCycles = policyValueOrNull(input.policies, "min_successful_cycles");
+    const minFills = policyValueOrNull(input.policies, "min_paper_fills");
+    const maxFailures = policyValueOrNull(input.policies, "max_paper_failures");
+
     if (!p?.sessionPresent) blockers.push("هیچ نشست اجرای کاغذی وجود ندارد.");
-    if (p && p.cyclesEvaluated < MIN_PAPER_CYCLES) {
-      blockers.push(`تعداد چرخهٔ کاغذی ${p.cyclesEvaluated} کمتر از حداقل ${MIN_PAPER_CYCLES} است.`);
+    if (minCycles === null) blockers.push("سیاست «حداقل چرخهٔ موفق» تعیین نشده است.");
+    else if (p && p.cyclesEvaluated < minCycles) {
+      blockers.push(`تعداد چرخهٔ کاغذی ${p.cyclesEvaluated} کمتر از حداقل ${minCycles} است.`);
     }
-    if (p && p.tradesExecuted < MIN_PAPER_TRADES) {
-      blockers.push(`تعداد معاملهٔ کاغذی ${p.tradesExecuted} کمتر از حداقل ${MIN_PAPER_TRADES} است.`);
+    if (minFills === null) blockers.push("سیاست «حداقل معاملهٔ کاغذی اجراشده» تعیین نشده است.");
+    else if (p && p.tradesExecuted < minFills) {
+      blockers.push(`تعداد معاملهٔ کاغذی ${p.tradesExecuted} کمتر از حداقل ${minFills} است.`);
+    }
+    if (maxFailures === null) blockers.push("سیاست «حداکثر خطای مجاز در اجرای کاغذی» تعیین نشده است.");
+    else if (p && p.failedDecisions > maxFailures) {
+      blockers.push(`${p.failedDecisions} خطای کاغذی از سقف ${maxFailures} بیشتر است.`);
     }
     gates.push({
       id: "paper_evidence",
       labelFa: "شواهد کافی از اجرای کاغذی",
       status: blockers.length ? "BLOCKED" : "PASSED",
       evidenceFa: p
-        ? `${p.cyclesEvaluated} چرخه · ${p.tradesExecuted} معامله · سود اقتصادی ${p.economicNetPnlToman}`
+        ? `${p.cyclesEvaluated} چرخه · ${p.tradesExecuted} معامله · ${p.failedDecisions} خطا · سود اقتصادی ${p.economicNetPnlToman}`
         : "بدون شواهد",
       expiresAt: null,
       expired: false,
@@ -391,7 +428,32 @@ export function evaluateGates(input: ReadinessInput): ReadinessGate[] {
     });
   }
 
-  // 11 — reconciliation and incident runbook
+  // 11 — reconciliation integrity of the existing ledgers
+  {
+    const maxMismatch = policyValueOrNull(input.policies, "max_reconciliation_mismatches");
+    const observed = input.reconciliationMismatches;
+    const blockers: string[] = [];
+    if (maxMismatch === null) {
+      blockers.push("سیاست «حداکثر مغایرت تطبیق مجاز» تعیین نشده است.");
+    }
+    if (observed === null) {
+      blockers.push("مغایرت تطبیق اندازه‌گیری نشده است؛ دفتر اندازه‌گیری‌نشده تطبیق‌شده نیست.");
+    } else if (maxMismatch !== null && observed > maxMismatch) {
+      blockers.push(`${observed} مغایرت تطبیق از سقف ${maxMismatch} بیشتر است.`);
+    }
+    gates.push({
+      id: "reconciliation_integrity",
+      labelFa: "یکپارچگی تطبیق دفاتر موجود",
+      status: blockers.length ? "BLOCKED" : "PASSED",
+      evidenceFa: observed === null ? "اندازه‌گیری نشده" : `${observed} مغایرت مشاهده‌شده`,
+      expiresAt: null,
+      expired: false,
+      blockerFa: blockers.join(" ") || null,
+      requiredActionFa: "تعیین سقف مغایرت و رفع هر مغایرت مشاهده‌شده در دفاتر."
+    });
+  }
+
+  // 12 — reconciliation and incident runbook
   {
     const { record, expiresAt, expired } = attestation(input, "reconciliation_runbook");
     const claims = requireClaims(record, [

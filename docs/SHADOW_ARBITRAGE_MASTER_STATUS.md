@@ -888,3 +888,48 @@ key-permission checklist, incident runbook and rollback procedure.
 12/12 suites green, 375 assertions, 0 failures · isolated standalone build
 succeeds and emits the `live-readiness` route · collector, paper and capital
 modules byte-identical to v4.9.1; observation and paper sessions untouched.
+
+---
+
+## 18. Phase 7A.1 — Readiness hardening (branch `shadow-phase7a1-readiness-hardening`, not merged)
+
+Built on v4.10.0. **Not merged, not tagged, not deployed.**
+
+**Invented thresholds removed.** `MIN_PAPER_CYCLES = 500` and
+`MIN_PAPER_TRADES = 20` are gone. The readiness engine now contains no numeric
+minimum at all — a test scans the source for `500`, for `const MIN_… = <number>`
+and for any `?? <number>` fallback, and asserts none exist.
+
+**Six new required-but-unset evidence policies:** `min_observation_duration_days`,
+`min_successful_cycles`, `min_paper_fills`, `max_paper_failures`,
+`max_duplicate_idempotency_keys`, `max_reconciliation_mismatches`. No numeric
+value is chosen anywhere; policies carry a `category` of RISK or EVIDENCE and
+eighteen are now required in total. Unset means BLOCKED, and **zero is an
+explicit choice** — the duplicate-key tolerance must be stated, not assumed.
+
+**New gate `reconciliation_integrity`** checks the existing paper ledger
+read-only (`cashPnl − sellFeeValue === economicNetPnl`, and a fill must carry the
+balances it produced). An unmeasured ledger blocks; twelve gates in total.
+
+**Provenance and expiry.** Each policy value records `ADMIN_APPROVED`
+provenance, approver, approval date and an approver-chosen validity period. The
+expiry is derived from that period — the code never picks a duration. **An
+expired policy is treated exactly like an unset one.** Storage stays append-only;
+migration `0009` adds two nullable/defaulted columns to the existing table (no
+drops, no type changes, no inserts), and existing rows keep their meaning.
+
+**RTL layout.** All readiness tables use a fixed layout with explicit column
+widths, `overflow-wrap: anywhere`, `word-break: break-word`, `vertical-align:
+top` and RTL-safe `text-align: start`. Tablet (≤1024px) drops optional columns
+instead of squeezing cells; mobile (≤720px) stacks every row into labelled lines,
+so columns cannot overlap because there are no columns. A test asserts every
+table opts into the style, every `<td>` carries a `data-label`, and the CSS
+contains each wrapping and media rule.
+
+**Unchanged:** `LIVE_EXECUTION_IMPLEMENTED` is still a compile-time false with no
+environment read in any live module; `effectiveState` is still `DISARMED` with
+all gates passing; collector, runner, instrumentation, paper modules, paper
+repository, capital engine and config are byte-identical to v4.10.0.
+
+**Verification:** typecheck clean · ESLint 0 errors (17 pre-existing warnings) ·
+12/12 suites green, 383 assertions, 0 failures · isolated standalone build OK.

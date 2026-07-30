@@ -798,6 +798,10 @@ export const shadowLiveRiskPolicies = pgTable(
     seq: bigserial("seq", { mode: "number" }).notNull(),
     policyKey: text("policy_key").notNull(),
     value: numeric("value", { precision: 24, scale: 6 }).notNull(),
+    /** Only ADMIN_APPROVED exists; there is no machine-chosen provenance. */
+    provenance: text("provenance").notNull().default("ADMIN_APPROVED"),
+    /** Chosen by the approver. Null means the approver stated no expiry. */
+    validForDays: integer("valid_for_days"),
     setBy: text("set_by").notNull(),
     setAt: ts("set_at").notNull(),
     note: text("note"),

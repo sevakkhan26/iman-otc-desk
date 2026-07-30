@@ -1092,6 +1092,7 @@ await test("7A readiness attestations, policies and reviews are append-only", as
     policyKey: "max_order_size_usdt",
     value: 50,
     setBy: "admin",
+    validForDays: 30,
     note: "افزایش سقف"
   });
 
@@ -1099,9 +1100,12 @@ await test("7A readiness attestations, policies and reviews are append-only", as
   const latest = await liveRepo.loadRiskPolicyValues();
   assert.equal(latest.length, 1);
   assert.equal(latest[0].value, 50);
+  assert.equal(latest[0].provenance, "ADMIN_APPROVED", "the only provenance that exists");
+  assert.equal(latest[0].validForDays, 30, "the approver's own validity period round-trips");
   const history = await liveRepo.loadRiskPolicyHistory("max_order_size_usdt");
   assert.equal(history.length, 2, "the earlier value is preserved");
   assert.equal(history[1].value, 25);
+  assert.equal(history[1].validForDays, null, "a policy set without an expiry keeps null");
 
   await liveRepo.recordAttestation({
     kind: "key_permissions",

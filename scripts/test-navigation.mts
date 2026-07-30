@@ -481,5 +481,159 @@ await test("8A ratios are bidi-isolated so RTL cannot reverse them", () => {
   assert.ok(rule.slice(0, 220).includes("unicode-bidi: isolate"));
 });
 
+/** Only the Phase 8A section of the stylesheet — never an unrelated rule. */
+function phase8aCss(): string {
+  const css = read("app/globals.css");
+  return css.slice(css.indexOf("Phase 8A shell and overview"));
+}
+
+await test("8A polish: the desktop tab strip uses the full content width", () => {
+  const css = phase8aCss();
+  const strip = css.slice(css.indexOf(".sa-tabs {"), css.indexOf(".sa-tab {"));
+  assert.ok(strip.includes("display: flex"), "not an inline strip hugging one end");
+  assert.ok(strip.includes("width: 100%"));
+  assert.ok(strip.includes("justify-content: space-between"));
+  const tab = css.slice(css.indexOf(".sa-tab {"), css.indexOf(".sa-tab:hover"));
+  assert.ok(tab.includes("flex: 1 1 auto"), "tabs share the available width");
+
+  // Below 900px the strip returns to its natural width and scrolls.
+  const narrow = css.slice(css.indexOf("@media (max-width: 900px)"));
+  assert.ok(narrow.slice(0, 900).includes("width: max-content"));
+  assert.ok(narrow.slice(0, 900).includes("flex: 0 0 auto"));
+});
+
+await test("8A polish: mobile tabs snap, fade at the edges and self-scroll", () => {
+  const css = phase8aCss();
+  const wrap = css.slice(css.indexOf(".sa-tabs-wrap {"), css.indexOf(".sa-tabs {"));
+  assert.ok(wrap.includes("scroll-snap-type: x proximity"), "no tab rests half-cut");
+  assert.ok(wrap.includes("scroll-padding-inline"));
+  const tab = css.slice(css.indexOf(".sa-tab {"), css.indexOf(".sa-tab:hover"));
+  assert.ok(tab.includes("scroll-snap-align: center"));
+  // Edge affordance.
+  const narrow = css.slice(css.indexOf("@media (max-width: 900px)"));
+  assert.ok(narrow.slice(0, 1400).includes("mask-image"), "edge fade signals more tabs");
+
+  // The active tab is brought into view when the strip actually scrolls.
+  const tabs = read("src/components/shadowArbitrage/ShadowTabs.tsx");
+  assert.ok(tabs.includes("scrollIntoView"));
+  assert.ok(tabs.includes('inline: "center"'));
+  assert.ok(
+    tabs.includes("strip.scrollWidth <= strip.clientWidth + 1"),
+    "no scrolling when everything already fits"
+  );
+  assert.ok(tabs.includes("}, [active]);"), "it reacts to the selected tab");
+});
+
+await test("8A polish: the status panel is grouped, aligned and ends with progress", () => {
+  const ov = read("src/components/shadowArbitrage/OverviewPanel.tsx");
+  // Mode + collector + paper form one cluster; cycle time + refresh the other.
+  const group = ov.indexOf('className="sa-ov-status-group"');
+  const tail = ov.indexOf('className="sa-ov-status-tail"');
+  const progress = ov.indexOf('className="sa-ov-progress"');
+  assert.ok(group > 0 && tail > group, "the tail follows the cluster");
+  assert.ok(progress > tail, "progress is the final row");
+
+  const css = phase8aCss();
+  const g = css.slice(css.indexOf(".sa-ov-status-group {"), css.indexOf(".sa-ov-status-tail {"));
+  assert.ok(g.includes("border-inline-end"), "a divider separates the cluster");
+  const t = css.slice(css.indexOf(".sa-ov-status-tail {"));
+  assert.ok(t.slice(0, 220).includes("margin-inline-start: auto"), "the tail aligns to the end");
+  const p = css.slice(css.indexOf(".sa-ov-progress {"));
+  assert.ok(p.slice(0, 200).includes("border-top"), "progress reads as its own row");
+});
+
+await test("8A polish: KPI cards use neutral glass borders with a small accent", () => {
+  const css = phase8aCss();
+  // No tone sets a full coloured border any more.
+  for (const tone of ["good", "warn", "danger"]) {
+    const rule = css.slice(css.indexOf(`.sa-ov-card-${tone}::before {`));
+    assert.ok(rule.slice(0, 160).includes("background:"), `${tone} carries an accent rail`);
+    assert.equal(
+      new RegExp(`\\.sa-ov-card-${tone} \\{[^}]*border-color`).test(css),
+      false,
+      `${tone} must not paint the whole border`
+    );
+  }
+  // The accent is a thin rail, not a fill.
+  const rail = css.slice(css.indexOf(".sa-ov-card-good::before,"));
+  assert.ok(rail.slice(0, 400).includes("width: 3px"));
+  assert.ok(rail.slice(0, 400).includes("inset-inline-start: 0"));
+  // The card border itself stays neutral glass.
+  const card = css.slice(css.indexOf(".sa-ov-card {"));
+  assert.ok(card.slice(0, 400).includes("border: 1px solid var(--line)"));
+});
+
+await test("8A polish: secondary cards are dense and use existing data only", () => {
+  const ov = read("src/components/shadowArbitrage/OverviewPanel.tsx");
+  // Paper: a status chip plus exactly three metrics.
+  const paperBlock = ov.slice(ov.indexOf("ارزیابی کاغذی"), ov.indexOf("آمادگی حساب و کارمزد"));
+  for (const dt of ["وضعیت نشست", "معاملات اجراشده", "ردشده", "سود خالص اقتصادی"]) {
+    assert.ok(paperBlock.includes(dt), `paper summary needs ${dt}`);
+  }
+  // Account readiness: ratio + main blocker, in a two-column list.
+  const acctBlock = ov.slice(ov.indexOf("آمادگی حساب و کارمزد"), ov.indexOf("آمادگی اجرای واقعی"));
+  assert.ok(acctBlock.includes("<Ratio part={accounts.executable}"));
+  assert.ok(acctBlock.includes("مانع اصلی"));
+  assert.ok(acctBlock.includes("sa-ov-mini-list-2"));
+  // Live readiness: DISARMED + gate ratio + first blocker.
+  const liveBlock = ov.slice(ov.indexOf("آمادگی اجرای واقعی"));
+  assert.ok(liveBlock.includes("غیرمسلح"));
+  assert.ok(liveBlock.includes("<Ratio part={readiness.passed}"));
+  assert.ok(liveBlock.includes("نخستین مانع"));
+
+  // Nothing new was invented: the props are unchanged.
+  assert.equal(/props\.[a-z]+New|fakeData|sample/i.test(ov), false);
+});
+
+await test("8A polish: details actions are restrained glass with a chevron", () => {
+  const ov = read("src/components/shadowArbitrage/OverviewPanel.tsx");
+  assert.ok(ov.includes("function DetailsAction("));
+  assert.ok(ov.includes("<ChevronLeft"), "a directional chevron, pointing onward in RTL");
+  assert.ok(ov.includes('from "lucide-react"'), "no new icon library");
+  // The bright link style is gone from the secondary cards.
+  const secondary = ov.slice(ov.indexOf("sa-ov-secondary"));
+  assert.equal(secondary.includes("sa-linkish"), false, "no bright-blue links remain");
+  assert.equal((ov.match(/<DetailsAction/g) ?? []).length, 3);
+
+  const css = phase8aCss();
+  const action = css.slice(css.indexOf(".sa-ov-action {"));
+  assert.ok(action.slice(0, 500).includes("border: 1px solid var(--line)"));
+  assert.ok(action.slice(0, 500).includes("color: var(--muted)"), "tertiary, not accent-coloured");
+  assert.ok(css.includes(".sa-ov-action:focus-visible"), "still keyboard visible");
+});
+
+await test("8A polish: dark secondary text is lifted without flattening hierarchy", () => {
+  const css = phase8aCss();
+  const dark = css.slice(css.indexOf(':root[data-theme="dark"] .sa-ov-card-hint'));
+  assert.ok(dark.slice(0, 700).includes("#d7dde8"), "hints are lifted in dark mode");
+  for (const sel of [
+    ".sa-ov-card-label",
+    ".sa-ov-status-label",
+    ".sa-ov-mini-list dt",
+    ".sa-ov-action"
+  ]) {
+    assert.ok(dark.slice(0, 700).includes(sel), `${sel} must be lifted too`);
+  }
+  // Hierarchy is preserved: the primary value keeps its own colour and weight.
+  const value = css.slice(css.indexOf(".sa-ov-card-value {"));
+  assert.ok(value.slice(0, 260).includes("color: var(--text)"));
+  assert.ok(value.slice(0, 260).includes("font-weight: 800"));
+  // The lift is scoped to Shadow, not applied to the global muted token.
+  assert.equal(/:root\[data-theme="dark"\]\s*\{[^}]*--muted/.test(read("app/globals.css")), false);
+});
+
+await test("8A polish: mobile spacing tightens without shrinking tap targets", () => {
+  const css = phase8aCss();
+  const mob = css.slice(css.indexOf("Mobile rhythm:"));
+  const block = mob.slice(0, mob.indexOf("The page itself"));
+  assert.ok(block.includes(".sa-ov-status"), "padding tightens");
+  assert.ok(block.includes(".sa-ov-mini"));
+  // Tap targets do not shrink — they grow.
+  assert.ok(block.includes("min-height: 28px"), "tertiary action stays tappable");
+  assert.ok(block.includes("min-height: 36px"), "tabs stay tappable on touch");
+  // Readability is preserved: the value only steps down one size.
+  assert.ok(block.includes("font-size: 19px"));
+});
+
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

@@ -6652,16 +6652,38 @@ table th {
 
 /* Tab strip ---------------------------------------------------------------- */
 .sa-tabs-wrap {
+  position: relative;
   margin: 0 0 14px;
   /* Narrow screens scroll the strip instead of wrapping or clipping labels. */
   overflow-x: auto;
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin;
+  scrollbar-width: none;
+  /* Snap so a tab never comes to rest half-cut. */
+  scroll-snap-type: x proximity;
+  scroll-padding-inline: 12px;
+}
+.sa-tabs-wrap::-webkit-scrollbar {
+  display: none;
+}
+/* Edge fade: a scroll affordance that appears only when there is more to see. */
+.sa-tabs-wrap::after,
+.sa-tabs-wrap::before {
+  content: "";
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: block;
+  flex: 0 0 22px;
+  align-self: stretch;
+  pointer-events: none;
 }
 .sa-tabs {
-  display: inline-flex;
+  /* Desktop: the strip uses the full content width instead of hugging one end. */
+  display: flex;
+  width: 100%;
   align-items: center;
+  justify-content: space-between;
   gap: 4px;
   padding: 4px;
   border-radius: var(--radius-lg, 16px);
@@ -6674,10 +6696,13 @@ table th {
 }
 .sa-tab {
   display: inline-flex;
+  flex: 1 1 auto;
+  justify-content: center;
   align-items: center;
   gap: 6px;
   min-height: 34px;
   padding: 6px 13px;
+  scroll-snap-align: center;
   border: 1px solid transparent;
   border-radius: var(--radius-md, 12px);
   background: transparent;
@@ -6729,6 +6754,34 @@ table th {
   color: #ff9c92;
 }
 
+@media (max-width: 900px) {
+  .sa-tabs {
+    /* Below this width the labels no longer fit; scroll instead of squeezing. */
+    width: max-content;
+    justify-content: flex-start;
+  }
+  .sa-tab {
+    flex: 0 0 auto;
+  }
+  .sa-tabs-wrap {
+    /* A soft mask at both edges signals that the strip continues. */
+    -webkit-mask-image: linear-gradient(
+      to left,
+      transparent 0,
+      #000 18px,
+      #000 calc(100% - 18px),
+      transparent 100%
+    );
+    mask-image: linear-gradient(
+      to left,
+      transparent 0,
+      #000 18px,
+      #000 calc(100% - 18px),
+      transparent 100%
+    );
+  }
+}
+
 .sa-tabpanel:focus {
   outline: none;
 }
@@ -6741,13 +6794,32 @@ table th {
 }
 
 .sa-ov-status {
-  padding: 14px 16px;
+  padding: 11px 14px;
 }
+/*
+ * Deliberate grouping: the three state chips read as one cluster, the cycle
+ * time and refresh align to the far end, and progress owns its own final row.
+ */
 .sa-ov-status-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px 22px;
+  gap: 8px 14px;
+}
+.sa-ov-status-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  padding-inline-end: 14px;
+  border-inline-end: 1px solid var(--line-soft, var(--line));
+}
+.sa-ov-status-tail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-inline-start: auto;
 }
 .sa-ov-status-item {
   display: flex;
@@ -6776,7 +6848,9 @@ table th {
 }
 
 .sa-ov-progress {
-  margin-top: 12px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft, var(--line));
 }
 .sa-ov-progress-head {
   display: flex;
@@ -6862,14 +6936,37 @@ table th {
   color: var(--muted);
   overflow-wrap: anywhere;
 }
-.sa-ov-card-good {
-  border-color: color-mix(in srgb, var(--ok, #12805c) 30%, var(--line));
+/*
+ * KPI cards keep a neutral glass border. Semantic meaning is carried by a small
+ * accent rail on the inline start edge, so a wall of coloured outlines never
+ * competes with the numbers themselves.
+ */
+.sa-ov-card {
+  position: relative;
+  overflow: hidden;
 }
-.sa-ov-card-warn {
-  border-color: color-mix(in srgb, #b54708 28%, var(--line));
+.sa-ov-card-good::before,
+.sa-ov-card-warn::before,
+.sa-ov-card-danger::before,
+.sa-ov-card-muted::before {
+  content: "";
+  position: absolute;
+  inset-block: 12px;
+  inset-inline-start: 0;
+  width: 3px;
+  border-radius: 999px;
 }
-.sa-ov-card-danger {
-  border-color: color-mix(in srgb, #d92d20 32%, var(--line));
+.sa-ov-card-good::before {
+  background: var(--green, #12805c);
+}
+.sa-ov-card-warn::before {
+  background: #b54708;
+}
+.sa-ov-card-danger::before {
+  background: #d92d20;
+}
+.sa-ov-card-muted::before {
+  background: var(--line);
 }
 .sa-ov-card-skeleton {
   min-height: 104px;
@@ -6886,15 +6983,17 @@ table th {
   }
 }
 .sa-ov-mini {
-  padding: 13px 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
   min-width: 0;
 }
 .sa-ov-mini-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-bottom: 9px;
 }
 .sa-ov-mini-title {
   margin: 0;
@@ -6904,9 +7003,25 @@ table th {
 }
 .sa-ov-mini-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: 8px 14px;
+  /* Three metrics sit on one row; a wide blocker line spans the full width. */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 12px;
   margin: 0;
+}
+.sa-ov-mini-list.sa-ov-mini-list-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+/*
+ * A blocker is a full sentence, not a metric: it always takes the whole row so
+ * it can wrap instead of being squeezed against the card edge.
+ */
+.sa-ov-mini-list .sa-ov-mini-wide {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+.sa-ov-mini-list .sa-ov-mini-wide dd {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .sa-ov-mini-list > div {
   min-width: 0;
@@ -6920,11 +7035,16 @@ table th {
   color: var(--muted);
 }
 .sa-ov-mini-list dd {
-  margin: 3px 0 0;
+  margin: 2px 0 0;
   font-size: 13.5px;
   font-weight: 800;
   color: var(--text);
   overflow-wrap: anywhere;
+}
+.sa-ov-mini-list .sa-reason {
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.75;
 }
 .sa-ov-mini-empty {
   margin: 0;
@@ -6937,8 +7057,7 @@ table th {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 10px;
-  padding: 7px 10px;
+  padding: 6px 9px;
   border-radius: var(--radius-md, 12px);
   border: 1px solid color-mix(in srgb, #d92d20 40%, transparent);
   background: color-mix(in srgb, #d92d20 9%, transparent);
@@ -6952,6 +7071,45 @@ table th {
   background: color-mix(in srgb, #d92d20 18%, transparent);
 }
 
+/*
+ * Tertiary action: the same restrained glass language as the other controls —
+ * never a bright link colour competing with the data.
+ */
+.sa-ov-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--card) 70%, transparent);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.5;
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+.sa-ov-action:hover {
+  color: var(--text);
+  background: var(--card);
+  border-color: color-mix(in srgb, var(--text) 18%, var(--line));
+}
+.sa-ov-action:focus-visible {
+  outline: 2px solid rgb(var(--brand) / 0.55);
+  outline-offset: 1px;
+}
+.sa-ov-action svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+
 .sa-ov-foot {
   margin: 2px 0 0;
   font-size: 11px;
@@ -6959,6 +7117,66 @@ table th {
 }
 .sa-ov-foot-note {
   opacity: 0.9;
+}
+
+/*
+ * Dark mode: lift secondary text a step so hints stay readable on glass, while
+ * staying clearly below the primary value in weight and size.
+ */
+:root[data-theme="dark"] .sa-ov-card-hint,
+:root[data-theme="dark"] .sa-ov-card-label,
+:root[data-theme="dark"] .sa-ov-status-label,
+:root[data-theme="dark"] .sa-ov-status-sub,
+:root[data-theme="dark"] .sa-ov-mini-list dt,
+:root[data-theme="dark"] .sa-ov-mini-empty,
+:root[data-theme="dark"] .sa-ov-progress-head,
+:root[data-theme="dark"] .sa-ov-action {
+  color: #d7dde8;
+}
+:root[data-theme="dark"] .sa-ov-foot,
+:root[data-theme="dark"] .sa-ratio-sep,
+:root[data-theme="dark"] .sa-ratio-whole {
+  color: #c3ccda;
+}
+:root[data-theme="dark"] .sa-ov-mini-list .sa-reason {
+  color: #e3b7a6;
+}
+
+/* Mobile rhythm: tighter spacing, larger touch targets. */
+@media (max-width: 620px) {
+  .sa-ov {
+    gap: 10px;
+  }
+  .sa-ov-status {
+    padding: 10px 12px;
+  }
+  .sa-ov-status-group {
+    padding-inline-end: 0;
+    border-inline-end: 0;
+  }
+  .sa-ov-status-tail {
+    margin-inline-start: 0;
+  }
+  .sa-ov-card {
+    padding: 12px 13px;
+  }
+  .sa-ov-card-value {
+    font-size: 19px;
+  }
+  .sa-ov-mini {
+    padding: 11px 12px;
+  }
+  .sa-ov-mini-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  /* Spacing tightens, tap targets do not: both of these grow. */
+  .sa-ov-action {
+    min-height: 28px;
+    padding: 4px 10px;
+  }
+  .sa-tab {
+    min-height: 36px;
+  }
 }
 
 /*

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { ChevronLeft } from "lucide-react";
 import { formatTehran } from "@/components/format";
 import {
   COLLECTOR_STATE_FA,
@@ -63,6 +64,20 @@ type Props = {
 function toman(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "—";
   return `${toFaDigits(Math.round(value).toLocaleString("en-US"))} تومان`;
+}
+
+/**
+ * Restrained tertiary action.
+ *
+ * The chevron points inline-end, which in this RTL page reads as "onward".
+ */
+function DetailsAction({ onClick, label = "جزئیات" }: { onClick: () => void; label?: string }) {
+  return (
+    <button type="button" className="sa-ov-action" onClick={onClick}>
+      <span>{label}</span>
+      <ChevronLeft aria-hidden="true" strokeWidth={2} />
+    </button>
+  );
 }
 
 /**
@@ -202,6 +217,8 @@ export function OverviewPanel({
       {/* ── status strip ─────────────────────────────────────────────── */}
       <section className="panel sa-panel sa-ov-status">
         <div className="sa-ov-status-row">
+          {/* Mode, collector and paper read as one cluster. */}
+          <div className="sa-ov-status-group">
           <div className="sa-ov-status-item">
             <span className="sa-ov-status-label">حالت</span>
             <span className="sa-chip sa-chip-sm sa-chip-warn" title={TOOLTIP_FA.coverage}>
@@ -236,7 +253,10 @@ export function OverviewPanel({
               <span className="sa-chip sa-chip-sm sa-chip-muted">نشستی وجود ندارد</span>
             )}
           </div>
+          </div>
 
+          {/* Last cycle and refresh align together at the far end. */}
+          <div className="sa-ov-status-tail">
           <div className="sa-ov-status-item">
             <span className="sa-ov-status-label">آخرین چرخهٔ موفق</span>
             <span className="sa-ov-status-value" title={observation?.lastSuccessAt ?? undefined}>
@@ -253,16 +273,15 @@ export function OverviewPanel({
             </span>
           </div>
 
-          <div className="sa-ov-status-actions">
-            <button
-              type="button"
-              className="sa-btn sa-btn-ghost"
-              onClick={onRefresh}
-              disabled={loading}
-              aria-busy={loading}
-            >
-              {loading ? "در حال به‌روزرسانی…" : "به‌روزرسانی"}
-            </button>
+          <button
+            type="button"
+            className="sa-btn sa-btn-ghost"
+            onClick={onRefresh}
+            disabled={loading}
+            aria-busy={loading}
+          >
+            {loading ? "در حال به‌روزرسانی…" : "به‌روزرسانی"}
+          </button>
           </div>
         </div>
 
@@ -390,21 +409,37 @@ export function OverviewPanel({
         <section className="panel sa-panel sa-ov-mini">
           <div className="sa-ov-mini-head">
             <h3 className="sa-ov-mini-title">ارزیابی کاغذی</h3>
-            <button type="button" className="sa-linkish" onClick={() => onOpenTab("paper")}>
-              جزئیات
-            </button>
+            <DetailsAction onClick={() => onOpenTab("paper")} />
           </div>
           {paper?.present ? (
             <dl className="sa-ov-mini-list">
+              <div>
+                <dt>وضعیت نشست</dt>
+                <dd>
+                  <span
+                    className={`sa-chip sa-chip-sm sa-chip-${
+                      paper.status === "RUNNING" ? "good" : paper.status === "PAUSED" ? "warn" : "muted"
+                    }`}
+                  >
+                    {paper.status === "RUNNING"
+                      ? "در حال اجرا"
+                      : paper.status === "PAUSED"
+                        ? "متوقف"
+                        : paper.status === "STOPPED"
+                          ? "پایان‌یافته"
+                          : "شروع‌نشده"}
+                  </span>
+                </dd>
+              </div>
               <div>
                 <dt>معاملات اجراشده</dt>
                 <dd>{formatCountFa(paper.filled)}</dd>
               </div>
               <div>
-                <dt>نامزدهای ردشده</dt>
+                <dt>ردشده</dt>
                 <dd>{formatCountFa(paper.skipped)}</dd>
               </div>
-              <div>
+              <div className="sa-ov-mini-wide">
                 <dt>سود خالص اقتصادی</dt>
                 <dd className={paper.economicNetPnlToman >= 0 ? "sa-pos" : "sa-neg"}>
                   {toman(paper.economicNetPnlToman)}
@@ -421,12 +456,10 @@ export function OverviewPanel({
         <section className="panel sa-panel sa-ov-mini">
           <div className="sa-ov-mini-head">
             <h3 className="sa-ov-mini-title">آمادگی حساب و کارمزد</h3>
-            <button type="button" className="sa-linkish" onClick={() => onOpenTab("sources")}>
-              جزئیات
-            </button>
+            <DetailsAction onClick={() => onOpenTab("sources")} />
           </div>
           {accounts ? (
-            <dl className="sa-ov-mini-list">
+            <dl className="sa-ov-mini-list sa-ov-mini-list-2">
               <div>
                 <dt>صرافی اجراپذیر</dt>
                 <dd>
@@ -448,16 +481,14 @@ export function OverviewPanel({
         <section className="panel sa-panel sa-ov-mini">
           <div className="sa-ov-mini-head">
             <h3 className="sa-ov-mini-title">آمادگی اجرای واقعی</h3>
-            <button type="button" className="sa-linkish" onClick={() => onOpenTab("live")}>
-              جزئیات
-            </button>
+            <DetailsAction onClick={() => onOpenTab("live")} />
           </div>
           <div className="sa-ov-disarmed" role="status">
             <span className="sa-chip sa-chip-sm sa-chip-danger">غیرمسلح</span>
             <span>اجرای واقعی پیاده‌سازی نشده است — هیچ سفارش واقعی ثبت نمی‌شود.</span>
           </div>
           {readiness ? (
-            <dl className="sa-ov-mini-list">
+            <dl className="sa-ov-mini-list sa-ov-mini-list-2">
               <div>
                 <dt>دروازه‌های برقرار</dt>
                 <dd>

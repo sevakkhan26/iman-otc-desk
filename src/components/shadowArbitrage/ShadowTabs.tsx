@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { SHADOW_TABS, type ShadowTabId } from "@/components/shadowArbitrage/tabs";
 
 type Props = {
@@ -18,6 +19,24 @@ type Props = {
  * or shrinking labels to the point of clipping.
  */
 export function ShadowTabs({ active, onSelect, badges }: Props) {
+  const stripRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Bring the active tab fully into view when the strip is scrollable.
+   *
+   * On a narrow screen the selected tab is often the one off-screen — arriving
+   * from a URL with `?tab=analytics` would otherwise show a strip that looks
+   * like nothing is selected.
+   */
+  useEffect(() => {
+    const strip = stripRef.current;
+    if (!strip) return;
+    const current = strip.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (!current) return;
+    if (strip.scrollWidth <= strip.clientWidth + 1) return;
+    current.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
+  }, [active]);
+
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
     if (!keys.includes(event.key)) return;
@@ -35,7 +54,7 @@ export function ShadowTabs({ active, onSelect, badges }: Props) {
   };
 
   return (
-    <div className="sa-tabs-wrap">
+    <div className="sa-tabs-wrap" ref={stripRef}>
       <div className="sa-tabs" role="tablist" aria-label="بخش‌های آربیتراژ آزمایشی" onKeyDown={onKeyDown}>
         {SHADOW_TABS.map((tab) => {
           const selected = tab.id === active;

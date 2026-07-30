@@ -481,6 +481,15 @@ await test("8A ratios are bidi-isolated so RTL cannot reverse them", () => {
   assert.ok(rule.slice(0, 220).includes("unicode-bidi: isolate"));
 });
 
+/** Strip comments so a scan tests behaviour, not documentation. */
+function stripComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .split("\n")
+    .map((line) => line.replace(/(^|\s)\/\/.*$/, "$1"))
+    .join("\n");
+}
+
 /** Only the Phase 8A section of the stylesheet — never an unrelated rule. */
 function phase8aCss(): string {
   const css = read("app/globals.css");
@@ -725,6 +734,84 @@ await test("8A glass: the page inherits the OTC workspace environment", () => {
   const pageRule = css.slice(css.indexOf(".sa-page-tabbed {"), css.indexOf(".sa-page-tabbed > *"));
   assert.equal(/background|padding|margin/.test(pageRule), false, "no bespoke workspace chrome");
   assert.ok(read("app/globals.css").includes(".content {"), ".content owns the workspace padding");
+});
+
+/* ── the preview must photograph the real app, never a reconstruction ────── */
+
+await test("preview harness renders the production shell, not a rebuilt one", () => {
+  const preview = read("scripts/preview-shadow-ui.mts");
+
+  // It drives the real standalone build over HTTP; it does not assemble markup.
+  assert.ok(preview.includes("standalone"), "it boots the production bundle");
+  assert.ok(preview.includes("/shadow-arbitrage?tab=overview"), "it navigates the real route");
+  assert.ok(preview.includes("Page.captureScreenshot"), "a real browser takes the picture");
+
+  // No substitute shell, sidebar, header or icon list may exist here.
+  for (const forbidden of [
+    "<aside",
+    "<nav",
+    "sidebar glass-nav",
+    "glass-icon-button",
+    "sa-tabs",
+    "sa-ov-card",
+    "<svg",
+    "viewBox",
+    "brand-title",
+    "nav-item"
+  ]) {
+    assert.equal(preview.includes(forbidden), false, `preview must not contain ${forbidden}`);
+  }
+  // No replacement navigation list, and no icon imports.
+  assert.equal(/lucide-react/.test(preview), false, "no substitute icons");
+  assert.equal(/RAIL_ITEMS|NAV_ITEMS|SIDEBAR_ITEMS/.test(preview), false, "no rebuilt nav list");
+  // No CSS for shell, sidebar, header or navigation.
+  assert.equal(/<style|\.sidebar\s*\{|\.shell\s*\{|\.page-header\s*\{/.test(preview), false);
+
+  // The real components are the ones under test, and they are untouched.
+  assert.ok(read("src/components/Shell.tsx").includes("sidebarNavItems"));
+  assert.ok(read("app/(desk)/layout.tsx").includes("<Shell>"));
+});
+
+await test("preview isolation: throwaway database, no credential, no stored secret", () => {
+  const raw = read("scripts/preview-shadow-ui.mts");
+  // Scan what the script DOES, not what its comments say it avoids.
+  const preview = stripComments(raw);
+  // Never the live local database.
+  assert.ok(preview.includes("mkdtemp"), "the database directory is temporary");
+  assert.ok(preview.includes("pglite:${path.join(dataDir"), "and points at that temp dir");
+  assert.equal(preview.includes(".data/"), false, "never the live local database");
+  // The secret is generated per run and never written anywhere.
+  assert.ok(preview.includes("randomBytes(48)"), "the signing secret is generated");
+  assert.equal(/writeFile\([^)]*secret/.test(preview), false, "the secret is never written to disk");
+  // A test-only identity with no password: it can mint a session, never log in.
+  assert.ok(preview.includes('ADMIN_PASSWORD_HASH: ""'), "no password hash exists");
+  assert.equal(/process\.env\.ADMIN_PASSWORD_HASH\s*\?\?/.test(preview), false);
+  // The collector never runs inside a screenshot tool.
+  assert.ok(preview.includes('SHADOW_COLLECTOR_ENABLED: "false"'));
+  // Output is not committed.
+  assert.ok(read(".gitignore").includes("preview-out/"));
+  // The prose still documents the isolation for a human reader.
+  assert.ok(raw.includes("never `.data/`"));
+});
+
+await test("preview does not modify production shell, header or tokens", () => {
+  // Everything the preview photographs is production code it only imports.
+  const preview = read("scripts/preview-shadow-ui.mts");
+  for (const productionFile of [
+    "src/components/Shell.tsx",
+    "src/components/DeskPageHeader.tsx",
+    "src/lib/sidebarNav.ts",
+    "app/ios27-design-system.css"
+  ]) {
+    assert.equal(preview.includes(productionFile), false, `preview must not touch ${productionFile}`);
+  }
+  // And the shipped admin shortcut is still the one the header renders.
+  const header = read("src/components/DeskPageHeader.tsx");
+  assert.ok(header.includes("<ShadowArbitrageHeaderButton />"));
+  assert.ok(
+    read("src/components/ShadowArbitrageHeaderButton.tsx").includes('role !== "admin"'),
+    "and it is still admin-only"
+  );
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

@@ -30,3 +30,6 @@ app/data/
 backups/
 *.dump
 *.dump.meta.json
+
+# Local UI preview artefacts (never committed)
+preview-out/

@@ -31,9 +31,72 @@ export type CollectorOptions = {
   /** Sweep retention every N cycles. */
   retentionEveryCycles?: number;
   log?: (message: string, extra?: unknown) => void;
-  /** Exit instead of collecting when another holder owns the lease. */
-  requireLease?: boolean;
+  /**
+   * Keep retrying while another holder owns the lease (default). Set false only
+   * for one-shot callers that genuinely want to give up.
+   */
+  waitForLease?: boolean;
+  /** Backoff bounds while waiting for a lease to expire. */
+  leaseRetryMinMs?: number;
+  leaseRetryMaxMs?: number;
 };
+
+/**
+ * Acquire the collector lease, waiting through another holder's lease instead of
+ * exiting.
+ *
+ * A container restart lands inside the previous container's still-valid lease.
+ * Exiting there leaves nothing running once that lease expires, which is exactly
+ * how production went silent after a recreate: the old lease expired at
+ * 13:22:01 and no process was left to claim it.
+ */
+export async function acquireLeaseWithRetry(input: {
+  workerId: string;
+  pollIntervalMs: number;
+  shouldStop: () => boolean;
+  log?: (message: string, extra?: unknown) => void;
+  minDelayMs?: number;
+  maxDelayMs?: number;
+  maxWaitMs?: number;
+}): Promise<{ acquired: boolean; heldBy: string | null; waitedMs: number }> {
+  const log = input.log ?? (() => undefined);
+  const min = input.minDelayMs ?? 2_000;
+  const max = input.maxDelayMs ?? 30_000;
+  const started = Date.now();
+  let delay = min;
+  let announced = false;
+
+  for (;;) {
+    if (input.shouldStop()) return { acquired: false, heldBy: null, waitedMs: Date.now() - started };
+
+    try {
+      const lease = await claimWorkerLease({
+        workerId: input.workerId,
+        pollIntervalMs: input.pollIntervalMs
+      });
+      if (lease.acquired) {
+        if (announced) log(`lease acquired after waiting ${Math.round((Date.now() - started) / 1000)}s`);
+        return { acquired: true, heldBy: lease.heldBy, waitedMs: Date.now() - started };
+      }
+      if (!announced) {
+        announced = true;
+        log(`lease held by ${lease.heldBy} until ${lease.expiresAt} — waiting for it to expire`);
+      }
+    } catch (e) {
+      // Database not ready yet: keep retrying rather than dying.
+      if (!announced) {
+        announced = true;
+        log("lease check failed — retrying", e instanceof Error ? e.message : e);
+      }
+    }
+
+    if (input.maxWaitMs && Date.now() - started > input.maxWaitMs) {
+      return { acquired: false, heldBy: null, waitedMs: Date.now() - started };
+    }
+    await new Promise((r) => setTimeout(r, delay));
+    delay = Math.min(max, Math.round(delay * 1.5));
+  }
+}
 
 function defaultLog(message: string, extra?: unknown) {
   const line = `[shadow-worker ${new Date().toISOString()}] ${message}`;
@@ -54,19 +117,39 @@ export async function startShadowCollector(
   const maxCycles = Math.max(0, options.maxCycles ?? 0);
   const retentionEvery = Math.max(1, options.retentionEveryCycles ?? 20);
 
-  const lease = await claimWorkerLease({ workerId, pollIntervalMs: pollMs });
-  if (!lease.acquired && options.requireLease !== false) {
-    log(`another collector holds the lease (${lease.heldBy}, expires ${lease.expiresAt}) — not starting`);
-    return {
-      stop: async () => undefined,
-      done: Promise.resolve(),
-      workerId,
-      leaseAcquired: false,
-      heldBy: lease.heldBy
-    };
-  }
-
   let stopping = false;
+
+  if (options.waitForLease === false) {
+    const once = await claimWorkerLease({ workerId, pollIntervalMs: pollMs });
+    if (!once.acquired) {
+      log(`another collector holds the lease (${once.heldBy}, expires ${once.expiresAt}) — not starting`);
+      return {
+        stop: async () => undefined,
+        done: Promise.resolve(),
+        workerId,
+        leaseAcquired: false,
+        heldBy: once.heldBy
+      };
+    }
+  } else {
+    const lease = await acquireLeaseWithRetry({
+      workerId,
+      pollIntervalMs: pollMs,
+      shouldStop: () => stopping,
+      log,
+      minDelayMs: options.leaseRetryMinMs,
+      maxDelayMs: options.leaseRetryMaxMs
+    });
+    if (!lease.acquired) {
+      return {
+        stop: async () => undefined,
+        done: Promise.resolve(),
+        workerId,
+        leaseAcquired: false,
+        heldBy: lease.heldBy
+      };
+    }
+  }
   let wake: (() => void) | null = null;
 
   const sleep = (ms: number) =>

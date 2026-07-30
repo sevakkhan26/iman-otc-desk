@@ -464,6 +464,63 @@ await test("run and source stats expose coverage inputs", async () => {
   assert.ok(obs!.expectedCycles >= 1);
 });
 
+
+await test("restart during a live lease: B waits, then takes over after expiry", async () => {
+  // Reproduces the production outage: container A held the lease, was recreated
+  // without releasing it, and the new process exited instead of waiting — so
+  // nothing claimed the lease once it expired.
+  const { acquireLeaseWithRetry } = await import("../src/lib/shadowArbitrage/runner.ts");
+  const { makeWorkerId } = await import("../src/lib/shadowArbitrage/workerIdentity.ts");
+
+  // Lease = max(pollInterval*3, floor). Use a 1s interval + 4s floor so the
+  // expiry path runs in seconds instead of two minutes.
+  process.env.SHADOW_LEASE_MIN_MS = "4000";
+  try {
+    const sessionBefore = await repo.ensureObservationSession(15_000);
+
+    // A is on a DIFFERENT host, so the dead-pid reclaim cannot short-circuit
+    // this — exactly like a recreated container with a new hostname.
+    const workerA = "shadow-web-otherhostabc-4321-ms7test";
+    const a = await repo.claimWorkerLease({ workerId: workerA, pollIntervalMs: 1_000 });
+    assert.equal(a.acquired, true, "A must hold the lease");
+
+    // A disappears WITHOUT releasing. B starts while the lease is still valid.
+    const workerB = makeWorkerId("web");
+    const immediate = await repo.claimWorkerLease({ workerId: workerB, pollIntervalMs: 1_000 });
+    assert.equal(immediate.acquired, false, "B must not steal a live lease");
+
+    const started = Date.now();
+    const result = await acquireLeaseWithRetry({
+      workerId: workerB,
+      pollIntervalMs: 1_000,
+      shouldStop: () => false,
+      minDelayMs: 250,
+      maxDelayMs: 1_000,
+      maxWaitMs: 30_000
+    });
+    assert.equal(result.acquired, true, "B must take over once the lease expires");
+    assert.ok(result.waitedMs >= 1_000, "B must have waited rather than exited immediately");
+    assert.ok(Date.now() - started < 30_000, "takeover must happen promptly after expiry");
+
+    // Exactly one collector: the heartbeat now names B, and A cannot come back.
+    const hb = await repo.getWorkerHeartbeat();
+    assert.equal(hb?.workerId, workerB);
+    assert.equal(hb?.leaseHeld, true);
+    const aAgain = await repo.claimWorkerLease({ workerId: workerA, pollIntervalMs: 1_000 });
+    assert.equal(aAgain.acquired, false, "the displaced worker must not reclaim a live lease");
+
+    // The observation session is untouched by the handover.
+    const sessionAfter = await repo.getObservation();
+    assert.equal(sessionAfter?.id, sessionBefore.id, "observation.id must survive the restart");
+
+    // A graceful release frees it immediately for the next process.
+    await repo.releaseWorkerLease(workerB);
+    assert.equal((await repo.getWorkerHeartbeat())?.leaseHeld, false);
+  } finally {
+    delete process.env.SHADOW_LEASE_MIN_MS;
+  }
+});
+
 await closeDb().catch(() => undefined);
 await rm(dir, { recursive: true, force: true });
 

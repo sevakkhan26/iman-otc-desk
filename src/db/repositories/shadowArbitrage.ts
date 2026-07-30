@@ -341,8 +341,10 @@ export type WorkerHeartbeat = {
   leaseHeld: boolean;
 };
 
+/** Lease window. The floor is env-tunable so tests can exercise expiry quickly. */
 function leaseMs(pollIntervalMs: number): number {
-  return Math.max(pollIntervalMs * SHADOW_LEASE_MULTIPLIER, 120_000);
+  const floor = Number(process.env.SHADOW_LEASE_MIN_MS ?? 120_000) || 120_000;
+  return Math.max(pollIntervalMs * SHADOW_LEASE_MULTIPLIER, floor);
 }
 
 /**

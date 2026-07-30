@@ -102,9 +102,16 @@ async function start(): Promise<void> {
 
   // The PostgreSQL lease plus the advisory lock keep a future second replica
   // from collecting at the same time.
-  const handle = await startShadowCollector({ workerId, pollIntervalMs: pollMs, log });
+  // waitForLease keeps this process retrying through a previous container's
+  // still-valid lease and taking over the moment it expires.
+  const handle = await startShadowCollector({
+    workerId,
+    pollIntervalMs: pollMs,
+    log,
+    waitForLease: true
+  });
   if (!handle.leaseAcquired) {
-    log(`another collector holds the lease (${handle.heldBy}) — this process stays passive`);
+    log("collector stopped before a lease could be acquired");
     return;
   }
 

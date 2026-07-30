@@ -5616,19 +5616,35 @@ table th {
 }
 
 /* Permanent trial-mode warning — compact by design. */
+/*
+ * Alert pill. The material comes from .glass-control (translucency, blur,
+ * specular highlight); this only adds the semantic amber as a tint layer and
+ * the border, which requirement 6 explicitly allows for alerts.
+ */
 .sa-warning {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 8px;
   align-self: start;
   padding: 7px 13px;
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--yellow) 40%, var(--line));
-  background: color-mix(in srgb, var(--yellow) 10%, var(--card));
+  border-color: color-mix(in srgb, var(--yellow) 40%, var(--line));
   color: var(--text);
   font-size: 12.5px;
   font-weight: 600;
   line-height: 1.5;
+}
+.sa-warning::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--yellow) 12%, transparent);
+  pointer-events: none;
+}
+.sa-warning > * {
+  position: relative;
 }
 .sa-warning-icon {
   color: var(--yellow);
@@ -6633,4 +6649,523 @@ table th {
   }
   .sa-readiness-table td:empty { display: none; }
   .sa-cell-input { max-width: 100%; }
+}
+
+/* ── Shadow Arbitrage · Phase 8A shell and overview ───────────────────────── */
+/*
+ * LAYOUT ONLY.
+ *
+ * Every surface here takes its material from the shared OTC glass primitives —
+ * `.panel` for cards, `.glass-tabbar` for the tab container, `.glass-control`
+ * for controls — defined in app/ios27-design-system.css and app/globals.css.
+ * Nothing below declares a background, border, box-shadow or backdrop-filter
+ * for a surface: doing so would fork the Liquid Glass system and make Shadow
+ * look like a different product. The only colour this section owns is the 3px
+ * semantic status rail and the badge/alert tints, which are explicitly not
+ * card material.
+ *
+ * Rule of thumb for anything added here: layout, sizing, spacing, grid — and
+ * nothing else.
+ */
+.sa-page-booting {
+  min-height: 40vh;
+}
+
+.sa-warning-compact {
+  padding: 7px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* Tab strip ---------------------------------------------------------------- */
+.sa-tabs-wrap {
+  position: relative;
+  margin: 0 0 14px;
+  /* Narrow screens scroll the strip instead of wrapping or clipping labels. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  /* Snap so a tab never comes to rest half-cut. */
+  scroll-snap-type: x proximity;
+  scroll-padding-inline: 12px;
+}
+.sa-tabs-wrap::-webkit-scrollbar {
+  display: none;
+}
+/* Material comes from .glass-tabbar; this only sets the layout of the row. */
+.sa-tabs {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 4px;
+  white-space: nowrap;
+}
+/* An inactive tab is a plain control slot; the active one wears .glass-control. */
+.sa-tab {
+  display: inline-flex;
+  flex: 1 1 auto;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 6px 13px;
+  border: 0;
+  background: none;
+  border-radius: var(--radius-md);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1.5;
+  white-space: nowrap;
+  scroll-snap-align: center;
+  cursor: pointer;
+  transition: color var(--duration, 160ms) var(--ease-out, ease);
+}
+.sa-tab:hover {
+  color: var(--text);
+}
+.sa-tab:focus-visible {
+  outline: 2px solid rgb(var(--brand) / 0.55);
+  outline-offset: 1px;
+}
+.sa-tab.is-active {
+  color: var(--text);
+}
+/* Semantic badge — a badge, never card material. */
+.sa-tab-badge {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--red) 16%, transparent);
+  color: color-mix(in srgb, var(--red) 82%, var(--text));
+  font-size: 10.5px;
+  font-weight: 800;
+  text-align: center;
+}
+
+@media (max-width: 900px) {
+  .sa-tabs {
+    /* Below this width the labels no longer fit; scroll instead of squeezing. */
+    width: max-content;
+    justify-content: flex-start;
+  }
+  .sa-tab {
+    flex: 0 0 auto;
+  }
+  .sa-tabs-wrap {
+    /* A soft mask at both edges signals that the strip continues. */
+    -webkit-mask-image: linear-gradient(
+      to left,
+      transparent 0,
+      #000 18px,
+      #000 calc(100% - 18px),
+      transparent 100%
+    );
+    mask-image: linear-gradient(
+      to left,
+      transparent 0,
+      #000 18px,
+      #000 calc(100% - 18px),
+      transparent 100%
+    );
+  }
+}
+
+.sa-tabpanel:focus {
+  outline: none;
+}
+
+/* Overview ----------------------------------------------------------------- */
+.sa-ov {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sa-ov-status {
+  padding: 11px 14px;
+}
+/*
+ * Deliberate grouping: the three state chips read as one cluster, the cycle
+ * time and refresh align to the far end, and progress owns its own final row.
+ */
+.sa-ov-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+.sa-ov-status-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  padding-inline-end: 14px;
+  border-inline-end: 1px solid var(--line-soft);
+}
+.sa-ov-status-tail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-inline-start: auto;
+}
+.sa-ov-status-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.sa-ov-status-label {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--muted);
+}
+.sa-ov-status-value {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.sa-ov-status-sub {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.sa-ov-progress {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+.sa-ov-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--muted);
+}
+.sa-ov-progress-value {
+  color: var(--text);
+}
+
+.sa-ov-grid {
+  display: grid;
+  /* Never more than four across; falls to 2 and then 1 as width shrinks. */
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+@media (max-width: 1180px) {
+  .sa-ov-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 620px) {
+  .sa-ov-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* A KPI tile is a .panel; this only sizes it and hosts the status rail. */
+.sa-ov-card {
+  position: relative;
+  min-width: 0;
+  padding: 14px 16px;
+}
+.sa-ov-card-label {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--muted);
+}
+.sa-ov-card-value {
+  margin-top: 7px;
+  font-size: 21px;
+  font-weight: 800;
+  line-height: 1.35;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.sa-ov-card-of {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+/*
+ * Ratios must not be reordered by the surrounding RTL paragraph: "3 / 9" has to
+ * stay "3 / 9", not become "9 / 3". The isolate is what guarantees that.
+ */
+.sa-ratio {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+.sa-ratio-sep,
+.sa-ratio-whole {
+  font-size: 0.68em;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.sa-ov-card-hint {
+  margin-top: 6px;
+  font-size: 11.5px;
+  line-height: 1.85;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+/*
+ * Status rail: the ONE place this section owns colour on a card. It is a 3px
+ * bar, not a surface — the glass material underneath is untouched.
+ */
+.sa-ov-card-good::before,
+.sa-ov-card-warn::before,
+.sa-ov-card-danger::before,
+.sa-ov-card-muted::before {
+  content: "";
+  position: absolute;
+  inset-block: 12px;
+  inset-inline-start: 0;
+  width: 3px;
+  border-radius: 999px;
+}
+.sa-ov-card-good::before {
+  background: var(--green);
+}
+.sa-ov-card-warn::before {
+  background: var(--yellow);
+}
+.sa-ov-card-danger::before {
+  background: var(--red);
+}
+.sa-ov-card-muted::before {
+  background: var(--line);
+}
+.sa-ov-card-skeleton {
+  min-height: 104px;
+}
+
+.sa-ov-secondary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+@media (max-width: 1024px) {
+  .sa-ov-secondary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.sa-ov-mini {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  min-width: 0;
+}
+.sa-ov-mini-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.sa-ov-mini-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text);
+}
+.sa-ov-mini-list {
+  display: grid;
+  /* Three metrics sit on one row; a wide blocker line spans the full width. */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin: 0;
+}
+.sa-ov-mini-list.sa-ov-mini-list-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+/*
+ * A blocker is a full sentence, not a metric: it always takes the whole row so
+ * it can wrap instead of being squeezed against the card edge.
+ */
+.sa-ov-mini-list .sa-ov-mini-wide {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+.sa-ov-mini-list .sa-ov-mini-wide dd {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.sa-ov-mini-list > div {
+  min-width: 0;
+}
+.sa-ov-mini-list dt {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+}
+.sa-ov-mini-list dd {
+  margin: 2px 0 0;
+  font-size: 13.5px;
+  font-weight: 800;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.sa-ov-mini-list .sa-reason {
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.75;
+}
+.sa-ov-mini-empty {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.9;
+  color: var(--muted);
+}
+/* An alert, not card material — semantic tint is allowed here by design. */
+.sa-ov-disarmed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 9px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--red) 10%, transparent);
+  color: color-mix(in srgb, var(--red) 80%, var(--text));
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.7;
+}
+
+/*
+ * Tertiary action: the layout of a .glass-control. The material — translucency,
+ * blur, border, specular highlight — comes from that shared primitive.
+ */
+.sa-ov-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: color var(--duration, 160ms) var(--ease-out, ease);
+}
+.sa-ov-action:hover {
+  color: var(--text);
+}
+.sa-ov-action:focus-visible {
+  outline: 2px solid rgb(var(--brand) / 0.55);
+  outline-offset: 1px;
+}
+.sa-ov-action svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+
+.sa-ov-foot {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.sa-ov-foot-note {
+  opacity: 0.9;
+}
+
+/*
+ * Dark mode: lift secondary text a step so hints stay readable on glass, while
+ * staying clearly below the primary value in weight and size. Text only — the
+ * surface material is never touched here.
+ */
+:root[data-theme="dark"] .sa-ov-card-hint,
+:root[data-theme="dark"] .sa-ov-card-label,
+:root[data-theme="dark"] .sa-ov-status-label,
+:root[data-theme="dark"] .sa-ov-status-sub,
+:root[data-theme="dark"] .sa-ov-mini-list dt,
+:root[data-theme="dark"] .sa-ov-mini-empty,
+:root[data-theme="dark"] .sa-ov-progress-head,
+:root[data-theme="dark"] .sa-ov-action {
+  color: color-mix(in srgb, var(--text) 72%, var(--muted));
+}
+:root[data-theme="dark"] .sa-ov-foot,
+:root[data-theme="dark"] .sa-ratio-sep,
+:root[data-theme="dark"] .sa-ratio-whole {
+  color: color-mix(in srgb, var(--text) 52%, var(--muted));
+}
+
+/* Mobile rhythm: tighter spacing, larger touch targets. */
+@media (max-width: 620px) {
+  .sa-ov {
+    gap: 10px;
+  }
+  .sa-ov-status {
+    padding: 10px 12px;
+  }
+  .sa-ov-status-group {
+    padding-inline-end: 0;
+    border-inline-end: 0;
+  }
+  .sa-ov-status-tail {
+    margin-inline-start: 0;
+  }
+  .sa-ov-card {
+    padding: 12px 13px;
+  }
+  .sa-ov-card-value {
+    font-size: 19px;
+  }
+  .sa-ov-mini {
+    padding: 11px 12px;
+  }
+  .sa-ov-mini-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  /* Spacing tightens, tap targets do not: both of these grow. */
+  .sa-ov-action {
+    min-height: 28px;
+    padding: 4px 10px;
+  }
+  .sa-tab {
+    min-height: 36px;
+  }
+}
+
+/*
+ * The page itself must never scroll horizontally; wide children scroll inside.
+ *
+ * .sa-page is a grid, and grid items default to `min-width: auto`, so a single
+ * wide child — the tab strip is a flex row — widens the whole track and pushes
+ * the layout past the viewport. `minmax(0, 1fr)` plus `min-width: 0` on the
+ * children is the actual fix; `overflow-x: clip` is only a backstop.
+ */
+.sa-page-tabbed {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 100%;
+  overflow-x: clip;
+}
+.sa-page-tabbed > * {
+  min-width: 0;
+}
+.sa-tabs-wrap,
+.sa-tabpanel,
+.sa-ov,
+.sa-ov-grid,
+.sa-ov-secondary {
+  min-width: 0;
+  max-width: 100%;
 }

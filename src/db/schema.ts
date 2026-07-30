@@ -515,3 +515,23 @@ export const shadowRouteMetrics = pgTable(
   ]
 );
 
+
+/**
+ * Phase 4 — admin-confirmed fee tiers. Append-only: every confirmation is a new
+ * row so the audit history is preserved. Never stores API keys or credentials.
+ */
+export const shadowFeeConfirmations = pgTable(
+  "shadow_fee_confirmations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sourceId: text("source_id").notNull(),
+    takerFeeBps: integer("taker_fee_bps").notNull(),
+    feeTier: text("fee_tier"),
+    sourceUrl: text("source_url"),
+    confirmedBy: text("confirmed_by").notNull(),
+    confirmedAt: ts("confirmed_at").notNull(),
+    note: text("note"),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [index("shadow_fee_conf_source_time_idx").on(t.sourceId, t.confirmedAt)]
+);

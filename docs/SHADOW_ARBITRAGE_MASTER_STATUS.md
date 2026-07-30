@@ -350,3 +350,117 @@ heartbeat age, ≥10 consecutive 30 s production cycles, exactly-one-collector,
 duplicate idempotency key count, PostgreSQL-vs-PGlite confirmation, restart
 resumption, and the authenticated dashboard. The production database backup was
 again **not** run — the LAN host stayed unreachable.
+
+---
+
+## 10. Hotfix v4.6.3 — single-container collector (2026-07-30)
+
+The two-service Compose design (`iman-otc-desk` + `iman-otc-shadow-worker`)
+never ran in production: the deploy path targets the `iman-otc-desk` service
+explicitly, so the worker service was defined but never created. Replaced with
+one container — the Next server process runs both the app and the collector via
+the Node-runtime instrumentation hook. The worker service was removed from
+`docker-compose.yml`.
+
+Commit `bf93872`, tag `v4.6.3`, `main` = `bf93872`.
+
+---
+
+## 11. Hotfix v4.6.4 — collector no longer depends on Compose env plumbing (2026-07-30)
+
+v4.6.3 shipped but the collector still did not run: the production host composes
+this service from an external parent Compose file plus
+`docker-compose.production.yml`, so `SHADOW_COLLECTOR_ENABLED` added to this
+repo's `docker-compose.yml` never reached the container. Reproduced locally with
+the standalone artifact and no `SHADOW_*` variables set.
+
+Fix: `enabled()` in `instrumentation.node.ts` now defaults **on** whenever
+`NODE_ENV === "production"`. An explicit env value can still force it off
+(`false/0/no/off`); env can no longer be the reason it fails to start. The
+bootstrap also logs `NODE_ENV`, `NEXT_RUNTIME`, the env value and the pid.
+
+Commit `411646a`, tag `v4.6.4`, `main` = `411646a`.
+
+---
+
+## 12. Hotfix v4.6.5 — restart-safe collector lease supervisor (2026-07-30)
+
+**Root cause of the restart outage, proven from production health JSON**
+(`lastCycleAt=13:20:01Z`, `leaseExpiredAt=13:22:01Z`, heartbeat still naming the
+previous container's worker): the recreated container bootstrapped *inside* the
+previous container's still-valid lease, `claimWorkerLease` returned
+`acquired:false`, and `instrumentation.node.ts` took the
+`if (!handle.leaseAcquired) return` path — a **permanent** exit. When the old
+lease expired two minutes later, no process was left to claim it. The pid-based
+`isDeadLocalWorker` takeover could not rescue it either, because a recreated
+container has a different hostname and that helper deliberately refuses to judge
+a worker on another host.
+
+Fix: `acquireLeaseWithRetry()` in `runner.ts` retries with bounded backoff
+(2 s → 30 s, ×1.5), survives database errors during bootstrap, and never exits;
+`startShadowCollector` defaults to `waitForLease: true`; instrumentation no
+longer exits on a held lease. A live lease is still never stolen, so
+exactly-one-collector holds. `SHADOW_LEASE_MIN_MS` makes the lease floor
+tunable for tests. Integration test reproduces A-holds → A-vanishes →
+B-waits → B-takes-over with `observation.id` preserved.
+
+Commit `728e567`, tag `v4.6.5`, `main` = `728e567`.
+
+**Verified live in production after the deploy restart:**
+
+| Field | Value |
+| --- | --- |
+| `status` | `healthy` |
+| `running` | `true` |
+| `workerId` | `shadow-web-ca46643de6bc-7-ms7kmodf` (new) |
+| `leaseHeld` | `true` |
+| `heartbeatAgeMs` | `328` (`heartbeatStale=false`) |
+| `observation.id` | `9846b26c-54ed-49ef-9e59-a57ef2b07a64` (unchanged) |
+| cycles | `63` completed / `63` successful / `0` failed |
+| `duplicateIdempotencyKeys` | `0` |
+| sources | 9/9, no errors |
+
+The same 14-day observation survived the restart and five further cycles
+completed after it. This closes the previously unverified items: collector
+heartbeat age, consecutive production cycles, exactly-one-collector, duplicate
+idempotency keys and restart resumption.
+
+---
+
+## 13. Phase 4 — exchange account & fee readiness (v4.7.0, 2026-07-30)
+
+Merged into `main` as an ordinary non-fast-forward merge on top of v4.6.5; the
+only conflict was the `package.json` version field, resolved to `4.7.0`. The
+lease-retry hotfix is preserved intact.
+
+**Scope — read-only, no credentials.** Phase 4 records which venues are actually
+usable for a net-profit calculation and on what fee evidence:
+
+* `src/lib/shadowArbitrage/accounts.ts` — `buildVenueReadiness` /
+  `buildAllReadiness` / `venueUsableForNetProfit`, plus the account-state map:
+  nobitex, wallex, tabdeal `VERIFIED`; bitpin, abantether, ramzinex, tetherland,
+  bit24 `NEEDS_ACCOUNT`; arzinja `REFERENCE_ONLY`. OMPFinex is absent by design.
+* Fees are never invented. A venue is usable for net profit only with an
+  admin-confirmed taker fee; evidence older than `FEE_REVERIFY_DAYS = 90` is
+  stale and blocks usability again.
+* `drizzle/0003_shadow_fee_confirmations.sql` — one additive table,
+  `shadow_fee_confirmations`, append-only fee-evidence history. No drops, no
+  changes to existing tables, no credential columns.
+* `app/api/shadow-arbitrage/accounts/route.ts` — admin-only GET/POST. POST
+  hard-rejects `apiKey`, `api_key`, `secret`, `apiSecret`, `token`, `password`
+  and `passphrase` with `forbidden_field`.
+* `src/components/shadowArbitrage/AccountReadiness.tsx` — Persian readiness
+  panel on the dashboard.
+
+**No API keys are requested or stored in this phase, and nothing here can place
+an order or move funds.**
+
+Verification before release: typecheck clean · ESLint 0 errors (17 pre-existing
+warnings) · 12/12 test suites green, 268 assertions, 0 failures — including 52
+shadow-arbitrage tests (Phase 4 covered) and 15 persistence tests (v4.6.5
+restart test covered) · isolated standalone build succeeds and emits the
+`accounts` route.
+
+**Still outstanding:** the production database backup has never been run or
+verified — the LAN host stays unreachable. Protection remains the `pre-v4.6.1`
+tag plus strictly additive migrations. Phase 5 has not started.

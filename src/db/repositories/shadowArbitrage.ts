@@ -24,7 +24,8 @@ import {
   shadowRouteMetrics,
   shadowSourceHealthEvents,
   shadowSourceSnapshots,
-  shadowWorkerHeartbeat
+  shadowWorkerHeartbeat,
+  shadowFeeConfirmations
 } from "@/db/schema";
 import type { NormalizedSourceSnapshot, ShadowOpportunity } from "@/lib/shadowArbitrage/types";
 import type { SourceCertification } from "@/lib/shadowArbitrage/certification";
@@ -1432,4 +1433,87 @@ export async function retentionCleanup(): Promise<{
   } catch {
     return result;
   }
+}
+
+
+/* ── Phase 4: admin-confirmed fee tiers (append-only audit trail) ─────────── */
+
+export type FeeConfirmationRow = {
+  id: string;
+  sourceId: string;
+  takerFeeBps: number;
+  feeTier: string | null;
+  sourceUrl: string | null;
+  confirmedBy: string;
+  confirmedAt: string;
+  note: string | null;
+};
+
+/** Full history, newest first. Nothing is ever updated or deleted. */
+export async function loadFeeConfirmations(sourceId?: string): Promise<FeeConfirmationRow[]> {
+  try {
+    const db = await getDbAsync();
+    const rows = await serial(async () => {
+      const q = db.select().from(shadowFeeConfirmations);
+      const filtered = sourceId ? q.where(eq(shadowFeeConfirmations.sourceId, sourceId)) : q;
+      return filtered.orderBy(desc(shadowFeeConfirmations.confirmedAt)).limit(500);
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      sourceId: r.sourceId,
+      takerFeeBps: r.takerFeeBps,
+      feeTier: r.feeTier,
+      sourceUrl: r.sourceUrl,
+      confirmedBy: r.confirmedBy,
+      confirmedAt: r.confirmedAt,
+      note: r.note
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/** Latest confirmation per venue — what the engine should apply. */
+export async function loadLatestFeeConfirmations(): Promise<Record<string, FeeConfirmationRow>> {
+  const all = await loadFeeConfirmations();
+  const out: Record<string, FeeConfirmationRow> = {};
+  for (const row of all) {
+    const prev = out[row.sourceId];
+    if (!prev || Date.parse(row.confirmedAt) > Date.parse(prev.confirmedAt)) out[row.sourceId] = row;
+  }
+  return out;
+}
+
+export async function recordFeeConfirmation(input: {
+  sourceId: string;
+  takerFeeBps: number;
+  feeTier?: string | null;
+  sourceUrl?: string | null;
+  confirmedBy: string;
+  note?: string | null;
+}): Promise<FeeConfirmationRow> {
+  const db = await getDbAsync();
+  const now = new Date().toISOString();
+  const row = {
+    id: randomUUID(),
+    sourceId: input.sourceId,
+    takerFeeBps: Math.round(input.takerFeeBps),
+    feeTier: input.feeTier ?? null,
+    sourceUrl: input.sourceUrl ?? null,
+    confirmedBy: input.confirmedBy,
+    confirmedAt: now,
+    note: input.note ?? null,
+    createdAt: now
+  };
+  await serial(async () => db.insert(shadowFeeConfirmations).values(row));
+  return {
+    id: row.id,
+    sourceId: row.sourceId,
+    takerFeeBps: row.takerFeeBps,
+    feeTier: row.feeTier,
+    sourceUrl: row.sourceUrl,
+    confirmedBy: row.confirmedBy,
+    confirmedAt: row.confirmedAt,
+    note: row.note
+  };
 }

@@ -403,7 +403,7 @@ async function main() {
       OTC_NEXT_DIST: DIST,
       SHADOW_POLL_MS: String(pollMs),
       // On PGlite the app process hosts the collector; otherwise it stays idle.
-      ...(pglite ? { SHADOW_LOCAL_COLLECTOR: "1" } : {})
+      ...(pglite ? { SHADOW_COLLECTOR_ENABLED: "true" } : {})
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -416,7 +416,9 @@ async function main() {
 
   await waitForApp();
 
-  if (!pglite) {
+  const inProcess =
+    pglite || /^(true|1|yes)$/i.test(process.env.SHADOW_COLLECTOR_ENABLED ?? "");
+  if (!inProcess) {
     const worker = spawn("npx", ["--yes", "tsx", "scripts/shadow-worker.mts"], {
       cwd: repoRoot,
       env: { ...process.env, SHADOW_POLL_MS: String(pollMs) },

@@ -11,10 +11,11 @@ export const SHADOW_WARNING_FA = "حالت آزمایشی — هیچ سفارش 
 
 /* ── observation / collector state ─────────────────────────────────────────── */
 
-export type CollectorState = "watching" | "stopped" | "degraded" | "stale" | "completed";
+export type CollectorState = "watching" | "offline" | "stopped" | "degraded" | "stale" | "completed";
 
 export const COLLECTOR_STATE_FA: Record<CollectorState, string> = {
   watching: "در حال پایش",
+  offline: "جمع‌آورنده آفلاین",
   stopped: "متوقف",
   degraded: "اختلال جزئی",
   stale: "داده قدیمی",
@@ -24,7 +25,7 @@ export const COLLECTOR_STATE_FA: Record<CollectorState, string> = {
 export function collectorTone(state: CollectorState): "good" | "warn" | "danger" | "muted" {
   if (state === "watching") return "good";
   if (state === "completed") return "muted";
-  if (state === "stopped") return "danger";
+  if (state === "stopped" || state === "offline") return "danger";
   return "warn";
 }
 
@@ -40,7 +41,8 @@ export function deriveCollectorState(input: {
   if (input.observationStatus === "PAUSED" || input.observationStatus === "NOT_STARTED") {
     return "stopped";
   }
-  if (!input.workerRunning || input.workerStale) return "stopped";
+  // Session says RUNNING but nothing is collecting: the collector is offline.
+  if (!input.workerRunning || input.workerStale) return "offline";
   const budget = Math.max((input.pollIntervalMs ?? 30_000) * 3, 120_000);
   if (input.lastSuccessAgeMs !== null && input.lastSuccessAgeMs !== undefined) {
     if (input.lastSuccessAgeMs > budget) return "stale";

@@ -88,7 +88,8 @@ export async function startShadowCollector(
     const result = await runCollectionCycle({
       workerId,
       pollIntervalMs: pollMs,
-      runRetention: index % retentionEvery === 1
+      runRetention: index % retentionEvery === 1,
+      ownsHeartbeat: true
     });
 
     if (!result.acquired) {

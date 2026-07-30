@@ -54,6 +54,7 @@ import type {
 } from "../src/lib/shadowArbitrage/types.ts";
 import {
   BLOCKED_FA,
+  COLLECTOR_STATE_FA,
   SHADOW_WARNING_FA,
   accountPriorityLabel,
   blockedShort,
@@ -861,9 +862,10 @@ await test("collector state reflects the honest situation", () => {
     deriveCollectorState({ observationStatus: "PAUSED", workerRunning: true, workerStale: false }),
     "stopped"
   );
+  // Session RUNNING but nothing is collecting → offline, not "stopped".
   assert.equal(
     deriveCollectorState({ observationStatus: "RUNNING", workerRunning: false, workerStale: true }),
-    "stopped"
+    "offline"
   );
   // Worker alive but nothing succeeded for far longer than the interval.
   assert.equal(
@@ -876,6 +878,8 @@ await test("collector state reflects the honest situation", () => {
     }),
     "stale"
   );
+  // Offline hides the pause action in the UI.
+  assert.equal(COLLECTOR_STATE_FA.offline, "جمع‌آورنده آفلاین");
   assert.equal(
     deriveCollectorState({
       observationStatus: "DEGRADED",

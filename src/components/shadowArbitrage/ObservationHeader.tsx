@@ -92,7 +92,9 @@ export function ObservationHeader({
           <h3 className="panel-title sa-panel-title">وضعیت پایش</h3>
         </div>
         <div className="sa-actions">
-          {observation?.status === "RUNNING" || observation?.status === "DEGRADED" ? (
+          {state === "offline" ? (
+            <span className="sa-panel-note">جمع‌آورنده آفلاین است</span>
+          ) : observation?.status === "RUNNING" || observation?.status === "DEGRADED" ? (
             <button type="button" className="sa-btn" onClick={onPause}>
               توقف موقت
             </button>

@@ -10,7 +10,7 @@
  */
 import { hostname } from "node:os";
 
-export type WorkerKind = "inproc" | "worker" | "manual" | "test";
+export type WorkerKind = "web" | "inproc" | "worker" | "manual" | "test";
 
 function safeHost(): string {
   return (hostname() || "unknown").replace(/[^a-zA-Z0-9]/g, "").slice(0, 24) || "unknown";

@@ -20,10 +20,13 @@ Instead the collector runs through the server's **instrumentation hook** in a
 second container from the same image:
 
 ```
-iman-otc-desk           app, published on ${IMAN_OTC_PORT:-3000}, Caddy/Arvan route here
-iman-otc-shadow-worker  same image, SHADOW_COLLECTOR=1, NO published ports
-otc-postgres            shared database, bound to 127.0.0.1 only
+iman-otc-desk   app + Shadow collector in ONE Node process (SHADOW_COLLECTOR_ENABLED=true)
+otc-postgres    database, bound to 127.0.0.1 only
 ```
+
+There is no separate worker service: a second Compose service was never started
+by the deploy path (which targets `iman-otc-desk` explicitly), so the collector
+now lives inside the web container's Node process.
 
 The hook runs at server bootstrap, not in a request handler, so collection never
 depends on a browser. Validated locally against the standalone build:
@@ -43,7 +46,6 @@ Exactly one collector is guaranteed by three independent mechanisms:
 3. a per-interval idempotency key with a unique index, so two collectors waking
    in the same window cannot both record a cycle.
 
-Do **not** scale `iman-otc-shadow-worker` above one replica.
 
 ---
 
@@ -79,7 +81,7 @@ docker logs -f auto-deploy-poller
 
 ```bash
 git pull --ff-only
-docker compose up -d --build iman-otc-desk iman-otc-shadow-worker
+docker compose up -d --build iman-otc-desk
 ```
 
 The app container migrates the schema on start (`docker-entrypoint.sh`). The
@@ -103,10 +105,8 @@ Nothing existing is dropped, renamed or rewritten. Money columns are
 ```bash
 # 1. containers healthy, exactly one worker
 docker compose ps
-docker ps --filter name=iman-otc-shadow-worker --format '{{.Names}}\t{{.Status}}'
 
 # 2. collector is cycling (no browser involved)
-docker logs --tail 50 iman-otc-shadow-worker | grep 'cycle '
 
 # 3. schema present and row counts sane
 docker compose exec -T otc-postgres psql -U otc_app -d otc_desk -c "\dt shadow_*"
@@ -119,9 +119,7 @@ docker compose exec -T otc-postgres psql -U otc_app -d otc_desk -c \
   "SELECT id, status, started_at, completed_cycles FROM shadow_observation_sessions;"
 
 # 5. restart survival: same session id, counters keep climbing
-docker compose restart iman-otc-shadow-worker
 sleep 60
-docker logs --tail 20 iman-otc-shadow-worker | grep 'cycle '
 
 # 6. reboot survival (restart: unless-stopped)
 sudo reboot        # then re-check steps 1–2
@@ -164,7 +162,6 @@ curl -s -o /dev/null -w '%{http_code}\n' $BASE/login       # 200
 cd ~/docker-projects/iman-otc-desk
 git revert --no-commit <shadow shas> && git commit -m "revert: shadow arbitrage"
 docker compose up -d --build iman-otc-desk
-docker compose stop iman-otc-shadow-worker && docker compose rm -f iman-otc-shadow-worker
 ```
 
 No database rollback is needed — the migrations are additive, so reverted code
@@ -187,4 +184,3 @@ docker exec -i otc-postgres pg_restore -U otc_app -d otc_desk \
   state, heartbeat age, last successful cycle, next expected cycle, lease owner,
   duplicate-key count and per-source error rates. It exposes no endpoint URLs,
   stack traces or database details.
-* **Never expose** `iman-otc-shadow-worker` through Caddy or publish its ports.

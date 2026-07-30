@@ -1,76 +1,105 @@
 /**
- * Node-runtime instrumentation: the in-process Shadow Arbitrage collector.
+ * Node-runtime instrumentation: the Shadow Arbitrage collector.
  *
- * Opt-in, off by default — it only runs when SHADOW_LOCAL_COLLECTOR=1, which
- * `pnpm shadow:local` sets. Every other command, and production, are
- * unaffected; there the standalone `pnpm shadow:worker` process is used.
+ * Production topology is ONE container: this Next server process serves the app
+ * and runs the collector. There is no separate worker service.
  *
- * Why in-process at all: a PGlite data directory has exactly one safe writer.
- * Running the app and a separate worker process against the same directory
- * silently loses writes (verified on this machine), so on PGlite the collector
- * must live inside the server process. With real PostgreSQL, `shadow:local`
- * spawns the standalone worker instead and this file does nothing.
+ * It runs only when SHADOW_COLLECTOR_ENABLED=true (compose sets it on
+ * iman-otc-desk). It never runs in the browser, the edge runtime, `next build`,
+ * lint, tests or migrations: this file is imported solely from
+ * `instrumentation.ts` behind a `NEXT_RUNTIME === "nodejs"` guard, and the
+ * bootstrap hook is not executed during a build.
  *
- * This executes at server bootstrap, not inside a request handler, so
- * collection never depends on a browser being open.
+ * Read-only: public market data in, database rows out. No credentials, orders,
+ * balances or transfers.
  */
+import { getDbAsync, pingDatabase } from "@/db/client";
 import { runMigrations } from "@/db/migrate";
 import { pollIntervalFromEnv } from "@/lib/shadowArbitrage/config";
 import { startShadowCollector } from "@/lib/shadowArbitrage/runner";
 import { makeWorkerId } from "@/lib/shadowArbitrage/workerIdentity";
 
 function log(message: string, extra?: unknown) {
-  const line = `[shadow-worker ${new Date().toISOString()}] ${message}`;
+  const line = `[shadow-collector ${new Date().toISOString()}] ${message}`;
   if (extra !== undefined) console.log(line, extra);
   else console.log(line);
 }
 
-/** Guard against double registration within a single process. */
-const globalFlag = globalThis as typeof globalThis & { __shadowCollectorStarted?: boolean };
-
-/**
- * Enabled by `SHADOW_COLLECTOR=1` (production worker container) or
- * `SHADOW_LOCAL_COLLECTOR=1` (`pnpm shadow:local`). Absent → this file does
- * nothing, so the public app container never collects.
- */
-function collectorEnabled(): boolean {
+function enabled(): boolean {
+  const v = (process.env.SHADOW_COLLECTOR_ENABLED ?? "").trim().toLowerCase();
+  if (v === "true" || v === "1" || v === "yes") return true;
+  // Backwards-compatible flags.
   return process.env.SHADOW_COLLECTOR === "1" || process.env.SHADOW_LOCAL_COLLECTOR === "1";
 }
 
+/** Process-level singleton: one collector per Node process, always. */
+const g = globalThis as typeof globalThis & { __shadowCollector?: { started: boolean } };
+
+/** Block until the database answers, so the first cycle never races startup. */
+async function waitForDatabase(maxAttempts = 30): Promise<boolean> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await getDbAsync();
+      await pingDatabase();
+      return true;
+    } catch (e) {
+      if (attempt === maxAttempts) {
+        log("database never became ready", e instanceof Error ? e.message : e);
+        return false;
+      }
+      await new Promise((r) => setTimeout(r, Math.min(5_000, 500 * attempt)));
+    }
+  }
+  return false;
+}
+
 async function start(): Promise<void> {
-  if (!collectorEnabled()) return;
-  if (globalFlag.__shadowCollectorStarted) {
-    log("collector already started in this process — skipping duplicate");
+  if (!enabled()) return;
+  if (g.__shadowCollector?.started) {
+    log("collector already started in this process — ignoring duplicate bootstrap");
     return;
   }
-  globalFlag.__shadowCollectorStarted = true;
+  g.__shadowCollector = { started: true };
 
+  if (!(await waitForDatabase())) {
+    g.__shadowCollector.started = false;
+    return;
+  }
+
+  // The container entrypoint also migrates; this is idempotent and guarantees
+  // the shadow tables exist before the first cycle.
   try {
     const migrated = await runMigrations();
     if (migrated.applied.length) log("migrations applied", migrated.applied);
   } catch (e) {
-    log("migrate failed — collector not started", e instanceof Error ? e.message : e);
+    log("migrations failed — collector not started", e instanceof Error ? e.message : e);
+    g.__shadowCollector.started = false;
     return;
   }
 
-  const workerId = makeWorkerId("inproc");
+  const workerId = makeWorkerId("web");
   const pollMs = pollIntervalFromEnv();
-  log(`starting in-process collector workerId=${workerId} pollMs=${pollMs}`);
+  log(`starting collector workerId=${workerId} pollMs=${pollMs}`);
   log("SHADOW MODE — NO REAL ORDERS OR FUND TRANSFERS");
 
+  // The PostgreSQL lease plus the advisory lock keep a future second replica
+  // from collecting at the same time.
   const handle = await startShadowCollector({ workerId, pollIntervalMs: pollMs, log });
-  if (!handle.leaseAcquired) return;
+  if (!handle.leaseAcquired) {
+    log(`another collector holds the lease (${handle.heldBy}) — this process stays passive`);
+    return;
+  }
 
-  let shuttingDown = false;
+  let stopping = false;
   const shutdown = async (signal: string) => {
-    if (shuttingDown) return;
-    shuttingDown = true;
+    if (stopping) return;
+    stopping = true;
     log(`${signal} — stopping collector`);
     await handle.stop().catch(() => undefined);
   };
-  process.once("SIGINT", () => void shutdown("SIGINT"));
   process.once("SIGTERM", () => void shutdown("SIGTERM"));
+  process.once("SIGINT", () => void shutdown("SIGINT"));
 }
 
-// Fire and forget: a collector problem must never block the app from serving.
+// Fire and forget: a collector problem must never stop the app from serving.
 void start().catch((e) => log("collector failed to start", e instanceof Error ? e.message : e));

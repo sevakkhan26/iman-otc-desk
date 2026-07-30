@@ -38,6 +38,10 @@ services:
       # DATABASE_URL=postgres://otc_app:…@otc-postgres:5432/otc_desk
       DATABASE_URL: ${DATABASE_URL:-}
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
+      # Shadow Arbitrage collector runs inside this same Node server process
+      # (Next instrumentation bootstrap). There is no separate worker service.
+      SHADOW_COLLECTOR_ENABLED: ${SHADOW_COLLECTOR_ENABLED:-true}
+      SHADOW_POLL_MS: ${SHADOW_POLL_MS:-30000}
       # Schema migrate on every start. Import: auto|1|0
       # auto = import JSON only when app_settings is empty (first cutover)
       AUTO_IMPORT_LEGACY: ${AUTO_IMPORT_LEGACY:-auto}
@@ -62,79 +66,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 40s
-
-  # ── Shadow Arbitrage collector ───────────────────────────────────────────
-  # Read-only observation worker: public market data in, database rows out.
-  # No credentials, no orders, no transfers. OMPFinex is not part of it.
-  #
-  # It is the SAME image as the app, started with the collector enabled. The
-  # production image is a Next standalone build with no tsx and no .mts scripts,
-  # so the collector runs through the server's instrumentation hook (a bootstrap
-  # hook, not a request handler) rather than a separate CLI.
-  #
-  # Deliberately NO published ports: this container must never be reachable from
-  # the internet, and Caddy/Arvan route only to iman-otc-desk.
-  #
-  # Exactly one collector: the database lease + advisory lock + per-interval
-  # idempotency key make a second one refuse to record cycles, but do not scale
-  # this service above 1 replica.
-  iman-otc-shadow-worker:
-    # Same build context as the app so this image is always produced locally.
-    # Without a build section, `docker compose pull` / `up --pull` would try to
-    # fetch iman-otc-desk:latest from a registry where it does not exist and
-    # abort the whole deploy. pull_policy: never makes that impossible.
-    build:
-      context: .
-      dockerfile: ${DOCKERFILE:-Dockerfile}
-      args:
-        NODE_IMAGE: ${NODE_IMAGE:-public.ecr.aws/docker/library/node:20-alpine}
-    image: iman-otc-desk:latest
-    pull_policy: never
-    container_name: iman-otc-shadow-worker
-    depends_on:
-      iman-otc-desk:
-        condition: service_started
-    restart: unless-stopped
-    environment:
-      NODE_ENV: production
-      # Turns this container into the collector.
-      SHADOW_COLLECTOR: "1"
-      # Poll cadence in ms; clamped to 15000–300000 by the app.
-      SHADOW_POLL_MS: ${SHADOW_POLL_MS:-30000}
-      # Same database as the app — real PostgreSQL, so multi-process is safe.
-      DATABASE_URL: ${DATABASE_URL:-}
-      DATABASE_POOL_MAX: ${SHADOW_WORKER_POOL_MAX:-4}
-      OTC_FORCE_COMPOSE_DB: ${OTC_FORCE_COMPOSE_DB:-}
-      OTC_DB_HOST: ${OTC_DB_HOST:-}
-      OTC_DB_PORT: ${OTC_DB_PORT:-}
-      # The app container owns legacy import; the worker must never run it.
-      AUTO_IMPORT_LEGACY: "0"
-      GIT_COMMIT_SHA: ${GIT_COMMIT_SHA:-}
-      # Outbound proxy for filtered hosts, if the host uses one.
-      OUTBOUND_HTTPS_PROXY: ${OUTBOUND_HTTPS_PROXY:-}
-      PROXY_HOSTS: ${PROXY_HOSTS:-}
-      # Bind the internal server to loopback inside the container.
-      HOSTNAME: 127.0.0.1
-    # Alive-check only; collector health is reported at
-    # /api/shadow-arbitrage/health (admin-only) on the app container.
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "fetch('http://127.0.0.1:3000/api/auth/me').then(r=>process.exit(r.status===401||r.ok?0:1)).catch(()=>process.exit(1))"
-        ]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
-    # Bounded, rotated logs so a long observation cannot fill the disk.
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
 
 volumes:
   iman-otc-alerts-data:

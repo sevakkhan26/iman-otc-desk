@@ -102,27 +102,28 @@ async function runCycleLocked(input: {
   pollIntervalMs: number;
   force: boolean;
   ignorePause: boolean;
+  /** Only the real collector owns the heartbeat; API refreshes must not. */
+  ownsHeartbeat: boolean;
 }): Promise<CycleResult> {
   const { workerId, pollIntervalMs, force } = input;
 
   const session = await ensureObservationSession(pollIntervalMs);
   if (session.status === "PAUSED" && !input.ignorePause) {
-    await touchHeartbeat({
-      workerId,
-      status: "paused",
-      pollIntervalMs,
-      sessionId: session.id
-    });
+    if (input.ownsHeartbeat) {
+      await touchHeartbeat({ workerId, status: "paused", pollIntervalMs, sessionId: session.id });
+    }
     return { acquired: true, skipped: "paused", observation: session };
   }
 
-  await touchHeartbeat({
-    workerId,
-    status: "collecting",
-    pollIntervalMs,
-    sessionId: session.id,
-    extendLease: true
-  });
+  if (input.ownsHeartbeat) {
+    await touchHeartbeat({
+      workerId,
+      status: "collecting",
+      pollIntervalMs,
+      sessionId: session.id,
+      extendLease: true
+    });
+  }
 
   const nowMs = Date.now();
   const idempotencyKey = force
@@ -138,13 +139,15 @@ async function runCycleLocked(input: {
   });
 
   if (duplicate) {
-    await touchHeartbeat({
-      workerId,
-      status: "idle",
-      pollIntervalMs,
-      lastCycleStatus: "duplicate",
-      sessionId: session.id
-    });
+    if (input.ownsHeartbeat) {
+      await touchHeartbeat({
+        workerId,
+        status: "idle",
+        pollIntervalMs,
+        lastCycleStatus: "duplicate",
+        sessionId: session.id
+      });
+    }
     return { acquired: true, duplicate: true, runId, observation: session };
   }
 
@@ -232,14 +235,16 @@ async function runCycleLocked(input: {
   // Compact aggregates cover every evaluated pair without a row per pair.
   await upsertRouteMetrics(built.drafts, serverNow);
 
-  await touchHeartbeat({
-    workerId,
-    status: "idle",
-    pollIntervalMs,
-    lastCycleStatus: status,
-    sessionId: session.id,
-    extendLease: true
-  });
+  if (input.ownsHeartbeat) {
+    await touchHeartbeat({
+      workerId,
+      status: "idle",
+      pollIntervalMs,
+      lastCycleStatus: status,
+      sessionId: session.id,
+      extendLease: true
+    });
+  }
 
   const matrix: ShadowMatrixResponse = {
     serverNow,
@@ -285,6 +290,8 @@ export async function runCollectionCycle(input?: {
   /** Retention sweep is cheap but not needed on every cycle. */
   runRetention?: boolean;
   ignorePause?: boolean;
+  /** True only for the background collector loop. */
+  ownsHeartbeat?: boolean;
 }): Promise<CycleResult> {
   const workerId = input?.workerId ?? `manual-${process.pid}`;
   const pollIntervalMs = clampPollInterval(input?.pollIntervalMs ?? SHADOW_POLL_INTERVAL_MS);
@@ -309,7 +316,8 @@ export async function runCollectionCycle(input?: {
           workerId,
           pollIntervalMs,
           force: Boolean(input?.force),
-          ignorePause: Boolean(input?.ignorePause)
+          ignorePause: Boolean(input?.ignorePause),
+          ownsHeartbeat: Boolean(input?.ownsHeartbeat)
         })
       );
       if (!locked.acquired) {

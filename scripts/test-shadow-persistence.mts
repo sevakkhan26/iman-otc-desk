@@ -565,6 +565,33 @@ await test("capital plans persist append-only and preserve virtual balances", as
   assert.equal(after[0]?.reservePercent, 20);
 });
 
+await test("capital approvals persist append-only and pin plan + readiness", async () => {
+  const first = await repo.saveCapitalApproval({
+    planId: null,
+    planFingerprint: "plan-aaa",
+    readinessFingerprint: "ready-aaa",
+    approvedBy: "admin",
+    note: "تأیید اول"
+  });
+  assert.ok(first.id);
+  let latest = await repo.loadLatestCapitalApproval();
+  assert.equal(latest?.planFingerprint, "plan-aaa");
+  assert.equal(latest?.readinessFingerprint, "ready-aaa");
+
+  // A later approval supersedes it without mutating the earlier row.
+  const second = await repo.saveCapitalApproval({
+    planId: null,
+    planFingerprint: "plan-bbb",
+    readinessFingerprint: "ready-bbb",
+    approvedBy: "admin",
+    note: null
+  });
+  latest = await repo.loadLatestCapitalApproval();
+  assert.equal(latest?.id, second.id);
+  assert.equal(latest?.planFingerprint, "plan-bbb");
+  assert.notEqual(second.id, first.id, "approvals are appended, never updated");
+});
+
 await closeDb().catch(() => undefined);
 await rm(dir, { recursive: true, force: true });
 

@@ -467,10 +467,10 @@ tag plus strictly additive migrations. Phase 5 has not started.
 
 ---
 
-## 14. Phase 5 — Capital Allocation Simulator (branch `shadow-phase5-capital`, not merged)
+## 14. Phase 5 — Capital Allocation Simulator (v4.8.0)
 
-Built on top of v4.7.0 after the user verified production healthy. **Not merged,
-not tagged and not deployed** — awaiting explicit approval for v4.8.0.
+Built on top of v4.7.0 after the user verified production healthy, then released
+as v4.8.0 once the user approved the corrected gate semantics.
 
 **Scope — admin-only, Shadow Mode only, no execution.** Every balance is
 virtual. Nothing in this phase contacts an exchange, accepts credentials, places
@@ -523,20 +523,65 @@ falling back to an explicitly labelled equal split when there is no evidence).
 Integer largest-remainder splitting keeps the portfolio exact. An explicit
 `reservePercent` is honoured and defaults to 0 so no reserve policy is invented.
 
-### Lock
+### Recommendation state flow
 
-`recommendation.status` is permanently `PROVISIONAL` with `locked: true`. The
-14-day gate (`COMPLETED` **and** ≥80% success coverage) is reported separately as
-`observationGatePassed`; passing it does not unlock the recommendation.
+Three gates are evaluated independently and reported separately, so it is always
+visible *which* one is holding the plan back:
+
+* `daysGatePassed` — `elapsedMs >= targetDurationMs` (14 real days, pauses
+  excluded). Evaluated from the observation's own elapsed/target values, not
+  from the derived `COMPLETED` status, so the day gate and the coverage gate
+  cannot be conflated.
+* `coverageGatePassed` — `successCoveragePercent >= 80`.
+* `readinessGatePassed` — at least one executable venue, and every venue
+  actually holding capital in the plan is executable (verified account plus a
+  known, fresh fee).
+
+State machine:
+
+| State | When | `locked` |
+| --- | --- | --- |
+| `PROVISIONAL` | any gate fails | `true` |
+| `READY_FOR_ADMIN_REVIEW` | all three gates pass, no valid approval | `false` |
+| `APPROVED_SIMULATION_PLAN` | an admin approval on record still matches both fingerprints | `false` |
+
+Unlocking is a state change, not an approval: `READY_FOR_ADMIN_REVIEW` explicitly
+carries `approval: null`.
+
+**Approval never executes anything.** The `approve` action writes exactly one
+audit row and returns; `recommendation.executesOrders` is a structural `false`,
+and the API surface contains no order, transfer, deposit or withdrawal path (a
+test asserts this by scanning the route file).
+
+**Invalidation.** An approval is pinned to two digests — `planFingerprint` (the
+exact allocation) and `readinessFingerprint` (each venue's class, fee value, fee
+provenance and freshness). If a fee goes stale or unknown, or account readiness
+changes, the fingerprint changes and the approval is dropped: the plan returns to
+`PROVISIONAL` + `locked: true` with an `invalidationReasonFa`. Losing the
+observation gate invalidates an approval the same way. Editing the allocation
+does not invalidate the old approval, it simply is not covered by it — that plan
+returns to `READY_FOR_ADMIN_REVIEW` and needs a fresh confirmation.
+
+Approvals are stored append-only in `shadow_capital_approvals`
+(`drizzle/0005_shadow_capital_approvals.sql`, additive), so the decision history
+is auditable.
+
+### Boundary tests
+
+Below 14 days · exactly 14 days · 79.99% vs 80% coverage · stale fee · never-
+confirmed fee · admin approval · invalidation on readiness change · invalidation
+on losing the observation gate · approval not covering a changed allocation.
 
 ### Files
 
 * `src/lib/shadowArbitrage/capital.ts` — pure engine, no database import.
 * `app/api/shadow-arbitrage/capital/route.ts` — admin-only GET/POST
-  (`simulate` / `optimize` / `save`); rejects `apiKey`, `api_key`, `secret`,
-  `apiSecret`, `token`, `password`, `passphrase`, `privateKey`, `mnemonic`.
-* `drizzle/0004_shadow_capital_plans.sql` + `shadowCapitalPlans` — one additive
-  table, append-only plan history, no drops or alters.
+  (`simulate` / `optimize` / `save` / `approve`); rejects `apiKey`, `api_key`,
+  `secret`, `apiSecret`, `token`, `password`, `passphrase`, `privateKey`,
+  `mnemonic`.
+* `drizzle/0004_shadow_capital_plans.sql` + `shadowCapitalPlans` and
+  `drizzle/0005_shadow_capital_approvals.sql` + `shadowCapitalApprovals` — two
+  additive tables, append-only, no drops or alters.
 * `src/components/shadowArbitrage/CapitalSimulator.tsx` + RTL Persian styles.
 * `REQUIRED_SUCCESS_COVERAGE_PERCENT` moved to `config.ts` and re-exported from
   the repository, so the pure engine can gate on it without the database layer.
@@ -547,8 +592,8 @@ untouched; `observation.id` is read only.
 ### Verification
 
 typecheck clean · ESLint 0 errors (17 pre-existing warnings, none new) ·
-12/12 suites green, 288 assertions, 0 failures — including 19 new deterministic
-accounting tests and 1 new persistence test · isolated standalone build succeeds
-and emits the `capital` route.
+12/12 suites green, 294 assertions, 0 failures — including 24 deterministic
+accounting and gate-boundary tests plus 2 persistence tests · isolated standalone
+build succeeds and emits the `capital` route.
 
 **Phase 6 (automatic paper execution) has not started.**

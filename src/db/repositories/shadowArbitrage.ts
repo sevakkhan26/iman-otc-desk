@@ -26,7 +26,8 @@ import {
   shadowSourceSnapshots,
   shadowWorkerHeartbeat,
   shadowFeeConfirmations,
-  shadowCapitalPlans
+  shadowCapitalPlans,
+  shadowCapitalApprovals
 } from "@/db/schema";
 import type { NormalizedSourceSnapshot, ShadowOpportunity } from "@/lib/shadowArbitrage/types";
 import type { SourceCertification } from "@/lib/shadowArbitrage/certification";
@@ -1603,4 +1604,77 @@ export async function saveCapitalPlan(input: {
   };
   await serial(async () => db.insert(shadowCapitalPlans).values(row));
   return toPlanRow(row as typeof shadowCapitalPlans.$inferSelect);
+}
+
+export type CapitalApprovalRow = {
+  id: string;
+  planId: string | null;
+  planFingerprint: string;
+  readinessFingerprint: string;
+  approvedBy: string;
+  approvedAt: string;
+  note: string | null;
+};
+
+/** Most recent admin confirmation, or null when none was ever granted. */
+export async function loadLatestCapitalApproval(): Promise<CapitalApprovalRow | null> {
+  try {
+    const db = await getDbAsync();
+    const rows = await serial(async () =>
+      db
+        .select()
+        .from(shadowCapitalApprovals)
+        .orderBy(desc(shadowCapitalApprovals.approvedAt))
+        .limit(1)
+    );
+    const r = rows[0];
+    if (!r) return null;
+    return {
+      id: r.id,
+      planId: r.planId,
+      planFingerprint: r.planFingerprint,
+      readinessFingerprint: r.readinessFingerprint,
+      approvedBy: r.approvedBy,
+      approvedAt: r.approvedAt,
+      note: r.note
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Record an admin confirmation of a simulated plan. Append-only, so the decision
+ * history is auditable. This writes a row and nothing else: no order, no
+ * transfer, no exchange call.
+ */
+export async function saveCapitalApproval(input: {
+  planId?: string | null;
+  planFingerprint: string;
+  readinessFingerprint: string;
+  approvedBy: string;
+  note?: string | null;
+}): Promise<CapitalApprovalRow> {
+  const db = await getDbAsync();
+  const now = new Date().toISOString();
+  const row = {
+    id: randomUUID(),
+    planId: input.planId ?? null,
+    planFingerprint: input.planFingerprint,
+    readinessFingerprint: input.readinessFingerprint,
+    approvedBy: input.approvedBy,
+    approvedAt: now,
+    note: input.note ?? null,
+    createdAt: now
+  };
+  await serial(async () => db.insert(shadowCapitalApprovals).values(row));
+  return {
+    id: row.id,
+    planId: row.planId,
+    planFingerprint: row.planFingerprint,
+    readinessFingerprint: row.readinessFingerprint,
+    approvedBy: row.approvedBy,
+    approvedAt: row.approvedAt,
+    note: row.note
+  };
 }

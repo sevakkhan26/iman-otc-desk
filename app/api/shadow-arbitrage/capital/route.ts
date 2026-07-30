@@ -3,11 +3,13 @@ import { isSession } from "@/lib/requireApiAuth";
 import { requireAdminSession } from "@/lib/requireAdmin";
 import {
   loadCapitalPlans,
+  loadLatestCapitalApproval,
   loadLatestCapitalPlan,
   loadLatestFeeConfirmations,
   loadLatestSourceSnapshots,
   getObservation,
   loadRouteMetrics,
+  saveCapitalApproval,
   saveCapitalPlan
 } from "@/db/repositories/shadowArbitrage";
 import { buildAllReadiness } from "@/lib/shadowArbitrage/accounts";
@@ -17,8 +19,11 @@ import {
   MIN_CAPITAL_TOMAN,
   buildOptimizedPlan,
   classifyAllVenues,
+  planFingerprint,
+  readinessFingerprint,
   simulateCapitalPlan,
   smallestFundableSizeUsdt,
+  type ApprovalRecord,
   type CapitalAllocation,
   type CapitalPlanInput,
   type RouteEvidence
@@ -118,14 +123,16 @@ function parseAllocations(raw: unknown): { ok: true; value: CapitalAllocation[] 
 }
 
 async function buildContext() {
-  const [latestFees, snapshots, routeRows, observation, savedPlan, history] = await Promise.all([
-    loadLatestFeeConfirmations(),
-    loadLatestSourceSnapshots(),
-    loadRouteMetrics(),
-    getObservation(),
-    loadLatestCapitalPlan(),
-    loadCapitalPlans(25)
-  ]);
+  const [latestFees, snapshots, routeRows, observation, savedPlan, history, approvalRow] =
+    await Promise.all([
+      loadLatestFeeConfirmations(),
+      loadLatestSourceSnapshots(),
+      loadRouteMetrics(),
+      getObservation(),
+      loadLatestCapitalPlan(),
+      loadCapitalPlans(25),
+      loadLatestCapitalApproval()
+    ]);
 
   const readiness = buildAllReadiness(Object.values(latestFees));
   const routes = toRouteEvidence(routeRows);
@@ -138,12 +145,26 @@ async function buildContext() {
     routes,
     valuationPriceToman,
     observation: observation
-      ? { status: observation.status, successCoveragePercent: observation.successCoveragePercent }
+      ? {
+          status: observation.status,
+          successCoveragePercent: observation.successCoveragePercent,
+          elapsedMs: observation.elapsedMs,
+          targetDurationMs: observation.targetDurationMs
+        }
       : null,
     observationId: observation?.id ?? null,
     observedWindowMs,
     savedPlan,
-    history
+    history,
+    approval: approvalRow
+      ? ({
+          approvedBy: approvalRow.approvedBy,
+          approvedAt: approvalRow.approvedAt,
+          readinessFingerprint: approvalRow.readinessFingerprint,
+          planFingerprint: approvalRow.planFingerprint
+        } satisfies ApprovalRecord)
+      : null,
+    approvalRow
   };
 }
 
@@ -158,7 +179,8 @@ function runSimulation(ctx: Ctx, plan: CapitalPlanInput) {
     observedWindowMs: ctx.observedWindowMs,
     // No confirmed transfer cost exists yet, so the monthly figure stays UNKNOWN.
     perTransferCostToman: null,
-    perTransferCostConfirmed: false
+    perTransferCostConfirmed: false,
+    approval: ctx.approval
   });
   return {
     simulation,
@@ -258,7 +280,7 @@ export async function POST(request: Request) {
   }
 
   const action = String(body.action ?? "simulate");
-  if (!["simulate", "optimize", "save"].includes(action)) {
+  if (!["simulate", "optimize", "save", "approve"].includes(action)) {
     return bad("عملیات نامعتبر است");
   }
 
@@ -327,6 +349,58 @@ export async function POST(request: Request) {
   if (action === "simulate") {
     return new NextResponse(
       JSON.stringify(envelope(ctx, { plan, planSource: "DRAFT", history: ctx.history, ...result })),
+      { status: 200, headers: SHADOW_NO_STORE }
+    );
+  }
+
+  if (action === "approve") {
+    // An admin decision about a SIMULATION. It writes one audit row and does
+    // nothing else — no order, no transfer, no exchange call.
+    if (!result.simulation.ok) {
+      return new NextResponse(
+        JSON.stringify({
+          error: "invalid_plan",
+          message: "طرح تخصیص معتبر نیست و تأیید نشد.",
+          violations: result.simulation.violations
+        }),
+        { status: 400, headers: SHADOW_NO_STORE }
+      );
+    }
+    const rec = result.simulation.recommendation;
+    if (!rec.eligibleForApproval) {
+      return new NextResponse(
+        JSON.stringify({
+          error: "not_eligible",
+          message: `این طرح هنوز آمادهٔ تأیید نیست. ${rec.reasonFa}`,
+          recommendation: rec
+        }),
+        { status: 409, headers: SHADOW_NO_STORE }
+      );
+    }
+    try {
+      await saveCapitalApproval({
+        planId: ctx.savedPlan?.id ?? null,
+        planFingerprint: planFingerprint(plan),
+        readinessFingerprint: readinessFingerprint(ctx.venueStates),
+        approvedBy: session.u ?? "admin",
+        note: typeof body.note === "string" ? body.note.slice(0, 500) : null
+      });
+    } catch (error) {
+      return new NextResponse(
+        JSON.stringify({
+          error: "unavailable",
+          message: error instanceof Error ? error.message : "ثبت تأیید ممکن نشد"
+        }),
+        { status: 503, headers: SHADOW_NO_STORE }
+      );
+    }
+    // Re-read so the response reflects the stored approval, not an assumption.
+    const after = await buildContext();
+    const rerun = runSimulation(after, plan);
+    return new NextResponse(
+      JSON.stringify(
+        envelope(after, { plan, planSource: "APPROVED", history: after.history, ...rerun })
+      ),
       { status: 200, headers: SHADOW_NO_STORE }
     );
   }

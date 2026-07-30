@@ -561,3 +561,24 @@ export const shadowCapitalPlans = pgTable(
   },
   (t) => [index("shadow_capital_plans_created_idx").on(t.createdAt)]
 );
+
+/**
+ * Phase 5 — explicit admin confirmation of a simulated capital plan.
+ * Append-only. An approval is pinned to the plan and to the account/fee
+ * readiness it was granted against, so a later change invalidates it.
+ * Approving a simulation never places an order and never moves funds.
+ */
+export const shadowCapitalApprovals = pgTable(
+  "shadow_capital_approvals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    planId: uuid("plan_id"),
+    planFingerprint: text("plan_fingerprint").notNull(),
+    readinessFingerprint: text("readiness_fingerprint").notNull(),
+    approvedBy: text("approved_by").notNull(),
+    approvedAt: ts("approved_at").notNull(),
+    note: text("note"),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [index("shadow_capital_approvals_time_idx").on(t.approvedAt)]
+);

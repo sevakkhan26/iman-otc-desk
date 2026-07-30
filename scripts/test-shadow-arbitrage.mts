@@ -54,9 +54,14 @@ import {
   estimateMonthlyRebalance,
   simulateCapitalPlan,
   smallestFundableSizeUsdt,
+  evaluateRecommendation,
+  planFingerprint,
+  readinessFingerprint,
   splitIntegerByWeights,
   usdtValueToman,
   validateCapitalPlan,
+  type ApprovalRecord,
+  type VenueCapitalState,
   type CapitalPlanInput,
   type RouteEvidence
 } from "../src/lib/shadowArbitrage/capital.ts";
@@ -1073,6 +1078,7 @@ await test("Phase 4 surface excludes OMPFinex and never accepts credentials", ()
 // Fixed clock so fee-freshness never drifts the expectations over time.
 const CAP_NOW = Date.parse("2026-07-30T00:00:00Z");
 const CAP_PRICE = 100_000;
+const TARGET_14D = 14 * 24 * 60 * 60_000;
 const capReadiness = () => buildAllReadiness([], CAP_NOW);
 
 const capPlan = (allocations: CapitalPlanInput["allocations"], total = 50_000_000): CapitalPlanInput => ({
@@ -1125,7 +1131,12 @@ const simulateCap = (plan: CapitalPlanInput, over: Partial<Parameters<typeof sim
     plan,
     readiness: capReadiness(),
     routes: CAP_ROUTES,
-    observation: { status: "RUNNING", successCoveragePercent: 99 },
+    observation: {
+      status: "RUNNING",
+      successCoveragePercent: 99,
+      elapsedMs: 3 * 24 * 60 * 60_000,
+      targetDurationMs: TARGET_14D
+    },
     observedWindowMs: 14 * 24 * 60 * 60_000,
     perTransferCostToman: null,
     perTransferCostConfirmed: false,
@@ -1394,24 +1405,217 @@ await test("Phase 5 concentration is UNKNOWN when nothing is allocated", () => {
   assert.equal(sim.conservationResidualToman, 0);
 });
 
-await test("Phase 5 recommendation stays provisional even after the observation gate passes", () => {
-  const running = simulateCap(capPlan(CAP_ALLOC));
-  assert.equal(running.recommendation.status, "PROVISIONAL");
-  assert.equal(running.recommendation.locked, true);
-  assert.equal(running.recommendation.observationGatePassed, false);
-
-  const lowCoverage = simulateCap(capPlan(CAP_ALLOC), {
-    observation: { status: "COMPLETED", successCoveragePercent: 61 }
+await test("Phase 5 gate: below 14 days the recommendation is PROVISIONAL and locked", () => {
+  const sim = simulateCap(capPlan(CAP_ALLOC), {
+    observation: {
+      status: "RUNNING",
+      successCoveragePercent: 100,
+      elapsedMs: TARGET_14D - 1,
+      targetDurationMs: TARGET_14D
+    }
   });
-  assert.equal(lowCoverage.recommendation.observationGatePassed, false);
-  assert.ok(lowCoverage.recommendation.reasonFa.includes("۸۰") || lowCoverage.recommendation.reasonFa.includes("80"));
+  const r = sim.recommendation;
+  assert.equal(r.status, "PROVISIONAL");
+  assert.equal(r.locked, true);
+  assert.equal(r.daysGatePassed, false);
+  assert.equal(r.coverageGatePassed, true);
+  assert.equal(r.eligibleForApproval, false);
+  assert.ok(r.reasonFa.includes("دورهٔ مشاهده کامل نشده"));
+});
 
-  const completed = simulateCap(capPlan(CAP_ALLOC), {
-    observation: { status: "COMPLETED", successCoveragePercent: 100 }
+await test("Phase 5 gate: at exactly 14 days with 80% it unlocks for admin review", () => {
+  const sim = simulateCap(capPlan(CAP_ALLOC), {
+    observation: {
+      status: "COMPLETED",
+      successCoveragePercent: 80,
+      elapsedMs: TARGET_14D,
+      targetDurationMs: TARGET_14D
+    }
   });
-  assert.equal(completed.recommendation.observationGatePassed, true);
-  assert.equal(completed.recommendation.status, "PROVISIONAL");
-  assert.equal(completed.recommendation.locked, true);
+  const r = sim.recommendation;
+  assert.equal(r.daysGatePassed, true);
+  assert.equal(r.coverageGatePassed, true);
+  assert.equal(r.readinessGatePassed, true);
+  assert.equal(r.status, "READY_FOR_ADMIN_REVIEW");
+  assert.equal(r.locked, false, "an unlocked recommendation is not an approved one");
+  assert.equal(r.approval, null);
+  assert.equal(r.eligibleForApproval, true);
+  assert.equal(r.executesOrders, false);
+});
+
+await test("Phase 5 gate: 79.99% coverage is below the threshold, 80% is not", () => {
+  const at = (successCoveragePercent: number) =>
+    simulateCap(capPlan(CAP_ALLOC), {
+      observation: {
+        status: "COMPLETED",
+        successCoveragePercent,
+        elapsedMs: TARGET_14D,
+        targetDurationMs: TARGET_14D
+      }
+    }).recommendation;
+
+  const below = at(79.99);
+  assert.equal(below.coverageGatePassed, false);
+  assert.equal(below.status, "PROVISIONAL");
+  assert.equal(below.locked, true);
+  assert.ok(below.reasonFa.includes("پوشش موفق"));
+
+  const exact = at(80);
+  assert.equal(exact.coverageGatePassed, true);
+  assert.equal(exact.status, "READY_FOR_ADMIN_REVIEW");
+  assert.equal(exact.locked, false);
+});
+
+await test("Phase 5 gate: a stale or unknown fee keeps the recommendation locked", () => {
+  const stale = new Date(CAP_NOW - 200 * 86_400_000).toISOString();
+  const staleReadiness = buildAllReadiness(
+    ["nobitex", "wallex"].map((sourceId) => ({
+      sourceId,
+      takerFeeBps: 20,
+      feeTier: null,
+      sourceUrl: null,
+      confirmedBy: "admin",
+      confirmedAt: stale,
+      note: null
+    })),
+    CAP_NOW
+  );
+  const sim = simulateCap(capPlan(CAP_ALLOC), {
+    readiness: staleReadiness,
+    observation: {
+      status: "COMPLETED",
+      successCoveragePercent: 100,
+      elapsedMs: TARGET_14D,
+      targetDurationMs: TARGET_14D
+    }
+  });
+  const r = sim.recommendation;
+  assert.equal(r.observationGatePassed, true, "time and coverage are fine");
+  assert.equal(r.readinessGatePassed, false, "but the fees are stale");
+  assert.equal(r.status, "PROVISIONAL");
+  assert.equal(r.locked, true);
+  assert.equal(r.eligibleForApproval, false);
+  assert.ok(r.reasonFa.includes("غیراجراپذیر"));
+
+  // A venue whose fee was never confirmed is equally disqualifying.
+  const unknownFeePlan = capPlan([{ sourceId: "bitpin", irtToman: 10_000_000, usdtUnits: 50 }]);
+  const unknownSim = simulateCap(unknownFeePlan, {
+    observation: {
+      status: "COMPLETED",
+      successCoveragePercent: 100,
+      elapsedMs: TARGET_14D,
+      targetDurationMs: TARGET_14D
+    }
+  });
+  assert.equal(unknownSim.recommendation.readinessGatePassed, false);
+  assert.equal(unknownSim.recommendation.status, "PROVISIONAL");
+  assert.equal(unknownSim.recommendation.locked, true);
+});
+
+await test("Phase 5 approval: admin confirmation moves the plan to APPROVED_SIMULATION_PLAN", () => {
+  const plan = capPlan(CAP_ALLOC);
+  const states: VenueCapitalState[] = classifyAllVenues(capReadiness());
+  const gate = {
+    status: "COMPLETED",
+    successCoveragePercent: 95,
+    elapsedMs: TARGET_14D + 3_600_000,
+    targetDurationMs: TARGET_14D
+  };
+
+  const beforeApproval = evaluateRecommendation({ plan, states, observation: gate, approval: null });
+  assert.equal(beforeApproval.status, "READY_FOR_ADMIN_REVIEW");
+
+  const approval: ApprovalRecord = {
+    approvedBy: "admin",
+    approvedAt: new Date(CAP_NOW).toISOString(),
+    readinessFingerprint: readinessFingerprint(states),
+    planFingerprint: planFingerprint(plan)
+  };
+  const approved = evaluateRecommendation({ plan, states, observation: gate, approval });
+  assert.equal(approved.status, "APPROVED_SIMULATION_PLAN");
+  assert.equal(approved.locked, false);
+  assert.equal(approved.approval?.approvedBy, "admin");
+  assert.equal(approved.invalidationReasonFa, null);
+  // Approval is a decision about a simulation, never an execution.
+  assert.equal(approved.executesOrders, false);
+  assert.ok(approved.reasonFa.includes("هیچ سفارشی"));
+
+  // The approval covers exactly this allocation, not a different one.
+  const changedPlan = capPlan([
+    { sourceId: "nobitex", irtToman: 12_000_000, usdtUnits: 50 },
+    { sourceId: "wallex", irtToman: 3_000_000, usdtUnits: 100 }
+  ]);
+  const other = evaluateRecommendation({
+    plan: changedPlan,
+    states,
+    observation: gate,
+    approval
+  });
+  assert.equal(other.status, "READY_FOR_ADMIN_REVIEW");
+  assert.ok(other.reasonFa.includes("تأیید تازه"));
+});
+
+await test("Phase 5 approval is invalidated when fee or account readiness changes", () => {
+  const plan = capPlan(CAP_ALLOC);
+  const states = classifyAllVenues(capReadiness());
+  const gate = {
+    status: "COMPLETED",
+    successCoveragePercent: 95,
+    elapsedMs: TARGET_14D,
+    targetDurationMs: TARGET_14D
+  };
+  const approval: ApprovalRecord = {
+    approvedBy: "admin",
+    approvedAt: new Date(CAP_NOW).toISOString(),
+    readinessFingerprint: readinessFingerprint(states),
+    planFingerprint: planFingerprint(plan)
+  };
+  assert.equal(
+    evaluateRecommendation({ plan, states, observation: gate, approval }).status,
+    "APPROVED_SIMULATION_PLAN"
+  );
+
+  // The desk's fee evidence goes stale after the approval was granted.
+  const stale = new Date(CAP_NOW - 200 * 86_400_000).toISOString();
+  const changedStates = classifyAllVenues(
+    buildAllReadiness(
+      [
+        {
+          sourceId: "nobitex",
+          takerFeeBps: 20,
+          feeTier: null,
+          sourceUrl: null,
+          confirmedBy: "admin",
+          confirmedAt: stale,
+          note: null
+        }
+      ],
+      CAP_NOW
+    )
+  );
+  assert.notEqual(readinessFingerprint(changedStates), approval.readinessFingerprint);
+
+  const invalidated = evaluateRecommendation({
+    plan,
+    states: changedStates,
+    observation: gate,
+    approval
+  });
+  assert.equal(invalidated.status, "PROVISIONAL");
+  assert.equal(invalidated.locked, true);
+  assert.equal(invalidated.approval, null);
+  assert.ok(invalidated.invalidationReasonFa?.includes("باطل"));
+
+  // Losing the observation gate invalidates an approval too.
+  const lostGate = evaluateRecommendation({
+    plan,
+    states,
+    observation: { ...gate, successCoveragePercent: 40 },
+    approval
+  });
+  assert.equal(lostGate.status, "PROVISIONAL");
+  assert.equal(lostGate.locked, true);
+  assert.ok(lostGate.invalidationReasonFa);
 });
 
 await test("Phase 5 simulation is deterministic for identical inputs", () => {

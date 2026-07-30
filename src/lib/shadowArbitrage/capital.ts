@@ -17,9 +17,11 @@
  *
  * OMPFinex is intentionally absent: it belongs to the main OTC project only.
  */
+import { createHash } from "node:crypto";
 import { venueUsableForNetProfit, type VenueReadiness } from "@/lib/shadowArbitrage/accounts";
 import {
   REQUIRED_SUCCESS_COVERAGE_PERCENT,
+  SHADOW_OBSERVATION_TARGET_MS,
   SHADOW_SOURCES,
   SHADOW_TRADE_SIZES
 } from "@/lib/shadowArbitrage/config";
@@ -140,6 +142,64 @@ export type RouteEvidence = {
 export type ObservationGate = {
   status: string;
   successCoveragePercent: number;
+  /** Real observed time, pauses excluded. */
+  elapsedMs: number;
+  /** The 14-day target this observation was started with. */
+  targetDurationMs: number;
+};
+
+/**
+ * The recommendation lifecycle.
+ *
+ *  PROVISIONAL              — the 14-day / coverage / readiness gates are not all
+ *                             met, so the plan is locked.
+ *  READY_FOR_ADMIN_REVIEW   — every gate is met; the plan is unlocked and waiting
+ *                             for a human decision. It is NOT yet approved.
+ *  APPROVED_SIMULATION_PLAN — an admin explicitly confirmed it. This is still a
+ *                             simulation: approval never places an order and
+ *                             never moves funds.
+ */
+export type RecommendationStatus =
+  | "PROVISIONAL"
+  | "READY_FOR_ADMIN_REVIEW"
+  | "APPROVED_SIMULATION_PLAN";
+
+/** An admin confirmation, pinned to the exact plan and readiness it approved. */
+export type ApprovalRecord = {
+  approvedBy: string;
+  approvedAt: string;
+  /** Readiness state at approval time — a change here invalidates the approval. */
+  readinessFingerprint: string;
+  /** The exact allocation approved; a different plan is simply not covered. */
+  planFingerprint: string;
+};
+
+export type RecommendationView = {
+  status: RecommendationStatus;
+  locked: boolean;
+  reasonFa: string;
+  observationStatus: string;
+  successCoveragePercent: number;
+  requiredCoveragePercent: number;
+  elapsedMs: number;
+  targetDurationMs: number;
+  /** 14 real days of observation have elapsed. */
+  daysGatePassed: boolean;
+  /** Successful coverage is at or above the required threshold. */
+  coverageGatePassed: boolean;
+  /** Accounts are usable and their fees are known and fresh. */
+  readinessGatePassed: boolean;
+  /** daysGatePassed && coverageGatePassed. */
+  observationGatePassed: boolean;
+  /** All three gates — the precondition for an admin decision. */
+  eligibleForApproval: boolean;
+  approval: { approvedBy: string; approvedAt: string } | null;
+  /** Set when a previously valid approval no longer holds. */
+  invalidationReasonFa: string | null;
+  readinessFingerprint: string;
+  planFingerprint: string;
+  /** Structural, always false: approving a plan can never trade. */
+  executesOrders: false;
 };
 
 export function roundUsdt(units: number): number {
@@ -178,6 +238,187 @@ export function classifyVenueForCapital(readiness: VenueReadiness): VenueCapital
 
 export function classifyAllVenues(readiness: VenueReadiness[]): VenueCapitalState[] {
   return readiness.map(classifyVenueForCapital);
+}
+
+/**
+ * Stable digest of the readiness facts an approval depends on. Any change to a
+ * venue's class, fee value, fee provenance or freshness produces a different
+ * fingerprint, which is what invalidates an existing approval.
+ */
+export function readinessFingerprint(states: VenueCapitalState[]): string {
+  const canonical = [...states]
+    .sort((a, b) => a.sourceId.localeCompare(b.sourceId))
+    .map((s) =>
+      [s.sourceId, s.capitalClass, s.takerFeeBps ?? "null", s.feeProvenance, s.feeStale ? "stale" : "fresh"].join(
+        ":"
+      )
+    )
+    .join("|");
+  return createHash("sha256").update(canonical).digest("hex").slice(0, 32);
+}
+
+/** Stable digest of the exact allocation an approval covers. */
+export function planFingerprint(plan: CapitalPlanInput): string {
+  const canonical = [
+    Math.round(plan.totalCapitalToman),
+    Math.round(plan.valuationPriceToman),
+    plan.mode,
+    ...[...plan.allocations]
+      .sort((a, b) => a.sourceId.localeCompare(b.sourceId))
+      .map((a) => `${a.sourceId}:${Math.round(a.irtToman)}:${roundUsdt(a.usdtUnits)}`)
+  ].join("|");
+  return createHash("sha256").update(canonical).digest("hex").slice(0, 32);
+}
+
+/**
+ * Whether accounts and fees currently support a real recommendation.
+ *
+ * Requires at least one executable venue, and that every venue actually holding
+ * capital in this plan is executable — a plan resting on an unusable account or
+ * a stale fee is not something an admin should be asked to confirm.
+ */
+export function evaluateReadinessGate(
+  plan: CapitalPlanInput,
+  states: VenueCapitalState[]
+): { passed: boolean; reasonFa: string | null } {
+  const byId = new Map(states.map((s) => [s.sourceId as string, s]));
+  if (!states.some((s) => s.executable)) {
+    return {
+      passed: false,
+      reasonFa: "هیچ صرافی با حساب احرازشده و کارمزد تأییدشدهٔ معتبر وجود ندارد."
+    };
+  }
+  const funded = plan.allocations.filter(
+    (a) => Math.round(a.irtToman) > 0 || roundUsdt(a.usdtUnits) > 0
+  );
+  if (!funded.length) {
+    return { passed: false, reasonFa: "هیچ سرمایه‌ای تخصیص نیافته است." };
+  }
+  const unusable = funded.filter((a) => !byId.get(a.sourceId)?.executable);
+  if (unusable.length) {
+    const names = unusable.map((a) => byId.get(a.sourceId)?.nameFa ?? a.sourceId).join("، ");
+    return {
+      passed: false,
+      reasonFa: `سرمایه روی صرافی‌های غیراجراپذیر قرار دارد: ${names}.`
+    };
+  }
+  return { passed: true, reasonFa: null };
+}
+
+/**
+ * Resolve the recommendation state.
+ *
+ * Locked while any gate fails. Unlocked for review once all gates pass — that
+ * is a state change, not an approval. Approved only when an admin record exists
+ * that still matches both the plan and the readiness it was granted against.
+ */
+export function evaluateRecommendation(input: {
+  plan: CapitalPlanInput;
+  states: VenueCapitalState[];
+  observation: ObservationGate | null;
+  approval: ApprovalRecord | null;
+}): RecommendationView {
+  const obs = input.observation;
+  const coverage = obs?.successCoveragePercent ?? 0;
+  const elapsedMs = obs?.elapsedMs ?? 0;
+  const targetDurationMs = obs?.targetDurationMs || SHADOW_OBSERVATION_TARGET_MS;
+
+  const daysGatePassed = elapsedMs >= targetDurationMs;
+  const coverageGatePassed = coverage >= REQUIRED_SUCCESS_COVERAGE_PERCENT;
+  const readiness = evaluateReadinessGate(input.plan, input.states);
+  const observationGatePassed = daysGatePassed && coverageGatePassed;
+  const eligibleForApproval = observationGatePassed && readiness.passed;
+
+  const rFingerprint = readinessFingerprint(input.states);
+  const pFingerprint = planFingerprint(input.plan);
+
+  const base = {
+    observationStatus: obs?.status ?? "NOT_STARTED",
+    successCoveragePercent: round2(coverage),
+    requiredCoveragePercent: REQUIRED_SUCCESS_COVERAGE_PERCENT,
+    elapsedMs,
+    targetDurationMs,
+    daysGatePassed,
+    coverageGatePassed,
+    readinessGatePassed: readiness.passed,
+    observationGatePassed,
+    eligibleForApproval,
+    readinessFingerprint: rFingerprint,
+    planFingerprint: pFingerprint,
+    executesOrders: false as const
+  };
+
+  const approval = input.approval;
+  if (approval && approval.planFingerprint === pFingerprint) {
+    // An approval survives only while the world it was granted in still holds.
+    if (approval.readinessFingerprint !== rFingerprint) {
+      return {
+        ...base,
+        status: "PROVISIONAL",
+        locked: true,
+        approval: null,
+        invalidationReasonFa:
+          "وضعیت حساب یا کارمزد صرافی‌ها پس از تأیید تغییر کرده است؛ تأیید باطل شد و توصیه دوباره قفل است.",
+        reasonFa: "تأیید قبلی به دلیل تغییر آمادگی حساب یا کارمزد باطل شده است."
+      };
+    }
+    if (!eligibleForApproval) {
+      return {
+        ...base,
+        status: "PROVISIONAL",
+        locked: true,
+        approval: null,
+        invalidationReasonFa: readiness.passed
+          ? "شرط دورهٔ مشاهده دیگر برقرار نیست؛ تأیید باطل شد."
+          : `${readiness.reasonFa} تأیید باطل شد.`,
+        reasonFa: "شرایط لازم برای توصیه دیگر برقرار نیست؛ توصیه دوباره قفل است."
+      };
+    }
+    return {
+      ...base,
+      status: "APPROVED_SIMULATION_PLAN",
+      locked: false,
+      approval: { approvedBy: approval.approvedBy, approvedAt: approval.approvedAt },
+      invalidationReasonFa: null,
+      reasonFa:
+        "این طرح توسط مدیر تأیید شده است. تأیید فقط برای شبیه‌سازی است و هیچ سفارشی ثبت و هیچ وجهی منتقل نمی‌کند."
+    };
+  }
+
+  if (eligibleForApproval) {
+    return {
+      ...base,
+      status: "READY_FOR_ADMIN_REVIEW",
+      locked: false,
+      approval: null,
+      invalidationReasonFa: null,
+      reasonFa:
+        approval && approval.planFingerprint !== pFingerprint
+          ? "تخصیص نسبت به طرح تأییدشده تغییر کرده است؛ این طرح نیازمند تأیید تازهٔ مدیر است."
+          : "دورهٔ ۱۴ روزه با پوشش کافی کامل شده و آمادگی حساب‌ها برقرار است؛ در انتظار تأیید مدیر."
+    };
+  }
+
+  const blockers: string[] = [];
+  if (!daysGatePassed) {
+    const days = Math.floor(elapsedMs / 86_400_000);
+    blockers.push(`دورهٔ مشاهده کامل نشده (${days} روز از ${Math.round(targetDurationMs / 86_400_000)} روز).`);
+  }
+  if (!coverageGatePassed) {
+    blockers.push(
+      `پوشش موفق ${round2(coverage)}٪ کمتر از حداقل ${REQUIRED_SUCCESS_COVERAGE_PERCENT}٪ است.`
+    );
+  }
+  if (!readiness.passed && readiness.reasonFa) blockers.push(readiness.reasonFa);
+
+  return {
+    ...base,
+    status: "PROVISIONAL",
+    locked: true,
+    approval: null,
+    invalidationReasonFa: null,
+    reasonFa: blockers.join(" ")
+  };
 }
 
 const VALID_SOURCE_IDS = new Set<string>(SHADOW_SOURCES.map((s) => s.id));
@@ -293,16 +534,7 @@ export type CapitalSimulation = {
     unfundedTopReasons: Array<{ reasonFa: string; samples: number }>;
   };
   rebalance: RebalanceEstimate;
-  recommendation: {
-    status: "PROVISIONAL";
-    locked: true;
-    reasonFa: string;
-    observationStatus: string;
-    successCoveragePercent: number;
-    requiredCoveragePercent: number;
-    /** True when the observation gate itself is satisfied. Status stays provisional regardless. */
-    observationGatePassed: boolean;
-  };
+  recommendation: RecommendationView;
   /** Conservation proof: allocated + reserve − total. Must be exactly zero. */
   conservationResidualToman: number;
   notesFa: string[];
@@ -412,6 +644,8 @@ export type SimulateInput = {
   /** Confirmed per-transfer cost, when one exists. Provisional values do not count. */
   perTransferCostToman?: number | null;
   perTransferCostConfirmed?: boolean;
+  /** The admin confirmation on record, if any. */
+  approval?: ApprovalRecord | null;
 };
 
 /** Run the full simulation. Deterministic: same inputs always give same output. */
@@ -455,13 +689,17 @@ export function simulateCapitalPlan(input: SimulateInput): CapitalSimulation {
         expectedMonthlyRebalances: blocked("طرح تخصیص معتبر نیست.")
       },
       recommendation: {
+        ...evaluateRecommendation({
+          plan,
+          states: [...states.values()],
+          observation: input.observation,
+          approval: null
+        }),
         status: "PROVISIONAL",
         locked: true,
-        reasonFa: "طرح تخصیص معتبر نیست.",
-        observationStatus: input.observation?.status ?? "NOT_STARTED",
-        successCoveragePercent: input.observation?.successCoveragePercent ?? 0,
-        requiredCoveragePercent: REQUIRED_SUCCESS_COVERAGE_PERCENT,
-        observationGatePassed: false
+        approval: null,
+        eligibleForApproval: false,
+        reasonFa: "طرح تخصیص معتبر نیست."
       },
       conservationResidualToman: 0,
       notesFa: ["ورودی نامعتبر است؛ هیچ عددی گزارش نمی‌شود."]
@@ -575,15 +813,13 @@ export function simulateCapitalPlan(input: SimulateInput): CapitalSimulation {
     fundedSamples: fundedRouteSamples
   });
 
-  // ── Recommendation lock ─────────────────────────────────────────────────
-  const obs = input.observation;
-  const coverage = obs?.successCoveragePercent ?? 0;
-  const gatePassed = obs?.status === "COMPLETED" && coverage >= REQUIRED_SUCCESS_COVERAGE_PERCENT;
-  const reasonFa = gatePassed
-    ? "دورهٔ ۱۴ روزه کامل شده است، اما توصیهٔ نهایی تا تأیید صریح مدیر همچنان موقت می‌ماند."
-    : obs?.status === "COMPLETED"
-      ? `پوشش موفق ${round2(coverage)}٪ کمتر از حداقل ${REQUIRED_SUCCESS_COVERAGE_PERCENT}٪ است.`
-      : "دورهٔ مشاهدهٔ ۱۴ روزه هنوز کامل نشده است.";
+  // ── Recommendation state ────────────────────────────────────────────────
+  const recommendation = evaluateRecommendation({
+    plan,
+    states: [...states.values()],
+    observation: input.observation,
+    approval: input.approval ?? null
+  });
 
   // ── Notes ───────────────────────────────────────────────────────────────
   if (idleOnDisabledVenuesToman > 0) {
@@ -623,15 +859,7 @@ export function simulateCapitalPlan(input: SimulateInput): CapitalSimulation {
       unfundedTopReasons
     },
     rebalance,
-    recommendation: {
-      status: "PROVISIONAL",
-      locked: true,
-      reasonFa,
-      observationStatus: obs?.status ?? "NOT_STARTED",
-      successCoveragePercent: round2(coverage),
-      requiredCoveragePercent: REQUIRED_SUCCESS_COVERAGE_PERCENT,
-      observationGatePassed: gatePassed
-    },
+    recommendation,
     conservationResidualToman,
     notesFa
   };

@@ -67,13 +67,22 @@ type Simulation = {
     expectedMonthlyRebalances: Estimate<number>;
   };
   recommendation: {
-    status: "PROVISIONAL";
+    status: "PROVISIONAL" | "READY_FOR_ADMIN_REVIEW" | "APPROVED_SIMULATION_PLAN";
     locked: boolean;
     reasonFa: string;
     observationStatus: string;
     successCoveragePercent: number;
     requiredCoveragePercent: number;
+    elapsedMs: number;
+    targetDurationMs: number;
+    daysGatePassed: boolean;
+    coverageGatePassed: boolean;
+    readinessGatePassed: boolean;
     observationGatePassed: boolean;
+    eligibleForApproval: boolean;
+    approval: { approvedBy: string; approvedAt: string } | null;
+    invalidationReasonFa: string | null;
+    executesOrders: false;
   };
   conservationResidualToman: number;
   notesFa: string[];
@@ -103,6 +112,18 @@ const CLASS_TONE: Record<VenueState["capitalClass"], string> = {
   EXECUTABLE: "good",
   WHATIF_DISABLED: "warn",
   REFERENCE_ONLY: "muted"
+};
+
+const RECOMMENDATION_FA: Record<Simulation["recommendation"]["status"], string> = {
+  PROVISIONAL: "موقت و قفل‌شده",
+  READY_FOR_ADMIN_REVIEW: "آمادهٔ بازبینی مدیر",
+  APPROVED_SIMULATION_PLAN: "طرح شبیه‌سازی تأییدشده"
+};
+
+const RECOMMENDATION_TONE: Record<Simulation["recommendation"]["status"], string> = {
+  PROVISIONAL: "warn",
+  READY_FOR_ADMIN_REVIEW: "good",
+  APPROVED_SIMULATION_PLAN: "good"
 };
 
 const CONCENTRATION_TONE: Record<"LOW" | "MODERATE" | "HIGH", string> = {
@@ -192,7 +213,7 @@ export function CapitalSimulator() {
   );
 
   const post = useCallback(
-    async (action: "simulate" | "optimize" | "save") => {
+    async (action: "simulate" | "optimize" | "save" | "approve") => {
       setBusy(true);
       setNotice(null);
       try {
@@ -212,6 +233,9 @@ export function CapitalSimulator() {
         if (j) applyPayload(j);
         if (action === "save") setNotice("طرح ذخیره شد و در سابقه نگهداری می‌شود.");
         if (action === "optimize") setNotice("تخصیص پیشنهادی و موقت ساخته شد.");
+        if (action === "approve") {
+          setNotice("طرح شبیه‌سازی تأیید شد. تأیید هیچ سفارشی ثبت نمی‌کند و هیچ وجهی منتقل نمی‌کند.");
+        }
       } catch (e) {
         setNotice(e instanceof Error ? e.message : "درخواست ناموفق بود");
       } finally {
@@ -291,11 +315,24 @@ export function CapitalSimulator() {
               </button>
               <button
                 type="button"
-                className="sa-btn sa-btn-primary"
+                className="sa-btn"
                 disabled={busy || !sim?.ok}
                 onClick={() => void post("save")}
               >
                 ذخیرهٔ طرح
+              </button>
+              <button
+                type="button"
+                className="sa-btn sa-btn-primary"
+                disabled={busy || !sim?.recommendation?.eligibleForApproval}
+                title={
+                  sim?.recommendation?.eligibleForApproval
+                    ? "تأیید مدیر برای طرح شبیه‌سازی — بدون سفارش و بدون انتقال وجه"
+                    : (sim?.recommendation?.reasonFa ?? "هنوز آمادهٔ تأیید نیست")
+                }
+                onClick={() => void post("approve")}
+              >
+                تأیید مدیر (فقط شبیه‌سازی)
               </button>
             </div>
           </div>
@@ -455,11 +492,44 @@ export function CapitalSimulator() {
 
           {sim ? (
             <div className="panel-body">
-              <div className="sa-callout sa-callout-warn">
-                <strong>توصیهٔ نهایی قفل است — وضعیت: موقت.</strong> {sim.recommendation.reasonFa} (وضعیت
-                مشاهده: {sim.recommendation.observationStatus} · پوشش موفق{" "}
-                {formatPercentFa(sim.recommendation.successCoveragePercent)} · حداقل لازم{" "}
-                {formatPercentFa(sim.recommendation.requiredCoveragePercent, 0)})
+              <div
+                className={`sa-callout sa-callout-${
+                  sim.recommendation.locked ? "warn" : "good"
+                }`}
+              >
+                <strong>
+                  وضعیت توصیه:{" "}
+                  <span className={`sa-chip sa-chip-sm sa-chip-${RECOMMENDATION_TONE[sim.recommendation.status]}`}>
+                    {RECOMMENDATION_FA[sim.recommendation.status]}
+                  </span>
+                </strong>{" "}
+                {sim.recommendation.reasonFa}
+                {sim.recommendation.approval ? (
+                  <div className="sa-reason">
+                    تأییدکننده: {sim.recommendation.approval.approvedBy} ·{" "}
+                    {formatTehran(sim.recommendation.approval.approvedAt)}
+                  </div>
+                ) : null}
+                {sim.recommendation.invalidationReasonFa ? (
+                  <div className="sa-reason">{sim.recommendation.invalidationReasonFa}</div>
+                ) : null}
+                <ul className="sa-list sa-list-muted">
+                  <li>
+                    دورهٔ ۱۴ روزه: {sim.recommendation.daysGatePassed ? "کامل" : "کامل نشده"} (
+                    {toFaDigits(Math.floor(sim.recommendation.elapsedMs / 86_400_000))} از{" "}
+                    {toFaDigits(Math.round(sim.recommendation.targetDurationMs / 86_400_000))} روز)
+                  </li>
+                  <li>
+                    پوشش موفق: {formatPercentFa(sim.recommendation.successCoveragePercent)} — حداقل لازم{" "}
+                    {formatPercentFa(sim.recommendation.requiredCoveragePercent, 0)} (
+                    {sim.recommendation.coverageGatePassed ? "برقرار" : "برقرار نیست"})
+                  </li>
+                  <li>
+                    آمادگی حساب و کارمزد:{" "}
+                    {sim.recommendation.readinessGatePassed ? "برقرار" : "برقرار نیست"}
+                  </li>
+                  <li>تأیید طرح هرگز سفارشی ثبت نمی‌کند و وجهی منتقل نمی‌کند.</li>
+                </ul>
               </div>
 
               {sim.coverage.unfundedTopReasons.length ? (

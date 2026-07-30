@@ -4,6 +4,11 @@ import { useMemo, useState } from "react";
 import { TomanAmount } from "@/components/TomanAmount";
 import {
   ELIGIBILITY_FA,
+  NO_VALID_OPPORTUNITY_FA,
+  OPP_CLASS_FA,
+  OPP_CLASS_ORDER,
+  classifyOpportunity,
+  TOOLTIP_FA,
   blockedShort,
   blockedDetail,
   eligibilityTone,
@@ -75,7 +80,12 @@ export function OpportunityTable({
       duration: (a, b) => b.durationMs - a.durationMs,
       freshness: (a, b) => Math.max(a.buyAgeMs, a.sellAgeMs) - Math.max(b.buyAgeMs, b.sellAgeMs)
     };
-    return [...filtered].sort(by[sort]);
+    return [...filtered].sort((a, b) => {
+      const ca = OPP_CLASS_ORDER[classifyOpportunity(a)];
+      const cb = OPP_CLASS_ORDER[classifyOpportunity(b)];
+      if (ca !== cb) return ca - cb;
+      return by[sort](a, b);
+    });
   }, [opportunities, size, source, verifiedOnly, netPositiveOnly, showEnded, sort, query]);
 
   const activeFilters =
@@ -200,6 +210,12 @@ export function OpportunityTable({
         </div>
       </div>
 
+      {!rows.some((o) => classifyOpportunity(o) === "valid") && rows.length ? (
+        <div className="panel-body">
+          <div className="sa-callout sa-callout-muted">{NO_VALID_OPPORTUNITY_FA}</div>
+        </div>
+      ) : null}
+
       <div className="panel-body sa-table-wrap">
         <table className="sa-table">
           <thead>
@@ -208,10 +224,10 @@ export function OpportunityTable({
               <th className="num">حجم</th>
               <th className="num">خرید</th>
               <th className="num">فروش</th>
-              <th className="num">اسپرد خام</th>
-              <th className="num">کارمزد</th>
-              <th className="num">بافر ریسک</th>
-              <th className="num">حاشیهٔ خالص</th>
+              <th className="num" title={TOOLTIP_FA.rawSpread}>اسپرد خام</th>
+              <th className="num" title={TOOLTIP_FA.fee}>کارمزد</th>
+              <th className="num" title={TOOLTIP_FA.buffer}>بافر ریسک</th>
+              <th className="num" title={TOOLTIP_FA.netEdge}>حاشیهٔ خالص</th>
               <th className="num">سود خالص</th>
               <th>وضعیت</th>
               <th>دوام / تازگی</th>
@@ -248,14 +264,19 @@ export function OpportunityTable({
                   }}
                 >
                   <td>
-                    <div className="sa-route">
-                      <span className="sa-route-buy">{o.buySourceName}</span>
-                      <span className="sa-route-arrow" aria-hidden="true">
-                        ←
-                      </span>
-                      <span className="sa-route-sell">{o.sellSourceName}</span>
+                    <div className="sa-route-line">
+                      <span className="sa-route-key">خرید از:</span>
+                      <strong>{o.buySourceName}</strong>
                     </div>
-                    <div className="sa-route-hint">خرید از {o.buySourceName} · فروش در {o.sellSourceName}</div>
+                    <div className="sa-route-line">
+                      <span className="sa-route-key">فروش در:</span>
+                      <strong>{o.sellSourceName}</strong>
+                    </div>
+                    <span className={`sa-chip sa-chip-sm sa-chip-${
+                      classifyOpportunity(o) === "valid" ? "good" : classifyOpportunity(o) === "raw" ? "warn" : "muted"
+                    }`}>
+                      {OPP_CLASS_FA[classifyOpportunity(o)]}
+                    </span>
                   </td>
                   <td className="num">{toFaDigits(o.sizeUsdt)}</td>
                   <td className="num">

@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { TomanAmount } from "@/components/TomanAmount";
 import { formatTehran } from "@/components/format";
 import {
+  TOOLTIP_FA,
   formatCountFa,
   formatDurationFa,
   formatPercentFa,
@@ -214,9 +215,8 @@ export function AnalyticsPanels({ analytics, costRecords, loading }: Props) {
 
       <div className="sa-grid-2">
         <section className="panel sa-panel">
-          <div className="panel-header sa-panel-header">
-            <h3 className="panel-title sa-panel-title">کارایی منابع</h3>
-          </div>
+          <details className="sa-details">
+            <summary>کارایی و تأخیر منابع (پیشرفته)</summary>
           <div className="panel-body sa-table-wrap">
             <table className="sa-table">
               <thead>
@@ -224,8 +224,8 @@ export function AnalyticsPanels({ analytics, costRecords, loading }: Props) {
                   <th>منبع</th>
                   <th className="num">دردسترس‌بودن</th>
                   <th className="num">نرخ خطا</th>
-                  <th className="num">p50</th>
-                  <th className="num">p95</th>
+                  <th className="num" title={TOOLTIP_FA.p50}>p50</th>
+                  <th className="num" title={TOOLTIP_FA.p95}>p95</th>
                   <th className="num">تازگی</th>
                 </tr>
               </thead>
@@ -243,6 +243,7 @@ export function AnalyticsPanels({ analytics, costRecords, loading }: Props) {
               </tbody>
             </table>
           </div>
+          </details>
         </section>
 
         <section className="panel sa-panel">

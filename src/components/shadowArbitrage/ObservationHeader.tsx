@@ -67,7 +67,6 @@ export function ObservationHeader({
   });
 
   const progress = Math.min(100, Math.max(0, observation?.progressPercent ?? 0));
-  const paused = observation?.status === "PAUSED";
   const targetDays = Math.round((observation?.targetDurationMs ?? 0) / 86_400_000);
 
   if (loading && !observation) {
@@ -93,13 +92,17 @@ export function ObservationHeader({
           <h3 className="panel-title sa-panel-title">وضعیت پایش</h3>
         </div>
         <div className="sa-actions">
-          {paused ? (
-            <button type="button" className="sa-btn sa-btn-primary" onClick={onResume}>
-              ادامهٔ پایش
-            </button>
-          ) : (
+          {observation?.status === "RUNNING" || observation?.status === "DEGRADED" ? (
             <button type="button" className="sa-btn" onClick={onPause}>
               توقف موقت
+            </button>
+          ) : observation?.status === "NOT_STARTED" || !observation ? (
+            <button type="button" className="sa-btn sa-btn-primary" onClick={onResume}>
+              شروع پایش
+            </button>
+          ) : observation.status === "COMPLETED" ? null : (
+            <button type="button" className="sa-btn sa-btn-primary" onClick={onResume}>
+              ادامه پایش
             </button>
           )}
         </div>
@@ -109,7 +112,7 @@ export function ObservationHeader({
         <div className="sa-progress-row">
           <div className="sa-progress-meta">
             <span>
-              پیشرفت دورهٔ {toFaDigits(targetDays || 14)} روزه
+              پیشرفت زمانی دورهٔ {toFaDigits(targetDays || 14)} روزه
             </span>
             <strong>{formatPercentFa(progress, 2)}</strong>
           </div>
@@ -165,20 +168,25 @@ export function ObservationHeader({
             }
           />
           <Field
-            label="پوشش چرخه‌ها"
-            value={formatPercentFa(observation?.cycleCoveragePercent ?? null, 1)}
+            label="پوشش چرخه‌های موفق"
+            value={formatPercentFa(observation?.successCoveragePercent ?? null, 1)}
             hint={
               observation
-                ? `${formatCountFa(observation.completedCycles)} از ${formatCountFa(
+                ? `${formatCountFa(observation.successfulCycles)} موفق از ${formatCountFa(
                     observation.expectedCycles
                   )} مورد انتظار`
                 : undefined
             }
           />
           <Field
-            label="پوشش دادهٔ منابع"
+            label="زمان بدون جمع‌آوری"
+            value={formatDurationFa(observation?.downtimeMs)}
+            hint="این مدت پوشش را کاهش می‌دهد"
+          />
+          <Field
+            label="پاسخ‌دهی منابع در چرخه اخیر"
             value={formatPercentFa(dataCoveragePercent, 1)}
-            hint="سهم درخواست‌های موفق به منابع"
+            hint="سهم منابعی که پاسخ سالم دادند"
           />
           <Field
             label="چرخه‌های تکراری"

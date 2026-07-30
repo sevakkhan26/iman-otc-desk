@@ -72,6 +72,8 @@ export type Observation = {
   remainingMs: number;
   progressPercent: number;
   cycleCoveragePercent: number;
+  successCoveragePercent: number;
+  downtimeMs: number;
   expectedCycles: number;
   workerId: string | null;
 };

@@ -2,6 +2,8 @@
 
 import { TomanAmount } from "@/components/TomanAmount";
 import {
+  NO_VALID_OPPORTUNITY_FA,
+  classifyOpportunity,
   formatCountFa,
   formatPercentFa,
   toFaDigits
@@ -30,25 +32,20 @@ type Card = {
  */
 export function SummaryCards({ opportunities, sources, dataCoveragePercent, loading }: Props) {
   const active = opportunities.filter((o) => o.isActive);
+  const classed = active.map((o) => ({ o, cls: classifyOpportunity(o) }));
 
-  // Net-eligible = fees known on both legs and not blocked.
-  const netEligible = active.filter(
-    (o) => !o.feeUnknown && o.eligibility !== "BLOCKED" && o.netProfitToman > 0
-  );
-  const bestNet = netEligible.reduce<ShadowOpportunity | null>(
+  const valid = classed.filter((c) => c.cls === "valid").map((c) => c.o);
+  const raw = classed.filter((c) => c.cls === "raw").map((c) => c.o);
+  const blocked = classed.filter((c) => c.cls === "blocked").map((c) => c.o);
+
+  const bestNet = valid.reduce<ShadowOpportunity | null>(
     (best, o) => (!best || o.netProfitToman > best.netProfitToman ? o : best),
     null
   );
-
-  const bestRaw = active.reduce<ShadowOpportunity | null>(
-    (best, o) => (!best || o.rawSpreadPercent > best.rawSpreadPercent ? o : best),
-    null
-  );
-
-  const totalNet = netEligible.reduce((sum, o) => sum + o.netProfitToman, 0);
-  const usableNow = active.filter((o) => o.eligibility === "EXECUTABLE_NOW").length;
-  const needAccount = active.filter((o) => o.eligibility === "ACCOUNT_REQUIRED").length;
+  const totalNet = valid.reduce((sum, o) => sum + o.netProfitToman, 0);
   const healthy = sources.filter((s) => s.health === "healthy").length;
+  const verifiedAccounts = sources.filter((s) => s.accountStatus === "verified").length;
+  const needAccounts = sources.filter((s) => s.accountStatus !== "verified").length;
 
   const cards: Card[] = [
     {
@@ -56,60 +53,56 @@ export function SummaryCards({ opportunities, sources, dataCoveragePercent, load
       label: "بهترین فرصت معتبر",
       value: bestNet ? <TomanAmount value={bestNet.netProfitToman} /> : "—",
       hint: bestNet
-        ? `${bestNet.buySourceName} → ${bestNet.sellSourceName} · ${toFaDigits(bestNet.sizeUsdt)} تتر`
-        : "فرصتی با کارمزد معلوم و سود مثبت وجود ندارد",
+        ? `خرید از ${bestNet.buySourceName} · فروش در ${bestNet.sellSourceName} · ${toFaDigits(bestNet.sizeUsdt)} تتر`
+        : NO_VALID_OPPORTUNITY_FA,
       tone: bestNet ? "good" : "muted"
     },
     {
-      key: "active",
-      label: "فرصت‌های فعال",
-      value: formatCountFa(active.length),
-      hint: "مسیرهایی که همین حالا اسپرد مثبت دارند"
+      key: "valid",
+      label: "فرصت معتبر و خالص مثبت",
+      value: formatCountFa(valid.length),
+      hint: "کارمزد معلوم، عمق کافی، حساب موجود، سود مثبت",
+      tone: valid.length ? "good" : "muted"
     },
     {
-      key: "best-raw",
-      label: "بهترین اسپرد خام",
-      value: bestRaw ? formatPercentFa(bestRaw.rawSpreadPercent, 3) : "—",
-      hint: bestRaw
-        ? `${bestRaw.buySourceName} → ${bestRaw.sellSourceName} — پیش از کارمزد`
-        : "بدون داده",
-      tone: "muted"
+      key: "checked",
+      label: "مسیرهای بررسی‌شده",
+      value: formatCountFa(active.length),
+      hint: `پتانسیل خام یا مرجع: ${formatCountFa(raw.length)}`
+    },
+    {
+      key: "blocked",
+      label: "مسیرهای مسدودشده",
+      value: formatCountFa(blocked.length),
+      hint: "دلیل مسدودی در جدول و جزئیات",
+      tone: blocked.length ? "warn" : "muted"
     },
     {
       key: "total-net",
-      label: "سود خالص نظری",
-      value: netEligible.length ? <TomanAmount value={totalNet} /> : "—",
-      hint: netEligible.length
-        ? `مجموع ${formatCountFa(netEligible.length)} فرصت با کارمزد معلوم`
-        : "کارمزد لازم برای محاسبه تأیید نشده است",
-      tone: netEligible.length ? "good" : "muted"
+      label: "سود خالص نظری (فرصت‌های معتبر)",
+      value: valid.length ? <TomanAmount value={totalNet} /> : "—",
+      hint: valid.length ? `مجموع ${formatCountFa(valid.length)} فرصت معتبر` : NO_VALID_OPPORTUNITY_FA,
+      tone: valid.length ? "good" : "muted"
     },
     {
       key: "healthy",
       label: "منابع سالم",
       value: `${toFaDigits(healthy)} از ${toFaDigits(sources.length || 9)}`,
-      hint: "منابعی که در آخرین چرخه پاسخ سالم دادند",
+      hint: "در آخرین چرخه پاسخ سالم دادند",
       tone: healthy >= 7 ? "good" : healthy >= 4 ? "warn" : "danger"
     },
     {
+      key: "accounts",
+      label: "حساب‌های احرازشده",
+      value: `${toFaDigits(verifiedAccounts)} از ${toFaDigits(sources.length || 9)}`,
+      hint: `نیازمند افتتاح حساب: ${toFaDigits(needAccounts)} صرافی`,
+      tone: "muted"
+    },
+    {
       key: "coverage",
-      label: "پوشش پایش",
+      label: "پاسخ‌دهی منابع در چرخه اخیر",
       value: formatPercentFa(dataCoveragePercent, 1),
-      hint: "سهم درخواست‌های موفق در بازهٔ پایش"
-    },
-    {
-      key: "usable",
-      label: "قابل استفاده با حساب فعلی",
-      value: formatCountFa(usableNow),
-      hint: "نوبیتکس، والکس و تبدیل",
-      tone: usableNow ? "good" : "muted"
-    },
-    {
-      key: "need-account",
-      label: "نیازمند افتتاح حساب",
-      value: formatCountFa(needAccount),
-      hint: "فرصت‌هایی که با حساب جدید آزاد می‌شوند",
-      tone: needAccount ? "warn" : "muted"
+      hint: "این عدد پوشش پایش نیست"
     }
   ];
 

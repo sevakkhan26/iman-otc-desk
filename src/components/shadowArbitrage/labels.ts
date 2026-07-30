@@ -256,3 +256,48 @@ export function accountPriorityLabel(score: number | null): { label: string; ton
   if (score >= 0.2) return { label: "اولویت متوسط", tone: "warn" };
   return { label: "اولویت پایین", tone: "muted" };
 }
+
+/* ── opportunity classification ────────────────────────────────────────────── */
+
+export type OppClass = "valid" | "raw" | "blocked";
+
+/**
+ * A valid opportunity needs both sides healthy and fresh, confirmed direction,
+ * sufficient depth, known fees, positive net profit and available accounts.
+ * The engine already encodes all of that: EXECUTABLE_NOW means nothing
+ * disqualifying was found, so validity is that plus known fees and net > 0.
+ */
+export function classifyOpportunity(o: {
+  eligibility: OpportunityEligibility;
+  feeUnknown: boolean;
+  netProfitToman: number;
+  rawSpreadPercent: number;
+}): OppClass {
+  if (o.eligibility === "EXECUTABLE_NOW" && !o.feeUnknown && o.netProfitToman > 0) return "valid";
+  if (o.rawSpreadPercent > 0 && o.eligibility !== "BLOCKED") return "raw";
+  return "blocked";
+}
+
+/** Valid first, then raw candidates, then blocked. */
+export const OPP_CLASS_ORDER: Record<OppClass, number> = { valid: 0, raw: 1, blocked: 2 };
+
+export const OPP_CLASS_FA: Record<OppClass, string> = {
+  valid: "معتبر و خالص مثبت",
+  raw: "پتانسیل خام / مرجع",
+  blocked: "مسدودشده"
+};
+
+export const NO_VALID_OPPORTUNITY_FA = "در حال حاضر فرصت معتبر خالص مثبت وجود ندارد";
+
+/** Short explanations shown as tooltips on metric headers. */
+export const TOOLTIP_FA = {
+  rawSpread: "اختلاف قیمت فروش و خرید پیش از کارمزد. سود نیست.",
+  netEdge: "حاشیه پس از کسر کارمزد دو طرف و بافر ریسک. فقط وقتی کارمزد معلوم باشد.",
+  fee: "کارمزد taker دو صرافی. «نامشخص» یعنی جدول رسمی تأیید نشده است.",
+  buffer: "بافر لغزش و ریسک: ۰٫۰۵٪ از هزینه خرید (مقدار موقت).",
+  coverage: "سهم چرخه‌های موفق از چرخه‌های مورد انتظار در بازه پایش.",
+  sourceResponse: "سهم منابعی که در آخرین چرخه پاسخ سالم دادند.",
+  downtime: "مدتی که هیچ چرخه موفقی ثبت نشده است.",
+  p50: "میانه زمان پاسخ منبع.",
+  p95: "زمان پاسخ در بدترین ۵٪ درخواست‌ها."
+} as const;

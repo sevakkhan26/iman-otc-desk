@@ -64,9 +64,16 @@ export type ObservationSnapshot = {
   progressPercent: number;
   /** recorded cycles ÷ cycles the interval implies for the elapsed window. */
   cycleCoveragePercent: number;
+  /** successful cycles ÷ expected cycles — the honest observation quality. */
+  successCoveragePercent: number;
+  /** Elapsed time not covered by a successful cycle. */
+  downtimeMs: number;
   expectedCycles: number;
   workerId: string | null;
 };
+
+/** A 14-day observation only counts as complete with enough real coverage. */
+export const REQUIRED_SUCCESS_COVERAGE_PERCENT = 80;
 
 function num(v: string | number | null | undefined): number {
   if (v === null || v === undefined) return 0;
@@ -126,12 +133,24 @@ function toObs(row: typeof shadowObservationSessions.$inferSelect): ObservationS
   const target = num(row.targetDurationMs) || TARGET_MS;
   const pollIntervalMs = clampPollInterval(row.pollIntervalMs);
 
-  let status = row.status as ObservationStatus;
-  if ((status === "RUNNING" || status === "DEGRADED") && elapsedMs >= target) status = "COMPLETED";
-
   const expectedCycles = pollIntervalMs > 0 ? Math.floor(elapsedMs / pollIntervalMs) + 1 : 0;
   const cycleCoveragePercent =
     expectedCycles > 0 ? Math.min(100, (row.completedCycles / expectedCycles) * 100) : 0;
+  const successCoveragePercent =
+    expectedCycles > 0 ? Math.min(100, (row.successfulCycles / expectedCycles) * 100) : 0;
+  // Time not covered by a successful cycle. Downtime must reduce coverage and is
+  // never presented as successful observation.
+  const downtimeMs = Math.max(0, elapsedMs - row.successfulCycles * pollIntervalMs);
+
+  let status = row.status as ObservationStatus;
+  // Completion needs BOTH 14 real days and enough successful coverage.
+  if (
+    (status === "RUNNING" || status === "DEGRADED") &&
+    elapsedMs >= target &&
+    successCoveragePercent >= REQUIRED_SUCCESS_COVERAGE_PERCENT
+  ) {
+    status = "COMPLETED";
+  }
 
   return {
     id: row.id,
@@ -152,6 +171,8 @@ function toObs(row: typeof shadowObservationSessions.$inferSelect): ObservationS
     remainingMs: Math.max(0, target - elapsedMs),
     progressPercent: Math.min(100, (elapsedMs / target) * 100),
     cycleCoveragePercent: Math.round(cycleCoveragePercent * 100) / 100,
+    successCoveragePercent: Math.round(successCoveragePercent * 100) / 100,
+    downtimeMs,
     expectedCycles,
     workerId: row.workerId
   };

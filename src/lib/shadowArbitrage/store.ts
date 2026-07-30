@@ -331,9 +331,12 @@ export async function computeAnalytics(windowMs = RETENTION_MS): Promise<ShadowA
     }))
     .sort((a, b) => b.count - a.count);
 
-  const insufficientData = runStats.runCount < 10 || lifecycles.length === 0;
+  // Medians and rankings are meaningless on a handful of samples.
+  const MIN_SUCCESSFUL_CYCLES = 20;
+  const insufficientData =
+    runStats.successfulRuns < MIN_SUCCESSFUL_CYCLES || lifecycles.length === 0;
   const dataNote = insufficientData
-    ? `دادهٔ کافی برای تحلیل نیست (چرخه‌های ثبت‌شده: ${runStats.runCount}). هیچ پیش‌بینی یا برون‌یابی ارائه نمی‌شود.`
+    ? `داده کافی برای تحلیل وجود ندارد — ${runStats.successfulRuns} چرخهٔ موفق از حداقل ${MIN_SUCCESSFUL_CYCLES}. دادهٔ خام نگهداری می‌شود اما میانه، رتبه‌بندی و پیش‌بینی ارائه نمی‌شود.`
     : `بر پایهٔ ${runStats.runCount} چرخهٔ ثبت‌شده و ${snapshotCount} snapshot در ${SHADOW_RETENTION_DAYS} روز اخیر (${eventCount} رخداد چرخهٔ عمر). ارقام با کارمزد نامشخص «پتانسیل خام» هستند نه سود انتظاری.`;
 
   return {
@@ -352,16 +355,17 @@ export async function computeAnalytics(windowMs = RETENTION_MS): Promise<ShadowA
       .length,
     uniqueNetPositiveAllTime: new Set(netPositive.map((o) => o.routeKey)).size,
     uniqueRawPotentialOnly: new Set(rawPotentialOnly.map((o) => o.routeKey)).size,
-    medianDurationMs: median(durations),
-    maxDurationMs: durations.length ? Math.max(...durations) : null,
-    medianNetEdgePercent: median(edges) !== null ? round4(median(edges)!) : null,
-    maxNetEdgePercent: edges.length ? round4(Math.max(...edges)) : null,
-    estimatedNetPnlBySize: pnlBySize,
+    medianDurationMs: insufficientData ? null : median(durations),
+    maxDurationMs: insufficientData ? null : durations.length ? Math.max(...durations) : null,
+    medianNetEdgePercent:
+      insufficientData || median(edges) === null ? null : round4(median(edges)!),
+    maxNetEdgePercent: insufficientData || !edges.length ? null : round4(Math.max(...edges)),
+    estimatedNetPnlBySize: insufficientData ? {} : pnlBySize,
     lifecycles: lifecycles
       .slice()
       .sort((a, b) => b.maxRawSpreadPercent - a.maxRawSpreadPercent)
       .slice(0, 200),
-    routes,
+    routes: insufficientData ? [] : routes,
     sourceUptime,
     blockedByReason,
     insufficientData,

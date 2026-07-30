@@ -369,14 +369,28 @@ export async function withAdvisoryLock<T>(
   }
   await getDbAsync();
   const sql = state().sql!;
-  const rows = await sql`SELECT pg_try_advisory_lock(${lockKey}) AS ok`;
-  const ok = Boolean(rows[0]?.ok);
-  if (!ok) return { acquired: false };
+
+  // A PostgreSQL advisory lock is SESSION scoped. Running the lock and unlock as
+  // two pooled queries can put them on different connections: the unlock then
+  // no-ops and the original connection keeps the lock for its whole lifetime, so
+  // every later attempt fails. Pin one connection for lock + unlock.
+  const reserved = await sql.reserve();
+  let locked = false;
   try {
+    const rows = await reserved`SELECT pg_try_advisory_lock(${lockKey}) AS ok`;
+    locked = Boolean(rows[0]?.ok);
+    if (!locked) return { acquired: false };
     const result = await fn();
     return { acquired: true, result };
   } finally {
-    await sql`SELECT pg_advisory_unlock(${lockKey})`;
+    if (locked) {
+      try {
+        await reserved`SELECT pg_advisory_unlock(${lockKey})`;
+      } catch {
+        /* releasing the connection below drops the lock anyway */
+      }
+    }
+    reserved.release();
   }
 }
 

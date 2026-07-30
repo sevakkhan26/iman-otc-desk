@@ -233,3 +233,59 @@ start read-only with no withdrawal, transfer or order permission.
 | 14 real days of observation | time | ~2026-08-13 if collection runs continuously from 2026-07-30 |
 | Six exchange accounts not opened; no API credentials | credentials | Accounts opened and read-only keys supplied out of chat |
 | Fee schedules unverified for 6 of 9 venues | data | Official published fees confirmed, or account API fee tier |
+
+---
+
+## 8. Release v4.6.1 — pushed, NOT yet live in production (2026-07-30)
+
+| Item | Value |
+| --- | --- |
+| Release commit | `37921ec` — "Release v4.6.1 — Shadow Arbitrage production release" |
+| Deploy fix commit | `5d367a3` — compose worker build context + `pull_policy: never` |
+| `main` (GitHub) | `5d367a3` |
+| `shadow-arbitrage-master` | `5d367a3` |
+| Tag `v4.6.1` | → `37921ec` |
+| Tag `pre-v4.6.1` | → `393b756` (previous production commit) |
+| Production version observed | **`3.6.0`** — the release has **not** deployed |
+| Production health | HTTP 200, existing dashboard unaffected, no regression |
+
+### What is verified vs not
+
+* **Pushed to `main`: yes.** GitHub `main` is at the release.
+* **Verified in production: NO.** The site still serves the pre-release build.
+  Evidence: the login footer reports `3.6.0`, and the headers that only the new
+  `next.config.ts` emits (`CDN-Cache-Control`, `Surrogate-Control` on
+  `/api/shadow-arbitrage/*`) are absent. `X-Cache: BYPASS`, so this is not CDN
+  caching — the origin itself is serving the old build.
+* Note: `/shadow-arbitrage` → 307 and `/api/shadow-arbitrage/*` → 401 do **not**
+  prove deployment. Non-existent paths return the same codes, because middleware
+  redirects/401s every unauthenticated request before routing.
+
+### Database backup
+
+**Not performed and not verified.** The LAN host `192.168.50.105` is unreachable
+from the release machine (`192.168.0.101`, different subnet; ICMP and TCP
+22/9000/3000 all fail) and Docker is not installed locally, so
+`scripts/backup-production-db.sh` could not be run. The release proceeded on the
+user's explicit authorization, protected by the `pre-v4.6.1` tag and by the fact
+that both migrations are strictly additive (8 × `CREATE TABLE IF NOT EXISTS`,
+14 × `ADD COLUMN IF NOT EXISTS`, indexes only; every table touched is a new
+`shadow_*` table).
+
+### To finish the deployment (needs LAN/host access)
+
+```bash
+cd ~/docker-projects/iman-otc-desk
+docker logs --tail 100 auto-deploy-poller     # is the poller alive? did it try?
+git log --oneline -3                          # did the host actually pull 5d367a3?
+git pull --ff-only
+bash scripts/backup-production-db.sh          # backup first
+docker compose build iman-otc-desk            # watch for build errors
+docker compose up -d iman-otc-desk iman-otc-shadow-worker
+docker compose ps
+curl -s localhost:3000/login | grep -o '4\.6\.1'
+```
+
+Then re-check: version `4.6.1` on the login footer, `CDN-Cache-Control` on the
+shadow APIs, exactly one `iman-otc-shadow-worker`, and ≥3 recorded cycles via the
+admin health endpoint.

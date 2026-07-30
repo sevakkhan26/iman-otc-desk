@@ -1008,8 +1008,15 @@ await test("permanent trial-mode warning text is exact", () => {
   assert.equal(SHADOW_WARNING_FA, "حالت آزمایشی — هیچ سفارش یا انتقال واقعی انجام نمی‌شود");
   const view = readFileSync(new URL("../src/components/ShadowArbitrageView.tsx", import.meta.url), "utf8");
   assert.ok(view.includes("SHADOW_WARNING_FA"), "the dashboard must render the warning");
-  // It must not be conditional on data or state.
-  assert.ok(/className="sa-warning"/.test(view));
+  // It must not be conditional on data or state, and it must sit above the tab
+  // strip so it is present on every tab rather than only the default one.
+  assert.ok(/className="sa-warning[^"]*"/.test(view));
+  const warnIndex = view.indexOf("sa-warning");
+  const tabsIndex = view.indexOf("<ShadowTabs");
+  assert.ok(tabsIndex > 0 && warnIndex < tabsIndex, "the warning precedes the tabs");
+  // Nothing gates it: no ternary or && guard wraps the warning block.
+  const before = view.slice(Math.max(0, warnIndex - 220), warnIndex);
+  assert.equal(/[?&]{2}\s*\($|\?\s*\($/.test(before.trimEnd()), false);
 });
 
 /* ── storage volume ───────────────────────────────────────────────────────── */

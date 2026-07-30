@@ -70,8 +70,12 @@ export type PaperLedgerRow = {
   sellNotionalToman: number | null;
   buyFeeBps: number | null;
   sellFeeBps: number | null;
-  buyFeeBasis: string | null;
-  sellFeeBasis: string | null;
+  buyFeeAsset: string | null;
+  buyFeeDebitMode: string | null;
+  buyFeeProvenance: string | null;
+  sellFeeAsset: string | null;
+  sellFeeDebitMode: string | null;
+  sellFeeProvenance: string | null;
   feeTomanTotal: number | null;
   feeUsdtMicrosTotal: number | null;
   slippageBufferToman: number | null;
@@ -341,8 +345,12 @@ export type PaperFillRecord = {
   sellNotionalToman: number;
   buyFeeBps: number;
   sellFeeBps: number;
-  buyFeeBasis: string;
-  sellFeeBasis: string;
+  buyFeeAsset: string;
+  buyFeeDebitMode: string;
+  buyFeeProvenance: string;
+  sellFeeAsset: string;
+  sellFeeDebitMode: string;
+  sellFeeProvenance: string;
   feeTomanTotal: number;
   feeUsdtMicrosTotal: number;
   slippageBufferToman: number;
@@ -413,8 +421,12 @@ export async function commitPaperCycle(input: {
               sellNotionalToman: f.sellNotionalToman,
               buyFeeBps: f.buyFeeBps,
               sellFeeBps: f.sellFeeBps,
-              buyFeeBasis: f.buyFeeBasis,
-              sellFeeBasis: f.sellFeeBasis,
+              buyFeeAsset: f.buyFeeAsset,
+              buyFeeDebitMode: f.buyFeeDebitMode,
+              buyFeeProvenance: f.buyFeeProvenance,
+              sellFeeAsset: f.sellFeeAsset,
+              sellFeeDebitMode: f.sellFeeDebitMode,
+              sellFeeProvenance: f.sellFeeProvenance,
               feeTomanTotal: f.feeTomanTotal,
               feeUsdtMicrosTotal: f.feeUsdtMicrosTotal,
               slippageBufferToman: f.slippageBufferToman,
@@ -557,8 +569,12 @@ export async function loadPaperLedger(
       sellNotionalToman: numOrNull(r.sellNotionalToman),
       buyFeeBps: numOrNull(r.buyFeeBps),
       sellFeeBps: numOrNull(r.sellFeeBps),
-      buyFeeBasis: r.buyFeeBasis,
-      sellFeeBasis: r.sellFeeBasis,
+      buyFeeAsset: r.buyFeeAsset,
+      buyFeeDebitMode: r.buyFeeDebitMode,
+      buyFeeProvenance: r.buyFeeProvenance,
+      sellFeeAsset: r.sellFeeAsset,
+      sellFeeDebitMode: r.sellFeeDebitMode,
+      sellFeeProvenance: r.sellFeeProvenance,
       feeTomanTotal: numOrNull(r.feeTomanTotal),
       feeUsdtMicrosTotal: numOrNull(r.feeUsdtMicrosTotal),
       slippageBufferToman: numOrNull(r.slippageBufferToman),

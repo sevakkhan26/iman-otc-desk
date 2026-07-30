@@ -14,9 +14,10 @@ import { SHADOW_STALE_MS, SHADOW_TRADE_SIZES } from "@/lib/shadowArbitrage/confi
 import type { VenueCapitalState } from "@/lib/shadowArbitrage/capital";
 import {
   applyFill,
-  feeBasisFor,
   microsToUsdt,
   planFill,
+  settlementFor,
+  settlementUsable,
   usdtToMicros,
   type FillPlan,
   type PaperRejectionCode,
@@ -200,8 +201,13 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       skip(c, "fee_unknown");
       continue;
     }
-    if (feeBasisFor(c.buySourceId) === "UNKNOWN" || feeBasisFor(c.sellSourceId) === "UNKNOWN") {
-      skip(c, "fee_basis_unknown");
+    // Settlement is per venue AND per side: the buy side of one venue and the
+    // sell side of the other must both be admin-confirmed.
+    if (
+      !settlementUsable(settlementFor(c.buySourceId, "buy")) ||
+      !settlementUsable(settlementFor(c.sellSourceId, "sell"))
+    ) {
+      skip(c, "fee_settlement_unknown");
       continue;
     }
     const buySnap = sourceById.get(c.buySourceId);
@@ -242,8 +248,8 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       sellVwapToman: c.sellVwapToman,
       buyFeeBps: c.buyFeeBps,
       sellFeeBps: c.sellFeeBps,
-      buyFeeBasis: feeBasisFor(c.buySourceId),
-      sellFeeBasis: feeBasisFor(c.sellSourceId),
+      buySettlement: settlementFor(c.buySourceId, "buy"),
+      sellSettlement: settlementFor(c.sellSourceId, "sell"),
       slippageBufferToman: c.slippageBufferToman
     });
     if (!plan.ok) {

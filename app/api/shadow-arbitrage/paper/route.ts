@@ -31,7 +31,7 @@ import {
 } from "@/lib/shadowArbitrage/capital";
 import { SHADOW_BANNER, SHADOW_SOURCES } from "@/lib/shadowArbitrage/config";
 import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
-import { PAPER_FEE_BASIS, microsToUsdt } from "@/lib/shadowArbitrage/paper/broker";
+import { PAPER_FEE_SETTLEMENT, microsToUsdt } from "@/lib/shadowArbitrage/paper/broker";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -121,12 +121,17 @@ async function snapshot() {
   const evaluated = stats.filled + stats.skipped;
   return {
     session,
-    balances: balances.map((b) => ({
-      sourceId: b.sourceId,
-      irtToman: b.irtToman,
-      usdt: microsToUsdt(b.usdtMicros),
-      feeBasis: PAPER_FEE_BASIS[b.sourceId as keyof typeof PAPER_FEE_BASIS] ?? "UNKNOWN"
-    })),
+    balances: balances.map((b) => {
+      // Settlement is reported per side, never collapsed into one currency.
+      const st = PAPER_FEE_SETTLEMENT[b.sourceId as keyof typeof PAPER_FEE_SETTLEMENT];
+      return {
+        sourceId: b.sourceId,
+        irtToman: b.irtToman,
+        usdt: microsToUsdt(b.usdtMicros),
+        buySettlement: st?.buy ?? { feeAsset: "UNKNOWN", debitMode: "UNKNOWN", provenance: "UNKNOWN" },
+        sellSettlement: st?.sell ?? { feeAsset: "UNKNOWN", debitMode: "UNKNOWN", provenance: "UNKNOWN" }
+      };
+    }),
     trades,
     skipped,
     stats: {

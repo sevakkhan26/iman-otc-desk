@@ -66,13 +66,18 @@ import {
   type VenueCapitalState
 } from "../src/lib/shadowArbitrage/capital.ts";
 import {
-  PAPER_FEE_BASIS,
+  PAPER_FEE_SETTLEMENT,
   applyFill,
   microsToUsdt,
   planFill,
   portfolioValueToman,
+  reconcilePaperLedgers,
+  settlementCoherent,
+  settlementFor,
+  settlementUsable,
   usdtToMicros,
-  type FeeBasis,
+  type FillPlan,
+  type SideSettlement,
   type VenueBalance
 } from "../src/lib/shadowArbitrage/paper/broker.ts";
 import {
@@ -1765,8 +1770,19 @@ const paperSources = (over: Partial<Record<string, Partial<NormalizedSourceSnaps
   mockSource("tabdeal", "تبدیل", 101_000, 100_500, over.tabdeal)
 ];
 
-await test("Phase 6 buy and sell legs move the right assets in the right direction", () => {
-  const plan = planFill({
+const BUY_SETTLEMENT: SideSettlement = {
+  feeAsset: "IRT",
+  debitMode: "ADD_TO_DEBIT",
+  provenance: "ADMIN_CONFIRMED"
+};
+const SELL_SETTLEMENT: SideSettlement = {
+  feeAsset: "USDT",
+  debitMode: "ADD_TO_DEBIT",
+  provenance: "ADMIN_CONFIRMED"
+};
+
+function confirmedFill(over: Partial<Parameters<typeof planFill>[0]> = {}) {
+  return planFill({
     buySourceId: "nobitex",
     sellSourceId: "wallex",
     sizeUsdt: 25,
@@ -1774,117 +1790,179 @@ await test("Phase 6 buy and sell legs move the right assets in the right directi
     sellVwapToman: 102_000,
     buyFeeBps: 25,
     sellFeeBps: 35,
-    buyFeeBasis: "QUOTE_IRT",
-    sellFeeBasis: "QUOTE_IRT",
-    slippageBufferToman: 1_000
+    buySettlement: BUY_SETTLEMENT,
+    sellSettlement: SELL_SETTLEMENT,
+    slippageBufferToman: 1_000,
+    ...over
   });
+}
+
+await test("Phase 6 buy settles the fee in IRT and credits the full quantity", () => {
+  const plan = confirmedFill();
   assert.equal(plan.ok, true);
   if (!plan.ok) return;
 
-  // Buy: 25 × 100,000 = 2,500,000 toman, fee 0.25% = 6,250 charged in toman.
+  // 25 × 100,000 = 2,500,000 toman; 0.25% = 6,250 toman, added to the debit.
+  assert.equal(plan.buyLeg.settlement.feeAsset, "IRT");
+  assert.equal(plan.buyLeg.settlement.debitMode, "ADD_TO_DEBIT");
+  assert.equal(plan.buyLeg.settlement.provenance, "ADMIN_CONFIRMED");
   assert.equal(plan.buyLeg.notionalToman, 2_500_000);
   assert.equal(plan.buyLeg.feeToman, 6_250);
-  assert.equal(plan.buyLeg.deltaIrtToman, -2_506_250, "buy decreases IRT by cost plus fee");
-  assert.equal(plan.buyLeg.deltaUsdtMicros, usdtToMicros(25), "buy increases USDT");
-
-  // Sell: 25 × 102,000 = 2,550,000 toman, fee 0.35% = 8,925 out of the proceeds.
-  assert.equal(plan.sellLeg.notionalToman, 2_550_000);
-  assert.equal(plan.sellLeg.feeToman, 8_925);
-  assert.equal(plan.sellLeg.deltaUsdtMicros, -usdtToMicros(25), "sell decreases USDT");
-  assert.equal(plan.sellLeg.deltaIrtToman, 2_541_075, "sell increases IRT net of fee");
-
-  assert.equal(plan.grossSpreadToman, 50_000);
-  assert.equal(plan.totalFeeToman, 15_175);
-  assert.equal(plan.netPnlToman, 2_541_075 - 2_506_250);
-  assert.equal(plan.netPnlToman, 34_825);
-  assert.equal(plan.netPnlAfterBufferToman, 33_825);
+  assert.equal(plan.buyLeg.feeUsdtMicros, 0, "the buy fee is never taken in USDT");
+  assert.equal(plan.buyLeg.deltaIrtToman, -2_506_250, "IRT debit is cost plus fee");
+  assert.equal(plan.buyLeg.deltaUsdtMicros, usdtToMicros(25), "full purchased quantity is credited");
 });
 
-await test("Phase 6 fees are charged in the venue's own fee currency", () => {
-  const plan = planFill({
-    buySourceId: "nobitex",
-    sellSourceId: "wallex",
-    sizeUsdt: 10,
-    buyVwapToman: 100_000,
-    sellVwapToman: 105_000,
-    buyFeeBps: 100,
-    sellFeeBps: 200,
-    buyFeeBasis: "BASE_USDT",
-    sellFeeBasis: "BASE_USDT",
-    slippageBufferToman: 0
-  });
+await test("Phase 6 sell settles the fee in USDT and credits the full proceeds", () => {
+  const plan = confirmedFill();
   assert.equal(plan.ok, true);
   if (!plan.ok) return;
 
-  // Buy with a USDT-denominated fee: pay the full notional, receive 1% less USDT.
-  assert.equal(plan.buyLeg.feeToman, 0);
-  assert.equal(plan.buyLeg.feeUsdtMicros, usdtToMicros(0.1));
-  assert.equal(plan.buyLeg.deltaIrtToman, -1_000_000);
-  assert.equal(plan.buyLeg.deltaUsdtMicros, usdtToMicros(9.9));
-
-  // Sell with a USDT-denominated fee: give up 2% more USDT, receive full proceeds.
-  assert.equal(plan.sellLeg.feeToman, 0);
-  assert.equal(plan.sellLeg.feeUsdtMicros, usdtToMicros(0.2));
-  assert.equal(plan.sellLeg.deltaUsdtMicros, -usdtToMicros(10.2));
-  assert.equal(plan.sellLeg.deltaIrtToman, 1_050_000);
-  assert.equal(plan.totalFeeToman, 0);
-  assert.equal(plan.totalFeeUsdtMicros, usdtToMicros(0.3));
+  // 25 × 102,000 = 2,550,000 toman proceeds; 0.35% of 25 USDT = 0.0875 USDT.
+  assert.equal(plan.sellLeg.settlement.feeAsset, "USDT");
+  assert.equal(plan.sellLeg.settlement.debitMode, "ADD_TO_DEBIT");
+  assert.equal(plan.sellLeg.notionalToman, 2_550_000);
+  assert.equal(plan.sellLeg.feeToman, 0, "the sell fee is never taken in IRT");
+  assert.equal(plan.sellLeg.feeUsdtMicros, usdtToMicros(0.0875));
+  assert.equal(
+    plan.sellLeg.deltaUsdtMicros,
+    -usdtToMicros(25.0875),
+    "USDT debit is quantity plus fee"
+  );
+  assert.equal(plan.sellLeg.deltaIrtToman, 2_550_000, "full IRT proceeds are credited");
 });
 
-await test("Phase 6 blocks execution when the fee currency is unknown", () => {
-  const unknownBasis = planFill({
-    buySourceId: "nobitex",
-    sellSourceId: "bitpin",
-    sizeUsdt: 25,
-    buyVwapToman: 100_000,
-    sellVwapToman: 102_000,
-    buyFeeBps: 25,
-    sellFeeBps: 35,
-    buyFeeBasis: "QUOTE_IRT",
-    sellFeeBasis: "UNKNOWN" as FeeBasis,
-    slippageBufferToman: 0
-  });
-  assert.equal(unknownBasis.ok, false);
-  if (unknownBasis.ok) return;
-  assert.equal(unknownBasis.code, "fee_basis_unknown");
+await test("Phase 6 round trip: IRT PnL is gross spread minus the buy fee, USDT falls by the sell fee", () => {
+  const plan = confirmedFill();
+  assert.equal(plan.ok, true);
+  if (!plan.ok) return;
 
-  // An unknown fee value blocks it too, and separately.
-  const unknownFee = planFill({
-    buySourceId: "nobitex",
-    sellSourceId: "wallex",
-    sizeUsdt: 25,
-    buyVwapToman: 100_000,
-    sellVwapToman: 102_000,
-    buyFeeBps: null,
-    sellFeeBps: 35,
-    buyFeeBasis: "QUOTE_IRT",
-    sellFeeBasis: "QUOTE_IRT",
-    slippageBufferToman: 0
-  });
-  assert.equal(unknownFee.ok, false);
-  if (!unknownFee.ok) assert.equal(unknownFee.code, "fee_unknown");
+  assert.equal(plan.grossSpreadToman, 50_000);
+  assert.equal(plan.netPnlToman, 50_000 - 6_250, "gross spread minus the buy-side IRT fee");
+  assert.equal(plan.netPnlToman, 43_750);
+  assert.equal(plan.netPnlAfterBufferToman, 42_750);
+  assert.equal(plan.totalFeeToman, 6_250, "only the buy side pays an IRT fee");
+  assert.equal(plan.totalFeeUsdtMicros, usdtToMicros(0.0875), "only the sell side pays a USDT fee");
+  assert.equal(
+    plan.usdtDriftMicros,
+    -usdtToMicros(0.0875),
+    "total USDT decreases by exactly the sell-side fee"
+  );
+});
 
-  // Only venues with a verified account have an established basis.
-  assert.equal(PAPER_FEE_BASIS.nobitex, "QUOTE_IRT");
-  for (const id of ["bitpin", "abantether", "ramzinex", "tetherland", "bit24", "arzinja"]) {
-    assert.equal(PAPER_FEE_BASIS[id as ShadowSourceId], "UNKNOWN");
+await test("Phase 6 requires enough USDT for quantity plus the sell fee", () => {
+  const plan = confirmedFill();
+  assert.equal(plan.ok, true);
+  if (!plan.ok) return;
+
+  // Exactly the quantity, with nothing left for the fee: must be blocked.
+  const exactlyQuantity = paperBalances({ wallex: [20_000_000, 25] });
+  const snapshot = JSON.stringify(exactlyQuantity);
+  const short = applyFill(plan, exactlyQuantity);
+  assert.equal(short.ok, false, "25 USDT cannot cover 25 USDT plus the fee");
+  if (!short.ok) {
+    assert.equal(short.code, "insufficient_usdt");
+    assert.equal(short.requiredRebalance?.sourceId, "wallex");
+    assert.equal(short.requiredRebalance?.usdtMicrosShort, usdtToMicros(0.0875));
   }
+  assert.equal(JSON.stringify(exactlyQuantity), snapshot, "a blocked fill mutates nothing");
+
+  // One more micro-unit than quantity plus fee is enough.
+  const justEnough = paperBalances({ wallex: [20_000_000, 25.0875] });
+  const ok = applyFill(plan, justEnough);
+  assert.equal(ok.ok, true);
+  if (ok.ok) {
+    assert.equal(ok.balancesAfter.find((b) => b.sourceId === "wallex")?.usdtMicros, 0);
+  }
+});
+
+await test("Phase 6 stores settlement per venue and per side, never as one fee currency", () => {
+  // The confirmed rule is mixed: IRT on the buy side, USDT on the sell side.
+  const buy = settlementFor("nobitex", "buy");
+  const sell = settlementFor("nobitex", "sell");
+  assert.equal(buy.feeAsset, "IRT");
+  assert.equal(sell.feeAsset, "USDT");
+  assert.notEqual(buy.feeAsset, sell.feeAsset, "the two sides are not one currency");
+  assert.equal(buy.provenance, "ADMIN_CONFIRMED");
+  assert.equal(sell.provenance, "ADMIN_CONFIRMED");
+
+  for (const id of ["nobitex", "wallex", "tabdeal"] as const) {
+    assert.equal(settlementUsable(settlementFor(id, "buy")), true);
+    assert.equal(settlementUsable(settlementFor(id, "sell")), true);
+  }
+  // Unknown venues remain blocked on both sides.
+  for (const id of ["bitpin", "abantether", "ramzinex", "tetherland", "bit24", "arzinja"] as const) {
+    assert.equal(PAPER_FEE_SETTLEMENT[id].buy.provenance, "UNKNOWN");
+    assert.equal(settlementUsable(settlementFor(id, "buy")), false);
+    assert.equal(settlementUsable(settlementFor(id, "sell")), false);
+  }
+
+  // A fee can only be added to the debit in the asset that side actually pays.
+  assert.equal(settlementCoherent(BUY_SETTLEMENT, "buy"), true);
+  assert.equal(settlementCoherent(SELL_SETTLEMENT, "sell"), true);
+  assert.equal(settlementCoherent(SELL_SETTLEMENT, "buy"), false);
+  assert.equal(settlementCoherent(BUY_SETTLEMENT, "sell"), false);
+});
+
+await test("Phase 6 blocks when settlement is unknown or incoherent", () => {
+  const unknown = confirmedFill({
+    sellSettlement: { feeAsset: "UNKNOWN", debitMode: "UNKNOWN", provenance: "UNKNOWN" }
+  });
+  assert.equal(unknown.ok, false);
+  if (!unknown.ok) assert.equal(unknown.code, "fee_settlement_unknown");
+
+  // Confirmed, but the asset does not match the side that pays.
+  const incoherent = confirmedFill({
+    sellSettlement: { feeAsset: "IRT", debitMode: "ADD_TO_DEBIT", provenance: "ADMIN_CONFIRMED" }
+  });
+  assert.equal(incoherent.ok, false);
+  if (!incoherent.ok) assert.equal(incoherent.code, "fee_settlement_unsupported");
+
+  // An unknown fee value is still its own, separate block.
+  const noFee = confirmedFill({ buyFeeBps: null });
+  assert.equal(noFee.ok, false);
+  if (!noFee.ok) assert.equal(noFee.code, "fee_unknown");
+});
+
+await test("Phase 6 reconciles the IRT and USDT ledgers independently", () => {
+  const before = paperBalances();
+  const plan = confirmedFill();
+  assert.equal(plan.ok, true);
+  if (!plan.ok) return;
+
+  const applied = applyFill(plan, before);
+  assert.equal(applied.ok, true);
+  if (!applied.ok) return;
+  const after = before.map((b) => applied.balancesAfter.find((x) => x.sourceId === b.sourceId) ?? b);
+
+  const rec = reconcilePaperLedgers(before, after, [plan]);
+  assert.equal(rec.irtBalanced, true, "the IRT ledger reconciles on its own");
+  assert.equal(rec.usdtBalanced, true, "the USDT ledger reconciles on its own");
+  assert.equal(rec.irtDelta, 43_750);
+  assert.equal(rec.expectedIrtDelta, 43_750);
+  assert.equal(rec.usdtMicrosDelta, -usdtToMicros(0.0875));
+  assert.equal(rec.expectedUsdtMicrosDelta, -usdtToMicros(0.0875));
+
+  // The two assets never net against each other.
+  assert.notEqual(rec.irtDelta, 0);
+  assert.notEqual(rec.usdtMicrosDelta, 0);
+
+  // Two round trips reconcile just as exactly as one.
+  const second = confirmedFill({ sizeUsdt: 10 });
+  assert.equal(second.ok, true);
+  if (!second.ok) return;
+  const applied2 = applyFill(second, after);
+  assert.equal(applied2.ok, true);
+  if (!applied2.ok) return;
+  const after2 = after.map((b) => applied2.balancesAfter.find((x) => x.sourceId === b.sourceId) ?? b);
+  const rec2 = reconcilePaperLedgers(before, after2, [plan, second] as FillPlan[]);
+  assert.equal(rec2.irtBalanced, true);
+  assert.equal(rec2.usdtBalanced, true);
 });
 
 await test("Phase 6 accounting conserves the book: only fees leave it", () => {
   const before = paperBalances();
-  const plan = planFill({
-    buySourceId: "nobitex",
-    sellSourceId: "wallex",
-    sizeUsdt: 25,
-    buyVwapToman: 100_000,
-    sellVwapToman: 102_000,
-    buyFeeBps: 25,
-    sellFeeBps: 35,
-    buyFeeBasis: "QUOTE_IRT",
-    sellFeeBasis: "QUOTE_IRT",
-    slippageBufferToman: 1_000
-  });
+  const plan = confirmedFill();
   assert.equal(plan.ok, true);
   if (!plan.ok) return;
 
@@ -1898,33 +1976,22 @@ await test("Phase 6 accounting conserves the book: only fees leave it", () => {
   const usdtBefore = before.reduce((s, b) => s + b.usdtMicros, 0);
   const usdtAfter = after.reduce((s, b) => s + b.usdtMicros, 0);
 
-  // Toman changes by exactly the round-trip result; USDT is unchanged in total
-  // because the buy adds what the sell removes. No money appears from nowhere.
+  // Toman changes by exactly the round-trip result, and USDT falls by exactly
+  // the sell-side fee. Each ledger moves only by its own fee — no phantom money.
   assert.equal(irtAfter - irtBefore, plan.netPnlToman);
-  assert.equal(usdtAfter - usdtBefore, 0);
-  assert.equal(plan.usdtDriftMicros, 0);
+  assert.equal(usdtAfter - usdtBefore, -usdtToMicros(0.0875));
+  assert.equal(plan.usdtDriftMicros, -usdtToMicros(0.0875));
 
-  // Inventory moved between venues even though the total did not.
+  // Inventory moved between venues; the buy venue received the full quantity.
   const nobitex = after.find((b) => b.sourceId === "nobitex")!;
   const wallex = after.find((b) => b.sourceId === "wallex")!;
   assert.equal(microsToUsdt(nobitex.usdtMicros), 125);
-  assert.equal(microsToUsdt(wallex.usdtMicros), 75);
+  assert.equal(microsToUsdt(wallex.usdtMicros), 74.9125);
   assert.ok(portfolioValueToman(after, PX) > 0);
 });
 
 await test("Phase 6 makes no balance change when either leg cannot be funded", () => {
-  const plan = planFill({
-    buySourceId: "nobitex",
-    sellSourceId: "wallex",
-    sizeUsdt: 25,
-    buyVwapToman: 100_000,
-    sellVwapToman: 102_000,
-    buyFeeBps: 25,
-    sellFeeBps: 35,
-    buyFeeBasis: "QUOTE_IRT",
-    sellFeeBasis: "QUOTE_IRT",
-    slippageBufferToman: 0
-  });
+  const plan = confirmedFill({ slippageBufferToman: 0 });
   assert.equal(plan.ok, true);
   if (!plan.ok) return;
 
@@ -1953,18 +2020,7 @@ await test("Phase 6 makes no balance change when either leg cannot be funded", (
 });
 
 await test("Phase 6 refuses a round trip that is not net positive after the buffer", () => {
-  const plan = planFill({
-    buySourceId: "nobitex",
-    sellSourceId: "wallex",
-    sizeUsdt: 25,
-    buyVwapToman: 100_000,
-    sellVwapToman: 100_100,
-    buyFeeBps: 25,
-    sellFeeBps: 35,
-    buyFeeBasis: "QUOTE_IRT",
-    sellFeeBasis: "QUOTE_IRT",
-    slippageBufferToman: 1_000
-  });
+  const plan = confirmedFill({ sellVwapToman: 100_100 });
   assert.equal(plan.ok, false);
   if (!plan.ok) assert.equal(plan.code, "not_net_positive");
 });

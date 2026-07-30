@@ -33,38 +33,78 @@ export function microsToUsdt(micros: number): number {
   return Math.round(micros) / USDT_MICROS;
 }
 
-/**
- * Which currency a venue's taker fee is actually charged in.
- *  QUOTE_IRT — a percentage of the toman notional.
- *  BASE_USDT — a percentage of the USDT amount.
- *  UNKNOWN   — not established; execution is blocked rather than guessed.
- */
-export type FeeBasis = "QUOTE_IRT" | "BASE_USDT" | "UNKNOWN";
+/** Which asset a fee is actually settled in. */
+export type FeeAsset = "IRT" | "USDT" | "UNKNOWN";
 
 /**
- * Fee basis per venue.
- *
- * The three venues the desk holds accounts on charge the taker fee against the
- * toman notional, which is the same convention the Phase 2 economics already
- * use. Every venue without a verified account has no established basis and
- * stays UNKNOWN — a venue can have a published fee number and still not have a
- * confirmed basis, and in that case the engine must refuse to execute.
+ * How the fee moves relative to the leg.
+ *  ADD_TO_DEBIT        — the fee increases what this side pays.
+ *  DEDUCT_FROM_CREDIT  — the fee reduces what this side receives.
+ *  UNKNOWN             — not established; execution is blocked, never guessed.
  */
-export const PAPER_FEE_BASIS: Record<ShadowSourceId, FeeBasis> = {
-  nobitex: "QUOTE_IRT",
-  wallex: "QUOTE_IRT",
-  tabdeal: "QUOTE_IRT",
-  bitpin: "UNKNOWN",
-  abantether: "UNKNOWN",
-  ramzinex: "UNKNOWN",
-  tetherland: "UNKNOWN",
-  bit24: "UNKNOWN",
-  arzinja: "UNKNOWN"
+export type FeeDebitMode = "ADD_TO_DEBIT" | "DEDUCT_FROM_CREDIT" | "UNKNOWN";
+
+/** How one venue settles the fee on one side of a trade. */
+export type SideSettlement = {
+  feeAsset: FeeAsset;
+  debitMode: FeeDebitMode;
+  /** Only ADMIN_CONFIRMED settlement may execute. */
+  provenance: "ADMIN_CONFIRMED" | "UNKNOWN";
 };
 
-export function feeBasisFor(sourceId: ShadowSourceId): FeeBasis {
-  return PAPER_FEE_BASIS[sourceId] ?? "UNKNOWN";
+export type VenueSettlement = {
+  buy: SideSettlement;
+  sell: SideSettlement;
+};
+
+const UNKNOWN_SIDE: SideSettlement = {
+  feeAsset: "UNKNOWN",
+  debitMode: "UNKNOWN",
+  provenance: "UNKNOWN"
+};
+
+const UNKNOWN_VENUE: VenueSettlement = { buy: UNKNOWN_SIDE, sell: UNKNOWN_SIDE };
+
+/**
+ * Admin-confirmed settlement for the venues the desk holds accounts on.
+ *
+ * Buying USDT with IRT settles the fee in IRT on top of the cost, and the full
+ * purchased quantity arrives. Selling USDT for IRT settles the fee in USDT on
+ * top of the quantity sold, and the full proceeds arrive. The two sides are
+ * therefore NOT the same currency, which is why settlement is stored per venue
+ * and per side rather than as one global fee currency.
+ */
+const CONFIRMED_MIXED: VenueSettlement = {
+  buy: { feeAsset: "IRT", debitMode: "ADD_TO_DEBIT", provenance: "ADMIN_CONFIRMED" },
+  sell: { feeAsset: "USDT", debitMode: "ADD_TO_DEBIT", provenance: "ADMIN_CONFIRMED" }
+};
+
+/**
+ * Settlement per venue. A venue without a verified account has no confirmed
+ * settlement on either side and can never execute.
+ */
+export const PAPER_FEE_SETTLEMENT: Record<ShadowSourceId, VenueSettlement> = {
+  nobitex: CONFIRMED_MIXED,
+  wallex: CONFIRMED_MIXED,
+  tabdeal: CONFIRMED_MIXED,
+  bitpin: UNKNOWN_VENUE,
+  abantether: UNKNOWN_VENUE,
+  ramzinex: UNKNOWN_VENUE,
+  tetherland: UNKNOWN_VENUE,
+  bit24: UNKNOWN_VENUE,
+  arzinja: UNKNOWN_VENUE
+};
+
+/** Settlement for one side of one venue. UNKNOWN when never confirmed. */
+export function settlementFor(sourceId: ShadowSourceId, side: "buy" | "sell"): SideSettlement {
+  return (PAPER_FEE_SETTLEMENT[sourceId] ?? UNKNOWN_VENUE)[side];
 }
+
+export function settlementUsable(s: SideSettlement): boolean {
+  return s.provenance === "ADMIN_CONFIRMED" && s.feeAsset !== "UNKNOWN" && s.debitMode !== "UNKNOWN";
+}
+
+
 
 /** Virtual holdings on one venue. Integer only. */
 export type VenueBalance = {
@@ -77,7 +117,8 @@ export type PaperRejectionCode =
   | "same_venue"
   | "venue_not_executable"
   | "fee_unknown"
-  | "fee_basis_unknown"
+  | "fee_settlement_unknown"
+  | "fee_settlement_unsupported"
   | "stale_market_data"
   | "insufficient_depth"
   | "not_net_positive"
@@ -90,7 +131,8 @@ export const PAPER_REJECTION_FA: Record<PaperRejectionCode, string> = {
   same_venue: "خرید و فروش روی یک صرافی",
   venue_not_executable: "صرافی اجراپذیر نیست (حساب یا کارمزد)",
   fee_unknown: "کارمزد تأییدنشده",
-  fee_basis_unknown: "واحد کارمزد نامشخص است",
+  fee_settlement_unknown: "نحوهٔ تسویهٔ کارمزد (دارایی و سمت) تأیید نشده است",
+  fee_settlement_unsupported: "ترکیب دارایی و نحوهٔ کسر کارمزد برای این سمت معنا ندارد",
   stale_market_data: "دادهٔ بازار کهنه است",
   insufficient_depth: "عمق دفتر برای این حجم کافی نیست",
   not_net_positive: "سود خالص پس از کارمزد و بافر مثبت نیست",
@@ -107,7 +149,7 @@ export type LegPlan = {
   vwapToman: number;
   sizeUsdt: number;
   notionalToman: number;
-  feeBasis: FeeBasis;
+  settlement: SideSettlement;
   feeBps: number;
   feeToman: number;
   feeUsdtMicros: number;
@@ -124,8 +166,8 @@ export type FillInputs = {
   sellVwapToman: number;
   buyFeeBps: number | null;
   sellFeeBps: number | null;
-  buyFeeBasis: FeeBasis;
-  sellFeeBasis: FeeBasis;
+  buySettlement: SideSettlement;
+  sellSettlement: SideSettlement;
   /** Reported conservatism, not a cash movement. */
   slippageBufferToman: number;
 };
@@ -166,15 +208,29 @@ function reject(
 }
 
 /**
+ * Is this settlement coherent for the side it is applied to?
+ *
+ * A fee can only be ADDED to the debit when it is denominated in the asset that
+ * side actually pays; otherwise it has to come out of the credit. Anything else
+ * is not a settlement rule the broker will guess at.
+ */
+export function settlementCoherent(s: SideSettlement, side: "buy" | "sell"): boolean {
+  const debitAsset = side === "buy" ? "IRT" : "USDT";
+  return s.debitMode === "ADD_TO_DEBIT" ? s.feeAsset === debitAsset : s.feeAsset !== debitAsset;
+}
+
+/**
  * Buy leg: pay toman, receive USDT.
- * QUOTE_IRT adds the fee to what is paid; BASE_USDT takes it out of what arrives.
+ *
+ * Confirmed rule: the fee settles in IRT and is added to the debit, so the IRT
+ * debit is cost + fee and the FULL purchased quantity is credited.
  */
 function planBuyLeg(
   sourceId: ShadowSourceId,
   vwapToman: number,
   sizeUsdt: number,
   feeBps: number,
-  feeBasis: FeeBasis
+  settlement: SideSettlement
 ): LegPlan {
   const notionalToman = mulPriceSizeToman(vwapToman, sizeUsdt);
   const sizeMicros = usdtToMicros(sizeUsdt);
@@ -183,14 +239,15 @@ function planBuyLeg(
   let deltaIrtToman: number;
   let deltaUsdtMicros: number;
 
-  if (feeBasis === "BASE_USDT") {
-    feeUsdtMicros = Math.round((sizeMicros * feeBps) / 10_000);
-    deltaIrtToman = -notionalToman;
-    deltaUsdtMicros = sizeMicros - feeUsdtMicros;
-  } else {
+  if (settlement.feeAsset === "IRT") {
     feeToman = feeFromBps(notionalToman, feeBps);
     deltaIrtToman = -(notionalToman + feeToman);
     deltaUsdtMicros = sizeMicros;
+  } else {
+    // USDT fee on a buy can only come out of what arrives.
+    feeUsdtMicros = Math.round((sizeMicros * feeBps) / 10_000);
+    deltaIrtToman = -notionalToman;
+    deltaUsdtMicros = sizeMicros - feeUsdtMicros;
   }
 
   return {
@@ -199,7 +256,7 @@ function planBuyLeg(
     vwapToman,
     sizeUsdt,
     notionalToman,
-    feeBasis,
+    settlement,
     feeBps,
     feeToman,
     feeUsdtMicros,
@@ -210,29 +267,30 @@ function planBuyLeg(
 
 /**
  * Sell leg: pay USDT, receive toman.
- * QUOTE_IRT takes the fee out of the proceeds; BASE_USDT adds it to what is sold.
+ *
+ * Under the confirmed rule the fee settles in USDT and is ADDED to the debit —
+ * the venue takes quantity plus fee — and the full IRT proceeds are credited.
+ * The venue must therefore hold quantity + fee, not just quantity.
  */
 function planSellLeg(
   sourceId: ShadowSourceId,
   vwapToman: number,
   sizeUsdt: number,
   feeBps: number,
-  feeBasis: FeeBasis
+  settlement: SideSettlement
 ): LegPlan {
   const notionalToman = mulPriceSizeToman(vwapToman, sizeUsdt);
   const sizeMicros = usdtToMicros(sizeUsdt);
   let feeToman = 0;
   let feeUsdtMicros = 0;
-  let deltaIrtToman: number;
-  let deltaUsdtMicros: number;
+  let deltaIrtToman = notionalToman;
+  let deltaUsdtMicros = -sizeMicros;
 
-  if (feeBasis === "BASE_USDT") {
+  if (settlement.feeAsset === "USDT") {
     feeUsdtMicros = Math.round((sizeMicros * feeBps) / 10_000);
     deltaUsdtMicros = -(sizeMicros + feeUsdtMicros);
-    deltaIrtToman = notionalToman;
-  } else {
+  } else if (settlement.feeAsset === "IRT") {
     feeToman = feeFromBps(notionalToman, feeBps);
-    deltaUsdtMicros = -sizeMicros;
     deltaIrtToman = notionalToman - feeToman;
   }
 
@@ -242,7 +300,7 @@ function planSellLeg(
     vwapToman,
     sizeUsdt,
     notionalToman,
-    feeBasis,
+    settlement,
     feeBps,
     feeToman,
     feeUsdtMicros,
@@ -258,8 +316,15 @@ function planSellLeg(
 export function planFill(input: FillInputs): FillPlan | FillRejection {
   if (input.buySourceId === input.sellSourceId) return reject("same_venue");
   if (input.buyFeeBps === null || input.sellFeeBps === null) return reject("fee_unknown");
-  if (input.buyFeeBasis === "UNKNOWN" || input.sellFeeBasis === "UNKNOWN") {
-    return reject("fee_basis_unknown");
+  // Settlement must be admin-confirmed on BOTH sides; unknown venues are blocked.
+  if (!settlementUsable(input.buySettlement) || !settlementUsable(input.sellSettlement)) {
+    return reject("fee_settlement_unknown");
+  }
+  if (
+    !settlementCoherent(input.buySettlement, "buy") ||
+    !settlementCoherent(input.sellSettlement, "sell")
+  ) {
+    return reject("fee_settlement_unsupported");
   }
   if (
     !Number.isFinite(input.buyVwapToman) ||
@@ -276,14 +341,14 @@ export function planFill(input: FillInputs): FillPlan | FillRejection {
     input.buyVwapToman,
     input.sizeUsdt,
     input.buyFeeBps,
-    input.buyFeeBasis
+    input.buySettlement
   );
   const sellLeg = planSellLeg(
     input.sellSourceId,
     input.sellVwapToman,
     input.sizeUsdt,
     input.sellFeeBps,
-    input.sellFeeBasis
+    input.sellSettlement
   );
 
   const grossSpreadToman = sellLeg.notionalToman - buyLeg.notionalToman;
@@ -373,4 +438,50 @@ export function portfolioValueToman(balances: VenueBalance[], valuationPriceToma
     (sum, b) => sum + b.irtToman + mulPriceSizeToman(valuationPriceToman, microsToUsdt(b.usdtMicros)),
     0
   );
+}
+
+/**
+ * Independent reconciliation of the two ledgers.
+ *
+ * The assets do not net against each other, so each is checked on its own:
+ *  - IRT: the change equals the gross spread minus the buy-side IRT fee, which
+ *    is exactly the sum of the fills' net PnL;
+ *  - USDT: the change equals minus the sell-side USDT fee, because the buy
+ *    credits the full quantity and the sell debits quantity plus fee.
+ */
+export function reconcilePaperLedgers(
+  before: VenueBalance[],
+  after: VenueBalance[],
+  plans: FillPlan[]
+): {
+  irtBalanced: boolean;
+  usdtBalanced: boolean;
+  irtDelta: number;
+  usdtMicrosDelta: number;
+  expectedIrtDelta: number;
+  expectedUsdtMicrosDelta: number;
+} {
+  const sumIrt = (b: VenueBalance[]) => b.reduce((s, x) => s + x.irtToman, 0);
+  const sumUsdt = (b: VenueBalance[]) => b.reduce((s, x) => s + x.usdtMicros, 0);
+
+  const irtDelta = sumIrt(after) - sumIrt(before);
+  const usdtMicrosDelta = sumUsdt(after) - sumUsdt(before);
+
+  const expectedIrtDelta = plans.reduce(
+    (s, p) => s + (p.grossSpreadToman - p.buyLeg.feeToman - p.sellLeg.feeToman),
+    0
+  );
+  const expectedUsdtMicrosDelta = plans.reduce(
+    (s, p) => s - (p.sellLeg.feeUsdtMicros + p.buyLeg.feeUsdtMicros),
+    0
+  );
+
+  return {
+    irtBalanced: irtDelta === expectedIrtDelta,
+    usdtBalanced: usdtMicrosDelta === expectedUsdtMicrosDelta,
+    irtDelta,
+    usdtMicrosDelta,
+    expectedIrtDelta,
+    expectedUsdtMicrosDelta
+  };
 }

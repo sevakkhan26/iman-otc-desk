@@ -645,22 +645,38 @@ then route key). Each lifecycle fills at most once per session, enforced both by
 the in-memory filled set and by a unique index on `(session, lifecycle)`, so a
 still-open opportunity is not re-filled every 30 seconds.
 
-### Accounting
+### Accounting — user-confirmed fee settlement rule
 
 Separate virtual IRT and USDT per venue; toman is integer and USDT is integer
-micros. Buy decreases IRT and increases USDT; sell decreases USDT and increases
-IRT. Fees are charged in the venue's own fee currency: `QUOTE_IRT` adds the fee
-to what is paid and takes it out of proceeds, `BASE_USDT` takes it out of the
-USDT received and adds it to the USDT sold. **`UNKNOWN` blocks execution** — only
-the three venues with verified accounts have an established basis.
+micros. Fee settlement is stored **per venue and per side** with an explicit
+`provenance`, never as one global fee currency, because the two sides settle in
+different assets:
+
+| Side | `feeAsset` | `debitMode` | Effect |
+| --- | --- | --- | --- |
+| BUY USDT with IRT | `IRT` | `ADD_TO_DEBIT` | IRT debit = VWAP cost + fee; **full** purchased quantity credited |
+| SELL USDT for IRT | `USDT` | `ADD_TO_DEBIT` | USDT debit = quantity + fee; **full** VWAP proceeds credited |
+
+Only `ADMIN_CONFIRMED` settlement executes, and only for the three venues with
+verified accounts. Unknown venues are `BLOCKED` on both sides. A settlement whose
+asset does not match the side that actually pays (fee added to the debit in an
+asset that side does not pay) is rejected as unsupported rather than guessed at.
+
+Consequences, each asserted by a test:
+
+* Total USDT decreases by **exactly** the sell-side USDT fee.
+* Total IRT PnL equals **gross spread minus the buy-side IRT fee**.
+* The two ledgers never net against each other and reconcile **independently**
+  (`reconcilePaperLedgers`).
+* The sell venue must hold **quantity + fee**, not just quantity; otherwise the
+  trade is blocked for insufficient balance and the shortfall is reported.
 
 Both legs are priced first and applied together; if either fails, nothing is
 written and the caller's book is not mutated. The database layer refuses a
 negative balance inside the transaction, so a partial fill cannot survive. The
-slippage buffer is reported and tightens the execution gate but moves no cash,
-which keeps conservation exact: total USDT is unchanged by a round trip and
-total toman changes by exactly the net result. Rebalancing stays simulated: when
-inventory is short the trade is blocked and the required transfer is reported.
+slippage buffer is reported and tightens the execution gate but moves no cash.
+Rebalancing stays simulated: when inventory is short the trade is blocked and
+the required transfer is reported.
 
 Every decision — filled or skipped — becomes an immutable ledger row carrying
 both legs, VWAPs, fees, basis, buffer, gross spread, net PnL and the rejection
@@ -689,8 +705,11 @@ the serialization queue, so a second private queue wrapper would deadlock.
 ### Verification
 
 typecheck clean · ESLint 0 errors (17 pre-existing warnings, none new) ·
-12/12 suites green, 316 assertions, 0 failures — 13 new engine/broker tests and
-9 new persistence tests · isolated standalone build succeeds and emits the
+12/12 suites green, 321 assertions, 0 failures — 17 engine/broker tests
+(including exact buy, sell, round-trip, insufficient-USDT-for-the-sell-fee and
+ledger-reconciliation cases) and 10 persistence tests (including restart,
+idempotency and independent ledger reconciliation) · isolated standalone build
+succeeds and emits the
 `paper` route · v4.8.0 collector, runner, instrumentation, capital engine and
 30-second cadence unchanged; `observation.id` is read only.
 

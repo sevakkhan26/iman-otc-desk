@@ -22,7 +22,15 @@ type SessionRow = {
   createdAt: string;
 };
 
-type Balance = { sourceId: string; irtToman: number; usdt: number; feeBasis: string };
+type Settlement = { feeAsset: string; debitMode: string; provenance: string };
+
+type Balance = {
+  sourceId: string;
+  irtToman: number;
+  usdt: number;
+  buySettlement: Settlement;
+  sellSettlement: Settlement;
+};
 
 type Trade = {
   id: string;
@@ -37,8 +45,10 @@ type Trade = {
   sellNotionalToman: number | null;
   buyFeeBps: number | null;
   sellFeeBps: number | null;
-  buyFeeBasis: string | null;
-  sellFeeBasis: string | null;
+  buyFeeAsset: string | null;
+  buyFeeDebitMode: string | null;
+  sellFeeAsset: string | null;
+  sellFeeDebitMode: string | null;
   feeTomanTotal: number | null;
   feeUsdtMicrosTotal: number | null;
   slippageBufferToman: number | null;
@@ -100,6 +110,26 @@ const MODE_FA: Record<SessionRow["mode"], string> = {
   PROVISIONAL_EVALUATION: "ارزیابی موقت (غیرنهایی)",
   APPROVED_PLAN: "طرح تأییدشدهٔ فاز ۵"
 };
+
+const ASSET_FA: Record<string, string> = { IRT: "تومان", USDT: "تتر", UNKNOWN: "نامشخص" };
+
+const MODE_FA_SHORT: Record<string, string> = {
+  ADD_TO_DEBIT: "افزوده به بدهکاری",
+  DEDUCT_FROM_CREDIT: "کسر از بستانکاری",
+  UNKNOWN: "نامشخص"
+};
+
+/** Settlement is shown per side; it is never collapsed into one fee currency. */
+function settlementText(s: Settlement | undefined) {
+  if (!s || s.provenance !== "ADMIN_CONFIRMED") {
+    return <span className="sa-reason">تأییدنشده — مسدود</span>;
+  }
+  return (
+    <span>
+      {ASSET_FA[s.feeAsset] ?? s.feeAsset} · {MODE_FA_SHORT[s.debitMode] ?? s.debitMode}
+    </span>
+  );
+}
 
 function toman(v: number | null | undefined): string {
   if (v === null || v === undefined || !Number.isFinite(v)) return "—";
@@ -331,7 +361,8 @@ export function PaperExecution() {
                     <th className="num">تتر</th>
                     <th className="num">تغییر تومان</th>
                     <th className="num">تغییر تتر</th>
-                    <th>واحد کارمزد</th>
+                    <th>تسویهٔ کارمزد خرید</th>
+                    <th>تسویهٔ کارمزد فروش</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -349,7 +380,8 @@ export function PaperExecution() {
                         <td className="num">
                           {d ? `${d.usdtDelta > 0 ? "+" : ""}${toFaDigits(d.usdtDelta.toFixed(2))}` : "—"}
                         </td>
-                        <td>{b.feeBasis === "UNKNOWN" ? <span className="sa-reason">نامشخص</span> : b.feeBasis}</td>
+                        <td>{settlementText(b.buySettlement)}</td>
+                        <td>{settlementText(b.sellSettlement)}</td>
                       </tr>
                     );
                   })}
@@ -485,13 +517,17 @@ export function PaperExecution() {
                     <div className="sa-line">
                       <span className="sa-line-label">کارمزد خرید</span>
                       <span className="sa-line-value">
-                        {toFaDigits((detail.buyFeeBps ?? 0) / 100)}٪ · {detail.buyFeeBasis ?? "—"}
+                        {toFaDigits((detail.buyFeeBps ?? 0) / 100)}٪ ·{" "}
+                        {ASSET_FA[detail.buyFeeAsset ?? "UNKNOWN"] ?? "نامشخص"} ·{" "}
+                        {MODE_FA_SHORT[detail.buyFeeDebitMode ?? "UNKNOWN"] ?? "نامشخص"}
                       </span>
                     </div>
                     <div className="sa-line">
                       <span className="sa-line-label">کارمزد فروش</span>
                       <span className="sa-line-value">
-                        {toFaDigits((detail.sellFeeBps ?? 0) / 100)}٪ · {detail.sellFeeBasis ?? "—"}
+                        {toFaDigits((detail.sellFeeBps ?? 0) / 100)}٪ ·{" "}
+                        {ASSET_FA[detail.sellFeeAsset ?? "UNKNOWN"] ?? "نامشخص"} ·{" "}
+                        {MODE_FA_SHORT[detail.sellFeeDebitMode ?? "UNKNOWN"] ?? "نامشخص"}
                       </span>
                     </div>
                     <div className="sa-line">

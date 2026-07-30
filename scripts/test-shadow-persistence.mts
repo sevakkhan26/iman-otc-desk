@@ -603,10 +603,10 @@ const PAPER_OPENING = [
 
 function paperFill(
   lifecycleId: string,
-  netPnl = 34_825,
+  netPnl = 43_750,
   balancesAfter: Array<{ sourceId: string; irtToman: number; usdtMicros: number }> = [
     { sourceId: "nobitex", irtToman: 20_000_000 - 2_506_250, usdtMicros: 125_000_000 },
-    { sourceId: "wallex", irtToman: 20_000_000 + 2_541_075, usdtMicros: 75_000_000 }
+    { sourceId: "wallex", irtToman: 20_000_000 + 2_550_000, usdtMicros: 74_912_500 }
   ]
 ) {
   return {
@@ -621,15 +621,20 @@ function paperFill(
     sellNotionalToman: 2_550_000,
     buyFeeBps: 25,
     sellFeeBps: 35,
-    buyFeeBasis: "QUOTE_IRT",
-    sellFeeBasis: "QUOTE_IRT",
-    feeTomanTotal: 15_175,
-    feeUsdtMicrosTotal: 0,
+    // Confirmed mixed settlement: IRT on the buy side, USDT on the sell side.
+    buyFeeAsset: "IRT",
+    buyFeeDebitMode: "ADD_TO_DEBIT",
+    buyFeeProvenance: "ADMIN_CONFIRMED",
+    sellFeeAsset: "USDT",
+    sellFeeDebitMode: "ADD_TO_DEBIT",
+    sellFeeProvenance: "ADMIN_CONFIRMED",
+    feeTomanTotal: 6_250,
+    feeUsdtMicrosTotal: 87_500,
     slippageBufferToman: 1_000,
     grossSpreadToman: 50_000,
     netPnlToman: netPnl,
     netPnlAfterBufferToman: netPnl - 1_000,
-    usdtDriftMicros: 0,
+    usdtDriftMicros: -87_500,
     balancesAfter
   };
 }
@@ -715,13 +720,16 @@ await test("paper fill commits both legs and the balance change together", async
 
   const balances = await paperRepo.loadPaperBalances(paperSessionId);
   assert.equal(balances.find((b) => b.sourceId === "nobitex")?.irtToman, 17_493_750);
-  assert.equal(balances.find((b) => b.sourceId === "wallex")?.usdtMicros, 75_000_000);
+  // Sell debited quantity plus the USDT fee: 100 − 25.0875 = 74.9125 USDT.
+  assert.equal(balances.find((b) => b.sourceId === "wallex")?.usdtMicros, 74_912_500);
 
   const stats = await paperRepo.loadPaperStats(paperSessionId);
   assert.equal(stats.filled, 1);
   assert.equal(stats.skipped, 1);
-  assert.equal(stats.realizedPnlToman, 34_825);
-  assert.equal(stats.feeTomanTotal, 15_175);
+  // IRT PnL is the gross spread minus the buy-side IRT fee only.
+  assert.equal(stats.realizedPnlToman, 43_750);
+  assert.equal(stats.feeTomanTotal, 6_250);
+  assert.equal(stats.feeUsdtMicrosTotal, 87_500);
   assert.ok(stats.blockReasons.some((r) => r.code === "insufficient_usdt"));
 
   // The skip is recorded with its rebalance requirement, not silently dropped.
@@ -750,6 +758,30 @@ await test("paper ledger refuses a duplicate fill of the same lifecycle", async 
 
   const filledIds = await paperRepo.loadFilledLifecycleIds(paperSessionId);
   assert.ok(filledIds.has("lc-1"));
+});
+
+await test("paper ledgers reconcile independently across the session", async () => {
+  const balances = await paperRepo.loadPaperBalances(paperSessionId);
+  const fills = await paperRepo.loadPaperLedger(paperSessionId, { outcome: "FILLED" });
+
+  const openingIrt = PAPER_OPENING.reduce((s, a) => s + a.irtToman, 0);
+  const openingUsdtMicros = PAPER_OPENING.reduce((s, a) => s + a.usdtUnits * 1_000_000, 0);
+  const irtNow = balances.reduce((s, b) => s + b.irtToman, 0);
+  const usdtNow = balances.reduce((s, b) => s + b.usdtMicros, 0);
+
+  const expectedIrtDelta = fills.reduce((s, f) => s + (f.netPnlToman ?? 0), 0);
+  const expectedUsdtDelta = -fills.reduce((s, f) => s + (f.feeUsdtMicrosTotal ?? 0), 0);
+
+  assert.equal(irtNow - openingIrt, expectedIrtDelta, "the IRT ledger reconciles on its own");
+  assert.equal(usdtNow - openingUsdtMicros, expectedUsdtDelta, "the USDT ledger reconciles on its own");
+
+  // The fee assets are recorded per side, not as one currency.
+  for (const f of fills) {
+    assert.equal(f.buyFeeAsset, "IRT");
+    assert.equal(f.sellFeeAsset, "USDT");
+    assert.equal(f.buyFeeProvenance, "ADMIN_CONFIRMED");
+    assert.equal(f.sellFeeProvenance, "ADMIN_CONFIRMED");
+  }
 });
 
 await test("paper session continues after a restart with no duplicate fills", async () => {

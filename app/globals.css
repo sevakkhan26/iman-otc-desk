@@ -5616,19 +5616,35 @@ table th {
 }
 
 /* Permanent trial-mode warning — compact by design. */
+/*
+ * Alert pill. The material comes from .glass-control (translucency, blur,
+ * specular highlight); this only adds the semantic amber as a tint layer and
+ * the border, which requirement 6 explicitly allows for alerts.
+ */
 .sa-warning {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 8px;
   align-self: start;
   padding: 7px 13px;
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--yellow) 40%, var(--line));
-  background: color-mix(in srgb, var(--yellow) 10%, var(--card));
+  border-color: color-mix(in srgb, var(--yellow) 40%, var(--line));
   color: var(--text);
   font-size: 12.5px;
   font-weight: 600;
   line-height: 1.5;
+}
+.sa-warning::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--yellow) 12%, transparent);
+  pointer-events: none;
+}
+.sa-warning > * {
+  position: relative;
 }
 .sa-warning-icon {
   color: var(--yellow);
@@ -6637,8 +6653,19 @@ table th {
 
 /* ── Shadow Arbitrage · Phase 8A shell and overview ───────────────────────── */
 /*
- * Every selector below is scoped under .sa-page or a .sa-* class that only the
- * Shadow tree renders, so the Dashboard and every other page are untouched.
+ * LAYOUT ONLY.
+ *
+ * Every surface here takes its material from the shared OTC glass primitives —
+ * `.panel` for cards, `.glass-tabbar` for the tab container, `.glass-control`
+ * for controls — defined in app/ios27-design-system.css and app/globals.css.
+ * Nothing below declares a background, border, box-shadow or backdrop-filter
+ * for a surface: doing so would fork the Liquid Glass system and make Shadow
+ * look like a different product. The only colour this section owns is the 3px
+ * semantic status rail and the badge/alert tints, which are explicitly not
+ * card material.
+ *
+ * Rule of thumb for anything added here: layout, sizing, spacing, grid — and
+ * nothing else.
  */
 .sa-page-booting {
   min-height: 40vh;
@@ -6666,34 +6693,17 @@ table th {
 .sa-tabs-wrap::-webkit-scrollbar {
   display: none;
 }
-/* Edge fade: a scroll affordance that appears only when there is more to see. */
-.sa-tabs-wrap::after,
-.sa-tabs-wrap::before {
-  content: "";
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  display: block;
-  flex: 0 0 22px;
-  align-self: stretch;
-  pointer-events: none;
-}
+/* Material comes from .glass-tabbar; this only sets the layout of the row. */
 .sa-tabs {
-  /* Desktop: the strip uses the full content width instead of hugging one end. */
   display: flex;
   width: 100%;
   align-items: center;
   justify-content: space-between;
   gap: 4px;
   padding: 4px;
-  border-radius: var(--radius-lg, 16px);
-  border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--card) 88%, transparent);
-  -webkit-backdrop-filter: saturate(160%) blur(10px);
-  backdrop-filter: saturate(160%) blur(10px);
-  box-shadow: var(--shadow-card, 0 1px 2px rgba(0, 0, 0, 0.04));
   white-space: nowrap;
 }
+/* An inactive tab is a plain control slot; the active one wears .glass-control. */
 .sa-tab {
   display: inline-flex;
   flex: 1 1 auto;
@@ -6702,25 +6712,21 @@ table th {
   gap: 6px;
   min-height: 34px;
   padding: 6px 13px;
-  scroll-snap-align: center;
-  border: 1px solid transparent;
-  border-radius: var(--radius-md, 12px);
-  background: transparent;
+  border: 0;
+  background: none;
+  border-radius: var(--radius-md);
   color: var(--muted);
   font-family: inherit;
   font-size: 12.5px;
   font-weight: 700;
   line-height: 1.5;
   white-space: nowrap;
+  scroll-snap-align: center;
   cursor: pointer;
-  transition:
-    background-color 140ms ease,
-    color 140ms ease,
-    border-color 140ms ease;
+  transition: color var(--duration, 160ms) var(--ease-out, ease);
 }
 .sa-tab:hover {
   color: var(--text);
-  background: color-mix(in srgb, var(--text) 5%, transparent);
 }
 .sa-tab:focus-visible {
   outline: 2px solid rgb(var(--brand) / 0.55);
@@ -6728,30 +6734,17 @@ table th {
 }
 .sa-tab.is-active {
   color: var(--text);
-  background: var(--card);
-  border-color: var(--line);
-  /* Restrained selection: a surface lift, not a colour fill. */
-  box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.06),
-    inset 0 0 0 1px rgb(var(--brand) / 0.18);
 }
-:root[data-theme="dark"] .sa-tab.is-active {
-  box-shadow:
-    0 2px 10px -6px rgba(0, 0, 0, 0.5),
-    inset 0 0 0 1px rgb(var(--brand) / 0.22);
-}
+/* Semantic badge — a badge, never card material. */
 .sa-tab-badge {
   min-width: 18px;
   padding: 0 5px;
   border-radius: 999px;
-  background: color-mix(in srgb, #d92d20 16%, transparent);
-  color: #b42318;
+  background: color-mix(in srgb, var(--red) 16%, transparent);
+  color: color-mix(in srgb, var(--red) 82%, var(--text));
   font-size: 10.5px;
   font-weight: 800;
   text-align: center;
-}
-:root[data-theme="dark"] .sa-tab-badge {
-  color: #ff9c92;
 }
 
 @media (max-width: 900px) {
@@ -6812,7 +6805,7 @@ table th {
   align-items: center;
   gap: 8px 14px;
   padding-inline-end: 14px;
-  border-inline-end: 1px solid var(--line-soft, var(--line));
+  border-inline-end: 1px solid var(--line-soft);
 }
 .sa-ov-status-tail {
   display: flex;
@@ -6843,14 +6836,11 @@ table th {
   font-weight: 600;
   color: var(--muted);
 }
-.sa-ov-status-actions {
-  margin-inline-start: auto;
-}
 
 .sa-ov-progress {
   margin-top: 10px;
   padding-top: 10px;
-  border-top: 1px solid var(--line-soft, var(--line));
+  border-top: 1px solid var(--line-soft);
 }
 .sa-ov-progress-head {
   display: flex;
@@ -6883,15 +6873,11 @@ table th {
   }
 }
 
+/* A KPI tile is a .panel; this only sizes it and hosts the status rail. */
 .sa-ov-card {
+  position: relative;
   min-width: 0;
   padding: 14px 16px;
-  border-radius: var(--radius-lg, 18px);
-  border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--card) 92%, transparent);
-  -webkit-backdrop-filter: saturate(140%) blur(8px);
-  backdrop-filter: saturate(140%) blur(8px);
-  box-shadow: var(--shadow-card, 0 1px 2px rgba(0, 0, 0, 0.04));
 }
 .sa-ov-card-label {
   font-size: 11.5px;
@@ -6929,6 +6915,7 @@ table th {
   font-weight: 700;
   color: var(--muted);
 }
+
 .sa-ov-card-hint {
   margin-top: 6px;
   font-size: 11.5px;
@@ -6937,14 +6924,9 @@ table th {
   overflow-wrap: anywhere;
 }
 /*
- * KPI cards keep a neutral glass border. Semantic meaning is carried by a small
- * accent rail on the inline start edge, so a wall of coloured outlines never
- * competes with the numbers themselves.
+ * Status rail: the ONE place this section owns colour on a card. It is a 3px
+ * bar, not a surface — the glass material underneath is untouched.
  */
-.sa-ov-card {
-  position: relative;
-  overflow: hidden;
-}
 .sa-ov-card-good::before,
 .sa-ov-card-warn::before,
 .sa-ov-card-danger::before,
@@ -6957,13 +6939,13 @@ table th {
   border-radius: 999px;
 }
 .sa-ov-card-good::before {
-  background: var(--green, #12805c);
+  background: var(--green);
 }
 .sa-ov-card-warn::before {
-  background: #b54708;
+  background: var(--yellow);
 }
 .sa-ov-card-danger::before {
-  background: #d92d20;
+  background: var(--red);
 }
 .sa-ov-card-muted::before {
   background: var(--line);
@@ -7026,9 +7008,6 @@ table th {
 .sa-ov-mini-list > div {
   min-width: 0;
 }
-.sa-ov-mini-wide {
-  grid-column: 1 / -1;
-}
 .sa-ov-mini-list dt {
   font-size: 11px;
   font-weight: 700;
@@ -7052,28 +7031,24 @@ table th {
   line-height: 1.9;
   color: var(--muted);
 }
+/* An alert, not card material — semantic tint is allowed here by design. */
 .sa-ov-disarmed {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
   padding: 6px 9px;
-  border-radius: var(--radius-md, 12px);
-  border: 1px solid color-mix(in srgb, #d92d20 40%, transparent);
-  background: color-mix(in srgb, #d92d20 9%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--red) 10%, transparent);
+  color: color-mix(in srgb, var(--red) 80%, var(--text));
   font-size: 11.5px;
   font-weight: 700;
-  color: #b42318;
   line-height: 1.7;
-}
-:root[data-theme="dark"] .sa-ov-disarmed {
-  color: #ff9c92;
-  background: color-mix(in srgb, #d92d20 18%, transparent);
 }
 
 /*
- * Tertiary action: the same restrained glass language as the other controls —
- * never a bright link colour competing with the data.
+ * Tertiary action: the layout of a .glass-control. The material — translucency,
+ * blur, border, specular highlight — comes from that shared primitive.
  */
 .sa-ov-action {
   display: inline-flex;
@@ -7081,24 +7056,17 @@ table th {
   gap: 4px;
   min-height: 26px;
   padding: 3px 9px;
-  border: 1px solid var(--line);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--card) 70%, transparent);
   color: var(--muted);
   font-family: inherit;
   font-size: 11.5px;
   font-weight: 700;
   line-height: 1.5;
   cursor: pointer;
-  transition:
-    color 140ms ease,
-    background-color 140ms ease,
-    border-color 140ms ease;
+  transition: color var(--duration, 160ms) var(--ease-out, ease);
 }
 .sa-ov-action:hover {
   color: var(--text);
-  background: var(--card);
-  border-color: color-mix(in srgb, var(--text) 18%, var(--line));
 }
 .sa-ov-action:focus-visible {
   outline: 2px solid rgb(var(--brand) / 0.55);
@@ -7121,7 +7089,8 @@ table th {
 
 /*
  * Dark mode: lift secondary text a step so hints stay readable on glass, while
- * staying clearly below the primary value in weight and size.
+ * staying clearly below the primary value in weight and size. Text only — the
+ * surface material is never touched here.
  */
 :root[data-theme="dark"] .sa-ov-card-hint,
 :root[data-theme="dark"] .sa-ov-card-label,
@@ -7131,15 +7100,12 @@ table th {
 :root[data-theme="dark"] .sa-ov-mini-empty,
 :root[data-theme="dark"] .sa-ov-progress-head,
 :root[data-theme="dark"] .sa-ov-action {
-  color: #d7dde8;
+  color: color-mix(in srgb, var(--text) 72%, var(--muted));
 }
 :root[data-theme="dark"] .sa-ov-foot,
 :root[data-theme="dark"] .sa-ratio-sep,
 :root[data-theme="dark"] .sa-ratio-whole {
-  color: #c3ccda;
-}
-:root[data-theme="dark"] .sa-ov-mini-list .sa-reason {
-  color: #e3b7a6;
+  color: color-mix(in srgb, var(--text) 52%, var(--muted));
 }
 
 /* Mobile rhythm: tighter spacing, larger touch targets. */
@@ -7183,10 +7149,9 @@ table th {
  * The page itself must never scroll horizontally; wide children scroll inside.
  *
  * .sa-page is a grid, and grid items default to `min-width: auto`, so a single
- * wide child — the tab strip is an inline-flex row — widens the whole track and
- * pushes the layout past the viewport. `minmax(0, 1fr)` plus `min-width: 0` on
- * the children is the actual fix; `overflow-x: clip` is only a backstop, and on
- * its own it would hide the problem instead of solving it.
+ * wide child — the tab strip is a flex row — widens the whole track and pushes
+ * the layout past the viewport. `minmax(0, 1fr)` plus `min-width: 0` on the
+ * children is the actual fix; `overflow-x: clip` is only a backstop.
  */
 .sa-page-tabbed {
   grid-template-columns: minmax(0, 1fr);

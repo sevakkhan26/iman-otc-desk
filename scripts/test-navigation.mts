@@ -542,25 +542,24 @@ await test("8A polish: the status panel is grouped, aligned and ends with progre
   assert.ok(p.slice(0, 200).includes("border-top"), "progress reads as its own row");
 });
 
-await test("8A polish: KPI cards use neutral glass borders with a small accent", () => {
+await test("8A polish: KPI cards reuse .panel and own only the status rail", () => {
+  const ov = read("src/components/shadowArbitrage/OverviewPanel.tsx");
+  // The tile IS a shared panel; Shadow adds layout classes on top.
+  assert.ok(ov.includes('className={`panel sa-panel sa-ov-card'), "KPI tile is a .panel");
+  assert.ok(ov.includes('"panel sa-panel sa-ov-card sa-ov-card-skeleton"'), "so is the skeleton");
+
   const css = phase8aCss();
-  // No tone sets a full coloured border any more.
-  for (const tone of ["good", "warn", "danger"]) {
-    const rule = css.slice(css.indexOf(`.sa-ov-card-${tone}::before {`));
-    assert.ok(rule.slice(0, 160).includes("background:"), `${tone} carries an accent rail`);
-    assert.equal(
-      new RegExp(`\\.sa-ov-card-${tone} \\{[^}]*border-color`).test(css),
-      false,
-      `${tone} must not paint the whole border`
-    );
+  // .sa-ov-card declares layout only — no surface of its own.
+  const card = css.slice(css.indexOf(".sa-ov-card {"), css.indexOf(".sa-ov-card-label {"));
+  for (const prop of ["background", "box-shadow", "backdrop-filter", "border:"]) {
+    assert.equal(card.includes(prop), false, `.sa-ov-card must not declare ${prop}`);
   }
-  // The accent is a thin rail, not a fill.
+  // Semantics live on a 3px rail, drawn from existing tokens.
   const rail = css.slice(css.indexOf(".sa-ov-card-good::before,"));
-  assert.ok(rail.slice(0, 400).includes("width: 3px"));
-  assert.ok(rail.slice(0, 400).includes("inset-inline-start: 0"));
-  // The card border itself stays neutral glass.
-  const card = css.slice(css.indexOf(".sa-ov-card {"));
-  assert.ok(card.slice(0, 400).includes("border: 1px solid var(--line)"));
+  assert.ok(rail.slice(0, 700).includes("width: 3px"));
+  assert.ok(rail.slice(0, 700).includes("background: var(--green)"));
+  assert.ok(rail.slice(0, 700).includes("background: var(--yellow)"));
+  assert.ok(rail.slice(0, 700).includes("background: var(--red)"));
 });
 
 await test("8A polish: secondary cards are dense and use existing data only", () => {
@@ -595,17 +594,24 @@ await test("8A polish: details actions are restrained glass with a chevron", () 
   assert.equal(secondary.includes("sa-linkish"), false, "no bright-blue links remain");
   assert.equal((ov.match(/<DetailsAction/g) ?? []).length, 3);
 
+  // The control material is the shared primitive, not a Shadow re-creation.
+  assert.ok(ov.includes('className="sa-ov-action glass-control"'), "action reuses .glass-control");
   const css = phase8aCss();
-  const action = css.slice(css.indexOf(".sa-ov-action {"));
-  assert.ok(action.slice(0, 500).includes("border: 1px solid var(--line)"));
-  assert.ok(action.slice(0, 500).includes("color: var(--muted)"), "tertiary, not accent-coloured");
+  const action = css.slice(css.indexOf(".sa-ov-action {"), css.indexOf(".sa-ov-action:hover"));
+  for (const prop of ["background", "box-shadow", "backdrop-filter", "border:"]) {
+    assert.equal(action.includes(prop), false, `.sa-ov-action must not declare ${prop}`);
+  }
+  assert.ok(action.includes("color: var(--muted)"), "tertiary, not accent-coloured");
   assert.ok(css.includes(".sa-ov-action:focus-visible"), "still keyboard visible");
 });
 
 await test("8A polish: dark secondary text is lifted without flattening hierarchy", () => {
   const css = phase8aCss();
   const dark = css.slice(css.indexOf(':root[data-theme="dark"] .sa-ov-card-hint'));
-  assert.ok(dark.slice(0, 700).includes("#d7dde8"), "hints are lifted in dark mode");
+  assert.ok(
+    dark.slice(0, 900).includes("color-mix(in srgb, var(--text) 72%, var(--muted))"),
+    "the dark lift is derived from existing tokens, not a new literal"
+  );
   for (const sel of [
     ".sa-ov-card-label",
     ".sa-ov-status-label",
@@ -633,6 +639,92 @@ await test("8A polish: mobile spacing tightens without shrinking tap targets", (
   assert.ok(block.includes("min-height: 36px"), "tabs stay tappable on touch");
   // Readability is preserved: the value only steps down one size.
   assert.ok(block.includes("font-size: 19px"));
+});
+
+/* ── Liquid Glass reuse: Shadow must not fork the OTC material system ────── */
+
+await test("8A glass: every Shadow surface reuses an existing shared primitive", () => {
+  const view = read("src/components/ShadowArbitrageView.tsx");
+  const tabs = read("src/components/shadowArbitrage/ShadowTabs.tsx");
+  const ov = read("src/components/shadowArbitrage/OverviewPanel.tsx");
+
+  // The primitives themselves live in the shared stylesheets, not in Shadow.
+  const system = read("app/ios27-design-system.css");
+  const globals = read("app/globals.css");
+  assert.ok(system.includes(".glass-control {"), "glass-control is a shared primitive");
+  assert.ok(system.includes(".glass-tabbar {"), "glass-tabbar is a shared primitive");
+  assert.ok(globals.includes(".panel {"), ".panel is the shared card material");
+
+  // Each listed Shadow surface opts into one of them.
+  const surfaces: Array<[string, string, string]> = [
+    ["warning banner", view, 'sa-warning sa-warning-compact glass-control'],
+    ["tab container", tabs, 'className="sa-tabs glass-tabbar"'],
+    ["active tab", tabs, 'is-active glass-control'],
+    ["KPI card", ov, 'panel sa-panel sa-ov-card'],
+    ["loading skeleton", ov, 'panel sa-panel sa-ov-card sa-ov-card-skeleton'],
+    ["details action", ov, 'sa-ov-action glass-control'],
+    ["empty state", ov, 'panel sa-panel sa-empty']
+  ];
+  for (const [name, src, needle] of surfaces) {
+    assert.ok(src.includes(needle), `${name} must reuse a shared primitive (${needle})`);
+  }
+  // Status panel and the three secondary cards are .panel already.
+  assert.ok(ov.includes('className="panel sa-panel sa-ov-status"'));
+  assert.equal((ov.match(/className="panel sa-panel sa-ov-mini"/g) ?? []).length, 3);
+});
+
+await test("8A glass: Shadow CSS declares no card material of its own", () => {
+  const css = phase8aCss();
+
+  // Nothing in the Shadow section may re-create the glass material.
+  assert.equal(/backdrop-filter\s*:/.test(css), false, "blur must come from the primitives");
+  assert.equal(/box-shadow\s*:/.test(css), false, "shadows must come from the primitives");
+
+  // The only backgrounds allowed are the reset, the status rail and semantic
+  // alert/badge tints — never a card surface.
+  const backgrounds = [...css.matchAll(/background\s*:\s*([^;]+);/g)].map((m) => m[1].trim());
+  const allowed = [
+    "none",
+    "var(--green)",
+    "var(--yellow)",
+    "var(--red)",
+    "var(--line)",
+    "color-mix(in srgb, var(--red) 16%, transparent)",
+    "color-mix(in srgb, var(--red) 10%, transparent)"
+  ];
+  for (const bg of backgrounds) {
+    assert.ok(allowed.includes(bg), `unexpected surface background in Shadow CSS: ${bg}`);
+  }
+
+  // No new colour literals: every colour is a token or a mix of tokens.
+  const hex = [...new Set([...css.matchAll(/#[0-9a-fA-F]{3,8}/g)].map((m) => m[0]))];
+  assert.deepEqual(hex, ["#000"], `only the mask stop may be a literal, found: ${hex.join(", ")}`);
+  assert.equal(/rgba?\(\s*\d/.test(css), false, "no raw rgb()/rgba() surface values");
+
+  // Borders that remain are structural dividers, not card outlines.
+  const borders = [...css.matchAll(/border[a-z-]*\s*:\s*([^;]+);/g)].map((m) => m[1].trim());
+  for (const b of borders) {
+    assert.ok(
+      b === "0" || b.includes("var(--line-soft)") || b.includes("999px") || b.includes("var(--radius"),
+      `unexpected border declaration: ${b}`
+    );
+  }
+});
+
+await test("8A glass: the page inherits the OTC workspace environment", () => {
+  // Shadow renders inside the same desk layout and Shell as every other page.
+  const layout = read("app/(desk)/layout.tsx");
+  assert.ok(layout.includes("<Shell>"), "the desk layout wraps children in Shell");
+  const page = read("app/(desk)/shadow-arbitrage/page.tsx");
+  assert.equal(page.includes("Shell"), false, "the page must not build its own shell");
+  assert.equal(page.includes("background"), false, "nor its own background");
+
+  // The Shadow page sets no page-level background, padding or width of its own:
+  // .content in the shared layout owns the workspace environment.
+  const css = phase8aCss();
+  const pageRule = css.slice(css.indexOf(".sa-page-tabbed {"), css.indexOf(".sa-page-tabbed > *"));
+  assert.equal(/background|padding|margin/.test(pageRule), false, "no bespoke workspace chrome");
+  assert.ok(read("app/globals.css").includes(".content {"), ".content owns the workspace padding");
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

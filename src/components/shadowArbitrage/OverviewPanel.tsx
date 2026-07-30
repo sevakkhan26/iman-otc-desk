@@ -73,7 +73,7 @@ function toman(value: number | null | undefined): string {
  */
 function DetailsAction({ onClick, label = "جزئیات" }: { onClick: () => void; label?: string }) {
   return (
-    <button type="button" className="sa-ov-action" onClick={onClick}>
+    <button type="button" className="sa-ov-action glass-control" onClick={onClick}>
       <span>{label}</span>
       <ChevronLeft aria-hidden="true" strokeWidth={2} />
     </button>
@@ -112,7 +112,8 @@ function Metric({
   title?: string;
 }) {
   return (
-    <div className={`sa-ov-card${tone ? ` sa-ov-card-${tone}` : ""}`} title={title}>
+    // .panel is the shared Liquid Glass card material used across the desk.
+    <div className={`panel sa-panel sa-ov-card${tone ? ` sa-ov-card-${tone}` : ""}`} title={title}>
       <div className="sa-ov-card-label">{label}</div>
       <div className="sa-ov-card-value">{value}</div>
       {hint ? <div className="sa-ov-card-hint">{hint}</div> : null}
@@ -122,7 +123,7 @@ function Metric({
 
 function SkeletonCard() {
   return (
-    <div className="sa-ov-card sa-ov-card-skeleton" aria-hidden="true">
+    <div className="panel sa-panel sa-ov-card sa-ov-card-skeleton" aria-hidden="true">
       <div className="sa-skeleton-line" style={{ width: "44%" }} />
       <div className="sa-skeleton-line" style={{ width: "68%", height: 20, marginTop: 10 }} />
       <div className="sa-skeleton-line" style={{ width: "56%", marginTop: 8 }} />
@@ -275,7 +276,7 @@ export function OverviewPanel({
 
           <button
             type="button"
-            className="sa-btn sa-btn-ghost"
+            className="sa-ov-action glass-control"
             onClick={onRefresh}
             disabled={loading}
             aria-busy={loading}
@@ -509,7 +510,7 @@ export function OverviewPanel({
       </div>
 
       {!loading && !hasAnyData && !error ? (
-        <div className="sa-empty">
+        <div className="panel sa-panel sa-empty">
           هنوز هیچ داده‌ای برای نمایش وجود ندارد. پس از نخستین چرخهٔ موفق جمع‌آوری، ارقام این صفحه
           پر می‌شوند.
         </div>

@@ -227,7 +227,8 @@ export function ShadowArbitrageView() {
       />
 
       {/* Permanent, compact, never hidden — on every tab. */}
-      <div className="sa-warning sa-warning-compact" role="status">
+      {/* Material from the shared .glass-control primitive; amber is a tint. */}
+      <div className="sa-warning sa-warning-compact glass-control" role="status">
         <span className="sa-warning-icon" aria-hidden="true">
           ⚠
         </span>

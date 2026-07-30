@@ -55,7 +55,8 @@ export function ShadowTabs({ active, onSelect, badges }: Props) {
 
   return (
     <div className="sa-tabs-wrap" ref={stripRef}>
-      <div className="sa-tabs" role="tablist" aria-label="بخش‌های آربیتراژ آزمایشی" onKeyDown={onKeyDown}>
+      {/* .glass-tabbar is the shared tab-container material. */}
+      <div className="sa-tabs glass-tabbar" role="tablist" aria-label="بخش‌های آربیتراژ آزمایشی" onKeyDown={onKeyDown}>
         {SHADOW_TABS.map((tab) => {
           const selected = tab.id === active;
           const badge = badges?.[tab.id];
@@ -69,7 +70,8 @@ export function ShadowTabs({ active, onSelect, badges }: Props) {
               aria-controls={`sa-panel-${tab.id}`}
               tabIndex={selected ? 0 : -1}
               title={tab.hintFa}
-              className={`sa-tab${selected ? " is-active" : ""}`}
+              /* The selected tab wears the shared .glass-control material. */
+              className={`sa-tab${selected ? " is-active glass-control" : ""}`}
               onClick={() => onSelect(tab.id)}
             >
               <span className="sa-tab-label">{tab.labelFa}</span>

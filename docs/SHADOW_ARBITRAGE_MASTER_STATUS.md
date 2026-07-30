@@ -933,3 +933,72 @@ repository, capital engine and config are byte-identical to v4.10.0.
 
 **Verification:** typecheck clean · ESLint 0 errors (17 pre-existing warnings) ·
 12/12 suites green, 383 assertions, 0 failures · isolated standalone build OK.
+
+---
+
+## 19. Phase 7A.2 — Production hardening (branch `shadow-phase7a2-production-hardening`, not merged)
+
+Backend/ops only, on top of `35451fb`. **Not merged, not deployed.** No UI or CSS
+change. No collector or Paper runtime change — the diff against `35451fb` for
+`src/lib/shadowArbitrage/` and both shadow repositories is empty.
+
+**Audit first.** Four ops scripts already existed. Nothing new was duplicated:
+`backup-production-db.sh` was hardened as the canonical path, `pg-backup.sh`
+was demoted to a documented legacy convenience, and `deploy-production.sh` and
+`pg-restore.sh` were left alone.
+
+**Probes.** `/api/health/live` (process only) and `/api/health/ready`
+(database reachable, every migration applied, collector lease held with a fresh
+heartbeat). Unauthenticated by necessity and deliberately thin: check names and
+short details only — a test asserts the payload contains no URL, credential,
+worker id or database string. Full diagnostics stay admin-only. Both share one
+module with `ops:check` rather than becoming a second health system.
+
+**Backup hardening.** Dump written to `*.dump.partial` and renamed only after
+`pg_restore --list` succeeds, so an interrupted run leaves nothing that looks
+finished; a trap removes the partial. SHA-256 sidecar plus `meta.json` written
+after publication. Existing artefacts are never overwritten. `set +x` and
+`umask 077`; no password variable is handled at all.
+
+**Restore drill.** `scripts/restore-drill.sh` verifies the checksum and the TOC
+*before* creating anything, then restores into `otc_restore_drill_<ts>_<pid>` —
+a name generated internally, never taken from the caller, re-validated against a
+strict pattern before every statement, and refused if it lacks the prefix or
+matches the live or a system database. It verifies migrations, row counts,
+`observation.id`, the Paper session and status, non-negative balances, ledger
+idempotency and paper PnL reconciliation, then drops only the drill database
+(including on interrupt). The live database is never connected to.
+
+**Scheduling.** `scripts/backup-scheduler.template` is fully commented and
+inactive, proposes no cadence, and contains no URL or credential — asserted by a
+test that also checks `deploy-production.sh` never installs it.
+`docs/OPS-BACKUP-RUNBOOK.md` covers backup, drill, scheduling, retention,
+monitoring and probes.
+
+**Storage report.** `pnpm ops:storage` reports rows, oldest/newest record and
+size per Shadow table plus observed growth per day. Every statement is a SELECT
+— a test strips comments and asserts no `DELETE`/`DROP`/`TRUNCATE`/`ALTER` is
+executed. `--retention` is dry-run only and refuses to assume a window.
+
+**Ops check.** `pnpm ops:check` exits 0/10/11/12/13/14/15/16 for healthy,
+database, stale collector, failed cycles, duplicate keys, backup, paper
+reconciliation and pending migrations. An unmeasured ledger fails rather than
+passes; an unset backup-age limit reports "not checked" instead of passing
+silently. No webhook, token or notification integration exists.
+
+**Verification:** typecheck clean · ESLint 0 errors · 13/13 suites green,
+399 assertions, 0 failures (new `test-ops-hardening` covers outage, pending
+migrations, stale lease, restart continuity, backup corruption, restore
+mismatch, template inactivity and credential absence) · isolated standalone
+build OK. `LIVE_EXECUTION_IMPLEMENTED` remains a compile-time false; no
+migration was added.
+
+### Requires production-host access (not done here)
+
+* Installing the scheduler template and choosing a cadence.
+* Switching the Compose healthcheck to `/api/health/ready` (documented, not
+  committed into the running Compose file — it changes restart behaviour).
+* Running the first real backup, checksum verification and restore drill against
+  production data.
+* Setting `OPS_MAX_BACKUP_AGE_HOURS` and wiring `ops:check` exit codes into the
+  desk's existing alerting.

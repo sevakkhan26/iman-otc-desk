@@ -17,7 +17,14 @@
 #   PGDATABASE  (default: otc_desk)
 #   BACKUP_DIR  default output directory if no arg given
 # =============================================================================
+#
+# NOTE (v7A.2): scripts/backup-production-db.sh is the hardened, canonical
+# backup path — atomic publication, checksum, integrity verification and a
+# refusal to overwrite. Prefer it. This script remains only for the simple
+# copy-to-another-PC workflow it was written for, and is not scheduled.
 set -euo pipefail
+set +x
+umask 077
 
 CONTAINER="${CONTAINER:-otc-postgres}"
 PGUSER="${PGUSER:-otc_app}"
@@ -32,6 +39,12 @@ fi
 mkdir -p "$BACKUP_DIR"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="${BACKUP_DIR%/}/otc_desk_${STAMP}.dump"
+
+# Never overwrite an existing backup.
+if [ -e "$OUT" ]; then
+  echo "[pg-backup] ERROR: $OUT already exists — refusing to overwrite" >&2
+  exit 1
+fi
 
 echo "[pg-backup] dumping $PGDATABASE from $CONTAINER → $OUT"
 docker exec -t "$CONTAINER" pg_dump -U "$PGUSER" -d "$PGDATABASE" -Fc --no-owner --no-acl >"$OUT"

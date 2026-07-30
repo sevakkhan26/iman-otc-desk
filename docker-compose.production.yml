@@ -7,6 +7,11 @@
 services:
   iman-otc-desk:
     environment:
+      # Shadow collector runs inside this web container (single-container design).
+      # Repeated here because production may compose from an external parent file
+      # where this repo's docker-compose.yml is not used.
+      SHADOW_COLLECTOR_ENABLED: "true"
+      SHADOW_POLL_MS: "30000"
       PRICE_ALERTS_STORAGE: file
       PRICE_ALERTS_DATA_DIR: /app/data/price-alerts
       PRICE_ALERTS_DATA_FILE: /app/data/price-alerts/price-alerts.json

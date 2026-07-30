@@ -25,11 +25,22 @@ function log(message: string, extra?: unknown) {
   else console.log(line);
 }
 
+/**
+ * Enabled by default in the production server process, because the collector is
+ * part of the app now. An explicit env value can still force it either way.
+ *
+ * Defaulting on removes a dependency on Compose env plumbing: the production
+ * host may compose this service from an external parent file plus
+ * docker-compose.production.yml, in which case variables added to this repo's
+ * docker-compose.yml never reach the container.
+ */
 function enabled(): boolean {
-  const v = (process.env.SHADOW_COLLECTOR_ENABLED ?? "").trim().toLowerCase();
-  if (v === "true" || v === "1" || v === "yes") return true;
-  // Backwards-compatible flags.
-  return process.env.SHADOW_COLLECTOR === "1" || process.env.SHADOW_LOCAL_COLLECTOR === "1";
+  const raw = (process.env.SHADOW_COLLECTOR_ENABLED ?? "").trim().toLowerCase();
+  if (raw === "false" || raw === "0" || raw === "no" || raw === "off") return false;
+  if (raw === "true" || raw === "1" || raw === "yes" || raw === "on") return true;
+  if (process.env.SHADOW_COLLECTOR === "1" || process.env.SHADOW_LOCAL_COLLECTOR === "1") return true;
+  // No explicit setting: run in a production server process, stay off elsewhere.
+  return process.env.NODE_ENV === "production";
 }
 
 /** Process-level singleton: one collector per Node process, always. */
@@ -54,7 +65,14 @@ async function waitForDatabase(maxAttempts = 30): Promise<boolean> {
 }
 
 async function start(): Promise<void> {
-  if (!enabled()) return;
+  if (!enabled()) {
+    log("collector disabled by SHADOW_COLLECTOR_ENABLED");
+    return;
+  }
+  log(
+    `bootstrap: NODE_ENV=${process.env.NODE_ENV} NEXT_RUNTIME=${process.env.NEXT_RUNTIME} ` +
+      `SHADOW_COLLECTOR_ENABLED=${process.env.SHADOW_COLLECTOR_ENABLED ?? "(unset)"} pid=${process.pid}`
+  );
   if (g.__shadowCollector?.started) {
     log("collector already started in this process — ignoring duplicate bootstrap");
     return;

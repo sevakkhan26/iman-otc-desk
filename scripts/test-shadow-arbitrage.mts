@@ -47,6 +47,25 @@ import {
   venueUsableForNetProfit
 } from "../src/lib/shadowArbitrage/accounts.ts";
 import {
+  DEFAULT_CAPITAL_TOMAN,
+  buildOptimizedPlan,
+  classifyAllVenues,
+  classifyVenueForCapital,
+  estimateMonthlyRebalance,
+  simulateCapitalPlan,
+  smallestFundableSizeUsdt,
+  evaluateRecommendation,
+  planFingerprint,
+  readinessFingerprint,
+  splitIntegerByWeights,
+  usdtValueToman,
+  validateCapitalPlan,
+  type ApprovalRecord,
+  type VenueCapitalState,
+  type CapitalPlanInput,
+  type RouteEvidence
+} from "../src/lib/shadowArbitrage/capital.ts";
+import {
   isDeadLocalWorker,
   makeWorkerId,
   parseWorkerId
@@ -1051,6 +1070,614 @@ await test("Phase 4 surface excludes OMPFinex and never accepts credentials", ()
     "utf8"
   );
   assert.equal(/ompfinex/i.test(ui), false);
+});
+
+
+/* ── Phase 5 — capital allocation simulator (deterministic accounting) ────── */
+
+// Fixed clock so fee-freshness never drifts the expectations over time.
+const CAP_NOW = Date.parse("2026-07-30T00:00:00Z");
+const CAP_PRICE = 100_000;
+const TARGET_14D = 14 * 24 * 60 * 60_000;
+const capReadiness = () => buildAllReadiness([], CAP_NOW);
+
+const capPlan = (allocations: CapitalPlanInput["allocations"], total = 50_000_000): CapitalPlanInput => ({
+  totalCapitalToman: total,
+  valuationPriceToman: CAP_PRICE,
+  allocations,
+  mode: "MANUAL"
+});
+
+const CAP_ROUTES: RouteEvidence[] = [
+  {
+    routeKey: "nobitex->wallex@25",
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    sizeUsdt: 25,
+    samples: 100,
+    positiveNetSamples: 40,
+    positiveRawSamples: 80,
+    feeUnknown: false
+  },
+  {
+    routeKey: "wallex->nobitex@25",
+    buySourceId: "wallex",
+    sellSourceId: "nobitex",
+    sizeUsdt: 25,
+    samples: 50,
+    positiveNetSamples: 10,
+    positiveRawSamples: 30,
+    feeUnknown: false
+  },
+  {
+    routeKey: "bitpin->nobitex@25",
+    buySourceId: "bitpin",
+    sellSourceId: "nobitex",
+    sizeUsdt: 25,
+    samples: 30,
+    positiveNetSamples: 0,
+    positiveRawSamples: 20,
+    feeUnknown: true
+  }
+];
+
+const CAP_ALLOC: CapitalPlanInput["allocations"] = [
+  { sourceId: "nobitex", irtToman: 10_000_000, usdtUnits: 50 },
+  { sourceId: "wallex", irtToman: 5_000_000, usdtUnits: 100 }
+];
+
+const simulateCap = (plan: CapitalPlanInput, over: Partial<Parameters<typeof simulateCapitalPlan>[0]> = {}) =>
+  simulateCapitalPlan({
+    plan,
+    readiness: capReadiness(),
+    routes: CAP_ROUTES,
+    observation: {
+      status: "RUNNING",
+      successCoveragePercent: 99,
+      elapsedMs: 3 * 24 * 60 * 60_000,
+      targetDurationMs: TARGET_14D
+    },
+    observedWindowMs: 14 * 24 * 60 * 60_000,
+    perTransferCostToman: null,
+    perTransferCostConfirmed: false,
+    ...over
+  });
+
+await test("Phase 5 executable set is exactly the three verified venues", () => {
+  const states = classifyAllVenues(capReadiness());
+  const executable = states.filter((s) => s.executable).map((s) => s.sourceId).sort();
+  assert.deepEqual(executable, ["nobitex", "tabdeal", "wallex"]);
+  assert.equal(states.find((s) => s.sourceId === "arzinja")!.capitalClass, "REFERENCE_ONLY");
+  for (const id of ["bitpin", "abantether", "ramzinex", "tetherland", "bit24"]) {
+    const s = states.find((x) => x.sourceId === id)!;
+    assert.equal(s.capitalClass, "WHATIF_DISABLED");
+    assert.ok(s.blockingReason, `${id} must state why it is disabled`);
+  }
+  assert.equal(states.some((s) => /omp/i.test(s.sourceId) || /omp/i.test(s.nameFa)), false);
+});
+
+await test("Phase 5 stale fee evidence removes a venue from the executable set", () => {
+  const stale = new Date(CAP_NOW - 200 * 86_400_000).toISOString();
+  const readiness = buildAllReadiness(
+    [
+      {
+        sourceId: "nobitex",
+        takerFeeBps: 20,
+        feeTier: null,
+        sourceUrl: null,
+        confirmedBy: "admin",
+        confirmedAt: stale,
+        note: null
+      }
+    ],
+    CAP_NOW
+  );
+  const nobitex = classifyVenueForCapital(readiness.find((v) => v.sourceId === "nobitex")!);
+  assert.equal(nobitex.feeStale, true);
+  assert.equal(nobitex.executable, false);
+  assert.equal(nobitex.capitalClass, "WHATIF_DISABLED");
+});
+
+await test("Phase 5 portfolio conservation holds to the toman", () => {
+  const sim = simulateCap(capPlan(CAP_ALLOC));
+  assert.equal(sim.ok, true);
+  assert.equal(sim.allocatedToman, 30_000_000);
+  assert.equal(sim.unusedReserveToman, 20_000_000);
+  assert.equal(sim.allocatedToman + sim.unusedReserveToman, sim.totalCapitalToman);
+  assert.equal(sim.conservationResidualToman, 0);
+  const summed = sim.venues.reduce((s, v) => s + v.irtToman + v.usdtValueToman, 0);
+  assert.equal(summed, sim.allocatedToman);
+  assert.equal(usdtValueToman(50, CAP_PRICE), 5_000_000);
+});
+
+await test("Phase 5 rejects negative balances, duplicates and unknown venues", () => {
+  const neg = validateCapitalPlan(capPlan([{ sourceId: "nobitex", irtToman: -1, usdtUnits: 0 }]));
+  assert.equal(neg.ok, false);
+  assert.ok(neg.violations.some((v) => v.code === "negative_irt"));
+
+  const negUsdt = validateCapitalPlan(capPlan([{ sourceId: "nobitex", irtToman: 0, usdtUnits: -5 }]));
+  assert.ok(negUsdt.violations.some((v) => v.code === "negative_usdt"));
+
+  const dup = validateCapitalPlan(
+    capPlan([
+      { sourceId: "nobitex", irtToman: 1_000, usdtUnits: 0 },
+      { sourceId: "nobitex", irtToman: 1_000, usdtUnits: 0 }
+    ])
+  );
+  assert.ok(dup.violations.some((v) => v.code === "duplicate_venue"));
+
+  // OMPFinex must never be addressable from the Shadow simulator.
+  const omp = validateCapitalPlan(
+    capPlan([{ sourceId: "ompfinex" as never, irtToman: 1_000, usdtUnits: 0 }])
+  );
+  assert.equal(omp.ok, false);
+  assert.ok(omp.violations.some((v) => v.code === "unknown_venue"));
+});
+
+await test("Phase 5 refuses to over-allocate the portfolio", () => {
+  const sim = simulateCap(
+    capPlan([{ sourceId: "nobitex", irtToman: 40_000_000, usdtUnits: 200 }], 50_000_000)
+  );
+  assert.equal(sim.ok, false);
+  assert.ok(sim.violations.some((v) => v.code === "over_allocated"));
+  // A rejected plan must not emit metrics that look authoritative.
+  assert.equal(sim.concentration.status, "BLOCKED");
+  assert.equal(sim.opportunityCoveragePercent.status, "BLOCKED");
+  assert.equal(sim.venues.length, 0);
+});
+
+await test("Phase 5 integer weight split conserves the total exactly", () => {
+  const parts = splitIntegerByWeights(50_000_000, [1, 1, 1]);
+  assert.equal(parts.reduce((a, b) => a + b, 0), 50_000_000);
+  assert.deepEqual(splitIntegerByWeights(10, [1, 1, 1]), [4, 3, 3]);
+  assert.deepEqual(splitIntegerByWeights(100, [0, 0]), [0, 0]);
+  assert.deepEqual(splitIntegerByWeights(0, [3, 1]), [0, 0]);
+  // Deterministic: repeated calls give an identical split.
+  assert.deepEqual(splitIntegerByWeights(7, [5, 3, 1]), splitIntegerByWeights(7, [5, 3, 1]));
+});
+
+await test("Phase 5 optimized plan conserves capital and only funds executable venues", () => {
+  const opt = buildOptimizedPlan({
+    totalCapitalToman: DEFAULT_CAPITAL_TOMAN,
+    valuationPriceToman: CAP_PRICE,
+    readiness: capReadiness(),
+    routes: CAP_ROUTES
+  });
+  assert.equal(opt.status, "PROVISIONAL");
+  assert.equal(opt.basis, "OBSERVED_NET_POSITIVE");
+  const ids = opt.plan.allocations.map((a) => a.sourceId).sort();
+  assert.deepEqual(ids, ["nobitex", "tabdeal", "wallex"]);
+  for (const a of opt.plan.allocations) {
+    assert.ok(a.irtToman >= 0 && a.usdtUnits >= 0, "no negative virtual balance");
+  }
+  const allocated = opt.plan.allocations.reduce(
+    (s, a) => s + a.irtToman + usdtValueToman(a.usdtUnits, CAP_PRICE),
+    0
+  );
+  assert.equal(allocated, DEFAULT_CAPITAL_TOMAN, "optimizer must allocate exactly the capital");
+
+  const sim = simulateCap(opt.plan);
+  assert.equal(sim.conservationResidualToman, 0);
+  assert.equal(sim.unusedReserveToman, 0);
+});
+
+await test("Phase 5 optimizer honours an explicit reserve and never invents one", () => {
+  const withReserve = buildOptimizedPlan({
+    totalCapitalToman: 50_000_000,
+    valuationPriceToman: CAP_PRICE,
+    readiness: capReadiness(),
+    routes: CAP_ROUTES,
+    reservePercent: 20
+  });
+  const allocated = withReserve.plan.allocations.reduce(
+    (s, a) => s + a.irtToman + usdtValueToman(a.usdtUnits, CAP_PRICE),
+    0
+  );
+  assert.equal(allocated, 40_000_000);
+  const sim = simulateCap(withReserve.plan);
+  assert.equal(sim.unusedReserveToman, 10_000_000);
+  assert.equal(sim.conservationResidualToman, 0);
+});
+
+await test("Phase 5 optimizer returns nothing when no venue is executable", () => {
+  const stale = new Date(CAP_NOW - 400 * 86_400_000).toISOString();
+  const readiness = buildAllReadiness(
+    ["nobitex", "wallex", "tabdeal"].map((sourceId) => ({
+      sourceId,
+      takerFeeBps: 20,
+      feeTier: null,
+      sourceUrl: null,
+      confirmedBy: "admin",
+      confirmedAt: stale,
+      note: null
+    })),
+    CAP_NOW
+  );
+  const opt = buildOptimizedPlan({
+    totalCapitalToman: 50_000_000,
+    valuationPriceToman: CAP_PRICE,
+    readiness,
+    routes: CAP_ROUTES
+  });
+  assert.equal(opt.basis, "NONE");
+  assert.deepEqual(opt.plan.allocations, []);
+  assert.equal(opt.status, "PROVISIONAL");
+});
+
+await test("Phase 5 opportunity coverage counts only routes the allocation can fund", () => {
+  const sim = simulateCap(capPlan(CAP_ALLOC));
+  assert.equal(sim.coverage.observedRouteSamples, 180);
+  assert.equal(sim.coverage.executableRouteSamples, 150);
+  assert.equal(sim.coverage.fundedRouteSamples, 150);
+  assert.equal(sim.opportunityCoveragePercent.status, "KNOWN");
+  assert.equal(
+    (sim.opportunityCoveragePercent as { status: "KNOWN"; value: number }).value,
+    83.33
+  );
+  assert.equal((sim.coverage.fundedOfExecutablePercent as { value: number }).value, 100);
+  // The fee-unknown route is reported as unfunded, never silently dropped.
+  assert.ok(sim.coverage.unfundedTopReasons.some((r) => r.samples === 30));
+});
+
+await test("Phase 5 thin allocation cannot fund a route it has no inventory for", () => {
+  // Enough toman to buy, but no USDT anywhere to deliver the sell leg.
+  const sim = simulateCap(capPlan([{ sourceId: "nobitex", irtToman: 10_000_000, usdtUnits: 0 }]));
+  assert.equal(sim.coverage.fundedRouteSamples, 0);
+  assert.equal((sim.opportunityCoveragePercent as { value: number }).value, 0);
+  assert.ok(
+    sim.coverage.unfundedTopReasons.some((r) => r.reasonFa.includes("تتری")),
+    "must name the missing USDT leg"
+  );
+  assert.equal(smallestFundableSizeUsdt(sim.venues, CAP_PRICE), null);
+});
+
+await test("Phase 5 coverage is UNKNOWN when the observation has no route data", () => {
+  const sim = simulateCap(capPlan(CAP_ALLOC), { routes: [] });
+  assert.equal(sim.opportunityCoveragePercent.status, "UNKNOWN");
+  assert.equal(sim.coverage.fundedOfExecutablePercent.status, "UNKNOWN");
+  assert.ok(sim.notesFa.some((n) => n.includes("پوشش فرصت‌ها")));
+});
+
+await test("Phase 5 monthly rebalancing cost stays UNKNOWN without a confirmed transfer cost", () => {
+  const sim = simulateCap(capPlan(CAP_ALLOC));
+  assert.equal(sim.rebalance.costToman.status, "UNKNOWN");
+  assert.equal(sim.rebalance.expectedMonthlyRebalances.status, "KNOWN");
+  assert.ok(sim.notesFa.some((n) => n.includes("هزینهٔ بازتوازن")));
+
+  // Even a provisional zero must not become a printed number.
+  const provisional = estimateMonthlyRebalance({
+    perTransferCostToman: 0,
+    perTransferCostConfirmed: false,
+    observedWindowMs: 14 * 24 * 60 * 60_000,
+    fundedSamples: 150
+  });
+  assert.equal(provisional.costToman.status, "UNKNOWN");
+});
+
+await test("Phase 5 monthly rebalancing cost is computed once a cost is confirmed", () => {
+  const est = estimateMonthlyRebalance({
+    perTransferCostToman: 1_000,
+    perTransferCostConfirmed: true,
+    observedWindowMs: 14 * 24 * 60 * 60_000,
+    fundedSamples: 150
+  });
+  assert.equal(est.expectedMonthlyRebalances.status, "KNOWN");
+  assert.equal((est.expectedMonthlyRebalances as { value: number }).value, 321);
+  assert.equal((est.costToman as { value: number }).value, 321_000);
+
+  // No observation window means no extrapolation, so no cost either.
+  const noWindow = estimateMonthlyRebalance({
+    perTransferCostToman: 1_000,
+    perTransferCostConfirmed: true,
+    observedWindowMs: 0,
+    fundedSamples: 150
+  });
+  assert.equal(noWindow.costToman.status, "UNKNOWN");
+});
+
+await test("Phase 5 utilization and concentration ignore non-executable venues correctly", () => {
+  const sim = simulateCap(
+    capPlan([
+      { sourceId: "nobitex", irtToman: 10_000_000, usdtUnits: 50 },
+      { sourceId: "wallex", irtToman: 5_000_000, usdtUnits: 100 },
+      { sourceId: "bitpin", irtToman: 10_000_000, usdtUnits: 0 }
+    ])
+  );
+  assert.equal(sim.allocatedToman, 40_000_000);
+  assert.equal(sim.idleOnDisabledVenuesToman, 10_000_000);
+  // 30M of 50M sits on executable venues.
+  assert.equal(sim.capitalUtilizationPercent, 60);
+  assert.equal(sim.unusedReserveToman, 10_000_000);
+  assert.equal(sim.concentration.status, "KNOWN");
+  const c = (sim.concentration as { value: { hhi: number; venueCount: number } }).value;
+  assert.equal(c.venueCount, 3);
+  // Three equal-ish shares must not read as a concentrated book.
+  assert.ok(c.hhi > 0 && c.hhi <= 10_000);
+  assert.ok(sim.notesFa.some((n) => n.includes("اجراپذیر نیستند")));
+});
+
+await test("Phase 5 concentration is UNKNOWN when nothing is allocated", () => {
+  const sim = simulateCap(capPlan([]));
+  assert.equal(sim.ok, true);
+  assert.equal(sim.concentration.status, "UNKNOWN");
+  assert.equal(sim.unusedReserveToman, 50_000_000);
+  assert.equal(sim.capitalUtilizationPercent, 0);
+  assert.equal(sim.conservationResidualToman, 0);
+});
+
+await test("Phase 5 gate: below 14 days the recommendation is PROVISIONAL and locked", () => {
+  const sim = simulateCap(capPlan(CAP_ALLOC), {
+    observation: {
+      status: "RUNNING",
+      successCoveragePercent: 100,
+      elapsedMs: TARGET_14D - 1,
+      targetDurationMs: TARGET_14D
+    }
+  });
+  const r = sim.recommendation;
+  assert.equal(r.status, "PROVISIONAL");
+  assert.equal(r.locked, true);
+  assert.equal(r.daysGatePassed, false);
+  assert.equal(r.coverageGatePassed, true);
+  assert.equal(r.eligibleForApproval, false);
+  assert.ok(r.reasonFa.includes("دورهٔ مشاهده کامل نشده"));
+});
+
+await test("Phase 5 gate: at exactly 14 days with 80% it unlocks for admin review", () => {
+  const sim = simulateCap(capPlan(CAP_ALLOC), {
+    observation: {
+      status: "COMPLETED",
+      successCoveragePercent: 80,
+      elapsedMs: TARGET_14D,
+      targetDurationMs: TARGET_14D
+    }
+  });
+  const r = sim.recommendation;
+  assert.equal(r.daysGatePassed, true);
+  assert.equal(r.coverageGatePassed, true);
+  assert.equal(r.readinessGatePassed, true);
+  assert.equal(r.status, "READY_FOR_ADMIN_REVIEW");
+  assert.equal(r.locked, false, "an unlocked recommendation is not an approved one");
+  assert.equal(r.approval, null);
+  assert.equal(r.eligibleForApproval, true);
+  assert.equal(r.executesOrders, false);
+});
+
+await test("Phase 5 gate: 79.99% coverage is below the threshold, 80% is not", () => {
+  const at = (successCoveragePercent: number) =>
+    simulateCap(capPlan(CAP_ALLOC), {
+      observation: {
+        status: "COMPLETED",
+        successCoveragePercent,
+        elapsedMs: TARGET_14D,
+        targetDurationMs: TARGET_14D
+      }
+    }).recommendation;
+
+  const below = at(79.99);
+  assert.equal(below.coverageGatePassed, false);
+  assert.equal(below.status, "PROVISIONAL");
+  assert.equal(below.locked, true);
+  assert.ok(below.reasonFa.includes("پوشش موفق"));
+
+  const exact = at(80);
+  assert.equal(exact.coverageGatePassed, true);
+  assert.equal(exact.status, "READY_FOR_ADMIN_REVIEW");
+  assert.equal(exact.locked, false);
+});
+
+await test("Phase 5 gate: a stale or unknown fee keeps the recommendation locked", () => {
+  const stale = new Date(CAP_NOW - 200 * 86_400_000).toISOString();
+  const staleReadiness = buildAllReadiness(
+    ["nobitex", "wallex"].map((sourceId) => ({
+      sourceId,
+      takerFeeBps: 20,
+      feeTier: null,
+      sourceUrl: null,
+      confirmedBy: "admin",
+      confirmedAt: stale,
+      note: null
+    })),
+    CAP_NOW
+  );
+  const sim = simulateCap(capPlan(CAP_ALLOC), {
+    readiness: staleReadiness,
+    observation: {
+      status: "COMPLETED",
+      successCoveragePercent: 100,
+      elapsedMs: TARGET_14D,
+      targetDurationMs: TARGET_14D
+    }
+  });
+  const r = sim.recommendation;
+  assert.equal(r.observationGatePassed, true, "time and coverage are fine");
+  assert.equal(r.readinessGatePassed, false, "but the fees are stale");
+  assert.equal(r.status, "PROVISIONAL");
+  assert.equal(r.locked, true);
+  assert.equal(r.eligibleForApproval, false);
+  assert.ok(r.reasonFa.includes("غیراجراپذیر"));
+
+  // A venue whose fee was never confirmed is equally disqualifying.
+  const unknownFeePlan = capPlan([{ sourceId: "bitpin", irtToman: 10_000_000, usdtUnits: 50 }]);
+  const unknownSim = simulateCap(unknownFeePlan, {
+    observation: {
+      status: "COMPLETED",
+      successCoveragePercent: 100,
+      elapsedMs: TARGET_14D,
+      targetDurationMs: TARGET_14D
+    }
+  });
+  assert.equal(unknownSim.recommendation.readinessGatePassed, false);
+  assert.equal(unknownSim.recommendation.status, "PROVISIONAL");
+  assert.equal(unknownSim.recommendation.locked, true);
+});
+
+await test("Phase 5 approval: admin confirmation moves the plan to APPROVED_SIMULATION_PLAN", () => {
+  const plan = capPlan(CAP_ALLOC);
+  const states: VenueCapitalState[] = classifyAllVenues(capReadiness());
+  const gate = {
+    status: "COMPLETED",
+    successCoveragePercent: 95,
+    elapsedMs: TARGET_14D + 3_600_000,
+    targetDurationMs: TARGET_14D
+  };
+
+  const beforeApproval = evaluateRecommendation({ plan, states, observation: gate, approval: null });
+  assert.equal(beforeApproval.status, "READY_FOR_ADMIN_REVIEW");
+
+  const approval: ApprovalRecord = {
+    approvedBy: "admin",
+    approvedAt: new Date(CAP_NOW).toISOString(),
+    readinessFingerprint: readinessFingerprint(states),
+    planFingerprint: planFingerprint(plan)
+  };
+  const approved = evaluateRecommendation({ plan, states, observation: gate, approval });
+  assert.equal(approved.status, "APPROVED_SIMULATION_PLAN");
+  assert.equal(approved.locked, false);
+  assert.equal(approved.approval?.approvedBy, "admin");
+  assert.equal(approved.invalidationReasonFa, null);
+  // Approval is a decision about a simulation, never an execution.
+  assert.equal(approved.executesOrders, false);
+  assert.ok(approved.reasonFa.includes("هیچ سفارشی"));
+
+  // The approval covers exactly this allocation, not a different one.
+  const changedPlan = capPlan([
+    { sourceId: "nobitex", irtToman: 12_000_000, usdtUnits: 50 },
+    { sourceId: "wallex", irtToman: 3_000_000, usdtUnits: 100 }
+  ]);
+  const other = evaluateRecommendation({
+    plan: changedPlan,
+    states,
+    observation: gate,
+    approval
+  });
+  assert.equal(other.status, "READY_FOR_ADMIN_REVIEW");
+  assert.ok(other.reasonFa.includes("تأیید تازه"));
+});
+
+await test("Phase 5 approval is invalidated when fee or account readiness changes", () => {
+  const plan = capPlan(CAP_ALLOC);
+  const states = classifyAllVenues(capReadiness());
+  const gate = {
+    status: "COMPLETED",
+    successCoveragePercent: 95,
+    elapsedMs: TARGET_14D,
+    targetDurationMs: TARGET_14D
+  };
+  const approval: ApprovalRecord = {
+    approvedBy: "admin",
+    approvedAt: new Date(CAP_NOW).toISOString(),
+    readinessFingerprint: readinessFingerprint(states),
+    planFingerprint: planFingerprint(plan)
+  };
+  assert.equal(
+    evaluateRecommendation({ plan, states, observation: gate, approval }).status,
+    "APPROVED_SIMULATION_PLAN"
+  );
+
+  // The desk's fee evidence goes stale after the approval was granted.
+  const stale = new Date(CAP_NOW - 200 * 86_400_000).toISOString();
+  const changedStates = classifyAllVenues(
+    buildAllReadiness(
+      [
+        {
+          sourceId: "nobitex",
+          takerFeeBps: 20,
+          feeTier: null,
+          sourceUrl: null,
+          confirmedBy: "admin",
+          confirmedAt: stale,
+          note: null
+        }
+      ],
+      CAP_NOW
+    )
+  );
+  assert.notEqual(readinessFingerprint(changedStates), approval.readinessFingerprint);
+
+  const invalidated = evaluateRecommendation({
+    plan,
+    states: changedStates,
+    observation: gate,
+    approval
+  });
+  assert.equal(invalidated.status, "PROVISIONAL");
+  assert.equal(invalidated.locked, true);
+  assert.equal(invalidated.approval, null);
+  assert.ok(invalidated.invalidationReasonFa?.includes("باطل"));
+
+  // Losing the observation gate invalidates an approval too.
+  const lostGate = evaluateRecommendation({
+    plan,
+    states,
+    observation: { ...gate, successCoveragePercent: 40 },
+    approval
+  });
+  assert.equal(lostGate.status, "PROVISIONAL");
+  assert.equal(lostGate.locked, true);
+  assert.ok(lostGate.invalidationReasonFa);
+});
+
+await test("Phase 5 simulation is deterministic for identical inputs", () => {
+  const a = JSON.stringify(simulateCap(capPlan(CAP_ALLOC)));
+  const b = JSON.stringify(simulateCap(capPlan(CAP_ALLOC)));
+  assert.equal(a, b);
+  const o1 = JSON.stringify(
+    buildOptimizedPlan({
+      totalCapitalToman: 50_000_000,
+      valuationPriceToman: CAP_PRICE,
+      readiness: capReadiness(),
+      routes: CAP_ROUTES
+    })
+  );
+  const o2 = JSON.stringify(
+    buildOptimizedPlan({
+      totalCapitalToman: 50_000_000,
+      valuationPriceToman: CAP_PRICE,
+      readiness: capReadiness(),
+      routes: CAP_ROUTES
+    })
+  );
+  assert.equal(o1, o2);
+});
+
+await test("Phase 5 surface is admin-only, credential-free and has no execution path", () => {
+  const route = readFileSync(
+    new URL("../app/api/shadow-arbitrage/capital/route.ts", import.meta.url),
+    "utf8"
+  );
+  assert.ok(route.includes("requireAdminSession"), "capital API must be admin-only");
+  assert.ok(route.includes("forbidden_field"), "capital API must reject credential fields");
+  for (const secret of ["apiKey", "secret", "password", "passphrase", "privateKey"]) {
+    assert.ok(route.includes(secret), `must explicitly refuse ${secret}`);
+  }
+  // Phase 6 territory: no order placement or paper execution may exist yet.
+  const forbiddenTerms = [
+    "placeOrder",
+    "submitOrder",
+    "createOrder",
+    "paperExecute",
+    "withdraw",
+    "deposit",
+    "transferFunds"
+  ];
+  for (const term of forbiddenTerms) {
+    assert.equal(route.includes(term), false, `capital API must not contain ${term}`);
+  }
+  assert.equal(/ompfinex/i.test(route), false);
+
+  const engine = readFileSync(
+    new URL("../src/lib/shadowArbitrage/capital.ts", import.meta.url),
+    "utf8"
+  );
+  assert.equal(/ompfinex/i.test(engine.replace(/OMPFinex is intentionally absent[^\n]*/gi, "")), false);
+
+  const ui = readFileSync(
+    new URL("../src/components/shadowArbitrage/CapitalSimulator.tsx", import.meta.url),
+    "utf8"
+  );
+  assert.equal(/ompfinex/i.test(ui), false);
+  assert.ok(ui.includes("موجودی‌ها مجازی‌اند"), "UI must state the balances are virtual");
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

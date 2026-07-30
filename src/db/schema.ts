@@ -535,3 +535,50 @@ export const shadowFeeConfirmations = pgTable(
   },
   (t) => [index("shadow_fee_conf_source_time_idx").on(t.sourceId, t.confirmedAt)]
 );
+
+/**
+ * Phase 5 — virtual capital allocation plans for the Shadow simulator.
+ * Append-only: every save is a new row, so the allocation history is auditable.
+ * These balances are simulated. No exchange account, credential, order or
+ * transfer is represented here.
+ */
+export const shadowCapitalPlans = pgTable(
+  "shadow_capital_plans",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    mode: text("mode").notNull(), // MANUAL | OPTIMIZED
+    totalCapitalToman: bigint("total_capital_toman", { mode: "number" }).notNull(),
+    valuationPriceToman: integer("valuation_price_toman").notNull(),
+    reservePercent: integer("reserve_percent").notNull().default(0),
+    /** [{ sourceId, irtToman, usdtUnits }] — virtual balances only. */
+    allocations: jsonb("allocations")
+      .$type<Array<{ sourceId: string; irtToman: number; usdtUnits: number }>>()
+      .notNull(),
+    createdBy: text("created_by").notNull(),
+    note: text("note"),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [index("shadow_capital_plans_created_idx").on(t.createdAt)]
+);
+
+/**
+ * Phase 5 — explicit admin confirmation of a simulated capital plan.
+ * Append-only. An approval is pinned to the plan and to the account/fee
+ * readiness it was granted against, so a later change invalidates it.
+ * Approving a simulation never places an order and never moves funds.
+ */
+export const shadowCapitalApprovals = pgTable(
+  "shadow_capital_approvals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    planId: uuid("plan_id"),
+    planFingerprint: text("plan_fingerprint").notNull(),
+    readinessFingerprint: text("readiness_fingerprint").notNull(),
+    approvedBy: text("approved_by").notNull(),
+    approvedAt: ts("approved_at").notNull(),
+    note: text("note"),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [index("shadow_capital_approvals_time_idx").on(t.approvedAt)]
+);

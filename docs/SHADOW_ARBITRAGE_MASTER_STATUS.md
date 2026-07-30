@@ -464,3 +464,136 @@ restart test covered) · isolated standalone build succeeds and emits the
 **Still outstanding:** the production database backup has never been run or
 verified — the LAN host stays unreachable. Protection remains the `pre-v4.6.1`
 tag plus strictly additive migrations. Phase 5 has not started.
+
+---
+
+## 14. Phase 5 — Capital Allocation Simulator (v4.8.0)
+
+Built on top of v4.7.0 after the user verified production healthy, then released
+as v4.8.0 once the user approved the corrected gate semantics.
+
+**Scope — admin-only, Shadow Mode only, no execution.** Every balance is
+virtual. Nothing in this phase contacts an exchange, accepts credentials, places
+an order or moves funds, and automatic paper execution is deliberately absent
+(that is Phase 6).
+
+### Rules the engine enforces
+
+* **Portfolio conservation.** Allocated value plus reserve always equals the
+  stated capital, to the toman, by construction. `conservationResidualToman` is
+  reported on every simulation and is asserted to be exactly zero.
+* **No negative balances.** Negative IRT or USDT, duplicate venues, non-finite
+  amounts, out-of-range capital and over-allocation are all structural
+  violations; a violating plan produces no metrics at all rather than
+  authoritative-looking numbers, and cannot be saved.
+* **No invented numbers.** Unknown or stale fees, a missing valuation price and
+  an unconfirmed transfer cost each yield `UNKNOWN`/`BLOCKED` through a typed
+  `Estimate<T>`. The configured rebalance cost is a provisional zero, which is
+  not evidence, so **estimated monthly rebalancing cost is UNKNOWN today** and
+  is not replaced by a default.
+* **No profit is claimed.** The simulator reports what an allocation could have
+  funded from observed route data; it never asserts realised or expected profit.
+
+### Venues
+
+Executable venues are exactly those with a verified account **and** a fee that
+is known and fresh — today nobitex, wallex and tabdeal, gated through Phase 4's
+`venueUsableForNetProfit` so there is one definition in the codebase. bitpin,
+abantether, ramzinex, tetherland and bit24 stay `WHATIF_DISABLED`: capital may
+be placed there for exploration, but it never counts toward utilization and can
+never fund a covered route until the account and fee land. arzinja is
+`REFERENCE_ONLY` and its inputs are disabled in the UI. OMPFinex is not a valid
+venue id and is rejected as `unknown_venue`.
+
+### Metrics
+
+Capital utilization (executable share of capital), opportunity coverage (funded
+route samples ÷ observed route samples, plus funded-of-structurally-executable),
+unused reserve, concentration risk (HHI over venue shares with LOW/MODERATE/HIGH
+bands) and estimated monthly rebalancing cost. Coverage returns UNKNOWN when the
+observation has no route data; concentration returns UNKNOWN when nothing is
+allocated. Unfunded routes are always reported with a reason, never dropped.
+
+### Allocation modes
+
+Manual entry per venue, and a **provisional optimized** split that is fully
+deterministic: capital follows venues that actually appeared on the profitable
+side of observed routes (net-positive samples, falling back to raw-positive,
+falling back to an explicitly labelled equal split when there is no evidence).
+Integer largest-remainder splitting keeps the portfolio exact. An explicit
+`reservePercent` is honoured and defaults to 0 so no reserve policy is invented.
+
+### Recommendation state flow
+
+Three gates are evaluated independently and reported separately, so it is always
+visible *which* one is holding the plan back:
+
+* `daysGatePassed` — `elapsedMs >= targetDurationMs` (14 real days, pauses
+  excluded). Evaluated from the observation's own elapsed/target values, not
+  from the derived `COMPLETED` status, so the day gate and the coverage gate
+  cannot be conflated.
+* `coverageGatePassed` — `successCoveragePercent >= 80`.
+* `readinessGatePassed` — at least one executable venue, and every venue
+  actually holding capital in the plan is executable (verified account plus a
+  known, fresh fee).
+
+State machine:
+
+| State | When | `locked` |
+| --- | --- | --- |
+| `PROVISIONAL` | any gate fails | `true` |
+| `READY_FOR_ADMIN_REVIEW` | all three gates pass, no valid approval | `false` |
+| `APPROVED_SIMULATION_PLAN` | an admin approval on record still matches both fingerprints | `false` |
+
+Unlocking is a state change, not an approval: `READY_FOR_ADMIN_REVIEW` explicitly
+carries `approval: null`.
+
+**Approval never executes anything.** The `approve` action writes exactly one
+audit row and returns; `recommendation.executesOrders` is a structural `false`,
+and the API surface contains no order, transfer, deposit or withdrawal path (a
+test asserts this by scanning the route file).
+
+**Invalidation.** An approval is pinned to two digests — `planFingerprint` (the
+exact allocation) and `readinessFingerprint` (each venue's class, fee value, fee
+provenance and freshness). If a fee goes stale or unknown, or account readiness
+changes, the fingerprint changes and the approval is dropped: the plan returns to
+`PROVISIONAL` + `locked: true` with an `invalidationReasonFa`. Losing the
+observation gate invalidates an approval the same way. Editing the allocation
+does not invalidate the old approval, it simply is not covered by it — that plan
+returns to `READY_FOR_ADMIN_REVIEW` and needs a fresh confirmation.
+
+Approvals are stored append-only in `shadow_capital_approvals`
+(`drizzle/0005_shadow_capital_approvals.sql`, additive), so the decision history
+is auditable.
+
+### Boundary tests
+
+Below 14 days · exactly 14 days · 79.99% vs 80% coverage · stale fee · never-
+confirmed fee · admin approval · invalidation on readiness change · invalidation
+on losing the observation gate · approval not covering a changed allocation.
+
+### Files
+
+* `src/lib/shadowArbitrage/capital.ts` — pure engine, no database import.
+* `app/api/shadow-arbitrage/capital/route.ts` — admin-only GET/POST
+  (`simulate` / `optimize` / `save` / `approve`); rejects `apiKey`, `api_key`,
+  `secret`, `apiSecret`, `token`, `password`, `passphrase`, `privateKey`,
+  `mnemonic`.
+* `drizzle/0004_shadow_capital_plans.sql` + `shadowCapitalPlans` and
+  `drizzle/0005_shadow_capital_approvals.sql` + `shadowCapitalApprovals` — two
+  additive tables, append-only, no drops or alters.
+* `src/components/shadowArbitrage/CapitalSimulator.tsx` + RTL Persian styles.
+* `REQUIRED_SUCCESS_COVERAGE_PERCENT` moved to `config.ts` and re-exported from
+  the repository, so the pure engine can gate on it without the database layer.
+
+The collector, runner, instrumentation and the running observation session are
+untouched; `observation.id` is read only.
+
+### Verification
+
+typecheck clean · ESLint 0 errors (17 pre-existing warnings, none new) ·
+12/12 suites green, 294 assertions, 0 failures — including 24 deterministic
+accounting and gate-boundary tests plus 2 persistence tests · isolated standalone
+build succeeds and emits the `capital` route.
+
+**Phase 6 (automatic paper execution) has not started.**

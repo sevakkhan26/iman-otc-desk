@@ -28,6 +28,13 @@ export const SHADOW_RETENTION_DAYS = 14;
 /** Target observation window. */
 export const SHADOW_OBSERVATION_TARGET_MS = SHADOW_RETENTION_DAYS * 24 * 60 * 60_000;
 
+/**
+ * A 14-day observation only counts as complete with enough real coverage.
+ * Declared here so the capital simulator can gate on it without importing the
+ * database layer.
+ */
+export const REQUIRED_SUCCESS_COVERAGE_PERCENT = 80;
+
 /** Minimum spacing between manual (UI) refresh collections. */
 export const SHADOW_MANUAL_REFRESH_MIN_MS = 15_000;
 

@@ -308,6 +308,45 @@ export function summarizeOpportunities(groups: OpportunityGroups): OpportunitySu
   };
 }
 
+/* ── pagination ────────────────────────────────────────────────────────────── */
+
+export const OPPORTUNITY_PAGE_SIZES = [10, 20, 50] as const;
+export type OpportunityPageSize = (typeof OPPORTUNITY_PAGE_SIZES)[number];
+
+export type Page<T> = {
+  rows: T[];
+  /** 1-based, clamped into range even if the URL asked for something silly. */
+  page: number;
+  pageCount: number;
+  total: number;
+  from: number;
+  to: number;
+};
+
+/**
+ * Deterministic client-side paging over an already-ordered list.
+ *
+ * No request is made and no data is dropped: this only decides which slice of
+ * the same ordered array is on screen, so the same inputs always produce the
+ * same page.
+ */
+export function paginate<T>(rows: T[], page: number, perPage: number): Page<T> {
+  const total = rows.length;
+  const size = Math.max(1, Math.floor(perPage));
+  const pageCount = Math.max(1, Math.ceil(total / size));
+  const current = Math.min(Math.max(1, Math.floor(page) || 1), pageCount);
+  const start = (current - 1) * size;
+  const slice = rows.slice(start, start + size);
+  return {
+    rows: slice,
+    page: current,
+    pageCount,
+    total,
+    from: total === 0 ? 0 : start + 1,
+    to: start + slice.length
+  };
+}
+
 /* ── blocking reasons ──────────────────────────────────────────────────────── */
 
 /**

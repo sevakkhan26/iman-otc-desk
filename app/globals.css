@@ -7170,20 +7170,21 @@ table th {
   max-width: 100%;
 }
 
+
 /* ── Shadow Arbitrage · Phase 8B opportunities and sources ────────────────── */
 /*
  * LAYOUT ONLY — same contract as the Phase 8A section above.
  *
- * Every surface takes its material from the shared OTC Liquid Glass primitives:
- * `.panel` for cards, `.glass-tabbar` for the segmented container, and
- * `.glass-control` for the active segment, toggles, inputs and action pills.
- * Nothing here declares a background, border colour, box-shadow, blur or radius
- * token of its own — doing so would fork the design system. The only colour
- * this section owns is the 3px semantic status rail, which is a status marker
- * and not card material.
+ * Material comes from the shared OTC Liquid Glass primitives: `.panel` with
+ * `.panel-header` / `.panel-body` for every section, `.glass-tabbar` for a
+ * segmented container and `.glass-control` for the active segment, inputs and
+ * action pills. Nothing here declares a background, border colour, box-shadow,
+ * blur or colour token of its own; the only colour it owns is the 3px semantic
+ * status rail, which is a status marker and not card material.
  *
- * Everything below is grid, spacing, sizing, typography scale and the
- * table/card breakpoint. Both tabs are scoped: `.sa-op-*` and `.sa-sr-*`.
+ * The type scale matches the main OTC dashboard rather than shrinking to fit
+ * columns: 13px table cells, 12px labels, 22px headline numbers — the same
+ * figures `.table`, `.metric-label` and `.metric-value` already use.
  */
 
 /* Bidi isolation for ratios, percentages, latencies and route strings. */
@@ -7198,7 +7199,6 @@ table th {
 .sa-rail-danger,
 .sa-rail-muted {
   position: relative;
-  padding-inline-start: 12px;
 }
 .sa-rail-good::before,
 .sa-rail-warn::before,
@@ -7207,9 +7207,8 @@ table th {
   content: "";
   position: absolute;
   inset-inline-start: 0;
-  inset-block: 2px;
+  inset-block: 0;
   width: 3px;
-  border-radius: 999px;
 }
 .sa-rail-good::before {
   background: var(--green);
@@ -7224,273 +7223,295 @@ table th {
   background: var(--line);
 }
 
-/* ── «فرصت‌ها» ─────────────────────────────────────────────────────────────── */
-.sa-op,
-.sa-sr {
+/* ── page rhythm ──────────────────────────────────────────────────────────── */
+/* One clear gap between Summary, Filters, Category, Results and Pagination. */
+.sa-stack {
   display: grid;
-  gap: 14px;
+  gap: 18px;
   min-width: 0;
 }
-.sa-op-skeleton {
+.sa-skel {
   display: grid;
-  gap: 10px;
+  gap: 12px;
+}
+.sa-sub {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.sa-unknown {
+  color: var(--muted);
+  cursor: help;
+}
+.sa-strong {
+  font-weight: 800;
 }
 
-.sa-op-summary-grid,
-.sa-sr-summary-grid {
+/* ── KPI cards ────────────────────────────────────────────────────────────── */
+.sa-kpi-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
-  align-items: start;
+  gap: 14px;
 }
-.sa-op-stat,
-.sa-sr-stat {
-  display: grid;
-  gap: 3px;
+.sa-kpi {
   min-width: 0;
 }
-.sa-op-stat-label,
-.sa-sr-stat-label {
-  font-size: 11.5px;
+.sa-kpi-body {
+  display: grid;
+  gap: 6px;
+  min-height: 104px;
+  align-content: start;
+}
+.sa-kpi-label {
+  font-size: 12px;
   font-weight: 600;
   color: var(--muted);
 }
-.sa-op-stat-value,
-.sa-sr-stat-value {
-  font-size: 19px;
+.sa-kpi-value {
+  font-size: 22px;
   font-weight: 800;
-  line-height: 1.35;
-  letter-spacing: -0.01em;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
-.sa-op-stat-hint,
-.sa-sr-stat-hint {
-  font-size: 11px;
-  line-height: 1.65;
+.sa-kpi-hint {
+  font-size: 12px;
+  line-height: 1.7;
   color: var(--muted);
 }
 
-/* Filter rail */
-.sa-op-filter-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 12px 14px;
-  align-items: end;
-}
-.sa-op-field {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-}
-.sa-op-field-search {
-  grid-column: span 2;
-}
-.sa-op-field-label {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--muted);
-}
-.sa-op-control {
-  width: 100%;
-  min-width: 0;
-}
-.sa-op-segmented {
+/* ── segmented controls ───────────────────────────────────────────────────── */
+.sa-segmented {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 3px;
+  padding: 4px;
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
 }
-.sa-op-segmented::-webkit-scrollbar {
+.sa-segmented::-webkit-scrollbar {
   display: none;
 }
-.sa-op-seg {
+.sa-seg {
   flex: 1 1 auto;
-  min-height: 30px;
-  padding: 5px 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 6px 12px;
   border: 0;
   background: none;
   border-radius: var(--radius-md);
   color: var(--muted);
   font-family: inherit;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   white-space: nowrap;
   cursor: pointer;
 }
-.sa-op-seg.is-active {
+.sa-seg.is-active {
   color: var(--text);
 }
-.sa-op-seg:focus-visible,
-.sa-op-toggle:focus-within,
-.sa-op-clear:focus-visible {
+.sa-segmented-lg .sa-seg-lg {
+  min-height: 42px;
+  font-size: 14px;
+}
+.sa-seg-count {
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+.sa-seg:focus-visible,
+.sa-chip-toggle:focus-within,
+.sa-btn-clear:focus-visible,
+.sa-btn-page:focus-visible,
+.sa-btn-details:focus-visible,
+.sa-more-btn:focus-visible,
+.sa-venue-details > summary:focus-visible {
   outline: 2px solid rgb(var(--brand) / 0.55);
   outline-offset: 1px;
 }
-.sa-op-toggles {
+
+/* ── filters ──────────────────────────────────────────────────────────────── */
+/*
+ * One row of controls, then one row of chips.
+ *
+ * Search sits beside size, venue and sort even though the disclosure below owns
+ * the other three on a phone: `display: contents` lets those three join this
+ * grid on wide screens, so the markup can keep search outside the collapsible
+ * block without splitting the row in two.
+ */
+.sa-filter-body {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  align-items: end;
+}
+.sa-advanced {
+  display: contents;
+}
+.sa-chips {
   grid-column: 1 / -1;
+}
+.sa-field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+.sa-field-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.sa-control {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+}
+.sa-control:focus-visible {
+  outline: 2px solid rgb(var(--brand) / 0.55);
+  outline-offset: 1px;
+}
+.sa-chips {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
+  padding-top: 2px;
 }
-.sa-op-toggle {
+.sa-chip-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 6px 11px;
+  gap: 8px;
+  min-height: 36px;
+  padding: 7px 13px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--muted);
   cursor: pointer;
 }
-.sa-op-toggle.is-on {
+.sa-chip-toggle.is-on {
   color: var(--text);
 }
-.sa-op-clear {
-  padding: 6px 12px;
+.sa-btn-clear,
+.sa-btn-page,
+.sa-btn-details,
+.sa-more-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 7px 14px;
   border: 0;
   background: none;
   border-radius: 999px;
   font-family: inherit;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   color: var(--text);
+  white-space: nowrap;
   cursor: pointer;
 }
-.sa-op-filter-foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  padding-top: 0 !important;
-  font-size: 11.5px;
+.sa-btn-clear[disabled],
+.sa-btn-page[disabled] {
   color: var(--muted);
+  cursor: default;
 }
-.sa-op-note {
-  line-height: 1.7;
+.sa-more-count {
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+/* The mobile-only disclosure; on desktop the advanced row is simply visible. */
+.sa-more-btn {
+  display: none;
 }
 
-/* Desktop table */
-.sa-op-table-wrap,
-.sa-sr-table-wrap {
-  min-width: 0;
-}
+/* ── results table ────────────────────────────────────────────────────────── */
 .sa-op-table th,
-.sa-op-table td,
-.sa-sr-table th,
-.sa-sr-table td {
+.sa-op-table td {
+  padding: 12px 10px;
+  font-size: 13px;
   vertical-align: top;
 }
-.sa-op-stack,
-.sa-sr-stack {
+.sa-stack-2 {
   display: grid;
-  gap: 2px;
+  gap: 3px;
   min-width: 0;
 }
-.sa-op-sub,
-.sa-sr-sub {
-  font-size: 11px;
-  line-height: 1.6;
-  color: var(--muted);
-}
-.sa-op-route {
+.sa-route {
   display: grid;
-  gap: 2px;
+  gap: 3px;
   min-width: 0;
 }
-.sa-op-route-line {
+.sa-route-line {
   display: flex;
   gap: 6px;
   align-items: baseline;
   white-space: nowrap;
+  font-size: 13px;
 }
-.sa-op-route-key {
-  font-size: 11px;
+.sa-route-key {
+  font-size: 12px;
   color: var(--muted);
 }
-.sa-op-fees {
+.sa-status {
   display: grid;
   gap: 5px;
-  min-width: 0;
-}
-.sa-op-fee-leg {
-  display: grid;
-  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
-  gap: 2px 8px;
-  align-items: baseline;
-}
-.sa-op-fee-label {
-  font-size: 11px;
-  color: var(--muted);
-}
-.sa-op-fee-value {
-  font-variant-numeric: tabular-nums;
-}
-.sa-op-fee-meta {
-  grid-column: 1 / -1;
-  font-size: 10.5px;
-  line-height: 1.6;
-  color: var(--muted);
-}
-.sa-op-fee-prov.is-stale {
-  color: color-mix(in srgb, var(--red) 70%, var(--text));
-  font-weight: 700;
-}
-.sa-op-status {
-  display: grid;
-  gap: 4px;
   justify-items: start;
   min-width: 0;
 }
-.sa-op-primary-reason {
-  font-size: 11.5px;
+.sa-status-reason {
+  font-size: 12.5px;
   font-weight: 600;
   line-height: 1.6;
 }
-.sa-op-reasons > summary {
-  font-size: 11px;
+
+/* ── pagination ───────────────────────────────────────────────────────────── */
+.sa-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+  font-size: 13px;
+}
+.sa-pager-count,
+.sa-pager-page {
   color: var(--muted);
-  cursor: pointer;
-  list-style: none;
+  font-variant-numeric: tabular-nums;
 }
-.sa-op-reasons > summary::-webkit-details-marker {
-  display: none;
+.sa-pager-size {
+  display: flex;
+  align-items: center;
+  gap: 9px;
 }
-.sa-op-reasons ul {
-  margin: 4px 0 0;
-  padding-inline-start: 14px;
-  display: grid;
-  gap: 2px;
-  font-size: 11px;
-  line-height: 1.6;
-  color: var(--muted);
-}
-.sa-op-unknown {
-  color: var(--muted);
-  cursor: help;
-}
-.sa-op-strong {
-  font-weight: 800;
+.sa-pager-nav {
+  display: flex;
+  align-items: center;
+  gap: 9px;
 }
 
-/* Mobile cards — hidden until the table stops being readable. */
+/* ── opportunity cards (mobile) ───────────────────────────────────────────── */
 .sa-op-cards {
   display: none;
 }
 .sa-op-card {
   display: grid;
-  gap: 10px;
-  padding: 13px 14px;
+  gap: 12px;
+  padding: 14px;
   border-radius: var(--radius-lg);
-  cursor: pointer;
-}
-.sa-op-card:focus-visible {
-  outline: 2px solid rgb(var(--brand) / 0.55);
-  outline-offset: 2px;
 }
 .sa-op-card-head {
   display: flex;
@@ -7499,7 +7520,7 @@ table th {
   gap: 10px;
 }
 .sa-op-card-size {
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--muted);
   white-space: nowrap;
@@ -7507,101 +7528,215 @@ table th {
 .sa-op-card-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px 12px;
+  gap: 10px 14px;
   margin: 0;
 }
 .sa-op-card-line {
   display: grid;
-  gap: 2px;
+  gap: 3px;
   min-width: 0;
 }
 .sa-op-card-line dt {
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--muted);
 }
 .sa-op-card-line dd {
   margin: 0;
-  font-size: 12.5px;
+  font-size: 14px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
-.sa-op-card-fees,
 .sa-op-card-foot {
-  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
-/* ── «منابع و کارمزدها» ───────────────────────────────────────────────────── */
-.sa-sr-venue {
-  display: grid;
-  gap: 2px;
-  /* Start-aligned: a chip must hug its label, not stretch across the column. */
-  justify-items: start;
-  min-width: 0;
-}
-.sa-sr-reference {
-  margin-inline-start: 6px;
-}
-.sa-sr-form {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 12px 14px;
-  align-items: end;
-}
-
-/* Calculation drawer — hierarchy only; the drawer material is unchanged. */
-.sa-dw-headline-grid {
+/* ── venue cards ──────────────────────────────────────────────────────────── */
+.sa-venue-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  gap: 14px;
 }
-.sa-dw-head-stat {
+.sa-venue-card {
+  min-width: 0;
+}
+.sa-venue-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.sa-venue-name {
   display: grid;
   gap: 3px;
   min-width: 0;
 }
+.sa-venue-name strong {
+  font-size: 15px;
+  font-weight: 800;
+}
+.sa-venue-chips {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+}
+.sa-venue-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 14px;
+}
+.sa-venue-metric {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.sa-venue-metric-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.sa-venue-metric-value {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.sa-settlement {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.sa-venue-details {
+  margin-top: 12px;
+}
+.sa-venue-details > summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+}
+.sa-venue-details > summary::-webkit-details-marker {
+  display: none;
+}
+.sa-venue-detail-body {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+}
+.sa-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px 14px;
+  align-items: end;
+}
+
+/* ── calculation drawer ───────────────────────────────────────────────────── */
+/* Hierarchy only; the drawer's own material is unchanged. */
+.sa-dw-headline-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+.sa-dw-head-stat {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
 .sa-dw-head-label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--muted);
 }
 .sa-dw-head-value {
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 800;
   letter-spacing: -0.01em;
 }
 
 /* ── responsive ───────────────────────────────────────────────────────────── */
 @media (max-width: 1180px) {
-  .sa-op-summary-grid,
-  .sa-sr-summary-grid {
+  .sa-venue-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1024px) {
+  .sa-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  /*
+   * Long Persian segment labels stop sharing the width here: a shrinking flex
+   * item with nowrap text would overlap its neighbour, so the strip scrolls
+   * instead — the same behaviour the Phase 8A tab bar uses.
+   */
+  .sa-segmented-lg {
+    justify-content: flex-start;
+  }
+  .sa-segmented-lg .sa-seg-lg {
+    flex: 0 0 auto;
+  }
+  .sa-filter-body {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 768px) {
+  .sa-stack {
+    gap: 14px;
+  }
+  /* A phone gets cards, never a table that would be clipped. */
   .sa-op-table-wrap {
     display: none;
   }
   .sa-op-cards {
     display: grid;
-    gap: 10px;
+    gap: 12px;
   }
-  .sa-op-field-search {
-    grid-column: 1 / -1;
-  }
-  .sa-op-filter-grid {
+  .sa-venue-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+  /* Search and the category control stay; everything else folds away, so the
+     first result is one tap below the filter panel instead of a full form. */
+  .sa-more-btn {
+    display: inline-flex;
+    justify-self: start;
+  }
+  .sa-advanced {
+    display: none;
+  }
+  .sa-advanced.is-open {
+    display: grid;
+    gap: 14px;
+  }
+  .sa-filter-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sa-pager {
+    justify-content: flex-start;
   }
 }
 
 @media (max-width: 560px) {
-  .sa-op-summary-grid,
-  .sa-sr-summary-grid {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 12px;
+  .sa-kpi-body {
+    min-height: 92px;
   }
-  .sa-op-card-grid {
+  .sa-kpi-value {
+    font-size: 20px;
+  }
+  .sa-venue-metrics {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .sa-pager-nav,
+  .sa-pager-size {
+    flex-wrap: wrap;
   }
   .sa-dw-headline-grid {
     grid-template-columns: minmax(0, 1fr);

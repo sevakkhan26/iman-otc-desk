@@ -826,12 +826,14 @@ await test("preview does not modify production shell, header or tokens", () => {
 
 const {
   DEFAULT_OPPORTUNITY_FILTERS,
+  OPPORTUNITY_PAGE_SIZES,
   OPPORTUNITY_SORTS,
   activeFilterCount,
   evidenceFor,
   filterOpportunities,
   groupOpportunities,
   indexPaperEvidence,
+  paginate,
   primaryBlockingReason,
   sortOpportunities,
   summarizeOpportunities
@@ -840,6 +842,8 @@ const {
 const { buildVenueRows, summarizeVenues, feeExpiryIso, settlementFor } = await import(
   "../src/components/shadowArbitrage/sourcesModel.ts"
 );
+
+const { readInt } = await import("../src/components/shadowArbitrage/urlState.ts");
 
 type AnyRecord = Record<string, unknown>;
 
@@ -930,13 +934,11 @@ await test("8B filters are exact and combine without surprises", () => {
   ];
   const f = DEFAULT_OPPORTUNITY_FILTERS;
 
-  // Completed lifecycles are hidden until asked for.
   assert.deepEqual(filterOpportunities(rows, f).map((o) => o.id), ["a", "b", "d"]);
   assert.deepEqual(
     filterOpportunities(rows, { ...f, includeCompleted: true }).map((o) => o.id),
     ["a", "b", "c", "d"]
   );
-  // Size, venue, account and net-positive filters.
   assert.deepEqual(filterOpportunities(rows, { ...f, size: "5" }).map((o) => o.id), ["a"]);
   assert.deepEqual(filterOpportunities(rows, { ...f, sourceId: "tabdeal" }).map((o) => o.id), ["b"]);
   assert.deepEqual(
@@ -949,7 +951,6 @@ await test("8B filters are exact and combine without surprises", () => {
     filterOpportunities(rows, { ...f, netPositiveOnly: true }).map((o) => o.id),
     ["a", "b"]
   );
-  // Search matches the Persian venue name and the ascii id alike.
   assert.deepEqual(filterOpportunities(rows, { ...f, query: "تبدیل" }).map((o) => o.id), ["b"]);
   assert.deepEqual(filterOpportunities(rows, { ...f, query: "bitpin" }).map((o) => o.id), ["b"]);
   assert.deepEqual(filterOpportunities(rows, { ...f, query: "والکس" }).map((o) => o.id), ["a", "d"]);
@@ -969,7 +970,6 @@ await test("8B sorting is deterministic and never invents a missing metric", () 
     ledger({ lifecycleId: "low", riskAdjustedPnlToman: 90_000, economicNetPnlToman: 95_000 })
   ]);
 
-  // Rows with no recorded figure sort last — they are not treated as zero.
   assert.deepEqual(
     sortOpportunities(rows, "riskAdjusted", evidence).map((o) => o.id),
     ["low", "mid", "high"]
@@ -991,8 +991,6 @@ await test("8B sorting is deterministic and never invents a missing metric", () 
     ["high", "mid", "low"]
   );
 
-  // A tie is broken by raw spread and then by lifecycle id, so repeated renders
-  // of the same data are byte-identical.
   const tied = [
     opp({ id: "z", rawSpreadPercent: 0.5, durationMs: 5 }),
     opp({ id: "a", rawSpreadPercent: 0.5, durationMs: 5 }),
@@ -1002,12 +1000,79 @@ await test("8B sorting is deterministic and never invents a missing metric", () 
   const twice = sortOpportunities([...tied].reverse(), "duration", new Map()).map((o) => o.id);
   assert.deepEqual(once, ["a", "m", "z"]);
   assert.deepEqual(once, twice, "input order must not change the result");
-  // Sorting never mutates the caller's array.
   assert.deepEqual(tied.map((o) => o.id), ["z", "a", "m"]);
-  // Every offered sort key is implemented.
   for (const s of OPPORTUNITY_SORTS) {
     assert.equal(sortOpportunities(rows, s.key, evidence).length, rows.length);
   }
+});
+
+await test("8B pagination is deterministic, complete and self-correcting", () => {
+  const rows = Array.from({ length: 48 }, (_, i) => `r${String(i).padStart(2, "0")}`);
+  assert.deepEqual([...OPPORTUNITY_PAGE_SIZES], [10, 20, 50]);
+
+  const first = paginate(rows, 1, 20);
+  assert.deepEqual(first.rows, rows.slice(0, 20));
+  assert.equal(first.page, 1);
+  assert.equal(first.pageCount, 3);
+  assert.equal(first.total, 48);
+  assert.equal(first.from, 1);
+  assert.equal(first.to, 20);
+
+  const last = paginate(rows, 3, 20);
+  assert.deepEqual(last.rows, rows.slice(40));
+  assert.equal(last.from, 41);
+  assert.equal(last.to, 48);
+
+  // Every row appears exactly once across the pages — nothing is dropped.
+  const walked = [1, 2, 3].flatMap((p) => paginate(rows, p, 20).rows);
+  assert.deepEqual(walked, rows);
+
+  // A page beyond the end clamps to the last page instead of showing nothing.
+  assert.equal(paginate(rows, 99, 20).page, 3);
+  assert.equal(paginate(rows, 0, 20).page, 1);
+  assert.equal(paginate(rows, -5, 10).page, 1);
+  // An empty list still reports a usable page.
+  const empty = paginate([], 4, 10);
+  assert.deepEqual(empty.rows, []);
+  assert.equal(empty.page, 1);
+  assert.equal(empty.pageCount, 1);
+  assert.equal(empty.from, 0);
+  assert.equal(empty.to, 0);
+  // Same input, same output.
+  assert.deepEqual(paginate(rows, 2, 10).rows, paginate(rows, 2, 10).rows);
+
+  // URL integers are clamped, never trusted.
+  assert.equal(readInt("abc", 1, 1, 50), 1);
+  assert.equal(readInt("999", 1, 1, 50), 50);
+  assert.equal(readInt("-3", 1, 1, 50), 1);
+  assert.equal(readInt("20", 1, 1, 50), 20);
+});
+
+await test("8B category, page and page size survive a reload", () => {
+  const panel = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
+  const sources = read("src/components/shadowArbitrage/SourcesPanel.tsx");
+  const url = read("src/components/shadowArbitrage/urlState.ts");
+
+  // The view state is read from the query string, not from component state.
+  assert.ok(panel.includes('read("cat", "valid")'));
+  assert.ok(panel.includes('read("page", "1")'));
+  assert.ok(panel.includes('read("per", "20")'));
+  assert.ok(sources.includes('read("sv", "health")'));
+  assert.ok(sources.includes('read("spage", "1")'));
+  assert.equal(/useState[^\n]*\b(page|category|cat)\b/i.test(panel), false, "not local state");
+
+  // Selecting writes it back without stacking history or jumping the page.
+  assert.ok(panel.includes('write({ cat: c, page: "1" })'), "category resets paging");
+  assert.ok(panel.includes('write({ per: String(n), page: "1" })'), "page size resets paging");
+  assert.ok(sources.includes('write({ sv: v.id, spage: "1" })'));
+  assert.ok(url.includes("router.replace("));
+  assert.ok(url.includes("scroll: false"));
+
+  // Any filter change goes back to page 1.
+  const setFn = panel.slice(panel.indexOf("const set = <K extends"), panel.indexOf("const evidence"));
+  assert.ok(setFn.includes('write({ page: "1" })'), "filters reset paging");
+  const clear = panel.slice(panel.indexOf("const clearAll ="), panel.indexOf("if (error)"));
+  assert.ok(clear.includes('write({ page: "1" })'));
 });
 
 await test("8B paper evidence is joined exactly, or not at all", () => {
@@ -1015,19 +1080,14 @@ await test("8B paper evidence is joined exactly, or not at all", () => {
     ledger({ lifecycleId: "lc-1", outcome: "SKIPPED", riskAdjustedPnlToman: 1 }),
     ledger({ lifecycleId: "lc-1", outcome: "FILLED", riskAdjustedPnlToman: 2 })
   ]);
-  // A settled fill always wins over a skip, whatever the input order.
   assert.equal(index.get("lc-1")!.outcome, "FILLED");
   assert.equal(index.get("lc-1")!.riskAdjustedPnlToman, 2);
-
-  // Micros are converted to USDT, never rounded to zero.
   assert.equal(index.get("lc-1")!.inventoryDeltaUsdt, -0.0875);
 
-  // The size must match: a figure recorded for another size is not borrowed.
   assert.equal(evidenceFor(opp({ id: "lc-1", sizeUsdt: 25 }), index)!.economicNetPnlToman, 35_000);
   assert.equal(evidenceFor(opp({ id: "lc-1", sizeUsdt: 10 }), index), null);
   assert.equal(evidenceFor(opp({ id: "other" }), index), null);
 
-  // Two skips: the later timestamp wins, deterministically.
   const skips = indexPaperEvidence([
     ledger({ outcome: "SKIPPED", occurredAt: "2026-07-30T09:00:00.000Z", rejectionCode: "old" }),
     ledger({ outcome: "SKIPPED", occurredAt: "2026-07-30T11:00:00.000Z", rejectionCode: "new" })
@@ -1035,7 +1095,7 @@ await test("8B paper evidence is joined exactly, or not at all", () => {
   assert.equal(skips.get("lc-1")!.rejectionCode, "new");
 });
 
-await test("8B the three categories keep their exact membership", () => {
+await test("8B one category at a time, with its count in the segment", () => {
   const rows = [
     opp({ id: "valid" }),
     opp({ id: "raw", feeUnknown: true, eligibility: "ACCOUNT_REQUIRED", rawSpreadPercent: 0.4 }),
@@ -1047,43 +1107,70 @@ await test("8B the three categories keep their exact membership", () => {
   assert.deepEqual(groups.blocked.map((o) => o.id), ["blocked"]);
 
   const summary = summarizeOpportunities(groups);
-  assert.equal(summary.valid, 1);
-  assert.equal(summary.raw, 1);
-  assert.equal(summary.blocked, 1);
   assert.equal(summary.shown, 3);
   assert.equal(summary.bestValidNetToman, 8_663);
-  // With no valid row there is no "best" — null, never zero.
   assert.equal(summarizeOpportunities(groupOpportunities([rows[2]])).bestValidNetToman, null);
+
+  const panel = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
+  // A real tablist with three segments, each carrying its own count.
+  assert.ok(panel.includes('role="tablist"') && panel.includes('aria-label="دستهٔ فرصت‌ها"'));
+  assert.ok(panel.includes('aria-selected={category === c}'));
+  assert.ok(panel.includes('<span className="sa-seg-count">{formatCountFa(groups[c].length)}</span>'));
+  // Only the selected category is rendered.
+  assert.ok(panel.includes("paginate(groups[category], requestedPage, perPage)"));
+  assert.equal(panel.includes("CATEGORY_ORDER.map((group) =>"), false, "categories are not stacked");
+});
+
+await test("8B the desktop table keeps only the essential columns", () => {
+  const panel = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
+  const head = panel.slice(panel.indexOf("<thead>"), panel.indexOf("</thead>"));
+  const headers = [...head.matchAll(/<th[^>]*>([^<]*)</g)].map((m) => m[1].trim());
+  assert.equal((head.match(/<th[\s>/]/g) ?? []).length, 9, "nine columns, no more");
+  assert.deepEqual(headers.filter(Boolean), [
+    "مسیر",
+    "حجم",
+    "قیمت خرید / فروش",
+    "اسپرد خام",
+    "کارمزد شناخته‌شده",
+    "سود خالص اقتصادی",
+    "سود تعدیل‌شده با بافر",
+    "وضعیت و تازگی"
+  ]);
+  // The secondary figures moved into the drawer and are not in the table.
+  const drawer = read("src/components/shadowArbitrage/OpportunityDrawer.tsx");
+  for (const moved of ["بافر لغزش و ریسک", "سود نقدی تومانی", "برآورد هزینهٔ بازتوازن"]) {
+    assert.equal(head.includes(moved), false, `${moved} must not be a column`);
+    assert.ok(drawer.includes(moved), `${moved} must live in the details drawer`);
+  }
+  // Every row can open that drawer.
+  assert.ok(panel.includes('className="sa-btn-details glass-control"'));
+  assert.ok(panel.includes("onClick={() => onSelect(o)}"));
 });
 
 await test("8B the exact blocking reasons are preserved, never summarised away", () => {
   const reasons = ["stale_sell_source", "fee_unknown", "insufficient_buy_depth"];
   const o = opp({ eligibility: "BLOCKED", blockedReasons: reasons });
-  // The first recorded reason leads; the rest stay available in order.
   assert.equal(primaryBlockingReason(o), "stale_sell_source");
   assert.equal(primaryBlockingReason(opp({ blockedReasons: [] })), null);
 
   const panel = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
-  // The complete list is rendered, not a truncated slice of it.
-  assert.ok(panel.includes("o.blockedReasons.slice(1)"), "every remaining reason is listed");
-  assert.equal(/slice\(0,\s*\d\)/.test(panel), false, "reasons must not be capped");
-  // No generic catch-all sentence replaces a real reason.
-  assert.equal(panel.includes("مسدود شده است"), false);
-  // Technical codes stay out of the primary UI: only the drawer prints them.
-  assert.equal(/<code/.test(panel), false, "codes belong in the details drawer");
-  assert.ok(read("src/components/shadowArbitrage/OpportunityDrawer.tsx").includes('className="sa-code"'));
-  // Each reason chip carries the plain-Persian explanation as its tooltip.
+  // The list itself is rendered in full by the drawer, never truncated.
+  const drawer = read("src/components/shadowArbitrage/OpportunityDrawer.tsx");
+  assert.ok(drawer.includes("o.blockedReasons.map((r, i) =>"));
+  assert.equal(/blockedReasons\.slice\(0,\s*\d\)/.test(drawer), false, "reasons must not be capped");
+  assert.ok(drawer.includes('className="sa-code"'), "technical codes stay in the drawer");
+  // The table leads with the primary reason and explains it in plain Persian.
   assert.ok(panel.includes("title={blockedDetail(primary)}"));
+  assert.equal(/<code/.test(panel), false, "no technical codes in the primary UI");
+  assert.equal(panel.includes("مسدود شده است"), false, "no generic catch-all reason");
 });
 
 await test("8B missing figures render as an em dash with a reason, never as zero", () => {
   const panel = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
-  // The money renderer has exactly one path for null, and it is the em dash.
   const money = panel.slice(panel.indexOf("function Money("));
   assert.ok(money.includes("if (value === null)"));
   assert.ok(money.includes("—"));
-  assert.ok(money.includes("title={unknownHint}"), "and it says why it is missing");
-  // Nothing falls back to a number.
+  assert.ok(money.includes("title={UNKNOWN_PNL_FA}"), "and it says why it is missing");
   assert.equal(/\?\?\s*0\b/.test(panel), false, "no zero fallback for a missing metric");
 
   const sources = read("src/components/shadowArbitrage/SourcesPanel.tsx");
@@ -1167,13 +1254,11 @@ await test("8B the sources tab keeps health and readiness apart, with per-side s
   const nobitex = rows.find((r) => r.sourceId === "nobitex")!;
   const arzinja = rows.find((r) => r.sourceId === "arzinja")!;
 
-  // Health facts and readiness facts live on the same row but never merge.
   assert.equal(nobitex.health, "healthy");
   assert.equal(nobitex.latencyP95Ms, 400);
   assert.equal(nobitex.accountState, "VERIFIED");
   assert.equal(nobitex.takerFeeBps, 25);
 
-  // Settlement is per venue AND per side, from the admin-confirmed table.
   assert.equal(nobitex.buySettlement.feeAsset, "IRT");
   assert.equal(nobitex.sellSettlement.feeAsset, "USDT");
   assert.equal(nobitex.buySettlement.provenance, "ADMIN_CONFIRMED");
@@ -1185,16 +1270,13 @@ await test("8B the sources tab keeps health and readiness apart, with per-side s
     provenance: "UNKNOWN"
   });
 
-  // Arzinja is marked reference-only, semantically and visually.
   assert.equal(arzinja.referenceOnly, true);
   assert.ok(read("src/components/shadowArbitrage/SourcesPanel.tsx").includes("فقط مرجع"));
 
-  // Expiry comes from the confirmation date plus the reported window.
   assert.equal(nobitex.feeExpiresAt, "2026-09-29T00:00:00.000Z");
   assert.equal(feeExpiryIso(null, 90), null);
   assert.equal(feeExpiryIso("2026-07-01T00:00:00.000Z", null), null);
 
-  // A venue the accounts endpoint never described keeps nulls, not defaults.
   const partial = buildVenueRows({
     certifications: [],
     health: [],
@@ -1215,32 +1297,62 @@ await test("8B the sources tab keeps health and readiness apart, with per-side s
   assert.equal(summary.referenceOnly, 1);
 });
 
+await test("8B the sources tab shows venue cards, one dataset at a time", () => {
+  const sources = read("src/components/shadowArbitrage/SourcesPanel.tsx");
+
+  // Two datasets behind one segmented control; only the selected one renders.
+  assert.ok(sources.includes('role="tablist" aria-label="نمای منابع"'));
+  assert.ok(sources.includes('labelFa: "سلامت منابع"'));
+  assert.ok(sources.includes('labelFa: "حساب‌ها و کارمزدها"'));
+  assert.ok(sources.includes('view === "health" ? ('), "one dataset at a time");
+
+  // Cards, not a wide table — the venue grid has no table at all.
+  const grid = sources.slice(sources.indexOf('className="panel-body sa-venue-grid"'), sources.indexOf("<Pager"));
+  assert.equal(/<table/.test(grid), false, "venues must never be a clipped table");
+  assert.ok(sources.includes('className="panel sa-panel sa-venue-card"'));
+  assert.ok(sources.includes("<HealthCard") && sources.includes("<AccountCard"));
+
+  // Each card has a header with the Persian name, market and a status chip,
+  // plus a details expansion for everything secondary.
+  assert.ok(sources.includes("<strong>{row.nameFa}</strong>"));
+  assert.ok(sources.includes("{row.marketSymbol ?? \"—\"}"));
+  assert.ok(sources.includes('<details className="sa-venue-details">'));
+  assert.ok(sources.includes("<summary>جزئیات</summary>"));
+
+  // Six cards a page, paged with the shared control.
+  assert.ok(sources.includes("const VENUES_PER_PAGE = 6"));
+  assert.ok(sources.includes("paginate(rows, requestedPage, VENUES_PER_PAGE)"));
+  assert.ok(sources.includes("perPage={VENUES_PER_PAGE}"));
+});
+
 await test("8B both tabs reuse the shared glass primitives and add no material", () => {
   const op = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
   const sr = read("src/components/shadowArbitrage/SourcesPanel.tsx");
+  const kit = read("src/components/shadowArbitrage/panelKit.tsx");
 
   const surfaces: Array<[string, string, string]> = [
-    ["opportunity summary", op, 'className="panel sa-panel sa-op-summary"'],
-    ["filter rail", op, 'className="panel sa-panel sa-op-filterbar"'],
-    ["category group", op, "panel sa-panel sa-op-group"],
-    ["size segmented control", op, 'className="sa-op-segmented glass-tabbar"'],
+    ["KPI card", kit, "panel sa-panel sa-kpi sa-rail-"],
+    ["pager control", kit, 'className="sa-btn-page glass-control"'],
+    ["pager size control", kit, 'className="sa-segmented glass-tabbar"'],
+    ["filter panel", op, 'className="panel sa-panel" aria-label="فیلتر و جست‌وجو"'],
+    ["filter input", op, 'className="sa-control glass-control"'],
+    ["size segmented control", op, 'className="sa-segmented glass-tabbar"'],
+    ["category control", op, 'className="sa-segmented sa-segmented-lg glass-tabbar"'],
     ["active segment", op, "is-active glass-control"],
-    ["filter input", op, "sa-input glass-control sa-op-control"],
-    ["filter select", op, "sa-select glass-control sa-op-control"],
     ["mobile card", op, 'className="sa-op-card glass-control"'],
-    ["clear action", op, 'className="sa-op-clear glass-control"'],
-    ["sources summary", sr, 'className="panel sa-panel sa-sr-summary"'],
-    ["health table panel", sr, 'className="panel sa-panel" aria-label="سلامت منبع و داده"'],
-    ["readiness table panel", sr, 'className="panel sa-panel" aria-label="آمادگی حساب و کارمزد"']
+    ["details action", op, 'className="sa-btn-details glass-control"'],
+    ["mobile disclosure", op, 'className="sa-more-btn glass-control"'],
+    ["venue view control", sr, 'className="sa-segmented sa-segmented-lg glass-tabbar"'],
+    ["venue card", sr, 'className="panel sa-panel sa-venue-card"']
   ];
   for (const [name, src, needle] of surfaces) {
     assert.ok(src.includes(needle), `${name} must reuse a shared primitive (${needle})`);
   }
-  // Panel structure comes from the shared header/body classes.
-  assert.ok(op.includes("panel-header sa-panel-header") && op.includes('className="panel-body'));
-  assert.ok(sr.includes("panel-header sa-panel-header") && sr.includes('className="panel-body'));
-  // No inline styling sneaks a surface in through the back door.
+  // Every major section is a real panel with a header and a body.
   for (const src of [op, sr]) {
+    assert.ok(src.includes("panel-header sa-panel-header"));
+    assert.ok(src.includes('<h3 className="panel-title">'));
+    assert.ok(src.includes('className="panel-body'));
     assert.equal(/style=\{\{/.test(src), false, "no inline styles");
   }
 });
@@ -1251,23 +1363,227 @@ await test("8B Phase 8B CSS declares layout only — no forked material", () => 
   assert.equal(/backdrop-filter\s*:/.test(css), false, "blur must come from the primitives");
   assert.equal(/box-shadow\s*:/.test(css), false, "shadows must come from the primitives");
 
-  // Backgrounds: only the reset and the semantic status rail.
   const backgrounds = [...css.matchAll(/background\s*:\s*([^;]+);/g)].map((m) => m[1].trim());
   const allowed = ["none", "var(--green)", "var(--yellow)", "var(--red)", "var(--line)"];
   for (const bg of backgrounds) {
     assert.ok(allowed.includes(bg), `unexpected surface background in Phase 8B CSS: ${bg}`);
   }
-  // Colours are tokens or mixes of tokens — no new literals.
   assert.deepEqual([...new Set([...css.matchAll(/#[0-9a-fA-F]{3,8}/g)].map((m) => m[0]))], []);
   assert.equal(/rgba?\(\s*\d/.test(css), false, "no raw rgb()/rgba() values");
-  // Borders and radii are structural or token-derived only.
+
   const borders = [...css.matchAll(/border[a-z-]*\s*:\s*([^;]+);/g)].map((m) => m[1].trim());
   for (const b of borders) {
     assert.ok(
-      b === "0" || b.includes("999px") || b.includes("var(--radius"),
+      b === "0" ||
+        b.includes("999px") ||
+        b.includes("var(--radius") ||
+        b.includes("var(--line-soft)"),
       `unexpected border declaration: ${b}`
     );
   }
+});
+
+await test("8B the type scale matches the main OTC dashboard", () => {
+  const css = stripComments(phase8bCss());
+  const globals = read("app/globals.css");
+
+  // The dashboard's own reference values.
+  assert.ok(globals.includes("th,\ntd {"), "the shared table rule exists");
+  const table = globals.slice(globals.indexOf("th,\ntd {"), globals.indexOf("tr:last-child td"));
+  assert.ok(table.includes("font-size: 13px"), "dashboard tables are 13px");
+  const metric = globals.slice(globals.indexOf(".metric-label {"), globals.indexOf(".toman-amount {"));
+  assert.ok(metric.includes("font-size: 12px"), "dashboard metric labels are 12px");
+  assert.ok(metric.includes("font-size: 22px"), "dashboard metric values are 22px");
+
+  // Shadow now uses the same figures rather than shrinking to fit columns.
+  const cells = css.slice(css.indexOf(".sa-op-table th,"), css.indexOf(".sa-stack-2 {"));
+  assert.ok(cells.includes("font-size: 13px"));
+  assert.ok(cells.includes("padding: 12px 10px"));
+  const kpi = css.slice(css.indexOf(".sa-kpi-label {"), css.indexOf(".sa-segmented {"));
+  assert.ok(kpi.includes("font-size: 12px"));
+  assert.ok(kpi.includes("font-size: 22px"));
+
+  // Nothing in the section drops below 12px any more.
+  const sizes = [...css.matchAll(/font-size:\s*([\d.]+)px/g)].map((m) => Number(m[1]));
+  assert.ok(sizes.length > 10);
+  assert.equal(
+    sizes.filter((n) => n < 12).length,
+    0,
+    `text must not shrink below 12px: ${sizes.filter((n) => n < 12).join(", ")}`
+  );
+});
+
+await test("8B the KPI grid is four, two, then a 2×2 block", () => {
+  const css = stripComments(phase8bCss());
+  const grid = css.slice(css.indexOf(".sa-kpi-grid {"), css.indexOf(".sa-kpi {"));
+  assert.ok(grid.includes("grid-template-columns: repeat(4, minmax(0, 1fr))"), "desktop: four");
+
+  const tablet = css.slice(css.indexOf("@media (max-width: 1024px)"));
+  assert.ok(tablet.slice(0, 400).includes(".sa-kpi-grid"));
+  assert.ok(tablet.slice(0, 400).includes("repeat(2, minmax(0, 1fr))"), "tablet: two");
+
+  // The phone keeps two columns — a compact 2×2 block, not one long column.
+  const phone = css.slice(css.indexOf("@media (max-width: 560px)"));
+  assert.equal(phone.includes(".sa-kpi-grid"), false, "the 2-column KPI grid carries over");
+  assert.ok(phone.includes(".sa-kpi-value"), "only the figure size tightens");
+
+  // Each card carries a label, one number and one supporting line — nothing else.
+  const kit = read("src/components/shadowArbitrage/panelKit.tsx");
+  const kpi = kit.slice(kit.indexOf("export function Kpi("), kit.indexOf("export function Pager("));
+  assert.equal((kpi.match(/sa-kpi-/g) ?? []).length, 4, "label, value, hint and the body wrapper");
+});
+
+await test("8B the page never scrolls sideways — only tables and rails do", () => {
+  const css = stripComments(phase8bCss());
+
+  const gridTracks = [...css.matchAll(/grid-template-columns\s*:\s*([^;]+);/g)].map((m) => m[1].trim());
+  for (const track of gridTracks) {
+    assert.ok(
+      track.includes("minmax(0,") || track.includes("minmax(190px, 1fr)") || track.includes("minmax(200px, 1fr)"),
+      `grid track must be able to shrink: ${track}`
+    );
+  }
+  assert.ok(css.includes("min-width: 0"));
+  assert.ok(read("app/globals.css").includes(".sa-table-wrap {"));
+  const segmented = css.slice(css.indexOf(".sa-segmented {"), css.indexOf(".sa-seg {"));
+  assert.ok(segmented.includes("overflow-x: auto"));
+
+  // Below 768px the wide table is replaced by cards instead of being squeezed.
+  const mobile = css.slice(css.indexOf("@media (max-width: 768px)"));
+  const head = mobile.slice(0, 900);
+  assert.ok(head.includes(".sa-op-table-wrap"));
+  assert.ok(head.includes("display: none"));
+  assert.ok(head.includes(".sa-op-cards"));
+  assert.ok(css.includes(".sa-op-cards {\n  display: none;\n}"), "cards are desktop-hidden");
+  // And venue cards drop to a single column.
+  assert.ok(head.includes(".sa-venue-grid"));
+});
+
+await test("8B mobile reaches the first result without the whole filter form", () => {
+  const css = stripComments(phase8bCss());
+  const panel = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
+
+  // Desktop: one row of controls — search, size, venue, sort — then the chips.
+  const body = css.slice(css.indexOf(".sa-filter-body {"), css.indexOf(".sa-field {"));
+  assert.ok(body.includes("grid-template-columns: repeat(4, minmax(0, 1fr))"), "four controls in a row");
+  assert.ok(body.includes("display: contents"), "the collapsible block joins that row on desktop");
+  assert.ok(body.includes("grid-column: 1 / -1"), "the chips get their own full-width row");
+  // And the disclosure button only exists on a phone.
+  assert.ok(css.includes(".sa-more-btn {\n  display: none;\n}"), "no disclosure button on desktop");
+
+  // Mobile: the button appears and the advanced block collapses by default.
+  const mobile = css.slice(css.indexOf("@media (max-width: 768px)"), css.indexOf("@media (max-width: 560px)"));
+  assert.ok(mobile.includes(".sa-more-btn"));
+  assert.ok(mobile.includes(".sa-advanced {\n    display: none;\n  }"));
+  assert.ok(mobile.includes(".sa-filter-body {\n    grid-template-columns: minmax(0, 1fr);\n  }"));
+  assert.ok(mobile.includes(".sa-advanced.is-open"));
+
+  // Search and the category control are outside that collapsed block.
+  const advancedMarkup = panel.slice(panel.indexOf('className={`sa-advanced'), panel.indexOf("{/* ── category"));
+  assert.equal(advancedMarkup.includes('type="search"'), false, "search stays visible");
+  assert.equal(advancedMarkup.includes('role="tablist"'), false, "the category control stays visible");
+  assert.ok(panel.includes("aria-expanded={advancedOpen}"));
+  assert.ok(panel.includes("فیلترهای بیشتر"));
+  assert.ok(panel.includes("پاک‌کردن فیلترها"));
+});
+
+await test("8B RTL numbers, ratios and route strings are bidi-isolated", () => {
+  const css = phase8bCss();
+  const rule = css.slice(css.indexOf(".sa-bidi {"));
+  assert.ok(rule.slice(0, 120).includes("direction: ltr"));
+  assert.ok(rule.slice(0, 120).includes("unicode-bidi: isolate"));
+
+  assert.ok(read("src/components/shadowArbitrage/Bidi.tsx").includes('className="sa-bidi"'));
+
+  const op = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
+  const sr = read("src/components/shadowArbitrage/SourcesPanel.tsx");
+  const kit = read("src/components/shadowArbitrage/panelKit.tsx");
+  assert.ok(op.includes("<Bidi>{formatPercentFa(o.rawSpreadPercent, 3, true)}</Bidi>"));
+  assert.ok(sr.includes("toFaDigits(summary.healthy)} / ${toFaDigits(summary.total)"));
+  assert.ok(sr.includes("p50 ${toFaDigits(row.latencyP50Ms)}ms"));
+  assert.ok(kit.includes("toFaDigits(page)} / ${toFaDigits(pageCount)"), "the page ratio is isolated");
+});
+
+await test("8B the tabs are keyboard reachable and labelled", () => {
+  const op = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
+  const sr = read("src/components/shadowArbitrage/SourcesPanel.tsx");
+  const kit = read("src/components/shadowArbitrage/panelKit.tsx");
+
+  // Every action is a real button, so it is reachable and operable by keyboard.
+  assert.equal(/tabIndex=\{0\}/.test(op), false, "no faux-interactive rows");
+  assert.ok((op.match(/type="button"/g) ?? []).length >= 6);
+  assert.ok(op.includes("aria-label={`جزئیات محاسبهٔ خرید از"));
+  assert.ok(op.includes('role="group" aria-label="حجم معامله"'));
+  assert.ok(op.includes('aria-label="فیلتر و جست‌وجو"'));
+  assert.ok(op.includes("aria-pressed="));
+  assert.ok(kit.includes('aria-label="صفحه‌بندی نتایج"'));
+  assert.ok(kit.includes("disabled={page <= 1}") && kit.includes("disabled={page >= pageCount}"));
+  assert.ok((sr.match(/scope="col"/g) ?? []).length >= 6);
+  assert.ok(sr.includes("aria-expanded={editing}"));
+
+  const css = phase8bCss();
+  assert.ok(css.includes(".sa-seg:focus-visible"));
+  assert.ok(css.includes(".sa-btn-page:focus-visible"));
+  assert.ok(css.includes(".sa-control:focus-visible"));
+});
+
+await test("8B every data state is explicit and none of them fabricates data", () => {
+  const op = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
+  const sr = read("src/components/shadowArbitrage/SourcesPanel.tsx");
+
+  for (const [name, src] of [["opportunities", op], ["sources", sr]] as const) {
+    assert.ok(src.includes("if (error)"), `${name} has an error state`);
+    assert.ok(src.includes("loading &&"), `${name} has a loading state`);
+    assert.ok(src.includes("sa-empty"), `${name} has an empty state`);
+    assert.ok(src.includes("aria-busy"), `${name} announces loading`);
+  }
+  assert.ok(op.includes("stale ?") && op.includes("بودجهٔ تازگی"));
+  assert.ok(sr.includes("const partial = venues.length === 0"));
+  assert.ok(sr.includes("سلامت منابع همچنان معتبر است"));
+});
+
+await test("8B the redesign adds no order, credential, balance or transfer path", () => {
+  const files = [
+    "src/components/shadowArbitrage/OpportunitiesPanel.tsx",
+    "src/components/shadowArbitrage/SourcesPanel.tsx",
+    "src/components/shadowArbitrage/opportunityModel.ts",
+    "src/components/shadowArbitrage/sourcesModel.ts",
+    "src/components/shadowArbitrage/panelKit.tsx",
+    "src/components/shadowArbitrage/urlState.ts",
+    "src/components/shadowArbitrage/Bidi.tsx",
+    "src/components/ShadowArbitrageView.tsx"
+  ];
+  const banned = [
+    /placeOrder/i,
+    /cancelOrder/i,
+    /createOrder/i,
+    /\bwithdraw/i,
+    /\bdeposit\(/i,
+    /transferFunds/i,
+    /apiKey/i,
+    /apiSecret/i,
+    /privateKey/i,
+    /passphrase/i,
+    /fetchBalance/i,
+    /signRequest/i
+  ];
+  for (const file of files) {
+    const src = stripComments(read(file));
+    for (const pattern of banned) {
+      assert.equal(pattern.test(src), false, `${file} must not contain ${pattern}`);
+    }
+  }
+
+  const sr = read("src/components/shadowArbitrage/SourcesPanel.tsx");
+  const posts = [...sr.matchAll(/method:\s*"([A-Z]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(posts, ["POST"]);
+  const endpoints = [...sr.matchAll(/fetch\("([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(endpoints, ["/api/shadow-arbitrage/accounts"]);
+  assert.ok(sr.includes("هیچ\n            کلید API یا اطلاعات محرمانه‌ای"));
+
+  const capability = read("src/lib/shadowArbitrage/live/capability.ts");
+  assert.ok(capability.includes("export const LIVE_EXECUTION_IMPLEMENTED = false as const"));
+  assert.equal(/process\.env/.test(capability), false);
 });
 
 await test("8B every new selector is scoped under .sa-*", () => {
@@ -1293,147 +1609,20 @@ await test("8B every new selector is scoped under .sa-*", () => {
     }
     buffer.push(line);
   }
-  assert.ok(selectors.length > 30, "the section must actually contain rules");
+  assert.ok(selectors.length > 40, "the section must actually contain rules");
   for (const selector of selectors) {
     assert.ok(selector.includes(".sa-"), `unscoped selector leaked into globals: ${selector}`);
   }
 });
 
-await test("8B the page never scrolls sideways — only tables and rails do", () => {
-  const css = phase8bCss();
-
-  // Grid tracks can shrink, so a long cell cannot push the page wider.
-  const gridTracks = [...css.matchAll(/grid-template-columns\s*:\s*([^;]+);/g)].map((m) =>
-    m[1].trim()
-  );
-  for (const track of gridTracks) {
-    assert.ok(
-      track.includes("minmax(0,") || track.includes("minmax(190px, 1fr)"),
-      `grid track must be able to shrink: ${track}`
-    );
-  }
-  // Containers opt out of the min-content floor.
-  assert.ok(css.includes("min-width: 0"));
-  // Horizontal scrolling is delegated to the table wrapper and the segmented rail.
-  assert.ok(read("app/globals.css").includes(".sa-table-wrap {"));
-  const segmented = css.slice(css.indexOf(".sa-op-segmented {"), css.indexOf(".sa-op-seg {"));
-  assert.ok(segmented.includes("overflow-x: auto"));
-
-  // Below 768px the wide table is replaced by cards instead of being squeezed.
-  const mobile = css.slice(css.indexOf("@media (max-width: 768px)"));
-  assert.ok(mobile.slice(0, 700).includes(".sa-op-table-wrap"));
-  assert.ok(mobile.slice(0, 700).includes("display: none"));
-  assert.ok(mobile.slice(0, 700).includes(".sa-op-cards"));
-  assert.ok(css.includes(".sa-op-cards {\n  display: none;\n}"), "cards are desktop-hidden");
-});
-
-await test("8B RTL numbers, ratios and route strings are bidi-isolated", () => {
-  const css = phase8bCss();
-  const rule = css.slice(css.indexOf(".sa-bidi {"));
-  assert.ok(rule.slice(0, 120).includes("direction: ltr"));
-  assert.ok(rule.slice(0, 120).includes("unicode-bidi: isolate"));
-
-  const bidi = read("src/components/shadowArbitrage/Bidi.tsx");
-  assert.ok(bidi.includes('className="sa-bidi"'));
-
-  // Both tabs use it for percentages, ratios and latency figures.
-  const op = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
-  const sr = read("src/components/shadowArbitrage/SourcesPanel.tsx");
-  assert.ok(op.includes("<Bidi>{formatPercentFa(o.rawSpreadPercent, 3, true)}</Bidi>"));
-  assert.ok(sr.includes("<Bidi>{formatPercentFa(r.availabilityPercent, 1)}</Bidi>"));
-  assert.ok(sr.includes("p50 ${toFaDigits(r.latencyP50Ms)}ms"));
-  assert.ok(sr.includes("toFaDigits(summary.healthy)} / ${toFaDigits(summary.total)"));
-});
-
-await test("8B the tabs are keyboard reachable and labelled", () => {
-  const op = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
-  const sr = read("src/components/shadowArbitrage/SourcesPanel.tsx");
-
-  // Rows and cards are operable with a keyboard, not click-only.
-  assert.equal((op.match(/tabIndex=\{0\}/g) ?? []).length, 2, "table row and mobile card");
-  assert.ok(op.includes('e.key === "Enter" || e.key === " "'));
-  assert.ok(op.includes("aria-label={`جزئیات محاسبهٔ خرید از"));
-  // Filters announce themselves.
-  assert.ok(op.includes('role="group" aria-label="حجم معامله"'));
-  assert.ok(op.includes('aria-label="فیلترها و مرتب‌سازی"'));
-  assert.ok(op.includes("aria-pressed="));
-  // Tables carry scoped headers and section labels.
-  assert.ok((sr.match(/scope="col"/g) ?? []).length > 10);
-  assert.ok(sr.includes('aria-expanded={editing === r.sourceId}'));
-  // Focus is visible for every custom control.
-  const css = phase8bCss();
-  assert.ok(css.includes(".sa-op-seg:focus-visible"));
-  assert.ok(css.includes(".sa-op-card:focus-visible"));
-});
-
-await test("8B every data state is explicit and none of them fabricates data", () => {
-  const op = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
-  const sr = read("src/components/shadowArbitrage/SourcesPanel.tsx");
-
-  for (const [name, src] of [["opportunities", op], ["sources", sr]] as const) {
-    assert.ok(src.includes("if (error)"), `${name} has an error state`);
-    assert.ok(src.includes("loading &&"), `${name} has a loading state`);
-    assert.ok(src.includes("sa-empty"), `${name} has an empty state`);
-    assert.ok(src.includes('aria-busy'), `${name} announces loading`);
-  }
-  // Stale and partial data are called out rather than presented as current.
-  assert.ok(op.includes("stale ?") && op.includes("بودجهٔ تازگی"));
-  assert.ok(sr.includes("const partial = venues.length === 0"));
-  assert.ok(sr.includes("سلامت منابع همچنان معتبر است"));
-});
-
-await test("8B the redesign adds no order, credential, balance or transfer path", () => {
-  const files = [
-    "src/components/shadowArbitrage/OpportunitiesPanel.tsx",
-    "src/components/shadowArbitrage/SourcesPanel.tsx",
-    "src/components/shadowArbitrage/opportunityModel.ts",
-    "src/components/shadowArbitrage/sourcesModel.ts",
-    "src/components/shadowArbitrage/Bidi.tsx",
-    "src/components/ShadowArbitrageView.tsx"
-  ];
-  const banned = [
-    /placeOrder/i,
-    /cancelOrder/i,
-    /createOrder/i,
-    /\bwithdraw/i,
-    /\bdeposit\(/i,
-    /transferFunds/i,
-    /apiKey/i,
-    /apiSecret/i,
-    /privateKey/i,
-    /passphrase/i,
-    /fetchBalance/i,
-    /signRequest/i
-  ];
-  for (const file of files) {
-    const src = stripComments(read(file));
-    for (const pattern of banned) {
-      assert.equal(pattern.test(src), false, `${file} must not contain ${pattern}`);
-    }
-  }
-
-  // The only write the redesigned tabs perform is the existing fee-evidence POST.
-  const sr = read("src/components/shadowArbitrage/SourcesPanel.tsx");
-  const posts = [...sr.matchAll(/method:\s*"([A-Z]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(posts, ["POST"]);
-  const endpoints = [...sr.matchAll(/fetch\("([^"]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(endpoints, ["/api/shadow-arbitrage/accounts"]);
-  // And it still refuses to carry a secret.
-  assert.ok(sr.includes("هیچ کلید API، رمز یا دسترسی حسابی"));
-
-  // Real execution stays unimplemented and disarmed.
-  const capability = read("src/lib/shadowArbitrage/live/capability.ts");
-  assert.ok(capability.includes("export const LIVE_EXECUTION_IMPLEMENTED = false as const"));
-  assert.equal(/process\.env/.test(capability), false);
-});
-
 await test("8B the redesign touches presentation only — backend files are untouched", async () => {
-  // Structural boundary: no Shadow UI file may reach into the server layer.
   const uiFiles = [
     "src/components/shadowArbitrage/OpportunitiesPanel.tsx",
     "src/components/shadowArbitrage/SourcesPanel.tsx",
     "src/components/shadowArbitrage/opportunityModel.ts",
-    "src/components/shadowArbitrage/sourcesModel.ts"
+    "src/components/shadowArbitrage/sourcesModel.ts",
+    "src/components/shadowArbitrage/panelKit.tsx",
+    "src/components/shadowArbitrage/urlState.ts"
   ];
   for (const file of uiFiles) {
     const src = read(file);
@@ -1442,7 +1631,6 @@ await test("8B the redesign touches presentation only — backend files are unto
     }
   }
 
-  // And the released backend really is byte-identical, proven by git.
   const { execFileSync } = await import("node:child_process");
   const paths = [
     "app/api",

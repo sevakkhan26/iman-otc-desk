@@ -6,6 +6,7 @@ import { AccountReadiness } from "@/components/shadowArbitrage/AccountReadiness"
 import { AnalyticsPanels } from "@/components/shadowArbitrage/AnalyticsPanels";
 import { CapitalSimulator } from "@/components/shadowArbitrage/CapitalSimulator";
 import { ObservationHeader } from "@/components/shadowArbitrage/ObservationHeader";
+import { LiveReadiness } from "@/components/shadowArbitrage/LiveReadiness";
 import { OpportunityDrawer } from "@/components/shadowArbitrage/OpportunityDrawer";
 import { OpportunityTable } from "@/components/shadowArbitrage/OpportunityTable";
 import { PaperExecution } from "@/components/shadowArbitrage/PaperExecution";
@@ -195,6 +196,8 @@ export function ShadowArbitrageView() {
       <CapitalSimulator />
 
       <PaperExecution />
+
+      <LiveReadiness />
 
       <AnalyticsPanels
         analytics={analytics}

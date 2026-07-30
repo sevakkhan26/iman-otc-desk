@@ -39,6 +39,7 @@ const { certifyFromSnapshot, resetCertifications } = await import(
 const { bucketIdempotencyKey } = await import("../src/lib/shadowArbitrage/collector.ts");
 const paperRepo = await import("../src/db/repositories/shadowPaper.ts");
 const paperRun = await import("../src/lib/shadowArbitrage/paper/run.ts");
+const liveRepo = await import("../src/db/repositories/shadowLive.ts");
 const types = await import("../src/lib/shadowArbitrage/types.ts");
 void types;
 
@@ -1073,6 +1074,90 @@ await test("v4.9.1 a changed reason writes exactly one new transition", async ()
   });
   assert.equal(quiet.detailedEventsWritten, 0);
   assert.equal((await paperRepo.loadPaperLedger(session.id)).length, 3);
+});
+
+await test("7A readiness attestations, policies and reviews are append-only", async () => {
+  // Nothing exists until a human records it — no seeded defaults.
+  assert.deepEqual(await liveRepo.loadRiskPolicyValues(), []);
+  assert.deepEqual(await liveRepo.loadAttestations(), []);
+  assert.deepEqual(await liveRepo.loadReadinessReviews(), []);
+
+  await liveRepo.recordRiskPolicy({
+    policyKey: "max_order_size_usdt",
+    value: 25,
+    setBy: "admin",
+    note: "سقف اولیه"
+  });
+  await liveRepo.recordRiskPolicy({
+    policyKey: "max_order_size_usdt",
+    value: 50,
+    setBy: "admin",
+    note: "افزایش سقف"
+  });
+
+  // Latest wins for evaluation, but both rows survive for audit.
+  const latest = await liveRepo.loadRiskPolicyValues();
+  assert.equal(latest.length, 1);
+  assert.equal(latest[0].value, 50);
+  const history = await liveRepo.loadRiskPolicyHistory("max_order_size_usdt");
+  assert.equal(history.length, 2, "the earlier value is preserved");
+  assert.equal(history[1].value, 25);
+
+  await liveRepo.recordAttestation({
+    kind: "key_permissions",
+    confirmedBy: "admin",
+    claims: {
+      trading_only_keys: true,
+      withdrawal_permission_disabled: true,
+      ip_whitelist_confirmed: true
+    },
+    note: null
+  });
+  const attestations = await liveRepo.loadAttestations();
+  assert.equal(attestations.length, 1);
+  assert.equal(attestations[0].claims.withdrawal_permission_disabled, true);
+  // The attestation stores a STATEMENT, never a credential.
+  assert.equal(JSON.stringify(attestations[0]).toLowerCase().includes("apikey"), false);
+
+  await liveRepo.recordReadinessReview({
+    reviewedBy: "admin",
+    gateState: "DISARMED",
+    effectiveState: "DISARMED",
+    passedCount: 3,
+    blockedCount: 8,
+    blockers: [{ gate: "risk_policies", blocker: "پیکربندی‌نشده" }],
+    note: null
+  });
+  const reviews = await liveRepo.loadReadinessReviews();
+  assert.equal(reviews.length, 1);
+  assert.equal(reviews[0].effectiveState, "DISARMED", "a review never arms anything");
+  assert.equal(reviews[0].blockedCount, 8);
+});
+
+await test("7A readiness storage does not disturb the observation or paper session", async () => {
+  const observation = await repo.getObservation();
+  const paperSession = await paperRepo.getActivePaperSession();
+  const balancesBefore = paperSession ? await paperRepo.loadPaperBalances(paperSession.id) : [];
+
+  await liveRepo.recordRiskPolicy({
+    policyKey: "max_daily_loss_toman",
+    value: 1_000_000,
+    setBy: "admin",
+    note: null
+  });
+
+  const observationAfter = await repo.getObservation();
+  assert.equal(observationAfter?.id, observation?.id, "observation.id must be untouched");
+  const sessionAfter = await paperRepo.getActivePaperSession();
+  assert.equal(sessionAfter?.id, paperSession?.id, "the paper session is untouched");
+  assert.equal(sessionAfter?.status, paperSession?.status, "its status is untouched");
+  if (paperSession) {
+    assert.deepEqual(
+      await paperRepo.loadPaperBalances(paperSession.id),
+      balancesBefore,
+      "virtual balances are untouched"
+    );
+  }
 });
 
 await closeDb().catch(() => undefined);

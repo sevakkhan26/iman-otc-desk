@@ -95,6 +95,36 @@ import {
   type PricedCandidate
 } from "../src/lib/shadowArbitrage/paper/engine.ts";
 import {
+  LIVE_EXECUTION_IMPLEMENTED,
+  LIVE_NOT_IMPLEMENTED_BANNER_EN
+} from "../src/lib/shadowArbitrage/live/capability.ts";
+import {
+  REQUIRED_RISK_POLICIES,
+  buildPolicyState,
+  unsetPolicies,
+  validatePolicyValue
+} from "../src/lib/shadowArbitrage/live/policy.ts";
+import {
+  ORDER_PLAN_TRANSITIONS,
+  RESTART_RECOVERY,
+  canTransition,
+  clientOrderId,
+  reconcilePlan,
+  runTwoLegPlan,
+  validatePreTrade,
+  type ExecutionPlan,
+  type ExecutionSurfacePort,
+  type LegOutcome,
+  type OrderPlanState
+} from "../src/lib/shadowArbitrage/live/executionPlan.ts";
+import {
+  ATTESTATION_VALID_DAYS,
+  evaluateReadiness,
+  type AttestationRecord,
+  type ReadinessInput
+} from "../src/lib/shadowArbitrage/live/readiness.ts";
+import { createPaperSurface } from "../src/lib/shadowArbitrage/live/paperSurface.ts";
+import {
   isDeadLocalWorker,
   makeWorkerId,
   parseWorkerId
@@ -2558,6 +2588,653 @@ await test("v4.9.1 the engine reports the exact upstream cause on every skip", (
     balances: paperBalances()
   });
   assert.ok(done.decisions.some((d) => d.kind === "SKIP" && d.code === "lifecycle_already_processed"));
+});
+
+
+/* ── Phase 7A — guarded live-execution readiness ─────────────────────────── */
+
+const LIVE_NOW = Date.parse("2026-07-30T00:00:00Z");
+const DAY = 86_400_000;
+
+function allPolicies() {
+  return buildPolicyState(
+    REQUIRED_RISK_POLICIES.map((d) => ({
+      key: d.key,
+      value: d.key === "global_kill_switch" ? 1 : d.min,
+      setBy: "admin",
+      setAt: new Date(LIVE_NOW).toISOString(),
+      note: null
+    }))
+  );
+}
+
+function attest(kind: AttestationRecord["kind"], claims: Record<string, boolean>, ageDays = 0) {
+  return {
+    kind,
+    confirmedBy: "admin",
+    confirmedAt: new Date(LIVE_NOW - ageDays * DAY).toISOString(),
+    claims,
+    note: null
+  } satisfies AttestationRecord;
+}
+
+function fullyReady(over: Partial<ReadinessInput> = {}): ReadinessInput {
+  return {
+    observation: {
+      status: "COMPLETED",
+      elapsedMs: 14 * DAY,
+      targetDurationMs: 14 * DAY,
+      successCoveragePercent: 99
+    },
+    collector: {
+      running: true,
+      heartbeatStale: false,
+      duplicateIdempotencyKeys: 0,
+      lastCycleStatus: "success"
+    },
+    capitalRecommendation: { status: "APPROVED_SIMULATION_PLAN", reasonFa: "تأییدشده" },
+    paper: {
+      sessionPresent: true,
+      status: "PAUSED",
+      cyclesEvaluated: 900,
+      tradesExecuted: 42,
+      economicNetPnlToman: 120_000
+    },
+    venueStates: classifyAllVenues(buildAllReadiness([], LIVE_NOW)),
+    policies: allPolicies(),
+    attestations: [
+      attest("api_capability", {
+        public_market_data_verified: true,
+        private_api_documented: true,
+        least_privilege_documented: true
+      }),
+      attest("key_permissions", {
+        trading_only_keys: true,
+        withdrawal_permission_disabled: true,
+        ip_whitelist_confirmed: true
+      }),
+      attest("transfer_costs", { transfer_cost_known: true, rebalancing_cost_known: true }),
+      attest("reconciliation_runbook", {
+        reconciliation_procedure_approved: true,
+        incident_runbook_approved: true,
+        rollback_procedure_approved: true
+      })
+    ],
+    nowMs: LIVE_NOW,
+    ...over
+  };
+}
+
+await test("7A live execution is a compile-time false with no env override", () => {
+  assert.equal(LIVE_EXECUTION_IMPLEMENTED, false);
+
+  const capability = readFileSync(
+    new URL("../src/lib/shadowArbitrage/live/capability.ts", import.meta.url),
+    "utf8"
+  );
+  assert.equal(/process\.env/.test(capability), false, "the capability file must never read env");
+  assert.ok(/LIVE_EXECUTION_IMPLEMENTED = false as const/.test(capability));
+
+  // No Phase 7A module may read an env variable to decide this.
+  for (const f of ["policy.ts", "readiness.ts", "executionPlan.ts", "paperSurface.ts"]) {
+    const src = readFileSync(
+      new URL(`../src/lib/shadowArbitrage/live/${f}`, import.meta.url),
+      "utf8"
+    );
+    assert.equal(/process\.env/.test(src), false, `${f} must not read env`);
+  }
+
+  // Setting anything cannot change it: try, then re-check.
+  const before = process.env.SHADOW_LIVE_EXECUTION;
+  try {
+    process.env.SHADOW_LIVE_EXECUTION = "true";
+    process.env.LIVE_EXECUTION_IMPLEMENTED = "1";
+    process.env.SHADOW_ARM_LIVE = "yes";
+    assert.equal(LIVE_EXECUTION_IMPLEMENTED, false, "no env variable can enable live execution");
+    const ready = evaluateReadiness(fullyReady());
+    assert.equal(ready.effectiveState, "DISARMED");
+    assert.equal(ready.liveExecutionImplemented, false);
+  } finally {
+    if (before === undefined) delete process.env.SHADOW_LIVE_EXECUTION;
+    else process.env.SHADOW_LIVE_EXECUTION = before;
+    delete process.env.LIVE_EXECUTION_IMPLEMENTED;
+    delete process.env.SHADOW_ARM_LIVE;
+  }
+});
+
+await test("7A readiness fails closed for every missing gate", () => {
+  const empty = evaluateReadiness({
+    observation: null,
+    collector: null,
+    capitalRecommendation: null,
+    paper: null,
+    venueStates: [],
+    policies: buildPolicyState([]),
+    attestations: [],
+    nowMs: LIVE_NOW
+  });
+  assert.equal(empty.gateState, "DISARMED");
+  assert.equal(empty.effectiveState, "DISARMED");
+  assert.equal(empty.passedCount, 0, "no gate passes without evidence");
+  assert.equal(empty.blockedCount, empty.gates.length);
+  for (const g of empty.gates) {
+    assert.equal(g.status, "BLOCKED");
+    assert.ok(g.blockerFa && g.blockerFa.length > 0, `${g.id} must state an exact blocker`);
+    assert.ok(g.requiredActionFa.length > 0, `${g.id} must state a required action`);
+  }
+});
+
+await test("7A each gate blocks on its own exact evidence gap", () => {
+  const blockedGate = (input: ReadinessInput, id: string) =>
+    evaluateReadiness(input).gates.find((g) => g.id === id)!;
+
+  // 14 days short by one millisecond.
+  const shortWindow = blockedGate(
+    fullyReady({
+      observation: {
+        status: "RUNNING",
+        elapsedMs: 14 * DAY - 1,
+        targetDurationMs: 14 * DAY,
+        successCoveragePercent: 100
+      }
+    }),
+    "observation_window"
+  );
+  assert.equal(shortWindow.status, "BLOCKED");
+  assert.ok(shortWindow.blockerFa?.includes("کامل نشده"));
+
+  // Coverage below the threshold.
+  const lowCoverage = blockedGate(
+    fullyReady({
+      observation: {
+        status: "COMPLETED",
+        elapsedMs: 14 * DAY,
+        targetDurationMs: 14 * DAY,
+        successCoveragePercent: 79.99
+      }
+    }),
+    "observation_window"
+  );
+  assert.equal(lowCoverage.status, "BLOCKED");
+  assert.ok(lowCoverage.blockerFa?.includes("پوشش"));
+
+  // A duplicate cycle blocks collector health on its own.
+  const dup = blockedGate(
+    fullyReady({
+      collector: {
+        running: true,
+        heartbeatStale: false,
+        duplicateIdempotencyKeys: 1,
+        lastCycleStatus: "success"
+      }
+    }),
+    "collector_health"
+  );
+  assert.equal(dup.status, "BLOCKED");
+  assert.ok(dup.blockerFa?.includes("تکراری"));
+
+  // Unapproved capital plan.
+  const noPlan = blockedGate(
+    fullyReady({ capitalRecommendation: { status: "READY_FOR_ADMIN_REVIEW", reasonFa: "در انتظار" } }),
+    "capital_plan_approved"
+  );
+  assert.equal(noPlan.status, "BLOCKED");
+
+  // Thin paper evidence.
+  const thinPaper = blockedGate(
+    fullyReady({
+      paper: {
+        sessionPresent: true,
+        status: "RUNNING",
+        cyclesEvaluated: 10,
+        tradesExecuted: 0,
+        economicNetPnlToman: 0
+      }
+    }),
+    "paper_evidence"
+  );
+  assert.equal(thinPaper.status, "BLOCKED");
+  assert.ok(thinPaper.blockerFa?.includes("کمتر از حداقل"));
+
+  // One unset risk policy is enough.
+  const onePolicyMissing = buildPolicyState(
+    REQUIRED_RISK_POLICIES.slice(1).map((d) => ({
+      key: d.key,
+      value: d.min,
+      setBy: "admin",
+      setAt: new Date(LIVE_NOW).toISOString(),
+      note: null
+    }))
+  );
+  const policyGate = blockedGate(fullyReady({ policies: onePolicyMissing }), "risk_policies");
+  assert.equal(policyGate.status, "BLOCKED");
+  assert.ok(policyGate.blockerFa?.includes(REQUIRED_RISK_POLICIES[0].labelFa));
+});
+
+await test("7A stale or partial attestations re-block their gate", () => {
+  // Expired: the claims are all true but the evidence is 200 days old.
+  const expired = evaluateReadiness(
+    fullyReady({
+      attestations: [
+        attest(
+          "key_permissions",
+          {
+            trading_only_keys: true,
+            withdrawal_permission_disabled: true,
+            ip_whitelist_confirmed: true
+          },
+          ATTESTATION_VALID_DAYS + 110
+        )
+      ]
+    })
+  ).gates.find((g) => g.id === "key_permissions")!;
+  assert.equal(expired.status, "BLOCKED");
+  assert.equal(expired.expired, true);
+  assert.ok(expired.expiresAt, "an expiry date is always reported");
+  assert.ok(expired.blockerFa?.includes("منقضی"));
+
+  // A missing claim blocks; it is never assumed true.
+  const partial = evaluateReadiness(
+    fullyReady({
+      attestations: [
+        attest("key_permissions", {
+          trading_only_keys: true,
+          ip_whitelist_confirmed: true
+          // withdrawal_permission_disabled deliberately absent
+        })
+      ]
+    })
+  ).gates.find((g) => g.id === "key_permissions")!;
+  assert.equal(partial.status, "BLOCKED");
+  assert.ok(partial.blockerFa?.includes("برداشت"), "the missing claim is named");
+
+  // An explicit false is just as blocking as an absent claim.
+  const explicitFalse = evaluateReadiness(
+    fullyReady({
+      attestations: [
+        attest("key_permissions", {
+          trading_only_keys: true,
+          withdrawal_permission_disabled: false,
+          ip_whitelist_confirmed: true
+        })
+      ]
+    })
+  ).gates.find((g) => g.id === "key_permissions")!;
+  assert.equal(explicitFalse.status, "BLOCKED");
+});
+
+await test("7A every gate open still yields DISARMED, never armed", () => {
+  const ready = evaluateReadiness(fullyReady());
+  assert.equal(ready.blockedCount, 0, "the fixture is deliberately fully ready");
+  assert.equal(ready.gateState, "MANUAL_CANARY_ELIGIBLE");
+  // The whole point: gates passing does not arm anything.
+  assert.equal(ready.effectiveState, "DISARMED");
+  assert.equal(ready.liveExecutionImplemented, false);
+  assert.ok(ready.unavailableReasonFa.includes("پیاده‌سازی نشده"));
+});
+
+await test("7A collector or paper failure can never arm live mode", () => {
+  const brokenCollector = evaluateReadiness(
+    fullyReady({
+      collector: {
+        running: false,
+        heartbeatStale: true,
+        duplicateIdempotencyKeys: 3,
+        lastCycleStatus: "failed"
+      }
+    })
+  );
+  assert.equal(brokenCollector.effectiveState, "DISARMED");
+  assert.ok(brokenCollector.blockers.some((b) => b.gate === "collector_health"));
+
+  const brokenPaper = evaluateReadiness(fullyReady({ paper: null }));
+  assert.equal(brokenPaper.effectiveState, "DISARMED");
+  assert.ok(brokenPaper.blockers.some((b) => b.gate === "paper_evidence"));
+});
+
+await test("7A risk policies are required and never defaulted", () => {
+  const none = buildPolicyState([]);
+  assert.equal(none.length, REQUIRED_RISK_POLICIES.length);
+  assert.equal(unsetPolicies(none).length, REQUIRED_RISK_POLICIES.length);
+  for (const p of none) {
+    assert.equal(p.value, null, `${p.definition.key} must have no default`);
+    assert.equal(p.configured, false);
+    assert.ok(p.blockerFa);
+  }
+
+  // The definitions themselves carry no default value at all.
+  const policySource = readFileSync(
+    new URL("../src/lib/shadowArbitrage/live/policy.ts", import.meta.url),
+    "utf8"
+  );
+  assert.equal(/^\s*default:/m.test(policySource), false, "no policy may declare a default");
+
+  // Bounds only reject nonsense; they are not defaults.
+  assert.equal(validatePolicyValue("max_order_size_usdt", 0).ok, false);
+  assert.equal(validatePolicyValue("max_order_size_usdt", 25).ok, true);
+  assert.equal(validatePolicyValue("nope", 1).ok, false);
+});
+
+await test("7A pre-trade validation fails closed on live capability alone", () => {
+  const result = validatePreTrade({
+    armingState: "MANUAL_CANARY_ELIGIBLE",
+    policies: allPolicies(),
+    sizeUsdt: 1,
+    riskAdjustedEdgePercent: 100,
+    quoteAgeMs: 0,
+    estimatedSlippageBps: 0,
+    venueExposurePercent: 0,
+    dailyLossToman: 0,
+    killSwitchEngaged: false,
+    openCircuitVenues: [],
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    reservableIrtToman: 10_000_000_000,
+    reservableUsdtMicros: 10_000_000_000,
+    requiredIrtToman: 1,
+    requiredUsdtMicros: 1
+  });
+  assert.equal(result.ok, false, "even a perfect trade is refused");
+  if (!result.ok) assert.ok(result.codes.includes("live_not_implemented"));
+});
+
+await test("7A order-plan state machine forbids skipping approval", () => {
+  assert.equal(canTransition("PLANNED", "APPROVED"), true);
+  assert.equal(canTransition("PLANNED", "SENT"), false, "a plan cannot be sent unapproved");
+  assert.equal(canTransition("APPROVED", "SENT"), true);
+  assert.equal(canTransition("SENT", "HEDGE_REQUIRED"), true);
+  assert.equal(canTransition("RECONCILED", "SENT"), false, "terminal is terminal");
+
+  // Every non-terminal state has a path that ends at RECONCILED.
+  const reaches = (from: OrderPlanState, seen = new Set<OrderPlanState>()): boolean => {
+    if (from === "RECONCILED") return true;
+    if (seen.has(from)) return false;
+    seen.add(from);
+    return (ORDER_PLAN_TRANSITIONS[from] ?? []).some((next) => reaches(next, new Set(seen)));
+  };
+  for (const state of Object.keys(ORDER_PLAN_TRANSITIONS) as OrderPlanState[]) {
+    assert.equal(reaches(state), true, `${state} must be able to reach RECONCILED`);
+  }
+
+  // A restart never resumes an in-flight plan; it reconciles it.
+  for (const state of ["SENT", "PARTIAL", "FILLED", "FAILED", "HEDGE_REQUIRED"] as OrderPlanState[]) {
+    assert.equal(RESTART_RECOVERY[state], "RECONCILE", `${state} must reconcile, not resume`);
+  }
+  assert.equal(RESTART_RECOVERY.PLANNED, "RESUME");
+  assert.equal(RESTART_RECOVERY.RECONCILED, "DONE");
+});
+
+await test("7A client order ids are deterministic and attempt-scoped", () => {
+  const a = clientOrderId("plan-123", "BUY", 1);
+  assert.equal(a, clientOrderId("plan-123", "BUY", 1), "same inputs, same id");
+  assert.notEqual(a, clientOrderId("plan-123", "BUY", 2), "a new attempt is a new id");
+  assert.notEqual(a, clientOrderId("plan-123", "SELL", 1), "legs never share an id");
+  assert.notEqual(a, clientOrderId("plan-999", "BUY", 1));
+  assert.equal(/^sa-[a-zA-Z0-9]+-buy-1$/.test(a), true);
+});
+
+/* fake surfaces — the only way these paths are exercised */
+
+function fakeSurface(behaviour: (req: { clientOrderId: string; side: string }) => Partial<LegOutcome>) {
+  const answered = new Map<string, LegOutcome>();
+  const port: ExecutionSurfacePort = {
+    surface: "FAKE",
+    canPlaceRealOrders: false,
+    async simulateLeg(request) {
+      const prior = answered.get(request.clientOrderId);
+      if (prior) return { ...prior, duplicateOfPriorRequest: true };
+      const requested = Math.round(request.sizeUsdt * 1_000_000);
+      const outcome: LegOutcome = {
+        clientOrderId: request.clientOrderId,
+        filledUsdtMicros: requested,
+        requestedUsdtMicros: requested,
+        avgPriceToman: request.limitPriceToman,
+        status: "FILLED",
+        duplicateOfPriorRequest: false,
+        reasonFa: null,
+        ...behaviour({ clientOrderId: request.clientOrderId, side: request.side })
+      };
+      answered.set(request.clientOrderId, outcome);
+      return outcome;
+    }
+  };
+  return port;
+}
+
+function fakePlan(): ExecutionPlan {
+  return {
+    planId: "plan-abc",
+    lifecycleId: "lc-abc",
+    routeKey: "nobitex->wallex@25",
+    surface: "FAKE",
+    state: "APPROVED",
+    buyLeg: {
+      side: "BUY",
+      sourceId: "nobitex",
+      sizeUsdt: 25,
+      limitPriceToman: 100_000,
+      clientOrderId: clientOrderId("plan-abc", "BUY", 1)
+    },
+    sellLeg: {
+      side: "SELL",
+      sourceId: "wallex",
+      sizeUsdt: 25,
+      limitPriceToman: 102_000,
+      clientOrderId: clientOrderId("plan-abc", "SELL", 1)
+    },
+    reservations: [],
+    createdAt: new Date(LIVE_NOW).toISOString(),
+    approvedBy: "admin",
+    approvedAt: new Date(LIVE_NOW).toISOString()
+  };
+}
+
+await test("7A fake broker: a rejected sell leg becomes HEDGE_REQUIRED, not FAILED", async () => {
+  const port = fakeSurface((r) =>
+    r.side === "SELL" ? { status: "REJECTED", filledUsdtMicros: 0, reasonFa: "رد شد" } : {}
+  );
+  const plan = fakePlan();
+  const outcome = await runTwoLegPlan(port, plan);
+  assert.equal(outcome.state, "HEDGE_REQUIRED", "an open position is never reported as a failure");
+  assert.equal(outcome.hedgeRequiredUsdtMicros, 25_000_000);
+
+  const rec = reconcilePlan(plan, outcome);
+  assert.equal(rec.reconciled, false, "open exposure blocks reconciliation");
+  assert.equal(rec.state, "HEDGE_REQUIRED");
+  assert.equal(rec.openExposureUsdtMicros, 25_000_000);
+});
+
+await test("7A fake broker: unequal partial fills leave a measured exposure", async () => {
+  const port = fakeSurface((r) =>
+    r.side === "SELL"
+      ? { status: "PARTIAL", filledUsdtMicros: 10_000_000 }
+      : { status: "PARTIAL", filledUsdtMicros: 25_000_000 }
+  );
+  const outcome = await runTwoLegPlan(port, fakePlan());
+  assert.equal(outcome.state, "HEDGE_REQUIRED");
+  assert.equal(outcome.hedgeRequiredUsdtMicros, 15_000_000);
+
+  // Equal partials on both legs are a clean partial, not an exposure.
+  const balanced = fakeSurface(() => ({ status: "PARTIAL", filledUsdtMicros: 10_000_000 }));
+  const clean = await runTwoLegPlan(balanced, fakePlan());
+  assert.equal(clean.state, "PARTIAL");
+  assert.equal(clean.hedgeRequiredUsdtMicros, 0);
+});
+
+await test("7A fake broker: a rejected buy leg fails with nothing to hedge", async () => {
+  const port = fakeSurface((r) =>
+    r.side === "BUY" ? { status: "REJECTED", filledUsdtMicros: 0, reasonFa: "رد شد" } : {}
+  );
+  const outcome = await runTwoLegPlan(port, fakePlan());
+  assert.equal(outcome.state, "FAILED");
+  assert.equal(outcome.hedgeRequiredUsdtMicros, 0);
+  assert.equal(outcome.sell, null, "the second leg is never attempted after the first is rejected");
+});
+
+await test("7A duplicate requests are recognised, not executed twice", async () => {
+  const port = fakeSurface(() => ({}));
+  const plan = fakePlan();
+  const first = await runTwoLegPlan(port, plan);
+  assert.equal(first.state, "FILLED");
+  assert.equal(first.buy?.duplicateOfPriorRequest, false);
+
+  // A restart re-issues the SAME plan with the same client order ids.
+  const replay = await runTwoLegPlan(port, plan);
+  assert.equal(replay.buy?.duplicateOfPriorRequest, true, "the repeat is recognised");
+  assert.equal(replay.sell?.duplicateOfPriorRequest, true);
+  assert.equal(replay.state, "FILLED");
+  assert.equal(replay.hedgeRequiredUsdtMicros, 0, "no second position was created");
+
+  const rec = reconcilePlan(plan, replay);
+  assert.equal(rec.reconciled, true);
+  assert.equal(rec.state, "RECONCILED");
+  assert.equal(rec.buyDeltaUsdtMicros, 0);
+});
+
+await test("7A the paper surface is the only executable implementation", async () => {
+  const paper = createPaperSurface();
+  assert.equal(paper.surface, "PAPER");
+  assert.equal(paper.canPlaceRealOrders, false);
+
+  const outcome = await paper.simulateLeg({
+    clientOrderId: clientOrderId("plan-p", "BUY", 1),
+    side: "BUY",
+    sourceId: "nobitex",
+    sizeUsdt: 25,
+    limitPriceToman: 100_000
+  });
+  assert.equal(outcome.status, "FILLED");
+  assert.equal(outcome.duplicateOfPriorRequest, false);
+
+  const again = await paper.simulateLeg({
+    clientOrderId: clientOrderId("plan-p", "BUY", 1),
+    side: "BUY",
+    sourceId: "nobitex",
+    sizeUsdt: 25,
+    limitPriceToman: 100_000
+  });
+  assert.equal(again.duplicateOfPriorRequest, true, "the paper surface is idempotent too");
+
+  // A venue with unconfirmed settlement is refused rather than simulated.
+  const refused = await paper.simulateLeg({
+    clientOrderId: clientOrderId("plan-p", "SELL", 1),
+    side: "SELL",
+    sourceId: "bitpin",
+    sizeUsdt: 25,
+    limitPriceToman: 100_000
+  });
+  assert.equal(refused.status, "REJECTED");
+});
+
+await test("7A no authenticated or private exchange call exists anywhere in Phase 7A", () => {
+  const files: Record<string, string> = {};
+  for (const f of ["capability.ts", "policy.ts", "readiness.ts", "executionPlan.ts", "paperSurface.ts"]) {
+    files[f] = readFileSync(new URL(`../src/lib/shadowArbitrage/live/${f}`, import.meta.url), "utf8");
+  }
+  files["route.ts"] = readFileSync(
+    new URL("../app/api/shadow-arbitrage/live-readiness/route.ts", import.meta.url),
+    "utf8"
+  );
+  files["repo.ts"] = readFileSync(
+    new URL("../src/db/repositories/shadowLive.ts", import.meta.url),
+    "utf8"
+  );
+  files["ui.tsx"] = readFileSync(
+    new URL("../src/components/shadowArbitrage/LiveReadiness.tsx", import.meta.url),
+    "utf8"
+  );
+
+  // Call-shaped patterns, not bare words: `withdrawal_permission_disabled` is a
+  // readiness CLAIM and must be allowed, while a `withdraw(...)` call must not.
+  const forbiddenCalls: Array<[string, RegExp]> = [
+    ["placeOrder", /\bplaceOrder\s*\(|\.placeOrder\b/],
+    ["submitOrder", /\bsubmitOrder\s*\(|\.submitOrder\b/],
+    ["createOrder", /\bcreateOrder\s*\(|\.createOrder\b/],
+    ["cancelOrder", /\bcancelOrder\s*\(|\.cancelOrder\b/],
+    ["amendOrder", /\bamendOrder\s*\(|\.amendOrder\b/],
+    ["withdraw", /\bwithdraw\s*\(|\.withdraw\s*\(/],
+    ["deposit", /\bdeposit\s*\(|\.deposit\s*\(/],
+    ["transferFunds", /\btransferFunds\s*\(|\.transferFunds\b/],
+    ["signRequest", /\bsignRequest\s*\(|\.signRequest\b/],
+    ["createHmac", /\bcreateHmac\s*\(/],
+    ["api key header", /X-MBX-APIKEY|X-API-KEY|Authorization\s*:/i],
+    ["balance reader", /\b(getBalances?|fetchBalances?)\s*\(/]
+  ];
+  for (const [name, src] of Object.entries(files)) {
+    for (const [label, pattern] of forbiddenCalls) {
+      assert.equal(pattern.test(src), false, `${name} must not contain a ${label} call`);
+    }
+    assert.equal(/ompfinex/i.test(src), false, `${name} must not mention OMPFinex`);
+  }
+
+  // The claim names that legitimately mention withdrawal are statements only.
+  assert.ok(
+    files["readiness.ts"].includes("withdrawal_permission_disabled"),
+    "the key-permission gate must require an explicit withdrawal-disabled claim"
+  );
+
+  // The pure modules must not be able to reach the network at all.
+  for (const f of ["capability.ts", "policy.ts", "readiness.ts", "executionPlan.ts", "paperSurface.ts"]) {
+    assert.equal(/\bfetch\s*\(/.test(files[f]), false, `${f} must not call fetch`);
+    assert.equal(/node:https?|axios|undici/.test(files[f]), false, `${f} must not import a client`);
+  }
+
+  // The API is admin-only, refuses credentials and cannot arm anything.
+  assert.ok(files["route.ts"].includes("requireAdminSession"));
+  assert.ok(files["route.ts"].includes("forbidden_field"));
+  for (const secret of ["apiKey", "secret", "token", "password", "passphrase", "privateKey"]) {
+    assert.ok(files["route.ts"].includes(secret), `route must explicitly refuse ${secret}`);
+  }
+  assert.ok(files["route.ts"].includes("not_implemented"), "arming attempts must return 501");
+
+  // The UI shows the permanent banner and offers no arming control.
+  assert.ok(files["ui.tsx"].includes(LIVE_NOT_IMPLEMENTED_BANNER_EN));
+  for (const term of ["مسلح‌کردن سامانه", "شروع اجرای واقعی", "arm()", "goLive"]) {
+    assert.equal(files["ui.tsx"].includes(term), false, `UI must not offer ${term}`);
+  }
+});
+
+await test("7A every shadow route is admin-only for viewers and anonymous users", () => {
+  // The gate itself: a session must exist AND carry the admin role.
+  const gate = readFileSync(new URL("../src/lib/requireAdmin.ts", import.meta.url), "utf8");
+  assert.ok(gate.includes("requireApiSession"), "an unauthenticated request is refused first");
+  assert.ok(gate.includes('session.r !== "admin"'), "a viewer session is refused next");
+  assert.ok(gate.includes("forbiddenJson"));
+
+  // Every Shadow route, including the new readiness one, sits behind it.
+  const routes = [
+    "live-readiness",
+    "paper",
+    "capital",
+    "accounts",
+    "health",
+    "matrix",
+    "observation",
+    "analytics",
+    "history"
+  ];
+  for (const r of routes) {
+    const src = readFileSync(
+      new URL(`../app/api/shadow-arbitrage/${r}/route.ts`, import.meta.url),
+      "utf8"
+    );
+    assert.ok(src.includes("requireAdminSession"), `${r} must be admin-only`);
+    assert.ok(src.includes("isSession"), `${r} must return the refusal unchanged`);
+  }
+});
+
+await test("7A the readiness API exposes no arming action at all", () => {
+  const route = readFileSync(
+    new URL("../app/api/shadow-arbitrage/live-readiness/route.ts", import.meta.url),
+    "utf8"
+  );
+  // The only accepted actions are audit-shaped.
+  assert.ok(route.includes('["review", "set_policy", "attest"]'));
+  // Arming verbs are explicitly answered with 501, never executed.
+  assert.ok(route.includes('["arm", "enable_live", "execute", "go_live"]'));
+  assert.ok(route.includes("501"));
+  // Credential-shaped claim names are refused as well as body keys.
+  assert.ok(route.includes("نام فیلد تأیید مجاز نیست"));
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

@@ -831,3 +831,60 @@ typecheck clean · ESLint 0 errors (17 pre-existing warnings) · 12/12 suites
 green, 344 assertions, 0 failures · isolated standalone build succeeds.
 
 **Phase 7 has not started.**
+
+---
+
+## 17. Phase 7A — Guarded Live-Execution Readiness (branch `shadow-phase7a-live-readiness`, not merged)
+
+Built on top of v4.9.1. **Not merged, not tagged and not deployed.**
+
+**Live execution is not implemented.** `LIVE_EXECUTION_IMPLEMENTED` is a
+compile-time `false` literal in `live/capability.ts`; that file — and every other
+Phase 7A module — contains no environment read at all, verified by a test that
+also sets `SHADOW_LIVE_EXECUTION`, `LIVE_EXECUTION_IMPLEMENTED` and
+`SHADOW_ARM_LIVE` and re-asserts the value. There is no exchange client, no
+authenticated call, no order function, no balance reader and no funds-movement
+path. `ExecutionSurfacePort.canPlaceRealOrders` is typed as the literal `false`,
+so no implementation can claim otherwise and still compile. The only executable
+implementation is `createPaperSurface()`, which delegates to the Phase 6 paper
+broker; tests use fakes.
+
+**Readiness engine (fail-closed).** Eleven gates: observation window, collector
+health, approved Phase 5 plan, paper evidence, account/fee readiness, fee
+settlement, API capability, key permissions, transfer costs, risk policies,
+reconciliation runbook. Each fails closed with an exact reason and a required
+action. Gates 7–9 and 11 rest on dated, attributed attestations whose claims must
+be explicitly `true` — a missing or `false` claim blocks — and which expire after
+`ATTESTATION_VALID_DAYS = 90`. Even with all eleven passing, `effectiveState` is
+`DISARMED`; `gateState` is reported separately so the work stays visible.
+
+**Risk model.** Twelve required policies — max order size, max daily loss, max
+venue exposure, min risk-adjusted edge, max quote age, max latency, max slippage,
+max consecutive errors, API rate limit, max inventory deviation, global kill
+switch, per-venue circuit breaker. There is no `default` field in the definitions
+at all, and a test asserts that; an unset policy is a blocker.
+
+**Execution design (interfaces only).** Pipeline opportunity → pre-trade
+validation → balance reservation → approval → two-leg plan → reconciliation.
+Arming states `DISARMED` / `READY_FOR_REVIEW` / `MANUAL_CANARY_ELIGIBLE` (no
+`ARMED` member). Order-plan states `PLANNED → APPROVED → SENT →
+{PARTIAL, FILLED, FAILED, HEDGE_REQUIRED} → RECONCILED` with whitelisted
+transitions, so approval cannot be skipped and every path can reach
+`RECONCILED`. Deterministic `clientOrderId(planId, side, attempt)`; the port is
+idempotent on it. Restart recovery maps every in-flight state to `RECONCILE`,
+never `RESUME`. **A filled first leg with a rejected second leg is reported as
+`HEDGE_REQUIRED` with the exact exposure, never as `FAILED`.**
+
+**UI and audit.** Admin-only Persian RTL «آمادگی اجرای واقعی» with a permanent
+red `LIVE EXECUTION IS NOT IMPLEMENTED — NO REAL ORDERS` banner, every gate with
+evidence, expiry, blocker and required action, the policy table with unset ones
+flagged, attestation and review history. No control can arm or execute; the API
+answers `arm`/`enable_live`/`execute`/`go_live` with `501`. Attestations, policy
+values and reviews are append-only (`drizzle/0008`, additive: three new tables,
+no drops or alters). `docs/SHADOW_LIVE_READINESS.md` carries the threat model,
+key-permission checklist, incident runbook and rollback procedure.
+
+**Verification.** typecheck clean · ESLint 0 errors (17 pre-existing warnings) ·
+12/12 suites green, 375 assertions, 0 failures · isolated standalone build
+succeeds and emits the `live-readiness` route · collector, paper and capital
+modules byte-identical to v4.9.1; observation and paper sessions untouched.

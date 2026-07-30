@@ -79,7 +79,17 @@ services:
   # idempotency key make a second one refuse to record cycles, but do not scale
   # this service above 1 replica.
   iman-otc-shadow-worker:
+    # Same build context as the app so this image is always produced locally.
+    # Without a build section, `docker compose pull` / `up --pull` would try to
+    # fetch iman-otc-desk:latest from a registry where it does not exist and
+    # abort the whole deploy. pull_policy: never makes that impossible.
+    build:
+      context: .
+      dockerfile: ${DOCKERFILE:-Dockerfile}
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-public.ecr.aws/docker/library/node:20-alpine}
     image: iman-otc-desk:latest
+    pull_policy: never
     container_name: iman-otc-shadow-worker
     depends_on:
       iman-otc-desk:

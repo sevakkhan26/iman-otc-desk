@@ -322,3 +322,31 @@ this machine does not have):
 The production **database backup was never run or verified** — the host stayed
 unreachable. Protection remains the `pre-v4.6.1` tag plus the strictly additive
 migrations.
+
+---
+
+## 9. Hotfix v4.6.2 (2026-07-30)
+
+**Root cause of the stalled collector:** `withAdvisoryLock` ran
+`pg_try_advisory_lock` and `pg_advisory_unlock` as two separate pooled queries.
+Advisory locks are session scoped, so the unlock landed on a different pooled
+connection and no-opped; the original connection held the lock for its lifetime
+and every later cycle received `acquired:false`. That is exactly the reported
+"1 cycle in ~2h43m, stale heartbeat, status متوقف". Fixed by pinning one
+`sql.reserve()` connection for lock + unlock.
+
+Also in this release: separated elapsed/coverage/downtime/source-response
+metrics, COMPLETED now requires 14 days **and** ≥80% successful coverage,
+state-correct action button, valid/raw/blocked opportunity classification with
+valid-first ordering, analytics gated behind ≥20 successful cycles, and the
+dashboard label/clarity fixes.
+
+Commit `bdf101e`, tag `v4.6.2`, `main` = `bdf101e`. Verified live: version
+`4.6.2` on the login footer, shadow APIs still `private, no-store` +
+`CDN-Cache-Control` + `Surrogate-Control`, unauthenticated page 307 and APIs 401.
+
+**Not verified (needs production admin credentials or host access):** collector
+heartbeat age, ≥10 consecutive 30 s production cycles, exactly-one-collector,
+duplicate idempotency key count, PostgreSQL-vs-PGlite confirmation, restart
+resumption, and the authenticated dashboard. The production database backup was
+again **not** run — the LAN host stayed unreachable.

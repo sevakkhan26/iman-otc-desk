@@ -4,6 +4,7 @@
  */
 import {
   bigint,
+  bigserial,
   boolean,
   index,
   integer,
@@ -763,4 +764,62 @@ export const shadowPaperCycleSummaries = pgTable(
     createdAt: ts("created_at").notNull().defaultNow()
   },
   (t) => [index("shadow_paper_cycle_summary_idx").on(t.sessionId, t.occurredAt)]
+);
+
+/* ── Phase 7A — guarded live-execution readiness (no live trading) ────────── */
+
+/**
+ * Append-only human attestations backing readiness gates a machine cannot
+ * verify from inside this system. Stores STATEMENTS about key permissions —
+ * never a key, secret or token.
+ */
+export const shadowLiveAttestations = pgTable(
+  "shadow_live_attestations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    kind: text("kind").notNull(),
+    confirmedBy: text("confirmed_by").notNull(),
+    confirmedAt: ts("confirmed_at").notNull(),
+    /** Structured boolean/number claims. Missing claims block, never default. */
+    claims: jsonb("claims").$type<Record<string, boolean | number | string | null>>().notNull(),
+    note: text("note"),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [index("shadow_live_attestations_kind_idx").on(t.kind, t.confirmedAt)]
+);
+
+/** Append-only risk policy values. Every change is a new row, attributable. */
+export const shadowLiveRiskPolicies = pgTable(
+  "shadow_live_risk_policies",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** Monotonic insertion order, so two writes in the same millisecond still
+     * have an unambiguous "latest". Timestamps alone are not enough. */
+    seq: bigserial("seq", { mode: "number" }).notNull(),
+    policyKey: text("policy_key").notNull(),
+    value: numeric("value", { precision: 24, scale: 6 }).notNull(),
+    setBy: text("set_by").notNull(),
+    setAt: ts("set_at").notNull(),
+    note: text("note"),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [index("shadow_live_risk_policy_idx").on(t.policyKey, t.setAt)]
+);
+
+/** Append-only audit trail of readiness reviews. */
+export const shadowLiveReadinessReviews = pgTable(
+  "shadow_live_readiness_reviews",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    reviewedBy: text("reviewed_by").notNull(),
+    reviewedAt: ts("reviewed_at").notNull(),
+    gateState: text("gate_state").notNull(),
+    effectiveState: text("effective_state").notNull(),
+    passedCount: integer("passed_count").notNull().default(0),
+    blockedCount: integer("blocked_count").notNull().default(0),
+    blockers: jsonb("blockers").$type<Array<Record<string, string>>>().default([]).notNull(),
+    note: text("note"),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [index("shadow_live_reviews_time_idx").on(t.reviewedAt)]
 );

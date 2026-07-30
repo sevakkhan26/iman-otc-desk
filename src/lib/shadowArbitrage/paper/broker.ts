@@ -125,7 +125,8 @@ export type PaperRejectionCode =
   | "insufficient_irt"
   | "insufficient_usdt"
   | "negative_balance_guard"
-  | "no_balance_record";
+  | "no_balance_record"
+  | "mark_price_unavailable";
 
 export const PAPER_REJECTION_FA: Record<PaperRejectionCode, string> = {
   same_venue: "خرید و فروش روی یک صرافی",
@@ -139,7 +140,8 @@ export const PAPER_REJECTION_FA: Record<PaperRejectionCode, string> = {
   insufficient_irt: "موجودی تومانی صرافی خرید کافی نیست",
   insufficient_usdt: "موجودی تتری صرافی فروش کافی نیست",
   negative_balance_guard: "این معامله موجودی را منفی می‌کرد",
-  no_balance_record: "برای این صرافی موجودی مجازی ثبت نشده است"
+  no_balance_record: "برای این صرافی موجودی مجازی ثبت نشده است",
+  mark_price_unavailable: "قیمت مرجع تتر در همین چرخه در دسترس یا تازه نیست"
 };
 
 /** What one simulated leg would do to a venue's balances. */
@@ -168,6 +170,16 @@ export type FillInputs = {
   sellFeeBps: number | null;
   buySettlement: SideSettlement;
   sellSettlement: SideSettlement;
+  /**
+   * Same-cycle deterministic mark / replacement price for USDT, in toman.
+   *
+   * Documented rule: it is the executable buy VWAP for this size on the buy
+   * venue in THIS cycle — literally what the desk paid to acquire USDT moments
+   * ago, so it is the honest replacement cost of the USDT the sell fee consumed.
+   * Null when the cycle cannot supply it; the fill is then blocked rather than
+   * priced against a guess.
+   */
+  markPriceToman: number | null;
   /** Reported conservatism, not a cash movement. */
   slippageBufferToman: number;
 };
@@ -192,12 +204,21 @@ export type FillPlan = {
   totalFeeToman: number;
   totalFeeUsdtMicros: number;
   slippageBufferToman: number;
-  /** Cash result of the round trip: toman in minus toman out. */
-  netPnlToman: number;
-  /** Net after subtracting the reported (non-cash) slippage buffer. */
-  netPnlAfterBufferToman: number;
-  /** USDT the round trip left behind on the buy venue, in micros. */
-  usdtDriftMicros: number;
+  /** Mark price actually used to value the USDT fee. */
+  markPriceToman: number;
+  /**
+   * Cash movement only: sell proceeds − buy cost − buy fee in IRT.
+   * This is NOT economic profit — the USDT fee is invisible to it.
+   */
+  cashPnlIrtToman: number;
+  /** Change in total USDT holdings, in micros. Negative: the sell fee. */
+  inventoryDeltaUsdtMicros: number;
+  /** Toman value of the USDT fee at the mark price. */
+  sellFeeValueToman: number;
+  /** cashPnlIrt − sellFeeValueToman. The real result of the round trip. */
+  economicNetPnlToman: number;
+  /** economicNetPnl − slippage/risk buffer. The execution gate uses this. */
+  riskAdjustedPnlToman: number;
 };
 
 function reject(
@@ -326,6 +347,10 @@ export function planFill(input: FillInputs): FillPlan | FillRejection {
   ) {
     return reject("fee_settlement_unsupported");
   }
+  // A missing or non-positive mark price means the USDT fee cannot be valued.
+  if (input.markPriceToman === null || !Number.isFinite(input.markPriceToman) || input.markPriceToman <= 0) {
+    return reject("mark_price_unavailable");
+  }
   if (
     !Number.isFinite(input.buyVwapToman) ||
     !Number.isFinite(input.sellVwapToman) ||
@@ -352,11 +377,22 @@ export function planFill(input: FillInputs): FillPlan | FillRejection {
   );
 
   const grossSpreadToman = sellLeg.notionalToman - buyLeg.notionalToman;
-  const netPnlToman = buyLeg.deltaIrtToman + sellLeg.deltaIrtToman;
-  const slippageBufferToman = Math.max(0, Math.round(input.slippageBufferToman));
-  const netPnlAfterBufferToman = netPnlToman - slippageBufferToman;
 
-  if (netPnlAfterBufferToman <= 0) return reject("not_net_positive");
+  // Cash only. The USDT the sell fee consumed never appears in this number,
+  // which is exactly why it must not be the execution gate on its own.
+  const cashPnlIrtToman = buyLeg.deltaIrtToman + sellLeg.deltaIrtToman;
+  const inventoryDeltaUsdtMicros = buyLeg.deltaUsdtMicros + sellLeg.deltaUsdtMicros;
+
+  const markPriceToman = Math.round(input.markPriceToman);
+  const totalFeeUsdtMicros = buyLeg.feeUsdtMicros + sellLeg.feeUsdtMicros;
+  const sellFeeValueToman = mulPriceSizeToman(markPriceToman, microsToUsdt(totalFeeUsdtMicros));
+
+  const economicNetPnlToman = cashPnlIrtToman - sellFeeValueToman;
+  const slippageBufferToman = Math.max(0, Math.round(input.slippageBufferToman));
+  const riskAdjustedPnlToman = economicNetPnlToman - slippageBufferToman;
+
+  // The gate is risk-adjusted economic profit, never cash PnL.
+  if (riskAdjustedPnlToman <= 0) return reject("not_net_positive");
 
   return {
     ok: true,
@@ -364,11 +400,14 @@ export function planFill(input: FillInputs): FillPlan | FillRejection {
     sellLeg,
     grossSpreadToman,
     totalFeeToman: buyLeg.feeToman + sellLeg.feeToman,
-    totalFeeUsdtMicros: buyLeg.feeUsdtMicros + sellLeg.feeUsdtMicros,
+    totalFeeUsdtMicros,
     slippageBufferToman,
-    netPnlToman,
-    netPnlAfterBufferToman,
-    usdtDriftMicros: buyLeg.deltaUsdtMicros + sellLeg.deltaUsdtMicros
+    markPriceToman,
+    cashPnlIrtToman,
+    inventoryDeltaUsdtMicros,
+    sellFeeValueToman,
+    economicNetPnlToman,
+    riskAdjustedPnlToman
   };
 }
 
@@ -467,14 +506,8 @@ export function reconcilePaperLedgers(
   const irtDelta = sumIrt(after) - sumIrt(before);
   const usdtMicrosDelta = sumUsdt(after) - sumUsdt(before);
 
-  const expectedIrtDelta = plans.reduce(
-    (s, p) => s + (p.grossSpreadToman - p.buyLeg.feeToman - p.sellLeg.feeToman),
-    0
-  );
-  const expectedUsdtMicrosDelta = plans.reduce(
-    (s, p) => s - (p.sellLeg.feeUsdtMicros + p.buyLeg.feeUsdtMicros),
-    0
-  );
+  const expectedIrtDelta = plans.reduce((s, p) => s + p.cashPnlIrtToman, 0);
+  const expectedUsdtMicrosDelta = plans.reduce((s, p) => s + p.inventoryDeltaUsdtMicros, 0);
 
   return {
     irtBalanced: irtDelta === expectedIrtDelta,

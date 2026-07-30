@@ -632,9 +632,13 @@ function paperFill(
     feeUsdtMicrosTotal: 87_500,
     slippageBufferToman: 1_000,
     grossSpreadToman: 50_000,
-    netPnlToman: netPnl,
-    netPnlAfterBufferToman: netPnl - 1_000,
-    usdtDriftMicros: -87_500,
+    markPriceToman: 100_000,
+    cashPnlIrtToman: netPnl,
+    // 0.0875 USDT valued at the 100,000-toman same-cycle mark price.
+    sellFeeValueToman: 8_750,
+    economicNetPnlToman: netPnl - 8_750,
+    riskAdjustedPnlToman: netPnl - 8_750 - 1_000,
+    inventoryDeltaUsdtMicros: -87_500,
     balancesAfter
   };
 }
@@ -726,8 +730,13 @@ await test("paper fill commits both legs and the balance change together", async
   const stats = await paperRepo.loadPaperStats(paperSessionId);
   assert.equal(stats.filled, 1);
   assert.equal(stats.skipped, 1);
-  // IRT PnL is the gross spread minus the buy-side IRT fee only.
-  assert.equal(stats.realizedPnlToman, 43_750);
+  // Cash PnL is the gross spread minus the buy-side IRT fee only; the economic
+  // result is smaller because the USDT fee is valued and subtracted.
+  assert.equal(stats.cashPnlIrtToman, 43_750);
+  assert.equal(stats.sellFeeValueToman, 8_750);
+  assert.equal(stats.economicNetPnlToman, 35_000);
+  assert.equal(stats.riskAdjustedPnlToman, 34_000);
+  assert.equal(stats.inventoryDeltaUsdtMicros, -87_500);
   assert.equal(stats.feeTomanTotal, 6_250);
   assert.equal(stats.feeUsdtMicrosTotal, 87_500);
   assert.ok(stats.blockReasons.some((r) => r.code === "insufficient_usdt"));
@@ -769,8 +778,11 @@ await test("paper ledgers reconcile independently across the session", async () 
   const irtNow = balances.reduce((s, b) => s + b.irtToman, 0);
   const usdtNow = balances.reduce((s, b) => s + b.usdtMicros, 0);
 
-  const expectedIrtDelta = fills.reduce((s, f) => s + (f.netPnlToman ?? 0), 0);
-  const expectedUsdtDelta = -fills.reduce((s, f) => s + (f.feeUsdtMicrosTotal ?? 0), 0);
+  // The IRT ledger moves by CASH PnL, not by economic PnL — the USDT fee never
+  // touched the toman book, which is exactly why economic PnL must be reported
+  // separately rather than inferred from the balances.
+  const expectedIrtDelta = fills.reduce((s, f) => s + (f.cashPnlIrtToman ?? 0), 0);
+  const expectedUsdtDelta = fills.reduce((s, f) => s + (f.inventoryDeltaUsdtMicros ?? 0), 0);
 
   assert.equal(irtNow - openingIrt, expectedIrtDelta, "the IRT ledger reconciles on its own");
   assert.equal(usdtNow - openingUsdtMicros, expectedUsdtDelta, "the USDT ledger reconciles on its own");
@@ -781,6 +793,12 @@ await test("paper ledgers reconcile independently across the session", async () 
     assert.equal(f.sellFeeAsset, "USDT");
     assert.equal(f.buyFeeProvenance, "ADMIN_CONFIRMED");
     assert.equal(f.sellFeeProvenance, "ADMIN_CONFIRMED");
+    // Economic PnL is always strictly below cash PnL when a USDT fee was paid.
+    assert.ok((f.economicNetPnlToman ?? 0) < (f.cashPnlIrtToman ?? 0));
+    assert.equal(
+      (f.cashPnlIrtToman ?? 0) - (f.sellFeeValueToman ?? 0),
+      f.economicNetPnlToman ?? 0
+    );
   }
 });
 

@@ -49,7 +49,9 @@ export async function GET() {
     cyclesEvaluated: paperSession?.cyclesEvaluated ?? 0,
     tradesExecuted: paperStats?.filled ?? 0,
     candidatesSkipped: paperStats?.skipped ?? 0,
-    realizedPnlToman: paperStats?.realizedPnlToman ?? 0,
+    cashPnlIrtToman: paperStats?.cashPnlIrtToman ?? 0,
+    economicNetPnlToman: paperStats?.economicNetPnlToman ?? 0,
+    riskAdjustedPnlToman: paperStats?.riskAdjustedPnlToman ?? 0,
     lastFillAt: paperStats?.lastFillAt ?? null
   };
 

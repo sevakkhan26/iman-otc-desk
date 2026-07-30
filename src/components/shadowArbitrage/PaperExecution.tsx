@@ -53,8 +53,12 @@ type Trade = {
   feeUsdtMicrosTotal: number | null;
   slippageBufferToman: number | null;
   grossSpreadToman: number | null;
-  netPnlToman: number | null;
-  netPnlAfterBufferToman: number | null;
+  markPriceToman: number | null;
+  cashPnlIrtToman: number | null;
+  inventoryDeltaUsdtMicros: number | null;
+  sellFeeValueToman: number | null;
+  economicNetPnlToman: number | null;
+  riskAdjustedPnlToman: number | null;
   occurredAt: string;
 };
 
@@ -71,8 +75,11 @@ type Skipped = {
 type Stats = {
   filled: number;
   skipped: number;
-  realizedPnlToman: number;
-  realizedPnlAfterBufferToman: number;
+  cashPnlIrtToman: number;
+  inventoryDeltaUsdtMicros: number;
+  sellFeeValueToman: number;
+  economicNetPnlToman: number;
+  riskAdjustedPnlToman: number;
   feeTomanTotal: number;
   feeUsdtTotal: number;
   opportunityCaptureRatePercent: number | null;
@@ -325,13 +332,45 @@ export function PaperExecution() {
                 <div className="sa-metric-note">ردشده: {formatCountFa(stats.skipped)}</div>
               </div>
               <div className="sa-metric">
-                <div className="sa-metric-label">سود نظری محقق‌شده</div>
-                <div className={`sa-metric-value ${signedToman(stats.realizedPnlToman).cls}`}>
-                  {signedToman(stats.realizedPnlToman).text}
+                <div className="sa-metric-label">سود نقدی تومانی</div>
+                <div className={`sa-metric-value ${signedToman(stats.cashPnlIrtToman).cls}`}>
+                  {signedToman(stats.cashPnlIrtToman).text}
                 </div>
                 <div className="sa-metric-note">
-                  پس از بافر: {signedToman(stats.realizedPnlAfterBufferToman).text}
+                  فقط جابه‌جایی نقد — کارمزد تتری در آن دیده نمی‌شود
                 </div>
+              </div>
+              <div className="sa-metric">
+                <div className="sa-metric-label">تغییر موجودی تتر</div>
+                <div
+                  className={`sa-metric-value ${
+                    stats.inventoryDeltaUsdtMicros < 0 ? "sa-neg" : ""
+                  }`}
+                >
+                  {toFaDigits((stats.inventoryDeltaUsdtMicros / 1_000_000).toFixed(4))}
+                </div>
+                <div className="sa-metric-note">کاهش به اندازهٔ کارمزد تتری سمت فروش</div>
+              </div>
+              <div className="sa-metric">
+                <div className="sa-metric-label">ارزش تومانی کارمزد تتری</div>
+                <div className="sa-metric-value sa-neg">
+                  −{toFaDigits(Math.round(stats.sellFeeValueToman).toLocaleString("en-US"))}
+                </div>
+                <div className="sa-metric-note">به قیمت مرجع همان چرخه</div>
+              </div>
+              <div className="sa-metric">
+                <div className="sa-metric-label">سود خالص اقتصادی</div>
+                <div className={`sa-metric-value ${signedToman(stats.economicNetPnlToman).cls}`}>
+                  {signedToman(stats.economicNetPnlToman).text}
+                </div>
+                <div className="sa-metric-note">سود نقدی منهای ارزش کارمزد تتری</div>
+              </div>
+              <div className="sa-metric">
+                <div className="sa-metric-label">سود تعدیل‌شده با بافر</div>
+                <div className={`sa-metric-value ${signedToman(stats.riskAdjustedPnlToman).cls}`}>
+                  {signedToman(stats.riskAdjustedPnlToman).text}
+                </div>
+                <div className="sa-metric-note">مبنای دروازهٔ اجرا — نه سود نقدی</div>
               </div>
               <div className="sa-metric">
                 <div className="sa-metric-label">کارمزد پرداختی</div>
@@ -400,14 +439,16 @@ export function PaperExecution() {
                     <th className="num">حجم</th>
                     <th className="num">اسپرد ناخالص</th>
                     <th className="num">کارمزد</th>
-                    <th className="num">سود خالص</th>
+                    <th className="num">سود نقدی</th>
+                    <th className="num">سود اقتصادی</th>
                     <th>زمان</th>
                     <th />
                   </tr>
                 </thead>
                 <tbody>
                   {data.trades.map((t) => {
-                    const net = signedToman(t.netPnlToman);
+                    const cash = signedToman(t.cashPnlIrtToman);
+                    const econ = signedToman(t.economicNetPnlToman);
                     return (
                       <tr key={t.id}>
                         <td className="sa-route-cell">
@@ -416,7 +457,8 @@ export function PaperExecution() {
                         <td className="num">{usdtText(t.sizeUsdt)}</td>
                         <td className="num">{toman(t.grossSpreadToman)}</td>
                         <td className="num">{toman(t.feeTomanTotal)}</td>
-                        <td className={`num ${net.cls}`}>{net.text}</td>
+                        <td className={`num ${cash.cls}`}>{cash.text}</td>
+                        <td className={`num ${econ.cls}`}>{econ.text}</td>
                         <td className="text-micro">{formatTehran(t.occurredAt)}</td>
                         <td>
                           <button type="button" className="sa-linkish" onClick={() => setDetail(t)}>
@@ -535,18 +577,41 @@ export function PaperExecution() {
                       <span className="sa-line-value">{toman(detail.slippageBufferToman)}</span>
                     </div>
                     <div className="sa-line">
-                      <span className="sa-line-label">سود خالص</span>
-                      <span className="sa-line-value">{toman(detail.netPnlToman)}</span>
+                      <span className="sa-line-label">قیمت مرجع تتر</span>
+                      <span className="sa-line-value">{toman(detail.markPriceToman)}</span>
                     </div>
                     <div className="sa-line">
-                      <span className="sa-line-label">سود پس از بافر</span>
-                      <span className="sa-line-value">{toman(detail.netPnlAfterBufferToman)}</span>
+                      <span className="sa-line-label">سود نقدی تومانی</span>
+                      <span className="sa-line-value">{toman(detail.cashPnlIrtToman)}</span>
+                    </div>
+                    <div className="sa-line">
+                      <span className="sa-line-label">تغییر موجودی تتر</span>
+                      <span className="sa-line-value">
+                        {detail.inventoryDeltaUsdtMicros === null
+                          ? "—"
+                          : `${toFaDigits((detail.inventoryDeltaUsdtMicros / 1_000_000).toFixed(4))} تتر`}
+                      </span>
+                    </div>
+                    <div className="sa-line">
+                      <span className="sa-line-label">ارزش تومانی کارمزد تتری</span>
+                      <span className="sa-line-value">{toman(detail.sellFeeValueToman)}</span>
+                    </div>
+                    <div className="sa-line">
+                      <span className="sa-line-label">سود خالص اقتصادی</span>
+                      <span className="sa-line-value">{toman(detail.economicNetPnlToman)}</span>
+                    </div>
+                    <div className="sa-line">
+                      <span className="sa-line-label">سود تعدیل‌شده با بافر</span>
+                      <span className="sa-line-value">{toman(detail.riskAdjustedPnlToman)}</span>
                     </div>
                   </div>
                   <div className="sa-footnote">
-                    بافر لغزش یک عدد گزارشی و محافظه‌کارانه است و جابه‌جایی نقدی ایجاد نمی‌کند؛ فقط
-                    شرط اجرا را سخت‌گیرانه‌تر می‌کند. این معامله شبیه‌سازی است و هیچ سفارش واقعی ثبت
-                    نشده است.
+                    سود نقدی تومانی فقط جابه‌جایی نقد است و کارمزد تتری سمت فروش را نمی‌بیند؛
+                    بنابراین هرگز به‌تنهایی مبنای اجرا نیست. کارمزد تتری به قیمت مرجعِ همان چرخه —
+                    یعنی VWAP خریدِ همین معامله، که هزینهٔ واقعی جایگزینی آن تتر است — تومانی می‌شود
+                    و از سود نقدی کم می‌گردد تا سود خالص اقتصادی به دست آید. بافر لغزش عددی گزارشی
+                    است و جابه‌جایی نقدی ایجاد نمی‌کند؛ فقط شرط اجرا را سخت‌گیرانه‌تر می‌کند. این
+                    معامله شبیه‌سازی است و هیچ سفارش واقعی ثبت نشده است.
                   </div>
                 </div>
               </aside>

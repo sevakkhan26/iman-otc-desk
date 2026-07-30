@@ -665,11 +665,50 @@ asset that side does not pay) is rejected as unsupported rather than guessed at.
 Consequences, each asserted by a test:
 
 * Total USDT decreases by **exactly** the sell-side USDT fee.
-* Total IRT PnL equals **gross spread minus the buy-side IRT fee**.
+* Cash IRT PnL equals **gross spread minus the buy-side IRT fee**.
 * The two ledgers never net against each other and reconcile **independently**
   (`reconcilePaperLedgers`).
 * The sell venue must hold **quantity + fee**, not just quantity; otherwise the
   trade is blocked for insufficient balance and the shortfall is reported.
+
+### PnL is reported in five separate figures
+
+Cash IRT PnL is **not** economic profit: the USDT the sell fee consumed never
+appears in the toman book. So each fill records, and the UI shows separately:
+
+| Metric | Definition | Persian label |
+| --- | --- | --- |
+| `cashPnlIrtToman` | sell proceeds − buy cost − buy fee in IRT | سود نقدی تومانی |
+| `inventoryDeltaUsdtMicros` | −(sell fee in USDT) | تغییر موجودی تتر |
+| `sellFeeValueToman` | USDT fee × same-cycle mark price | ارزش تومانی کارمزد تتری |
+| `economicNetPnlToman` | `cashPnlIrt − sellFeeValueToman` | سود خالص اقتصادی |
+| `riskAdjustedPnlToman` | `economicNetPnl − slippage/risk buffer` | سود تعدیل‌شده با بافر |
+
+**The execution gate is `riskAdjustedPnlToman > 0`. Cash PnL is never the gate**
+— a test constructs a trade whose cash PnL is positive but whose economic PnL is
+not, and proves it is refused.
+
+**Mark price — documented deterministic rule.** The USDT fee is valued at the
+executable buy VWAP for that size on the buy venue *in the same cycle*: literally
+what the desk paid to acquire USDT moments earlier, so it is the honest
+replacement cost. When that snapshot is missing, unusable or stale the mark
+price is `null` and the fill is **BLOCKED** (`mark_price_unavailable`) rather
+than priced against a guess.
+
+Worked example (25 USDT, buy 100,000, sell 102,000, fees 0.25% / 0.35%, mark
+100,000, buffer 1,000): cash PnL **43,750**; USDT inventory **−0.0875**; fee
+value **8,750**; economic net **35,000**; risk-adjusted **34,000**. Reporting
+43,750 as the result would overstate the trade by 8,750 toman.
+
+### Deterministic global ranking
+
+Candidates compete for the same virtual balance, so the order they are applied
+in decides which ones fit. Every viable candidate is priced first, one size per
+route is kept on risk-adjusted economic PnL, and the survivors are put in a
+**total** order: risk-adjusted PnL desc, then size desc, then route key, then
+lifecycle id — no two candidates can tie on all four. A test proves every input
+permutation yields the identical order and the identical resulting book, and
+that under a scarce balance the better trade wins regardless of input order.
 
 Both legs are priced first and applied together; if either fails, nothing is
 written and the caller's book is not mutated. The database layer refuses a
@@ -705,9 +744,10 @@ the serialization queue, so a second private queue wrapper would deadlock.
 ### Verification
 
 typecheck clean · ESLint 0 errors (17 pre-existing warnings, none new) ·
-12/12 suites green, 321 assertions, 0 failures — 17 engine/broker tests
-(including exact buy, sell, round-trip, insufficient-USDT-for-the-sell-fee and
-ledger-reconciliation cases) and 10 persistence tests (including restart,
+12/12 suites green, 331 assertions, 0 failures — 21 engine/broker tests
+(including exact buy, sell, PnL decomposition, gate-on-economic-not-cash,
+missing mark price, insufficient-USDT-for-the-sell-fee, ledger reconciliation
+and deterministic global ranking) and 10 persistence tests (including restart,
 idempotency and independent ledger reconciliation) · isolated standalone build
 succeeds and emits the
 `paper` route · v4.8.0 collector, runner, instrumentation, capital engine and

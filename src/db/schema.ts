@@ -678,9 +678,14 @@ export const shadowPaperLedger = pgTable(
     feeUsdtMicrosTotal: bigint("fee_usdt_micros_total", { mode: "number" }),
     slippageBufferToman: bigint("slippage_buffer_toman", { mode: "number" }),
     grossSpreadToman: bigint("gross_spread_toman", { mode: "number" }),
-    netPnlToman: bigint("net_pnl_toman", { mode: "number" }),
-    netPnlAfterBufferToman: bigint("net_pnl_after_buffer_toman", { mode: "number" }),
-    usdtDriftMicros: bigint("usdt_drift_micros", { mode: "number" }),
+    /** Same-cycle mark price used to value the USDT fee. */
+    markPriceToman: bigint("mark_price_toman", { mode: "number" }),
+    /** Cash only: proceeds − cost − buy fee in IRT. Never the execution gate. */
+    cashPnlIrtToman: bigint("cash_pnl_irt_toman", { mode: "number" }),
+    inventoryDeltaUsdtMicros: bigint("inventory_delta_usdt_micros", { mode: "number" }),
+    sellFeeValueToman: bigint("sell_fee_value_toman", { mode: "number" }),
+    economicNetPnlToman: bigint("economic_net_pnl_toman", { mode: "number" }),
+    riskAdjustedPnlToman: bigint("risk_adjusted_pnl_toman", { mode: "number" }),
     /** Balances of both touched venues immediately after the fill. */
     balancesAfter: jsonb("balances_after")
       .$type<Array<{ sourceId: string; irtToman: number; usdtMicros: number }>>()

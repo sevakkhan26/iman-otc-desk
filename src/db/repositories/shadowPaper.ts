@@ -80,9 +80,12 @@ export type PaperLedgerRow = {
   feeUsdtMicrosTotal: number | null;
   slippageBufferToman: number | null;
   grossSpreadToman: number | null;
-  netPnlToman: number | null;
-  netPnlAfterBufferToman: number | null;
-  usdtDriftMicros: number | null;
+  markPriceToman: number | null;
+  cashPnlIrtToman: number | null;
+  inventoryDeltaUsdtMicros: number | null;
+  sellFeeValueToman: number | null;
+  economicNetPnlToman: number | null;
+  riskAdjustedPnlToman: number | null;
   balancesAfter: Array<{ sourceId: string; irtToman: number; usdtMicros: number }>;
   occurredAt: string;
 };
@@ -355,9 +358,12 @@ export type PaperFillRecord = {
   feeUsdtMicrosTotal: number;
   slippageBufferToman: number;
   grossSpreadToman: number;
-  netPnlToman: number;
-  netPnlAfterBufferToman: number;
-  usdtDriftMicros: number;
+  markPriceToman: number;
+  cashPnlIrtToman: number;
+  inventoryDeltaUsdtMicros: number;
+  sellFeeValueToman: number;
+  economicNetPnlToman: number;
+  riskAdjustedPnlToman: number;
   balancesAfter: Array<{ sourceId: string; irtToman: number; usdtMicros: number }>;
 };
 
@@ -431,9 +437,12 @@ export async function commitPaperCycle(input: {
               feeUsdtMicrosTotal: f.feeUsdtMicrosTotal,
               slippageBufferToman: f.slippageBufferToman,
               grossSpreadToman: f.grossSpreadToman,
-              netPnlToman: f.netPnlToman,
-              netPnlAfterBufferToman: f.netPnlAfterBufferToman,
-              usdtDriftMicros: f.usdtDriftMicros,
+              markPriceToman: f.markPriceToman,
+              cashPnlIrtToman: f.cashPnlIrtToman,
+              inventoryDeltaUsdtMicros: f.inventoryDeltaUsdtMicros,
+              sellFeeValueToman: f.sellFeeValueToman,
+              economicNetPnlToman: f.economicNetPnlToman,
+              riskAdjustedPnlToman: f.riskAdjustedPnlToman,
               balancesAfter: f.balancesAfter,
               occurredAt: input.occurredAt,
               createdAt: input.occurredAt
@@ -579,9 +588,12 @@ export async function loadPaperLedger(
       feeUsdtMicrosTotal: numOrNull(r.feeUsdtMicrosTotal),
       slippageBufferToman: numOrNull(r.slippageBufferToman),
       grossSpreadToman: numOrNull(r.grossSpreadToman),
-      netPnlToman: numOrNull(r.netPnlToman),
-      netPnlAfterBufferToman: numOrNull(r.netPnlAfterBufferToman),
-      usdtDriftMicros: numOrNull(r.usdtDriftMicros),
+      markPriceToman: numOrNull(r.markPriceToman),
+      cashPnlIrtToman: numOrNull(r.cashPnlIrtToman),
+      inventoryDeltaUsdtMicros: numOrNull(r.inventoryDeltaUsdtMicros),
+      sellFeeValueToman: numOrNull(r.sellFeeValueToman),
+      economicNetPnlToman: numOrNull(r.economicNetPnlToman),
+      riskAdjustedPnlToman: numOrNull(r.riskAdjustedPnlToman),
       balancesAfter: Array.isArray(r.balancesAfter) ? r.balancesAfter : [],
       occurredAt: r.occurredAt
     }));
@@ -594,8 +606,11 @@ export async function loadPaperLedger(
 export async function loadPaperStats(sessionId: string): Promise<{
   filled: number;
   skipped: number;
-  realizedPnlToman: number;
-  realizedPnlAfterBufferToman: number;
+  cashPnlIrtToman: number;
+  inventoryDeltaUsdtMicros: number;
+  sellFeeValueToman: number;
+  economicNetPnlToman: number;
+  riskAdjustedPnlToman: number;
   feeTomanTotal: number;
   feeUsdtMicrosTotal: number;
   blockReasons: Array<{ code: string; reasonFa: string; count: number }>;
@@ -604,8 +619,11 @@ export async function loadPaperStats(sessionId: string): Promise<{
   const empty = {
     filled: 0,
     skipped: 0,
-    realizedPnlToman: 0,
-    realizedPnlAfterBufferToman: 0,
+    cashPnlIrtToman: 0,
+    inventoryDeltaUsdtMicros: 0,
+    sellFeeValueToman: 0,
+    economicNetPnlToman: 0,
+    riskAdjustedPnlToman: 0,
     feeTomanTotal: 0,
     feeUsdtMicrosTotal: 0,
     blockReasons: [] as Array<{ code: string; reasonFa: string; count: number }>,
@@ -625,8 +643,11 @@ export async function loadPaperStats(sessionId: string): Promise<{
     return {
       filled: fills.length,
       skipped: skips.length,
-      realizedPnlToman: fills.reduce((s, f) => s + (f.netPnlToman ?? 0), 0),
-      realizedPnlAfterBufferToman: fills.reduce((s, f) => s + (f.netPnlAfterBufferToman ?? 0), 0),
+      cashPnlIrtToman: fills.reduce((s, f) => s + (f.cashPnlIrtToman ?? 0), 0),
+      inventoryDeltaUsdtMicros: fills.reduce((s, f) => s + (f.inventoryDeltaUsdtMicros ?? 0), 0),
+      sellFeeValueToman: fills.reduce((s, f) => s + (f.sellFeeValueToman ?? 0), 0),
+      economicNetPnlToman: fills.reduce((s, f) => s + (f.economicNetPnlToman ?? 0), 0),
+      riskAdjustedPnlToman: fills.reduce((s, f) => s + (f.riskAdjustedPnlToman ?? 0), 0),
       feeTomanTotal: fills.reduce((s, f) => s + (f.feeTomanTotal ?? 0), 0),
       feeUsdtMicrosTotal: fills.reduce((s, f) => s + (f.feeUsdtMicrosTotal ?? 0), 0),
       blockReasons: [...byReason.entries()]

@@ -30,7 +30,11 @@ import type {
   ShadowSourceId
 } from "@/lib/shadowArbitrage/types";
 
-export type PaperSkipCode = PaperRejectionCode | "already_executed" | "blocked_opportunity" | "size_not_selected";
+export type PaperSkipCode =
+  | PaperRejectionCode
+  | "already_executed"
+  | "blocked_opportunity"
+  | "size_not_selected";
 
 export const PAPER_SKIP_FA: Record<string, string> = {
   ...PAPER_REJECTION_FA,
@@ -76,40 +80,51 @@ export type CycleEvaluation = {
   executedCount: number;
 };
 
+/** A candidate whose economics have already been priced for this cycle. */
+export type PricedCandidate = { candidate: PaperCandidate; plan: FillPlan };
+
 /**
- * Deterministic size choice: at most one size per route per cycle.
+ * Deterministic global ranking.
  *
- * Highest net profit wins; ties break toward the larger size and then the
- * lexicographically smaller route key, so the same cycle always yields the same
- * selection regardless of iteration order.
+ * Candidates compete for the same virtual balance, so the order they are applied
+ * in decides which ones fit. Ranking is therefore total and reproducible:
+ * highest risk-adjusted PnL first, then larger size, then route key, then
+ * lifecycle id. No two candidates can ever tie on all four.
  */
-export function selectBestPerRoute(candidates: PaperCandidate[]): {
-  selected: PaperCandidate[];
-  dropped: PaperCandidate[];
+export function rankPricedCandidates(priced: PricedCandidate[]): PricedCandidate[] {
+  return [...priced].sort(
+    (a, b) =>
+      b.plan.riskAdjustedPnlToman - a.plan.riskAdjustedPnlToman ||
+      b.candidate.sizeUsdt - a.candidate.sizeUsdt ||
+      a.candidate.routeKey.localeCompare(b.candidate.routeKey) ||
+      a.candidate.lifecycleId.localeCompare(b.candidate.lifecycleId)
+  );
+}
+
+/**
+ * At most one size per route per cycle, chosen on risk-adjusted economic PnL —
+ * never on cash PnL, which ignores the USDT the sell fee consumes.
+ */
+export function selectBestPerRoute(priced: PricedCandidate[]): {
+  selected: PricedCandidate[];
+  dropped: PricedCandidate[];
 } {
-  const byRoute = new Map<string, PaperCandidate[]>();
-  for (const c of candidates) {
-    const key = `${c.buySourceId}->${c.sellSourceId}`;
+  const byRoute = new Map<string, PricedCandidate[]>();
+  for (const p of priced) {
+    const key = `${p.candidate.buySourceId}->${p.candidate.sellSourceId}`;
     const list = byRoute.get(key);
-    if (list) list.push(c);
-    else byRoute.set(key, [c]);
+    if (list) list.push(p);
+    else byRoute.set(key, [p]);
   }
 
-  const selected: PaperCandidate[] = [];
-  const dropped: PaperCandidate[] = [];
-  for (const list of [...byRoute.entries()].sort((a, b) => a[0].localeCompare(b[0])).map((e) => e[1])) {
-    const ordered = [...list].sort(
-      (a, b) =>
-        b.netProfitToman - a.netProfitToman ||
-        b.sizeUsdt - a.sizeUsdt ||
-        a.routeKey.localeCompare(b.routeKey)
-    );
+  const selected: PricedCandidate[] = [];
+  const dropped: PricedCandidate[] = [];
+  for (const key of [...byRoute.keys()].sort()) {
+    const ordered = rankPricedCandidates(byRoute.get(key) ?? []);
     selected.push(ordered[0]);
     dropped.push(...ordered.slice(1));
   }
-  // Stable, deterministic execution order across the whole cycle.
-  selected.sort((a, b) => b.netProfitToman - a.netProfitToman || a.routeKey.localeCompare(b.routeKey));
-  return { selected, dropped };
+  return { selected: rankPricedCandidates(selected), dropped };
 }
 
 /** Same-cycle freshness: the snapshot must be inside the staleness budget. */
@@ -118,6 +133,28 @@ function snapshotUsable(s: NormalizedSourceSnapshot | undefined): boolean {
   if (s.stale) return false;
   if (s.health === "unavailable") return false;
   return s.ageMs <= SHADOW_STALE_MS;
+}
+
+/**
+ * Same-cycle deterministic mark / replacement price for USDT.
+ *
+ * Documented rule: the executable buy VWAP for this size on the buy venue in
+ * THIS cycle — what the desk actually paid to acquire USDT moments ago, so it
+ * is the honest replacement cost of the USDT a sell-side fee consumes. Returns
+ * null when the snapshot is missing, unusable or stale; the caller then blocks
+ * rather than valuing the fee against a guess.
+ */
+export function resolveMarkPriceToman(
+  sources: NormalizedSourceSnapshot[],
+  buySourceId: string,
+  sizeUsdt: number
+): number | null {
+  const snap = sources.find((s) => s.sourceId === buySourceId);
+  if (!snapshotUsable(snap)) return null;
+  const ex = snap?.sizeExecutables.find((x) => x.sizeUsdt === sizeUsdt);
+  const price = ex?.userBuyVwapToman ?? null;
+  if (price === null || !Number.isFinite(price) || price <= 0) return null;
+  return Math.round(price);
 }
 
 /** The venue must actually have walkable depth for the size being traded. */
@@ -231,15 +268,11 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
     viable.push(c);
   }
 
-  // 2. One size per route, chosen deterministically.
-  const { selected, dropped } = selectBestPerRoute(viable);
-  for (const d of dropped) skip(d, "size_not_selected");
-
-  // 3. Price and apply, sequentially, against the evolving virtual book.
-  let book: VenueBalance[] = input.balances.map((b) => ({ ...b }));
-  let executedCount = 0;
-
-  for (const c of selected) {
+  // 2. Price every viable candidate for this cycle. Pricing needs the mark
+  //    price, so an unpriceable candidate is skipped here with its own reason.
+  const priced: PricedCandidate[] = [];
+  for (const c of viable) {
+    const markPriceToman = resolveMarkPriceToman(input.sources, c.buySourceId, c.sizeUsdt);
     const plan = planFill({
       buySourceId: c.buySourceId,
       sellSourceId: c.sellSourceId,
@@ -250,6 +283,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       sellFeeBps: c.sellFeeBps,
       buySettlement: settlementFor(c.buySourceId, "buy"),
       sellSettlement: settlementFor(c.sellSourceId, "sell"),
+      markPriceToman,
       slippageBufferToman: c.slippageBufferToman
     });
     if (!plan.ok) {
@@ -262,7 +296,18 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       });
       continue;
     }
+    priced.push({ candidate: c, plan });
+  }
 
+  // 3. One size per route, then a total order across the whole cycle.
+  const { selected, dropped } = selectBestPerRoute(priced);
+  for (const d of dropped) skip(d.candidate, "size_not_selected");
+
+  // 4. Apply in rank order against the evolving virtual book.
+  let book: VenueBalance[] = input.balances.map((b) => ({ ...b }));
+  let executedCount = 0;
+
+  for (const { candidate: c, plan } of selected) {
     const applied = applyFill(plan, book);
     if (!applied.ok) {
       decisions.push({
@@ -285,7 +330,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
   return {
     decisions,
     balancesAfter: book,
-    eligibleCandidates: viable.length,
+    eligibleCandidates: priced.length,
     executedCount
   };
 }

@@ -83,8 +83,10 @@ import {
 import {
   balancesFromAllocations,
   evaluateCycle,
+  rankPricedCandidates,
+  resolveMarkPriceToman,
   selectBestPerRoute,
-  type PaperCandidate
+  type PricedCandidate
 } from "../src/lib/shadowArbitrage/paper/engine.ts";
 import {
   isDeadLocalWorker,
@@ -1792,6 +1794,7 @@ function confirmedFill(over: Partial<Parameters<typeof planFill>[0]> = {}) {
     sellFeeBps: 35,
     buySettlement: BUY_SETTLEMENT,
     sellSettlement: SELL_SETTLEMENT,
+    markPriceToman: 100_000,
     slippageBufferToman: 1_000,
     ...over
   });
@@ -1832,22 +1835,74 @@ await test("Phase 6 sell settles the fee in USDT and credits the full proceeds",
   assert.equal(plan.sellLeg.deltaIrtToman, 2_550_000, "full IRT proceeds are credited");
 });
 
-await test("Phase 6 round trip: IRT PnL is gross spread minus the buy fee, USDT falls by the sell fee", () => {
+await test("Phase 6 decomposes PnL: cash 43,750 but economic net 35,000 at a 100,000 mark", () => {
   const plan = confirmedFill();
   assert.equal(plan.ok, true);
   if (!plan.ok) return;
 
   assert.equal(plan.grossSpreadToman, 50_000);
-  assert.equal(plan.netPnlToman, 50_000 - 6_250, "gross spread minus the buy-side IRT fee");
-  assert.equal(plan.netPnlToman, 43_750);
-  assert.equal(plan.netPnlAfterBufferToman, 42_750);
-  assert.equal(plan.totalFeeToman, 6_250, "only the buy side pays an IRT fee");
-  assert.equal(plan.totalFeeUsdtMicros, usdtToMicros(0.0875), "only the sell side pays a USDT fee");
+
+  // 1. Cash only: proceeds − cost − buy fee in IRT.
+  assert.equal(plan.cashPnlIrtToman, 2_550_000 - 2_500_000 - 6_250);
+  assert.equal(plan.cashPnlIrtToman, 43_750);
+
+  // 2. Inventory: total USDT falls by exactly the sell-side fee.
+  assert.equal(plan.inventoryDeltaUsdtMicros, -usdtToMicros(0.0875));
+
+  // 3. That lost USDT valued at the same-cycle mark price.
+  assert.equal(plan.markPriceToman, 100_000);
+  assert.equal(plan.sellFeeValueToman, 8_750, "0.0875 USDT × 100,000 toman");
+
+  // 4. The real result of the round trip — NOT 43,750.
+  assert.equal(plan.economicNetPnlToman, 35_000);
+  assert.notEqual(plan.economicNetPnlToman, plan.cashPnlIrtToman);
+
+  // 5. Risk-adjusted, which is what the execution gate uses.
+  assert.equal(plan.riskAdjustedPnlToman, 35_000 - 1_000);
+  assert.equal(plan.riskAdjustedPnlToman, 34_000);
+});
+
+await test("Phase 6 gates on risk-adjusted economic PnL, never on cash PnL alone", () => {
+  // Cash PnL is comfortably positive, but the USDT fee wipes it out.
+  const marginal = confirmedFill({
+    sellVwapToman: 100_600,
+    slippageBufferToman: 0,
+    markPriceToman: 100_000
+  });
+  assert.equal(marginal.ok, false, "a cash-positive but economically negative trade is refused");
+  if (!marginal.ok) assert.equal(marginal.code, "not_net_positive");
+
+  // Proof that cash PnL alone would have accepted it.
+  const cashOnly = 2_515_000 - 2_500_000 - 6_250;
+  assert.ok(cashOnly > 0, "cash PnL was positive");
+  const feeValue = 8_750;
+  assert.ok(cashOnly - feeValue <= 0, "economic PnL was not");
+
+  // A higher mark price makes the same fee more expensive and can flip a trade.
+  const cheapMark = confirmedFill({ sellVwapToman: 101_000, slippageBufferToman: 0, markPriceToman: 100_000 });
+  const dearMark = confirmedFill({ sellVwapToman: 101_000, slippageBufferToman: 0, markPriceToman: 300_000 });
+  assert.equal(cheapMark.ok, true);
+  assert.equal(dearMark.ok, false, "valuing the USDT fee higher can block the trade");
+});
+
+await test("Phase 6 blocks when the same-cycle mark price is missing", () => {
+  const noMark = confirmedFill({ markPriceToman: null });
+  assert.equal(noMark.ok, false);
+  if (!noMark.ok) assert.equal(noMark.code, "mark_price_unavailable");
+
+  const badMark = confirmedFill({ markPriceToman: 0 });
+  assert.equal(badMark.ok, false);
+  if (!badMark.ok) assert.equal(badMark.code, "mark_price_unavailable");
+
+  // The documented rule: this cycle's executable buy VWAP on the buy venue.
+  assert.equal(resolveMarkPriceToman(paperSources(), "nobitex", 25), 100_000);
+  // Stale data yields no mark price at all, rather than a stale one.
   assert.equal(
-    plan.usdtDriftMicros,
-    -usdtToMicros(0.0875),
-    "total USDT decreases by exactly the sell-side fee"
+    resolveMarkPriceToman(paperSources({ nobitex: { stale: true } }), "nobitex", 25),
+    null
   );
+  assert.equal(resolveMarkPriceToman(paperSources(), "nobitex", 7), null);
+  assert.equal(resolveMarkPriceToman(paperSources(), "unknown-venue", 25), null);
 });
 
 await test("Phase 6 requires enough USDT for quantity plus the sell fee", () => {
@@ -1978,9 +2033,11 @@ await test("Phase 6 accounting conserves the book: only fees leave it", () => {
 
   // Toman changes by exactly the round-trip result, and USDT falls by exactly
   // the sell-side fee. Each ledger moves only by its own fee — no phantom money.
-  assert.equal(irtAfter - irtBefore, plan.netPnlToman);
+  assert.equal(irtAfter - irtBefore, plan.cashPnlIrtToman);
   assert.equal(usdtAfter - usdtBefore, -usdtToMicros(0.0875));
-  assert.equal(plan.usdtDriftMicros, -usdtToMicros(0.0875));
+  assert.equal(plan.inventoryDeltaUsdtMicros, -usdtToMicros(0.0875));
+  // The book moved by cash, but the economic result is smaller.
+  assert.ok(plan.economicNetPnlToman < plan.cashPnlIrtToman);
 
   // Inventory moved between venues; the buy venue received the full quantity.
   const nobitex = after.find((b) => b.sourceId === "nobitex")!;
@@ -2025,27 +2082,160 @@ await test("Phase 6 refuses a round trip that is not net positive after the buff
   if (!plan.ok) assert.equal(plan.code, "not_net_positive");
 });
 
-await test("Phase 6 picks exactly one deterministic size per route", () => {
-  const mk = (size: number, net: number): PaperCandidate => ({
-    lifecycleId: `lc-${size}`,
-    routeKey: `nobitex->wallex@${size}`,
-    buySourceId: "nobitex",
-    sellSourceId: "wallex",
-    sizeUsdt: size,
-    buyVwapToman: 100_000,
-    sellVwapToman: 102_000,
-    netProfitToman: net,
-    slippageBufferToman: 0,
-    buyFeeBps: 25,
-    sellFeeBps: 35
-  });
-  const { selected, dropped } = selectBestPerRoute([mk(5, 10), mk(25, 90), mk(10, 30), mk(20, 90)]);
+await test("Phase 6 picks one size per route on risk-adjusted economic PnL", () => {
+  const priced = (size: number, sellVwap: number): PricedCandidate => {
+    const plan = confirmedFill({ sizeUsdt: size, sellVwapToman: sellVwap });
+    assert.equal(plan.ok, true);
+    if (!plan.ok) throw new Error("fixture must plan");
+    return {
+      candidate: {
+        lifecycleId: `lc-${size}`,
+        routeKey: `nobitex->wallex@${size}`,
+        buySourceId: "nobitex",
+        sellSourceId: "wallex",
+        sizeUsdt: size,
+        buyVwapToman: 100_000,
+        sellVwapToman: sellVwap,
+        netProfitToman: 0,
+        slippageBufferToman: 1_000,
+        buyFeeBps: 25,
+        sellFeeBps: 35
+      },
+      plan
+    };
+  };
+
+  const list = [priced(5, 102_000), priced(25, 102_000), priced(10, 102_000), priced(20, 102_000)];
+  const { selected, dropped } = selectBestPerRoute(list);
   assert.equal(selected.length, 1, "one size per route");
-  assert.equal(selected[0].sizeUsdt, 25, "ties break toward the larger size");
+  assert.equal(selected[0].candidate.sizeUsdt, 25, "largest economic profit wins");
   assert.equal(dropped.length, 3);
+
   // Deterministic across input orderings.
-  const again = selectBestPerRoute([mk(20, 90), mk(10, 30), mk(25, 90), mk(5, 10)]);
-  assert.equal(again.selected[0].lifecycleId, selected[0].lifecycleId);
+  const shuffled = selectBestPerRoute([list[2], list[0], list[3], list[1]]);
+  assert.equal(shuffled.selected[0].candidate.lifecycleId, selected[0].candidate.lifecycleId);
+});
+
+await test("Phase 6 ranks competing candidates globally and deterministically", () => {
+  // Three routes competing for the same virtual balance, deliberately shuffled.
+  const mk = (
+    lifecycleId: string,
+    routeKey: string,
+    sizeUsdt: number,
+    sellVwapToman: number
+  ): PricedCandidate => {
+    const plan = confirmedFill({ sizeUsdt, sellVwapToman });
+    assert.equal(plan.ok, true);
+    if (!plan.ok) throw new Error("fixture must plan");
+    return {
+      candidate: {
+        lifecycleId,
+        routeKey,
+        buySourceId: "nobitex",
+        sellSourceId: "wallex",
+        sizeUsdt,
+        buyVwapToman: 100_000,
+        sellVwapToman,
+        netProfitToman: 0,
+        slippageBufferToman: 1_000,
+        buyFeeBps: 25,
+        sellFeeBps: 35
+      },
+      plan
+    };
+  };
+
+  const big = mk("lc-big", "a->b@25", 25, 103_000);
+  const mid = mk("lc-mid", "c->d@25", 25, 102_000);
+  const small = mk("lc-small", "e->f@10", 10, 102_000);
+
+  const ranked = rankPricedCandidates([small, big, mid]);
+  assert.deepEqual(
+    ranked.map((r) => r.candidate.lifecycleId),
+    ["lc-big", "lc-mid", "lc-small"],
+    "highest risk-adjusted economic profit first"
+  );
+  // Ranking is by economic profit, and strictly decreasing here.
+  for (let i = 1; i < ranked.length; i += 1) {
+    assert.ok(
+      ranked[i - 1].plan.riskAdjustedPnlToman >= ranked[i].plan.riskAdjustedPnlToman,
+      "the order is monotonic in risk-adjusted PnL"
+    );
+  }
+
+  // Every input permutation produces the identical order.
+  const permutations = [
+    [big, mid, small],
+    [mid, small, big],
+    [small, mid, big],
+    [mid, big, small],
+    [big, small, mid]
+  ];
+  for (const p of permutations) {
+    assert.deepEqual(
+      rankPricedCandidates(p).map((r) => r.candidate.lifecycleId),
+      ["lc-big", "lc-mid", "lc-small"]
+    );
+  }
+
+  // A perfect economic tie is still broken deterministically: size, then route
+  // key, then lifecycle id — so no two candidates can ever tie on all four.
+  const tieA = mk("lc-aaa", "z->z@25", 25, 102_000);
+  const tieB = mk("lc-bbb", "a->a@25", 25, 102_000);
+  assert.equal(tieA.plan.riskAdjustedPnlToman, tieB.plan.riskAdjustedPnlToman);
+  assert.deepEqual(
+    rankPricedCandidates([tieA, tieB]).map((r) => r.candidate.routeKey),
+    ["a->a@25", "z->z@25"]
+  );
+  assert.deepEqual(
+    rankPricedCandidates([tieB, tieA]).map((r) => r.candidate.routeKey),
+    ["a->a@25", "z->z@25"]
+  );
+});
+
+await test("Phase 6 applies the best-ranked candidate first when balances are scarce", () => {
+  // Only enough toman for a single 25 USDT round trip on the buy venue.
+  const scarce: VenueBalance[] = [
+    { sourceId: "nobitex", irtToman: 2_600_000, usdtMicros: usdtToMicros(100) },
+    { sourceId: "wallex", irtToman: 2_600_000, usdtMicros: usdtToMicros(100) }
+  ];
+
+  const rich = paperOpportunity({
+    id: "lc-rich",
+    routeKey: "nobitex->wallex@25",
+    sellVwapToman: 104_000
+  });
+  const poor = paperOpportunity({
+    id: "lc-poor",
+    routeKey: "nobitex->tabdeal@25",
+    sellSourceId: "tabdeal",
+    sellVwapToman: 100_500
+  });
+
+  const run = (opportunities: ShadowOpportunity[]) =>
+    evaluateCycle({
+      opportunities,
+      sources: paperSources(),
+      venueStates: paperReadiness(),
+      executedLifecycleIds: new Set(),
+      balances: scarce
+    });
+
+  const a = run([rich, poor]);
+  const b = run([poor, rich]);
+
+  assert.equal(a.executedCount, 1, "only one trade fits the scarce balance");
+  assert.equal(b.executedCount, a.executedCount);
+
+  const executedA = a.decisions.find((d) => d.kind === "EXECUTE");
+  const executedB = b.decisions.find((d) => d.kind === "EXECUTE");
+  assert.ok(executedA && executedA.kind === "EXECUTE");
+  assert.ok(executedB && executedB.kind === "EXECUTE");
+  if (executedA?.kind === "EXECUTE" && executedB?.kind === "EXECUTE") {
+    assert.equal(executedA.candidate.lifecycleId, "lc-rich", "the better trade wins the balance");
+    assert.equal(executedB.candidate.lifecycleId, "lc-rich", "input order does not matter");
+  }
+  assert.deepEqual(a.balancesAfter, b.balancesAfter, "the resulting book is identical");
 });
 
 await test("Phase 6 executes a lifecycle at most once, however long it stays open", () => {

@@ -37,6 +37,8 @@ const { certifyFromSnapshot, resetCertifications } = await import(
   "../src/lib/shadowArbitrage/certification.ts"
 );
 const { bucketIdempotencyKey } = await import("../src/lib/shadowArbitrage/collector.ts");
+const paperRepo = await import("../src/db/repositories/shadowPaper.ts");
+const paperRun = await import("../src/lib/shadowArbitrage/paper/run.ts");
 const types = await import("../src/lib/shadowArbitrage/types.ts");
 void types;
 
@@ -590,6 +592,324 @@ await test("capital approvals persist append-only and pin plan + readiness", asy
   assert.equal(latest?.id, second.id);
   assert.equal(latest?.planFingerprint, "plan-bbb");
   assert.notEqual(second.id, first.id, "approvals are appended, never updated");
+});
+
+/* ── Phase 6 — paper execution persistence ────────────────────────────────── */
+
+const PAPER_OPENING = [
+  { sourceId: "nobitex", irtToman: 20_000_000, usdtUnits: 100 },
+  { sourceId: "wallex", irtToman: 20_000_000, usdtUnits: 100 }
+];
+
+function paperFill(
+  lifecycleId: string,
+  netPnl = 43_750,
+  balancesAfter: Array<{ sourceId: string; irtToman: number; usdtMicros: number }> = [
+    { sourceId: "nobitex", irtToman: 20_000_000 - 2_506_250, usdtMicros: 125_000_000 },
+    { sourceId: "wallex", irtToman: 20_000_000 + 2_550_000, usdtMicros: 74_912_500 }
+  ]
+) {
+  return {
+    lifecycleId,
+    routeKey: "nobitex->wallex@25",
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    sizeUsdt: 25,
+    buyVwapToman: 100_000,
+    sellVwapToman: 102_000,
+    buyNotionalToman: 2_500_000,
+    sellNotionalToman: 2_550_000,
+    buyFeeBps: 25,
+    sellFeeBps: 35,
+    // Confirmed mixed settlement: IRT on the buy side, USDT on the sell side.
+    buyFeeAsset: "IRT",
+    buyFeeDebitMode: "ADD_TO_DEBIT",
+    buyFeeProvenance: "ADMIN_CONFIRMED",
+    sellFeeAsset: "USDT",
+    sellFeeDebitMode: "ADD_TO_DEBIT",
+    sellFeeProvenance: "ADMIN_CONFIRMED",
+    feeTomanTotal: 6_250,
+    feeUsdtMicrosTotal: 87_500,
+    slippageBufferToman: 1_000,
+    grossSpreadToman: 50_000,
+    markPriceToman: 100_000,
+    cashPnlIrtToman: netPnl,
+    // 0.0875 USDT valued at the 100,000-toman same-cycle mark price.
+    sellFeeValueToman: 8_750,
+    economicNetPnlToman: netPnl - 8_750,
+    riskAdjustedPnlToman: netPnl - 8_750 - 1_000,
+    inventoryDeltaUsdtMicros: -87_500,
+    balancesAfter
+  };
+}
+
+let paperSessionId = "";
+
+await test("paper session is never started by creation alone", async () => {
+  const before = await paperRepo.getActivePaperSession();
+  assert.equal(before, null, "a fresh database has no paper session");
+
+  const created = await paperRepo.createPaperSession({
+    observationId: null,
+    name: "نشست تست",
+    mode: "PROVISIONAL_EVALUATION",
+    totalCapitalToman: 50_000_000,
+    valuationPriceToman: 100_000,
+    openingAllocations: PAPER_OPENING,
+    approvalFingerprint: null,
+    createdBy: "admin",
+    note: null
+  });
+  paperSessionId = created.id;
+  assert.equal(created.status, "NOT_STARTED", "creation must not start execution");
+  assert.equal(created.startedAt, null);
+
+  const balances = await paperRepo.loadPaperBalances(created.id);
+  assert.equal(balances.length, 2);
+  assert.equal(balances.find((b) => b.sourceId === "nobitex")?.usdtMicros, 100_000_000);
+});
+
+await test("paper engine does not run for a session that was never started", async () => {
+  const outcome = await paperRun.runPaperExecutionForCycle({
+    runId: null,
+    occurredAt: new Date().toISOString(),
+    cycleStatus: "success",
+    sources: [],
+    opportunities: []
+  });
+  assert.equal(outcome.ran, false);
+  assert.equal(outcome.reason, "not_running");
+  const ledger = await paperRepo.loadPaperLedger(paperSessionId);
+  assert.equal(ledger.length, 0, "nothing is written while the session is not running");
+});
+
+await test("paper session start, pause and resume are explicit admin transitions", async () => {
+  const started = await paperRepo.setPaperSessionStatus(paperSessionId, "RUNNING");
+  assert.equal(started?.status, "RUNNING");
+  assert.ok(started?.startedAt, "startedAt is stamped once");
+  const firstStart = started?.startedAt;
+
+  const paused = await paperRepo.setPaperSessionStatus(paperSessionId, "PAUSED");
+  assert.equal(paused?.status, "PAUSED");
+  assert.ok(paused?.pausedAt);
+
+  const resumed = await paperRepo.setPaperSessionStatus(paperSessionId, "RUNNING");
+  assert.equal(resumed?.status, "RUNNING");
+  assert.equal(resumed?.pausedAt, null, "resuming clears the pause marker");
+  assert.equal(resumed?.startedAt, firstStart, "the original start time is preserved");
+});
+
+await test("paper fill commits both legs and the balance change together", async () => {
+  const result = await paperRepo.commitPaperCycle({
+    sessionId: paperSessionId,
+    runId: null,
+    occurredAt: new Date().toISOString(),
+    fills: [paperFill("lc-1")],
+    skips: [
+      {
+        lifecycleId: "lc-skip",
+        routeKey: "wallex->nobitex@5",
+        buySourceId: "wallex",
+        sellSourceId: "nobitex",
+        sizeUsdt: 5,
+        rejectionCode: "insufficient_usdt",
+        rejectionReason: "موجودی تتری صرافی فروش کافی نیست",
+        requiredRebalance: "انتقال شبیه‌سازی‌شدهٔ ۵ تتر لازم است."
+      }
+    ]
+  });
+  assert.equal(result.filled, 1);
+  assert.equal(result.skipped, 1);
+  assert.equal(result.duplicates, 0);
+
+  const balances = await paperRepo.loadPaperBalances(paperSessionId);
+  assert.equal(balances.find((b) => b.sourceId === "nobitex")?.irtToman, 17_493_750);
+  // Sell debited quantity plus the USDT fee: 100 − 25.0875 = 74.9125 USDT.
+  assert.equal(balances.find((b) => b.sourceId === "wallex")?.usdtMicros, 74_912_500);
+
+  const stats = await paperRepo.loadPaperStats(paperSessionId);
+  assert.equal(stats.filled, 1);
+  assert.equal(stats.skipped, 1);
+  // Cash PnL is the gross spread minus the buy-side IRT fee only; the economic
+  // result is smaller because the USDT fee is valued and subtracted.
+  assert.equal(stats.cashPnlIrtToman, 43_750);
+  assert.equal(stats.sellFeeValueToman, 8_750);
+  assert.equal(stats.economicNetPnlToman, 35_000);
+  assert.equal(stats.riskAdjustedPnlToman, 34_000);
+  assert.equal(stats.inventoryDeltaUsdtMicros, -87_500);
+  assert.equal(stats.feeTomanTotal, 6_250);
+  assert.equal(stats.feeUsdtMicrosTotal, 87_500);
+  assert.ok(stats.blockReasons.some((r) => r.code === "insufficient_usdt"));
+
+  // The skip is recorded with its rebalance requirement, not silently dropped.
+  const skipped = await paperRepo.loadPaperLedger(paperSessionId, { outcome: "SKIPPED" });
+  assert.equal(skipped.length, 1);
+  assert.ok(skipped[0].requiredRebalance?.includes("انتقال"));
+});
+
+await test("paper ledger refuses a duplicate fill of the same lifecycle", async () => {
+  const balancesBefore = await paperRepo.loadPaperBalances(paperSessionId);
+  const again = await paperRepo.commitPaperCycle({
+    sessionId: paperSessionId,
+    runId: null,
+    occurredAt: new Date().toISOString(),
+    fills: [paperFill("lc-1")],
+    skips: []
+  });
+  assert.equal(again.filled, 0, "the second fill is refused");
+  assert.equal(again.duplicates, 1);
+
+  const balancesAfter = await paperRepo.loadPaperBalances(paperSessionId);
+  assert.deepEqual(balancesAfter, balancesBefore, "a refused duplicate changes no balance");
+
+  const fills = await paperRepo.loadPaperLedger(paperSessionId, { outcome: "FILLED" });
+  assert.equal(fills.length, 1, "the ledger still holds exactly one fill");
+
+  const filledIds = await paperRepo.loadFilledLifecycleIds(paperSessionId);
+  assert.ok(filledIds.has("lc-1"));
+});
+
+await test("paper ledgers reconcile independently across the session", async () => {
+  const balances = await paperRepo.loadPaperBalances(paperSessionId);
+  const fills = await paperRepo.loadPaperLedger(paperSessionId, { outcome: "FILLED" });
+
+  const openingIrt = PAPER_OPENING.reduce((s, a) => s + a.irtToman, 0);
+  const openingUsdtMicros = PAPER_OPENING.reduce((s, a) => s + a.usdtUnits * 1_000_000, 0);
+  const irtNow = balances.reduce((s, b) => s + b.irtToman, 0);
+  const usdtNow = balances.reduce((s, b) => s + b.usdtMicros, 0);
+
+  // The IRT ledger moves by CASH PnL, not by economic PnL — the USDT fee never
+  // touched the toman book, which is exactly why economic PnL must be reported
+  // separately rather than inferred from the balances.
+  const expectedIrtDelta = fills.reduce((s, f) => s + (f.cashPnlIrtToman ?? 0), 0);
+  const expectedUsdtDelta = fills.reduce((s, f) => s + (f.inventoryDeltaUsdtMicros ?? 0), 0);
+
+  assert.equal(irtNow - openingIrt, expectedIrtDelta, "the IRT ledger reconciles on its own");
+  assert.equal(usdtNow - openingUsdtMicros, expectedUsdtDelta, "the USDT ledger reconciles on its own");
+
+  // The fee assets are recorded per side, not as one currency.
+  for (const f of fills) {
+    assert.equal(f.buyFeeAsset, "IRT");
+    assert.equal(f.sellFeeAsset, "USDT");
+    assert.equal(f.buyFeeProvenance, "ADMIN_CONFIRMED");
+    assert.equal(f.sellFeeProvenance, "ADMIN_CONFIRMED");
+    // Economic PnL is always strictly below cash PnL when a USDT fee was paid.
+    assert.ok((f.economicNetPnlToman ?? 0) < (f.cashPnlIrtToman ?? 0));
+    assert.equal(
+      (f.cashPnlIrtToman ?? 0) - (f.sellFeeValueToman ?? 0),
+      f.economicNetPnlToman ?? 0
+    );
+  }
+});
+
+await test("paper session continues after a restart with no duplicate fills", async () => {
+  // A restart keeps no in-process state: everything is re-read from the database.
+  const resumedSession = await paperRepo.getActivePaperSession();
+  assert.equal(resumedSession?.id, paperSessionId, "the same session is picked back up");
+  assert.equal(resumedSession?.status, "RUNNING");
+
+  const balancesBefore = await paperRepo.loadPaperBalances(paperSessionId);
+  const filledBefore = await paperRepo.loadFilledLifecycleIds(paperSessionId);
+  assert.ok(filledBefore.has("lc-1"), "the filled-lifecycle memory survives the restart");
+
+  // The already-filled lifecycle must not refill; a new one may.
+  const after = await paperRepo.commitPaperCycle({
+    sessionId: paperSessionId,
+    runId: null,
+    occurredAt: new Date().toISOString(),
+    fills: [
+      paperFill("lc-1"),
+      // A second round trip moves the book further, so the change is observable.
+      paperFill("lc-2", 20_000, [
+        { sourceId: "nobitex", irtToman: 15_000_000, usdtMicros: 150_000_000 },
+        { sourceId: "wallex", irtToman: 25_000_000, usdtMicros: 50_000_000 }
+      ])
+    ],
+    skips: []
+  });
+  assert.equal(after.duplicates, 1, "the pre-restart fill is still refused");
+  assert.equal(after.filled, 1, "only the new lifecycle fills");
+
+  const fills = await paperRepo.loadPaperLedger(paperSessionId, { outcome: "FILLED" });
+  assert.equal(fills.length, 2);
+  const balancesAfter = await paperRepo.loadPaperBalances(paperSessionId);
+  assert.notDeepEqual(balancesAfter, balancesBefore);
+
+  // Balances never went negative at any point.
+  for (const b of balancesAfter) {
+    assert.ok(b.irtToman >= 0 && b.usdtMicros >= 0, `${b.sourceId} must never go negative`);
+  }
+});
+
+await test("paper balances can never be driven negative through the ledger", async () => {
+  const before = await paperRepo.loadPaperBalances(paperSessionId);
+  let threw = false;
+  try {
+    await paperRepo.commitPaperCycle({
+      sessionId: paperSessionId,
+      runId: null,
+      occurredAt: new Date().toISOString(),
+      fills: [
+        {
+          ...paperFill("lc-negative"),
+          balancesAfter: [{ sourceId: "nobitex", irtToman: -1, usdtMicros: 0 }]
+        }
+      ],
+      skips: []
+    });
+  } catch {
+    threw = true;
+  }
+  assert.equal(threw, true, "a negative balance must be rejected at the database boundary");
+  const after = await paperRepo.loadPaperBalances(paperSessionId);
+  assert.deepEqual(after, before, "the rejected write left the book untouched");
+  const fills = await paperRepo.loadPaperLedger(paperSessionId, { outcome: "FILLED" });
+  assert.equal(fills.length, 2, "no phantom fill was recorded");
+});
+
+await test("a paper execution failure cannot stop the collector", async () => {
+  // The isolated wrapper swallows anything the engine throws.
+  const outcome = await paperRun.runPaperExecutionIsolated({
+    runId: null,
+    occurredAt: "not-a-timestamp",
+    cycleStatus: "success",
+    // A malformed opportunity list is enough to make the engine throw.
+    sources: null as never,
+    opportunities: null as never
+  });
+  assert.equal(outcome.ran, false);
+  assert.equal(outcome.reason, "error");
+  assert.ok(outcome.error, "the failure is reported, not rethrown");
+
+  // The collector's own state is untouched and the next cycle still records.
+  const observation = await repo.getObservation();
+  assert.ok(observation, "the observation session survives a paper failure");
+  const stats = await paperRepo.loadPaperStats(paperSessionId);
+  assert.equal(stats.filled, 2, "no fill was invented by the failure path");
+});
+
+await test("a paused paper session stops executing without losing its book", async () => {
+  await paperRepo.setPaperSessionStatus(paperSessionId, "PAUSED");
+  const balancesBefore = await paperRepo.loadPaperBalances(paperSessionId);
+
+  const outcome = await paperRun.runPaperExecutionForCycle({
+    runId: null,
+    occurredAt: new Date().toISOString(),
+    cycleStatus: "success",
+    sources: [],
+    opportunities: []
+  });
+  assert.equal(outcome.ran, false);
+  assert.equal(outcome.reason, "not_running");
+
+  const balancesAfter = await paperRepo.loadPaperBalances(paperSessionId);
+  assert.deepEqual(balancesAfter, balancesBefore);
+
+  // Resuming keeps the same session and the same ledger.
+  const resumed = await paperRepo.setPaperSessionStatus(paperSessionId, "RUNNING");
+  assert.equal(resumed?.id, paperSessionId);
+  const fills = await paperRepo.loadPaperLedger(paperSessionId, { outcome: "FILLED" });
+  assert.equal(fills.length, 2);
 });
 
 await closeDb().catch(() => undefined);

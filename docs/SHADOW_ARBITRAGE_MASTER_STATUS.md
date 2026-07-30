@@ -597,3 +597,160 @@ accounting and gate-boundary tests plus 2 persistence tests · isolated standalo
 build succeeds and emits the `capital` route.
 
 **Phase 6 (automatic paper execution) has not started.**
+
+---
+
+## 15. Phase 6 — Automatic Paper Execution Engine (branch `shadow-phase6-paper-execution`, not merged)
+
+Built on top of v4.8.0 after the user verified production healthy. **Not merged,
+not tagged and not deployed** — awaiting explicit approval for v4.9.0.
+
+### Safety posture
+
+Paper/Shadow only. No authenticated exchange API, no credentials, no balances
+from a venue, no deposits, withdrawals, transfers or real orders anywhere in the
+path. `broker.ts` and `engine.ts` are pure modules with no network client and no
+adapter import; a structural test asserts that, and also scans every Phase 6
+file for `placeOrder`, `submitOrder`, `createOrder`, `cancelOrder`, `withdraw`,
+`deposit`, `transferFunds`, `signRequest` and `privateApi`. The API refuses
+`apiKey`, `api_key`, `secret`, `apiSecret`, `token`, `password`, `passphrase`,
+`privateKey` and `mnemonic`. OMPFinex is not a valid venue and is rejected.
+
+### Sessions
+
+Admin creates, starts, pauses and resumes a session; creation alone never starts
+execution, so a deployment cannot begin paper trading on its own (a test asserts
+`status = NOT_STARTED` with `startedAt = null` on create). All session state,
+balances and the filled-lifecycle memory live in the database, so a restarted
+container resumes the same session with the same book and re-fills nothing.
+
+Two modes: `PROVISIONAL_EVALUATION`, which runs on a draft 50,000,000-toman
+virtual plan and is labelled non-final in the UI, and `APPROVED_PLAN`, which is
+refused unless the Phase 5 recommendation currently resolves to
+`APPROVED_SIMULATION_PLAN`.
+
+### Execution engine
+
+Runs after each successful collection cycle through `runPaperExecutionIsolated`,
+which never throws — a paper failure cannot stop the collector, the heartbeat or
+the 14-day observation (asserted by a test that feeds the wrapper malformed
+input). Decisions use only same-cycle inputs: that cycle's order books, VWAP
+depth for the traded size, fees that are known and fresh, the slippage buffer,
+account readiness and the virtual balances.
+
+Only `EXECUTABLE_NOW` opportunities with no blocked reasons and positive net
+profit are considered. Size variants are grouped per route and exactly one size
+is chosen deterministically (highest net profit, ties toward the larger size,
+then route key). Each lifecycle fills at most once per session, enforced both by
+the in-memory filled set and by a unique index on `(session, lifecycle)`, so a
+still-open opportunity is not re-filled every 30 seconds.
+
+### Accounting — user-confirmed fee settlement rule
+
+Separate virtual IRT and USDT per venue; toman is integer and USDT is integer
+micros. Fee settlement is stored **per venue and per side** with an explicit
+`provenance`, never as one global fee currency, because the two sides settle in
+different assets:
+
+| Side | `feeAsset` | `debitMode` | Effect |
+| --- | --- | --- | --- |
+| BUY USDT with IRT | `IRT` | `ADD_TO_DEBIT` | IRT debit = VWAP cost + fee; **full** purchased quantity credited |
+| SELL USDT for IRT | `USDT` | `ADD_TO_DEBIT` | USDT debit = quantity + fee; **full** VWAP proceeds credited |
+
+Only `ADMIN_CONFIRMED` settlement executes, and only for the three venues with
+verified accounts. Unknown venues are `BLOCKED` on both sides. A settlement whose
+asset does not match the side that actually pays (fee added to the debit in an
+asset that side does not pay) is rejected as unsupported rather than guessed at.
+
+Consequences, each asserted by a test:
+
+* Total USDT decreases by **exactly** the sell-side USDT fee.
+* Cash IRT PnL equals **gross spread minus the buy-side IRT fee**.
+* The two ledgers never net against each other and reconcile **independently**
+  (`reconcilePaperLedgers`).
+* The sell venue must hold **quantity + fee**, not just quantity; otherwise the
+  trade is blocked for insufficient balance and the shortfall is reported.
+
+### PnL is reported in five separate figures
+
+Cash IRT PnL is **not** economic profit: the USDT the sell fee consumed never
+appears in the toman book. So each fill records, and the UI shows separately:
+
+| Metric | Definition | Persian label |
+| --- | --- | --- |
+| `cashPnlIrtToman` | sell proceeds − buy cost − buy fee in IRT | سود نقدی تومانی |
+| `inventoryDeltaUsdtMicros` | −(sell fee in USDT) | تغییر موجودی تتر |
+| `sellFeeValueToman` | USDT fee × same-cycle mark price | ارزش تومانی کارمزد تتری |
+| `economicNetPnlToman` | `cashPnlIrt − sellFeeValueToman` | سود خالص اقتصادی |
+| `riskAdjustedPnlToman` | `economicNetPnl − slippage/risk buffer` | سود تعدیل‌شده با بافر |
+
+**The execution gate is `riskAdjustedPnlToman > 0`. Cash PnL is never the gate**
+— a test constructs a trade whose cash PnL is positive but whose economic PnL is
+not, and proves it is refused.
+
+**Mark price — documented deterministic rule.** The USDT fee is valued at the
+executable buy VWAP for that size on the buy venue *in the same cycle*: literally
+what the desk paid to acquire USDT moments earlier, so it is the honest
+replacement cost. When that snapshot is missing, unusable or stale the mark
+price is `null` and the fill is **BLOCKED** (`mark_price_unavailable`) rather
+than priced against a guess.
+
+Worked example (25 USDT, buy 100,000, sell 102,000, fees 0.25% / 0.35%, mark
+100,000, buffer 1,000): cash PnL **43,750**; USDT inventory **−0.0875**; fee
+value **8,750**; economic net **35,000**; risk-adjusted **34,000**. Reporting
+43,750 as the result would overstate the trade by 8,750 toman.
+
+### Deterministic global ranking
+
+Candidates compete for the same virtual balance, so the order they are applied
+in decides which ones fit. Every viable candidate is priced first, one size per
+route is kept on risk-adjusted economic PnL, and the survivors are put in a
+**total** order: risk-adjusted PnL desc, then size desc, then route key, then
+lifecycle id — no two candidates can tie on all four. A test proves every input
+permutation yields the identical order and the identical resulting book, and
+that under a scarce balance the better trade wins regardless of input order.
+
+Both legs are priced first and applied together; if either fails, nothing is
+written and the caller's book is not mutated. The database layer refuses a
+negative balance inside the transaction, so a partial fill cannot survive. The
+slippage buffer is reported and tightens the execution gate but moves no cash.
+Rebalancing stays simulated: when inventory is short the trade is blocked and
+the required transfer is reported.
+
+Every decision — filled or skipped — becomes an immutable ledger row carrying
+both legs, VWAPs, fees, basis, buffer, gross spread, net PnL and the rejection
+reason.
+
+### UI and health
+
+Admin-only Persian RTL panel with a permanent
+`PAPER EXECUTION — NO REAL ORDERS OR TRANSFERS` banner, session status, virtual
+balances, trades, skipped candidates with reasons, realized theoretical PnL,
+fees, inventory drift, opportunity capture rate, block reasons, pause/resume
+controls and a per-trade calculation drawer. Admin health gained a `paper`
+block behind the same admin gate — a new field, not a new unauthenticated
+surface.
+
+### Files
+
+`src/lib/shadowArbitrage/paper/broker.ts`, `.../engine.ts`, `.../run.ts`,
+`src/db/repositories/shadowPaper.ts`, `app/api/shadow-arbitrage/paper/route.ts`,
+`src/components/shadowArbitrage/PaperExecution.tsx`,
+`drizzle/0006_shadow_paper_execution.sql` (three new tables, additive only, no
+drops or alters). `runSerialized` is now exported from the Phase 2 repository
+and reused by the paper repository on purpose: on PGlite the advisory lock *is*
+the serialization queue, so a second private queue wrapper would deadlock.
+
+### Verification
+
+typecheck clean · ESLint 0 errors (17 pre-existing warnings, none new) ·
+12/12 suites green, 331 assertions, 0 failures — 21 engine/broker tests
+(including exact buy, sell, PnL decomposition, gate-on-economic-not-cash,
+missing mark price, insufficient-USDT-for-the-sell-fee, ledger reconciliation
+and deterministic global ranking) and 10 persistence tests (including restart,
+idempotency and independent ledger reconciliation) · isolated standalone build
+succeeds and emits the
+`paper` route · v4.8.0 collector, runner, instrumentation, capital engine and
+30-second cadence unchanged; `observation.id` is read only.
+
+**Phase 7 has not started.**

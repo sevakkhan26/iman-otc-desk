@@ -1687,6 +1687,48 @@ await test("8B typography reuses the project's IRANYekan configuration", () => {
   assert.ok(read("package.json").includes('"test:fonts"'));
 });
 
+await test("release version: one authoritative public field, valid package metadata", () => {
+  const version = JSON.parse(read("version.json")) as {
+    appVersion: string;
+    packageMetadataVersion: string;
+  };
+  const pkg = JSON.parse(read("package.json")) as { version: string; private?: boolean };
+
+  // The product's version is exactly what this release is called.
+  assert.equal(version.appVersion, "4.1.3.0");
+
+  // Four-part numbers are not SemVer, which is why they cannot live in
+  // package.json: the production image validates it during `pnpm install`.
+  const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?$/;
+  assert.equal(semver.test(version.appVersion), false, "4.1.3.0 is deliberately not SemVer");
+  assert.ok(semver.test(pkg.version), `package.json keeps valid SemVer, found ${pkg.version}`);
+  assert.equal(pkg.version, version.packageMetadataVersion, "and the two stay in step");
+  assert.equal(pkg.private, true, "the package is never published, so its version is metadata only");
+
+  // One source feeds the build, which feeds the UI.
+  const config = read("next.config.ts");
+  assert.ok(config.includes('import appVersion from "./version.json"'));
+  assert.ok(config.includes("NEXT_PUBLIC_APP_VERSION: appVersion.appVersion"));
+  assert.equal(config.includes("packageJson.version"), false, "package.json no longer feeds the UI");
+
+  const lib = read("src/lib/version.ts");
+  assert.ok(lib.includes("process.env.NEXT_PUBLIC_APP_VERSION"));
+  assert.ok(lib.includes("return `v${version}`"), "the label is v + the version, verbatim");
+
+  // Both places a reader sees it come from that one constant.
+  assert.ok(read("src/components/Shell.tsx").includes("formatAppVersionLabel()"));
+  assert.ok(read("app/login/page.tsx").includes("{APP_VERSION}"));
+
+  // The number appears nowhere else, and the superseded one appears nowhere.
+  for (const file of ["next.config.ts", "src/lib/version.ts", "Dockerfile", "package.json"]) {
+    assert.equal(read(file).includes("4.13.0"), false, `${file} must not mention 4.13.0`);
+  }
+
+  // The build context carries the file (it is not ignored by Docker).
+  const dockerignore = read(".dockerignore");
+  assert.equal(dockerignore.split("\n").includes("version.json"), false);
+});
+
 await test("8B every new selector is scoped under .sa-*", () => {
   const css = stripComments(phase8bCss());
   // Collect each selector group: lines accumulate until one opens a block.
@@ -1740,8 +1782,7 @@ await test("8B the redesign touches presentation only — backend files are unto
     "src/lib/shadowArbitrage",
     "src/lib/ops",
     "middleware.ts",
-    "instrumentation.node.ts",
-    "next.config.ts"
+    "instrumentation.node.ts"
   ];
   let baseline = "";
   try {
@@ -1756,6 +1797,28 @@ await test("8B the redesign touches presentation only — backend files are unto
       encoding: "utf8"
     }).trim();
     assert.equal(changed, "", `backend files changed since v4.12.0: ${changed}`);
+
+    /*
+     * next.config.ts is allowed exactly one change: the release version now
+     * comes from version.json instead of package.json. Every other line of it
+     * — headers, CSP, tracing, external packages — must be identical.
+     */
+    const configDiff = execFileSync(
+      "git",
+      ["diff", "-U0", baseline, "--", "next.config.ts"],
+      { encoding: "utf8" }
+    );
+    const touched = configDiff
+      .split("\n")
+      .filter((l) => /^[+-]/.test(l) && !/^[+-][+-]/.test(l))
+      .map((l) => l.slice(1).trim())
+      .filter(Boolean);
+    for (const line of touched) {
+      assert.ok(
+        /version|appVersion|packageJson|^\*|^\/\*|^\*\/|^-|^import type/.test(line),
+        `next.config.ts changed outside the version wiring: ${line}`
+      );
+    }
   } else {
     console.log("        (note: tag v4.12.0 unavailable — import boundary checked only)");
   }

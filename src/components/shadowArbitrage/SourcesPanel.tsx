@@ -11,7 +11,7 @@ import {
   formatCountFa,
   formatPercentFa,
   freshnessLabel,
-  toFaDigits
+  toFaDigits,
 } from "@/components/shadowArbitrage/labels";
 import { Kpi, Pager } from "@/components/shadowArbitrage/panelKit";
 import { paginate } from "@/components/shadowArbitrage/opportunityModel";
@@ -26,14 +26,14 @@ import {
   summarizeVenues,
   type FeeConfirmationAudit,
   type VenueReadiness,
-  type VenueRow
+  type VenueRow,
 } from "@/components/shadowArbitrage/sourcesModel";
 import { readInt, useShadowViewState } from "@/components/shadowArbitrage/urlState";
 import type { SideSettlement } from "@/lib/shadowArbitrage/paper/broker";
 import type {
   Certification,
   NormalizedSourceSnapshot,
-  SourceHealthRow
+  SourceHealthRow,
 } from "@/components/shadowArbitrage/types";
 
 type Props = {
@@ -55,13 +55,13 @@ const VIEWS: Array<{ id: SourcesView; labelFa: string; descriptionFa: string }> 
   {
     id: "health",
     labelFa: "سلامت منابع",
-    descriptionFa: "آیا این منبع در چرخه‌های اخیر پاسخ سالم و تازه داده است"
+    descriptionFa: "آیا این منبع در چرخه‌های اخیر پاسخ سالم و تازه داده است",
   },
   {
     id: "accounts",
     labelFa: "حساب‌ها و کارمزدها",
-    descriptionFa: "آیا اصلاً می‌توان روی این صرافی معامله کرد و کارمزد آن معتبر است"
-  }
+    descriptionFa: "آیا اصلاً می‌توان روی این صرافی معامله کرد و کارمزد آن معتبر است",
+  },
 ];
 
 /** Six cards a page keeps the grid one screen tall at every width. */
@@ -92,7 +92,7 @@ export function SourcesPanel({
   pollIntervalMs,
   loading,
   error,
-  onReload
+  onReload,
 }: Props) {
   const { read, write } = useShadowViewState();
   const view = parseView(read("sv", "health"));
@@ -100,7 +100,7 @@ export function SourcesPanel({
 
   const rows = useMemo(
     () => buildVenueRows({ certifications, health, snapshots, venues, feeReverifyDays }),
-    [certifications, health, snapshots, venues, feeReverifyDays]
+    [certifications, health, snapshots, venues, feeReverifyDays],
   );
   const summary = useMemo(() => summarizeVenues(rows), [rows]);
   const page = useMemo(() => paginate(rows, requestedPage, VENUES_PER_PAGE), [rows, requestedPage]);
@@ -121,8 +121,8 @@ export function SourcesPanel({
           takerFeeBps: Number(form.takerFeeBps),
           feeTier: form.feeTier || null,
           sourceUrl: form.sourceUrl || null,
-          note: form.note || null
-        })
+          note: form.note || null,
+        }),
       });
       const j = (await res.json().catch(() => null)) as { message?: string } | null;
       if (!res.ok) throw new Error(j?.message ?? "ثبت ناموفق بود");
@@ -172,8 +172,8 @@ export function SourcesPanel({
     <div className="sa-stack">
       {partial ? (
         <div className="sa-callout sa-callout-warn" role="status">
-          وضعیت حساب و کارمزد در این بارگذاری دریافت نشد؛ مقادیر مربوط به آن «—» نمایش داده
-          می‌شوند. سلامت منابع همچنان معتبر است.
+          وضعیت حساب و کارمزد در این بارگذاری دریافت نشد؛ مقادیر مربوط به آن «—» نمایش داده می‌شوند.
+          سلامت منابع همچنان معتبر است.
         </div>
       ) : null}
 
@@ -186,7 +186,9 @@ export function SourcesPanel({
         />
         <Kpi
           label="حساب‌های آماده"
-          value={<Bidi>{`${toFaDigits(summary.accountsReady)} / ${toFaDigits(summary.total)}`}</Bidi>}
+          value={
+            <Bidi>{`${toFaDigits(summary.accountsReady)} / ${toFaDigits(summary.total)}`}</Bidi>
+          }
           hint="حساب احرازشده و قابل استفاده"
           tone={summary.accountsReady ? "good" : "muted"}
         />
@@ -206,7 +208,11 @@ export function SourcesPanel({
         />
       </div>
 
-      <div className="sa-segmented sa-segmented-lg glass-tabbar" role="tablist" aria-label="نمای منابع">
+      <div
+        className="sa-segmented sa-segmented-lg glass-tabbar"
+        role="tablist"
+        aria-label="نمای منابع"
+      >
         {VIEWS.map((v) => (
           <button
             key={v.id}
@@ -246,7 +252,7 @@ export function SourcesPanel({
                 onEdit={() => setEditing(editing === r.sourceId ? null : r.sourceId)}
                 editing={editing === r.sourceId}
               />
-            )
+            ),
           )}
         </div>
 
@@ -336,14 +342,18 @@ export function SourcesPanel({
         <section className="panel sa-panel" aria-label="سابقهٔ تأیید کارمزد">
           <div className="panel-header sa-panel-header">
             <h3 className="panel-title">سابقهٔ تأیید کارمزد</h3>
-            <div className="sa-panel-note">{formatCountFa(auditHistory.length)} رکورد · افزودنی</div>
+            <div className="sa-panel-note">
+              {formatCountFa(auditHistory.length)} رکورد · افزودنی
+            </div>
           </div>
           <div className="panel-body sa-table-wrap">
             <table className="sa-table">
               <thead>
                 <tr>
                   <th scope="col">صرافی</th>
-                  <th scope="col" className="num">کارمزد</th>
+                  <th scope="col" className="num">
+                    کارمزد
+                  </th>
                   <th scope="col">پله</th>
                   <th scope="col">ثبت‌کننده</th>
                   <th scope="col">زمان</th>
@@ -399,6 +409,27 @@ function VenueHead({ row, chip }: { row: VenueRow; chip: React.ReactNode }) {
   );
 }
 
+/**
+ * A card's secondary block: a real glass action, not a bare disclosure triangle.
+ * Kept compact on a phone — only the essential metrics stay on the card face.
+ */
+function VenueDetails({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="sa-venue-more">
+      <button
+        type="button"
+        className="sa-btn-details glass-control"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        جزئیات
+      </button>
+      {open ? <div className="sa-venue-detail-body">{children}</div> : null}
+    </div>
+  );
+}
+
 function Metric({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="sa-venue-metric">
@@ -426,7 +457,10 @@ function HealthCard({ row, pollIntervalMs }: { row: VenueRow; pollIntervalMs: nu
             label="تازگی داده"
             value={<span className={`sa-fresh sa-fresh-${fresh.tone}`}>{fresh.label}</span>}
           />
-          <Metric label="در دسترس‌بودن" value={<Bidi>{formatPercentFa(row.availabilityPercent, 1)}</Bidi>} />
+          <Metric
+            label="در دسترس‌بودن"
+            value={<Bidi>{formatPercentFa(row.availabilityPercent, 1)}</Bidi>}
+          />
           <Metric label="نرخ خطا" value={<Bidi>{formatPercentFa(row.errorRatePercent, 1)}</Bidi>} />
           <Metric
             label="تأخیر پاسخ"
@@ -438,33 +472,35 @@ function HealthCard({ row, pollIntervalMs }: { row: VenueRow; pollIntervalMs: nu
             }
           />
         </div>
-        <details className="sa-venue-details">
-          <summary>جزئیات</summary>
-          <div className="sa-venue-detail-body">
-            <Metric label="سهم تازگی" value={<Bidi>{formatPercentFa(row.freshnessPercent, 0)}</Bidi>} />
-            <Metric
-              label="نمونه‌های ثبت‌شده"
-              value={row.samples !== null ? formatCountFa(row.samples) : "—"}
-            />
-            <Metric
-              label="آخرین خطا"
-              value={
-                row.lastError ? (
-                  <>
-                    {row.lastError}
-                    {row.lastErrorAt ? <span className="sa-sub"> · {formatAgoFa(row.lastErrorAt)}</span> : null}
-                  </>
-                ) : (
-                  "خطایی ثبت نشده"
-                )
-              }
-            />
-            <Metric
-              label="آخرین بررسی"
-              value={row.lastProbeAt ? formatTehran(row.lastProbeAt) : "—"}
-            />
-          </div>
-        </details>
+        <VenueDetails>
+          <Metric
+            label="سهم تازگی"
+            value={<Bidi>{formatPercentFa(row.freshnessPercent, 0)}</Bidi>}
+          />
+          <Metric
+            label="نمونه‌های ثبت‌شده"
+            value={row.samples !== null ? formatCountFa(row.samples) : "—"}
+          />
+          <Metric
+            label="آخرین خطا"
+            value={
+              row.lastError ? (
+                <>
+                  {row.lastError}
+                  {row.lastErrorAt ? (
+                    <span className="sa-sub"> · {formatAgoFa(row.lastErrorAt)}</span>
+                  ) : null}
+                </>
+              ) : (
+                "خطایی ثبت نشده"
+              )
+            }
+          />
+          <Metric
+            label="آخرین بررسی"
+            value={row.lastProbeAt ? formatTehran(row.lastProbeAt) : "—"}
+          />
+        </VenueDetails>
       </div>
     </article>
   );
@@ -473,7 +509,7 @@ function HealthCard({ row, pollIntervalMs }: { row: VenueRow; pollIntervalMs: nu
 function AccountCard({
   row,
   onEdit,
-  editing
+  editing,
 }: {
   row: VenueRow;
   onEdit: () => void;
@@ -524,49 +560,52 @@ function AccountCard({
               </span>
             }
           />
-          <Metric
-            label="تسویهٔ کارمزد خرید"
-            value={<Settlement side={row.buySettlement} />}
-          />
-          <Metric
-            label="تسویهٔ کارمزد فروش"
-            value={<Settlement side={row.sellSettlement} />}
-          />
+          <Metric label="تسویهٔ کارمزد خرید" value={<Settlement side={row.buySettlement} />} />
+          <Metric label="تسویهٔ کارمزد فروش" value={<Settlement side={row.sellSettlement} />} />
         </div>
-        <details className="sa-venue-details">
-          <summary>جزئیات</summary>
-          <div className="sa-venue-detail-body">
-            <Metric
-              label="تاریخ تأیید"
-              value={row.feeVerifiedAt ? formatTehran(row.feeVerifiedAt) : "—"}
-            />
-            <Metric
-              label="انقضای اعتبار"
-              value={row.feeExpiresAt ? formatTehran(row.feeExpiresAt) : "—"}
-            />
-            <Metric label="پلهٔ کارمزد" value={row.feeTier ?? "—"} />
-            <Metric
-              label="توان API"
-              value={
-                row.apiCapabilities.length
-                  ? row.apiCapabilities.map((c) => API_CAPABILITY_FA[c] ?? c).join("، ")
-                  : "—"
-              }
-            />
-            <Metric label="اقدام لازم" value={row.requiredAction ?? "—"} />
-            <Metric label="دلیل مسدودی" value={row.blockingReason ?? "—"} />
-            {row.referenceOnly ? null : (
-              <button
-                type="button"
-                className="sa-btn-details glass-control"
-                onClick={onEdit}
-                aria-expanded={editing}
-              >
-                ثبت کارمزد
-              </button>
-            )}
-          </div>
-        </details>
+        <VenueDetails>
+          <Metric
+            label="تاریخ تأیید"
+            value={row.feeVerifiedAt ? formatTehran(row.feeVerifiedAt) : "—"}
+          />
+          <Metric
+            label="انقضای اعتبار"
+            value={row.feeExpiresAt ? formatTehran(row.feeExpiresAt) : "—"}
+          />
+          <Metric label="پلهٔ کارمزد" value={row.feeTier ?? "—"} />
+          <Metric
+            label="توان API"
+            value={
+              row.apiCapabilities.length
+                ? row.apiCapabilities.map((c) => API_CAPABILITY_FA[c] ?? c).join("، ")
+                : "—"
+            }
+          />
+          <Metric label="اقدام لازم" value={row.requiredAction ?? "—"} />
+          <Metric label="دلیل مسدودی" value={row.blockingReason ?? "—"} />
+          <Metric
+            label="نحوهٔ کسر کارمزد"
+            value={`خرید: ${DEBIT_MODE_FA[row.buySettlement.debitMode]} · فروش: ${
+              DEBIT_MODE_FA[row.sellSettlement.debitMode]
+            }`}
+          />
+          <Metric
+            label="گواهی تسویه"
+            value={`خرید: ${SETTLEMENT_PROVENANCE_FA[row.buySettlement.provenance]} · فروش: ${
+              SETTLEMENT_PROVENANCE_FA[row.sellSettlement.provenance]
+            }`}
+          />
+          {row.referenceOnly ? null : (
+            <button
+              type="button"
+              className="sa-btn-details glass-control"
+              onClick={onEdit}
+              aria-expanded={editing}
+            >
+              ثبت کارمزد
+            </button>
+          )}
+        </VenueDetails>
       </div>
     </article>
   );
@@ -577,17 +616,14 @@ function Settlement({ side }: { side: SideSettlement }) {
   const unknown = side.feeAsset === "UNKNOWN" || side.debitMode === "UNKNOWN";
   return (
     <span
-      className="sa-settlement"
+      className={`sa-chip sa-chip-sm sa-chip-${unknown ? "warn" : "muted"}`}
       title={
         unknown
           ? "دارایی تسویه و نحوهٔ کسر کارمزد برای این طرف تأیید نشده است؛ اجرا مسدود می‌ماند."
           : `${DEBIT_MODE_FA[side.debitMode]} · ${SETTLEMENT_PROVENANCE_FA[side.provenance]}`
       }
     >
-      <span className={`sa-chip sa-chip-sm sa-chip-${unknown ? "warn" : "muted"}`}>
-        {FEE_ASSET_FA[side.feeAsset] ?? side.feeAsset}
-      </span>
-      <span className="sa-sub">{DEBIT_MODE_FA[side.debitMode] ?? side.debitMode}</span>
+      {FEE_ASSET_FA[side.feeAsset] ?? side.feeAsset}
     </span>
   );
 }

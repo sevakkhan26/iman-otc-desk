@@ -491,12 +491,6 @@ export function OpportunitiesPanel({
                         label="سود تعدیل‌شده با بافر"
                         value={<Money value={ev?.riskAdjustedPnlToman ?? null} signed strong />}
                       />
-                      <CardLine
-                        label="تازگی"
-                        value={
-                          <span className={`sa-fresh sa-fresh-${fresh.tone}`}>{fresh.label}</span>
-                        }
-                      />
                     </dl>
                     <footer className="sa-op-card-foot">
                       <Status o={o} freshLabel={fresh.label} freshTone={fresh.tone} compact />
@@ -597,7 +591,9 @@ function Status({
           {blockedShort(primary)}
         </span>
       ) : null}
-      {compact ? null : (
+      {compact ? (
+        <span className={`sa-fresh sa-fresh-${freshTone}`}>{freshLabel}</span>
+      ) : (
         <span className="sa-sub">
           <span className={`sa-fresh sa-fresh-${freshTone}`}>{freshLabel}</span>
           {" · "}

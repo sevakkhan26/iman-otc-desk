@@ -780,7 +780,8 @@ await test("preview harness renders the production shell, not a rebuilt one", ()
 });
 
 await test("preview isolation: throwaway database, no credential, no stored secret", () => {
-  const raw = read("scripts/preview-shadow-ui.mts");
+  // Boot and isolation live in the shared runtime both browser tools use.
+  const raw = read("scripts/previewRuntime.mts");
   // Scan what the script DOES, not what its comments say it avoids.
   const preview = stripComments(raw);
   // Never the live local database.
@@ -797,6 +798,10 @@ await test("preview isolation: throwaway database, no credential, no stored secr
   assert.ok(preview.includes('SHADOW_COLLECTOR_ENABLED: "false"'));
   // Output is not committed.
   assert.ok(read(".gitignore").includes("preview-out/"));
+  // The screenshot tool itself only frames and captures.
+  const shots = stripComments(read("scripts/preview-shadow-ui.mts"));
+  assert.ok(shots.includes("Page.captureScreenshot"));
+  assert.equal(shots.includes("AUTH_TOKEN_SECRET"), false, "it never handles the secret itself");
   // The prose still documents the isolation for a human reader.
   assert.ok(raw.includes("never `.data/`"));
 });
@@ -1301,7 +1306,7 @@ await test("8B the sources tab shows venue cards, one dataset at a time", () => 
   const sources = read("src/components/shadowArbitrage/SourcesPanel.tsx");
 
   // Two datasets behind one segmented control; only the selected one renders.
-  assert.ok(sources.includes('role="tablist" aria-label="نمای منابع"'));
+  assert.ok(sources.includes('role="tablist"') && sources.includes('aria-label="نمای منابع"'));
   assert.ok(sources.includes('labelFa: "سلامت منابع"'));
   assert.ok(sources.includes('labelFa: "حساب‌ها و کارمزدها"'));
   assert.ok(sources.includes('view === "health" ? ('), "one dataset at a time");
@@ -1316,8 +1321,19 @@ await test("8B the sources tab shows venue cards, one dataset at a time", () => 
   // plus a details expansion for everything secondary.
   assert.ok(sources.includes("<strong>{row.nameFa}</strong>"));
   assert.ok(sources.includes("{row.marketSymbol ?? \"—\"}"));
-  assert.ok(sources.includes('<details className="sa-venue-details">'));
-  assert.ok(sources.includes("<summary>جزئیات</summary>"));
+  // «جزئیات» is a real glass action, not a bare disclosure triangle.
+  assert.ok(sources.includes("function VenueDetails("));
+  assert.ok(sources.includes('className="sa-btn-details glass-control"'));
+  assert.ok(sources.includes("aria-expanded={open}"));
+  assert.equal(sources.includes("<details"), false, "no unstyled native disclosure");
+  // Only the essential metrics stay on the card face; the rest is behind it.
+  const accountCard = sources.slice(sources.indexOf("function AccountCard("));
+  const face = accountCard.slice(0, accountCard.indexOf("<VenueDetails>"));
+  assert.equal((face.match(/<Metric/g) ?? []).length, 4, "a compact 2×2 block of metrics");
+  const behind = accountCard.slice(accountCard.indexOf("<VenueDetails>"));
+  for (const secondary of ["تاریخ تأیید", "انقضای اعتبار", "اقدام لازم", "دلیل مسدودی"]) {
+    assert.ok(behind.includes(secondary), `${secondary} belongs in the details block`);
+  }
 
   // Six cards a page, paged with the shared control.
   assert.ok(sources.includes("const VENUES_PER_PAGE = 6"));
@@ -1455,8 +1471,16 @@ await test("8B the page never scrolls sideways — only tables and rails do", ()
   assert.ok(head.includes("display: none"));
   assert.ok(head.includes(".sa-op-cards"));
   assert.ok(css.includes(".sa-op-cards {\n  display: none;\n}"), "cards are desktop-hidden");
-  // And venue cards drop to a single column.
+  // And venue cards drop to a single column, while their metrics stay 2×2.
   assert.ok(head.includes(".sa-venue-grid"));
+  const metrics = css.slice(css.indexOf(".sa-venue-metrics {"), css.indexOf(".sa-venue-metric {"));
+  assert.ok(metrics.includes("repeat(2, minmax(0, 1fr))"));
+  const phone = css.slice(css.indexOf("@media (max-width: 560px)"));
+  assert.equal(
+    /\.sa-venue-metrics \{[^}]*grid-template-columns/.test(phone),
+    false,
+    "the 2×2 metric block carries over to the phone"
+  );
 });
 
 await test("8B mobile reaches the first result without the whole filter form", () => {
@@ -1584,6 +1608,83 @@ await test("8B the redesign adds no order, credential, balance or transfer path"
   const capability = read("src/lib/shadowArbitrage/live/capability.ts");
   assert.ok(capability.includes("export const LIVE_EXECUTION_IMPLEMENTED = false as const"));
   assert.equal(/process\.env/.test(capability), false);
+});
+
+await test("8B the mobile opportunity card carries only the agreed fields", () => {
+  const panel = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
+  const cards = panel.slice(panel.indexOf('className="panel-body sa-op-cards"'), panel.indexOf("<Pager"));
+
+  // Route, size, both prices, risk-adjusted PnL, status and details — no more.
+  const lines = [...cards.matchAll(/<CardLine\s+label="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(lines, ["قیمت خرید", "قیمت فروش", "سود تعدیل‌شده با بافر"]);
+  assert.ok(cards.includes("<Route o={o} />"));
+  assert.ok(cards.includes("sa-op-card-size"));
+  assert.ok(cards.includes("<Status"));
+  assert.ok(cards.includes('className="sa-btn-details glass-control"'));
+  // Everything else stays in the drawer.
+  const drawer = read("src/components/shadowArbitrage/OpportunityDrawer.tsx");
+  for (const moved of ["اسپرد خام", "بافر لغزش و ریسک", "سود نقدی تومانی"]) {
+    assert.equal(cards.includes(moved), false, `${moved} must not be on the mobile card`);
+    assert.ok(drawer.includes(moved), `${moved} must be in the drawer`);
+  }
+});
+
+await test("8B pagination is present, readable and operable on both tabs", () => {
+  const kit = read("scripts/../src/components/shadowArbitrage/panelKit.tsx");
+  const op = read("src/components/shadowArbitrage/OpportunitiesPanel.tsx");
+  const sr = read("src/components/shadowArbitrage/SourcesPanel.tsx");
+  assert.ok(op.includes("<Pager") && sr.includes("<Pager"), "both tabs page their results");
+
+  // Count, page number, page size and both directions are all rendered.
+  assert.ok(kit.includes("sa-pager-count"));
+  assert.ok(kit.includes("sa-pager-page"));
+  assert.ok(kit.includes("قبلی") && kit.includes("بعدی"));
+  assert.ok(kit.includes("disabled={page <= 1}") && kit.includes("disabled={page >= pageCount}"));
+
+  const css = stripComments(phase8bCss());
+  // Readable at the dashboard's scale, and it wraps rather than clipping.
+  const pager = css.slice(css.indexOf(".sa-pager {"), css.indexOf(".sa-pager-count,"));
+  assert.ok(pager.includes("font-size: 13px"));
+  assert.ok(pager.includes("flex-wrap: wrap"));
+  const btn = css.slice(css.indexOf(".sa-btn-clear,"), css.indexOf(".sa-btn-clear[disabled],"));
+  assert.ok(btn.includes("min-height: 36px"), "a comfortable tap target");
+  assert.ok(btn.includes("font-size: 13px"));
+  // On a phone the row starts at the leading edge instead of stretching apart.
+  const mobile = css.slice(css.indexOf("@media (max-width: 768px)"), css.indexOf("@media (max-width: 560px)"));
+  assert.ok(mobile.includes(".sa-pager"));
+});
+
+await test("8B typography reuses the project's IRANYekan configuration", () => {
+  const globals = read("app/globals.css");
+  // The face is declared once, globally, and self-hosted.
+  const faces = [...globals.matchAll(/@font-face\s*\{[^}]*\}/g)].map((m) => m[0]);
+  assert.ok(faces.length >= 5, "the shared IRANYekan faces exist");
+  assert.ok(faces.every((f) => f.includes('font-family: "IRANYekan"')));
+  assert.ok(globals.includes('src: url("/fonts/iranyekanweb'), "self-hosted, not a CDN");
+
+  // Shadow declares no font of its own: its controls inherit, nothing else.
+  const shadowCss = stripComments(phase8aCss() + phase8bCss());
+  const families = [...shadowCss.matchAll(/font-family:\s*([^;]+);/g)].map((m) => m[1].trim());
+  assert.deepEqual([...new Set(families)], ["inherit"], "no Shadow-specific font stack");
+  assert.equal(/@font-face/.test(shadowCss), false, "no duplicated face");
+  assert.equal(/@import|fonts\.googleapis|cdn/i.test(shadowCss), false, "no remote font");
+
+  for (const file of [
+    "src/components/shadowArbitrage/OpportunitiesPanel.tsx",
+    "src/components/shadowArbitrage/SourcesPanel.tsx",
+    "src/components/shadowArbitrage/panelKit.tsx",
+    "src/components/shadowArbitrage/OpportunityDrawer.tsx"
+  ]) {
+    assert.equal(/font-family|fontFamily/.test(read(file)), false, `${file} must not set a font`);
+  }
+
+  // The browser-level proof is a real script, wired into the package manifest.
+  const fontTest = read("scripts/test-shadow-fonts.mts");
+  assert.ok(fontTest.includes("getComputedStyle"), "it reads what the browser resolved");
+  assert.ok(fontTest.includes("document.fonts.check"), "and proves the face really loaded");
+  assert.ok(fontTest.includes('const EXPECTED = "IRANYekan"'));
+  assert.ok(fontTest.includes('{ name: "mobile"'), "desktop and mobile layouts");
+  assert.ok(read("package.json").includes('"test:fonts"'));
 });
 
 await test("8B every new selector is scoped under .sa-*", () => {

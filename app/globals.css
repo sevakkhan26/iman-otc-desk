@@ -7328,8 +7328,7 @@ table th {
 .sa-btn-clear:focus-visible,
 .sa-btn-page:focus-visible,
 .sa-btn-details:focus-visible,
-.sa-more-btn:focus-visible,
-.sa-venue-details > summary:focus-visible {
+.sa-more-btn:focus-visible {
   outline: 2px solid rgb(var(--brand) / 0.55);
   outline-offset: 1px;
 }
@@ -7613,23 +7612,16 @@ table th {
   gap: 7px;
   flex-wrap: wrap;
 }
-.sa-venue-details {
+.sa-venue-more {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
   margin-top: 12px;
-}
-.sa-venue-details > summary {
-  list-style: none;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--muted);
-}
-.sa-venue-details > summary::-webkit-details-marker {
-  display: none;
 }
 .sa-venue-detail-body {
   display: grid;
   gap: 10px;
-  padding-top: 12px;
+  width: 100%;
 }
 .sa-form-grid {
   display: grid;
@@ -7731,12 +7723,15 @@ table th {
   .sa-kpi-value {
     font-size: 20px;
   }
-  .sa-venue-metrics {
-    grid-template-columns: minmax(0, 1fr);
-  }
   .sa-pager-nav,
   .sa-pager-size {
     flex-wrap: wrap;
+  }
+  .sa-pager {
+    row-gap: 10px;
+  }
+  .sa-venue-metrics {
+    gap: 10px 12px;
   }
   .sa-dw-headline-grid {
     grid-template-columns: minmax(0, 1fr);

@@ -3,26 +3,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { DeskPageHeader } from "@/components/DeskPageHeader";
+import { AccountReadiness } from "@/components/shadowArbitrage/AccountReadiness";
 import { AnalyticsPanels } from "@/components/shadowArbitrage/AnalyticsPanels";
 import { CapitalSimulator } from "@/components/shadowArbitrage/CapitalSimulator";
 import { ObservationHeader } from "@/components/shadowArbitrage/ObservationHeader";
 import { LiveReadiness } from "@/components/shadowArbitrage/LiveReadiness";
-import { OpportunitiesPanel } from "@/components/shadowArbitrage/OpportunitiesPanel";
 import { OpportunityDrawer } from "@/components/shadowArbitrage/OpportunityDrawer";
+import { OpportunityTable } from "@/components/shadowArbitrage/OpportunityTable";
 import { OverviewPanel } from "@/components/shadowArbitrage/OverviewPanel";
 import { PaperExecution } from "@/components/shadowArbitrage/PaperExecution";
 import { ShadowTabs } from "@/components/shadowArbitrage/ShadowTabs";
-import { SourcesPanel } from "@/components/shadowArbitrage/SourcesPanel";
+import { SourceTable } from "@/components/shadowArbitrage/SourceTable";
 import { SHADOW_WARNING_FA } from "@/components/shadowArbitrage/labels";
-import {
-  evidenceFor,
-  indexPaperEvidence,
-  type PaperLedgerRow
-} from "@/components/shadowArbitrage/opportunityModel";
-import type {
-  FeeConfirmationAudit,
-  VenueReadiness
-} from "@/components/shadowArbitrage/sourcesModel";
+import { SummaryCards } from "@/components/shadowArbitrage/SummaryCards";
 import { parseShadowTab, shadowTabLabel, type ShadowTabId } from "@/components/shadowArbitrage/tabs";
 import type {
   ObservationPayload,
@@ -31,25 +24,10 @@ import type {
   ShadowOpportunity
 } from "@/components/shadowArbitrage/types";
 
-/**
- * Paper payload shape.
- *
- * `trades` and `transitions` are the immutable paper ledger; Phase 8B joins
- * them to opportunities by lifecycle id, so the PnL figures shown on the
- * Opportunities tab are the engine's own recorded numbers, never re-derived.
- */
+/** Shapes read only for the Overview summaries — no behaviour depends on them. */
 type PaperPayload = {
   session: { status: string; mode: string } | null;
   stats: { filled: number; skipped: number; economicNetPnlToman: number } | null;
-  trades?: PaperLedgerRow[];
-  transitions?: PaperLedgerRow[];
-};
-
-/** Account and fee readiness, read once and shared by both redesigned tabs. */
-type AccountsPayload = {
-  venues: VenueReadiness[];
-  auditHistory: FeeConfirmationAudit[];
-  feeReverifyDays: number;
 };
 
 type ReadinessPayload = {
@@ -80,7 +58,6 @@ export function ShadowArbitrageView() {
   const [analytics, setAnalytics] = useState<ShadowAnalytics | null>(null);
   const [obs, setObs] = useState<ObservationPayload | null>(null);
   const [paper, setPaper] = useState<PaperPayload | null>(null);
-  const [accounts, setAccounts] = useState<AccountsPayload | null>(null);
   const [readiness, setReadiness] = useState<ReadinessPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -106,7 +83,7 @@ export function ShadowArbitrageView() {
     setError(null);
     try {
       const q = refresh ? "?refresh=1" : "";
-      const [mRes, hRes, aRes, oRes, pRes, rRes, accRes] = await Promise.all([
+      const [mRes, hRes, aRes, oRes, pRes, rRes] = await Promise.all([
         fetch(`/api/shadow-arbitrage/matrix${q}`, { cache: "no-store", credentials: "same-origin" }),
         fetch("/api/shadow-arbitrage/history", { cache: "no-store", credentials: "same-origin" }),
         fetch("/api/shadow-arbitrage/analytics", { cache: "no-store", credentials: "same-origin" }),
@@ -115,8 +92,7 @@ export function ShadowArbitrageView() {
         fetch("/api/shadow-arbitrage/live-readiness", {
           cache: "no-store",
           credentials: "same-origin"
-        }),
-        fetch("/api/shadow-arbitrage/accounts", { cache: "no-store", credentials: "same-origin" })
+        })
       ]);
 
       if (mRes.status === 403 || mRes.status === 401) {
@@ -141,11 +117,9 @@ export function ShadowArbitrageView() {
       if (oRes.ok) {
         setObs((await oRes.json()) as ObservationPayload);
       }
-      // These sources are best-effort: the page stays useful without them, and
-      // a tab that needs one says so rather than showing an invented value.
+      // The two summary sources are best-effort: the page is useful without them.
       if (pRes.ok) setPaper((await pRes.json()) as PaperPayload);
       if (rRes.ok) setReadiness((await rRes.json()) as ReadinessPayload);
-      if (accRes.ok) setAccounts((await accRes.json()) as AccountsPayload);
     } catch (e) {
       setError(e instanceof Error ? e.message : "خطای غیرمنتظره در دریافت داده.");
     } finally {
@@ -225,16 +199,6 @@ export function ShadowArbitrageView() {
     };
   }, [readiness]);
 
-  /**
-   * The paper ledger as one list. Fills carry the settled figures and skips
-   * carry the exact reason a candidate did not trade; both are evidence.
-   */
-  const paperLedger = useMemo(
-    () => [...(paper?.trades ?? []), ...(paper?.transitions ?? [])],
-    [paper]
-  );
-  const paperEvidence = useMemo(() => indexPaperEvidence(paperLedger), [paperLedger]);
-
   const paperSummary = useMemo(() => {
     if (!paper) return null;
     return {
@@ -304,34 +268,41 @@ export function ShadowArbitrageView() {
         ) : null}
 
         {tab === "opportunities" ? (
-          <OpportunitiesPanel
-            opportunities={allOpportunities}
-            sources={sources}
-            sizes={matrix?.sizes ?? [5, 10, 20, 25]}
-            venues={accounts?.venues ?? []}
-            paperLedger={paperLedger}
-            paperSessionPresent={Boolean(paper?.session)}
-            pollIntervalMs={pollIntervalMs}
-            loading={loading}
-            stale={stale}
-            error={error}
-            onSelect={setSelected}
-          />
+          <>
+            {error ? (
+              <div className="sa-callout sa-callout-danger" role="alert">
+                {error}
+              </div>
+            ) : null}
+            <SummaryCards
+              opportunities={allOpportunities}
+              sources={sources}
+              dataCoveragePercent={analytics?.dataCoveragePercent ?? null}
+              loading={loading}
+            />
+            <OpportunityTable
+              opportunities={allOpportunities}
+              sources={sources}
+              sizes={matrix?.sizes ?? [5, 10, 20, 25]}
+              pollIntervalMs={pollIntervalMs}
+              loading={loading}
+              onSelect={setSelected}
+            />
+          </>
         ) : null}
 
         {tab === "sources" ? (
-          <SourcesPanel
-            certifications={obs?.certifications ?? []}
-            health={obs?.sourceHealth ?? []}
-            snapshots={sources}
-            venues={accounts?.venues ?? []}
-            auditHistory={accounts?.auditHistory ?? []}
-            feeReverifyDays={accounts?.feeReverifyDays ?? null}
-            pollIntervalMs={pollIntervalMs}
-            loading={loading}
-            error={error}
-            onReload={() => void load(false)}
-          />
+          <>
+            <SourceTable
+              certifications={obs?.certifications ?? []}
+              health={obs?.sourceHealth ?? []}
+              sources={sources}
+              analytics={analytics}
+              pollIntervalMs={pollIntervalMs}
+              loading={loading}
+            />
+            <AccountReadiness />
+          </>
         ) : null}
 
         {tab === "capital" ? <CapitalSimulator /> : null}
@@ -365,7 +336,6 @@ export function ShadowArbitrageView() {
       <OpportunityDrawer
         opportunity={selected}
         sources={sources}
-        evidence={selected ? (evidenceFor(selected, paperEvidence) ?? null) : null}
         onClose={() => setSelected(null)}
       />
     </div>

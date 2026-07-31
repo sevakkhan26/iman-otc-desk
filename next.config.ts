@@ -1,16 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { NextConfig } from "next";
-/*
- * The public application version is its own file, not package.json's `version`.
- *
- * This release is numbered 4.1.3.0, which is not valid SemVer, and the
- * production image runs `pnpm install --frozen-lockfile` against package.json
- * before the source is copied in — an invalid `version` there would fail the
- * deploy. package.json keeps a valid SemVer for package metadata; version.json
- * is the single authoritative public version the product displays.
- */
-import appVersion from "./version.json";
+import packageJson from "./package.json";
 
 /** Pin project root — parent ~/package-lock.json made Next pick wrong workspace root. */
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
@@ -33,7 +24,7 @@ const nextConfig: NextConfig = {
     "drizzle-orm/pglite"
   ],
   env: {
-    NEXT_PUBLIC_APP_VERSION: appVersion.appVersion
+    NEXT_PUBLIC_APP_VERSION: packageJson.version
   },
   /**
    * Security / Lighthouse best-practices headers.

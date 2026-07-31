@@ -32,8 +32,7 @@
     "ops:restore-drill": "bash scripts/restore-drill.sh",
     "test:ops": "npx --yes tsx scripts/test-ops-hardening.mts",
     "test:navigation": "npx --yes tsx scripts/test-navigation.mts",
-    "preview:shadow": "npx --yes tsx scripts/preview-shadow-ui.mts",
-    "test:fonts": "npx --yes tsx scripts/test-shadow-fonts.mts"
+    "preview:shadow": "npx --yes tsx scripts/preview-shadow-ui.mts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.4",

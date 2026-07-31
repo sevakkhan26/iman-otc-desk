@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { formatTehran } from "@/components/format";
 import { TomanAmount } from "@/components/TomanAmount";
+import { Bidi } from "@/components/shadowArbitrage/Bidi";
 import {
   ELIGIBILITY_FA,
   blockedDetail,
@@ -13,11 +14,19 @@ import {
   formatPercentFa,
   toFaDigits
 } from "@/components/shadowArbitrage/labels";
+import {
+  DEBIT_MODE_FA,
+  FEE_ASSET_FA,
+  SETTLEMENT_PROVENANCE_FA
+} from "@/components/shadowArbitrage/sourcesModel";
+import type { PaperEvidence } from "@/components/shadowArbitrage/opportunityModel";
 import type { NormalizedSourceSnapshot, ShadowOpportunity } from "@/components/shadowArbitrage/types";
 
 type Props = {
   opportunity: ShadowOpportunity | null;
   sources: NormalizedSourceSnapshot[];
+  /** The paper engine's own recorded figures for this lifecycle, if any. */
+  evidence?: PaperEvidence | null;
   onClose: () => void;
 };
 
@@ -43,8 +52,15 @@ function Line({
   );
 }
 
-/** Section D — exact, auditable breakdown of one opportunity. */
-export function OpportunityDrawer({ opportunity, sources, onClose }: Props) {
+/**
+ * Exact, auditable breakdown of one opportunity.
+ *
+ * Phase 8B keeps every figure the drawer already showed and only sharpens the
+ * hierarchy: a headline strip first, then the calculation in the order it is
+ * performed, then the engine's own settled figures where they exist. Nothing is
+ * recomputed here — a value the server did not record is «—», never a guess.
+ */
+export function OpportunityDrawer({ opportunity, sources, evidence, onClose }: Props) {
   useEffect(() => {
     if (!opportunity) return;
     const onKey = (e: KeyboardEvent) => {
@@ -90,6 +106,37 @@ export function OpportunityDrawer({ opportunity, sources, onClose }: Props) {
         </header>
 
         <div className="sa-drawer-body">
+          {/* Headline: the three numbers a reader wants before any detail. */}
+          <section className="sa-drawer-section sa-dw-headline">
+            <div className="sa-dw-headline-grid">
+              <div className="sa-dw-head-stat">
+                <span className="sa-dw-head-label">اسپرد خام</span>
+                <span className="sa-dw-head-value">
+                  <Bidi>{formatPercentFa(o.rawSpreadPercent, 3, true)}</Bidi>
+                </span>
+              </div>
+              <div className="sa-dw-head-stat">
+                <span className="sa-dw-head-label">سود خالص نظری</span>
+                <span className="sa-dw-head-value">
+                  {o.feeUnknown ? "—" : <TomanAmount value={o.netProfitToman} />}
+                </span>
+              </div>
+              <div className="sa-dw-head-stat">
+                <span className="sa-dw-head-label">سود تعدیل‌شده با بافر</span>
+                <span className="sa-dw-head-value">
+                  {evidence?.riskAdjustedPnlToman !== null &&
+                  evidence?.riskAdjustedPnlToman !== undefined ? (
+                    <TomanAmount value={evidence.riskAdjustedPnlToman} />
+                  ) : (
+                    <span title="این رقم را موتور اجرای کاغذی ثبت می‌کند؛ برای این چرخه ثبتی وجود ندارد.">
+                      —
+                    </span>
+                  )}
+                </span>
+              </div>
+            </div>
+          </section>
+
           <section className="sa-drawer-section">
             <h4>محاسبهٔ خرید</h4>
             <Line
@@ -196,6 +243,99 @@ export function OpportunityDrawer({ opportunity, sources, onClose }: Props) {
             )}
           </section>
 
+          {/* The engine's own settled figures, shown only when it evaluated this lifecycle. */}
+          {evidence ? (
+            <section className="sa-drawer-section">
+              <h4>ارزیابی موتور اجرای کاغذی</h4>
+              <Line
+                label="سود نقدی تومانی"
+                value={
+                  evidence.cashPnlIrtToman !== null ? (
+                    <TomanAmount value={evidence.cashPnlIrtToman} />
+                  ) : (
+                    "—"
+                  )
+                }
+                hint="دریافتی فروش − هزینهٔ خرید − کارمزد تومانی خرید"
+              />
+              <Line
+                label="تغییر موجودی تتر"
+                value={
+                  evidence.inventoryDeltaUsdt !== null ? (
+                    <Bidi>{toFaDigits(evidence.inventoryDeltaUsdt.toFixed(6))} تتر</Bidi>
+                  ) : (
+                    "—"
+                  )
+                }
+                hint="کارمزد تتری فروش از پرتفوی خارج می‌شود"
+              />
+              <Line
+                label="ارزش تومانی کارمزد تتری"
+                value={
+                  evidence.sellFeeValueToman !== null ? (
+                    <TomanAmount value={evidence.sellFeeValueToman} />
+                  ) : (
+                    "—"
+                  )
+                }
+                hint={
+                  evidence.markPriceToman !== null
+                    ? `با قیمت مبنای همان چرخه: ${toFaDigits(evidence.markPriceToman)} تومان`
+                    : "قیمت مبنا ثبت نشده است"
+                }
+              />
+              <Line
+                label="سود خالص اقتصادی"
+                value={
+                  evidence.economicNetPnlToman !== null ? (
+                    <TomanAmount value={evidence.economicNetPnlToman} />
+                  ) : (
+                    "—"
+                  )
+                }
+                strong
+              />
+              <Line
+                label="سود تعدیل‌شده با بافر"
+                value={
+                  evidence.riskAdjustedPnlToman !== null ? (
+                    <TomanAmount value={evidence.riskAdjustedPnlToman} />
+                  ) : (
+                    "—"
+                  )
+                }
+                strong
+              />
+              <Line
+                label="تسویهٔ کارمزد خرید"
+                value={`${FEE_ASSET_FA[evidence.buyFeeAsset ?? "UNKNOWN"] ?? "—"} · ${
+                  DEBIT_MODE_FA[evidence.buyFeeDebitMode ?? "UNKNOWN"] ?? "—"
+                }`}
+                hint={SETTLEMENT_PROVENANCE_FA[evidence.buyFeeProvenance ?? "UNKNOWN"] ?? undefined}
+              />
+              <Line
+                label="تسویهٔ کارمزد فروش"
+                value={`${FEE_ASSET_FA[evidence.sellFeeAsset ?? "UNKNOWN"] ?? "—"} · ${
+                  DEBIT_MODE_FA[evidence.sellFeeDebitMode ?? "UNKNOWN"] ?? "—"
+                }`}
+                hint={SETTLEMENT_PROVENANCE_FA[evidence.sellFeeProvenance ?? "UNKNOWN"] ?? undefined}
+              />
+              {evidence.outcome === "SKIPPED" && evidence.rejectionReason ? (
+                <div className="sa-callout sa-callout-muted">
+                  این نامزد در آخرین ارزیابی اجرا نشد: {evidence.rejectionReason}
+                </div>
+              ) : null}
+            </section>
+          ) : (
+            <section className="sa-drawer-section">
+              <h4>ارزیابی موتور اجرای کاغذی</h4>
+              <div className="sa-callout sa-callout-muted">
+                برای این چرخهٔ حیات، ارزیابی اجرای کاغذی ثبت نشده است؛ بنابراین سود نقدی، اقتصادی و
+                تعدیل‌شده «—» نمایش داده می‌شود و هیچ مقداری جایگزین آن نمی‌شود.
+              </div>
+            </section>
+          )}
+
           <section className="sa-drawer-section">
             <h4>وضعیت اجرا</h4>
             <div className={`sa-callout ${executable ? "sa-callout-good" : "sa-callout-warn"}`}>
@@ -203,12 +343,17 @@ export function OpportunityDrawer({ opportunity, sources, onClose }: Props) {
                 ? "هر دو صرافی حساب احرازشده دارند، داده تازه است، عمق کافی است و کارمزد معلوم است — این مسیر از نظر داده قابل استفاده است. با این حال هیچ سفارشی ارسال نمی‌شود."
                 : "این مسیر در حال حاضر قابل استفاده نیست. دلایل زیر باید رفع شوند:"}
             </div>
+            {/* Complete list, first-recorded first: that is the reason to act on. */}
             {o.blockedReasons.length ? (
               <ul className="sa-reason-list">
-                {o.blockedReasons.map((r) => (
+                {o.blockedReasons.map((r, i) => (
                   <li key={r}>
-                    <strong>{blockedShort(r)}</strong>
+                    <strong>
+                      {i === 0 ? "دلیل اصلی: " : ""}
+                      {blockedShort(r)}
+                    </strong>
                     <span>{blockedDetail(r)}</span>
+                    {/* The technical code stays here, out of the primary UI. */}
                     <code className="sa-code">{r}</code>
                   </li>
                 ))}

@@ -275,6 +275,21 @@ export function emptySizes(): SizeExecutable[] {
   }));
 }
 
+/**
+ * Levels persisted with a snapshot: sorted the way they will be walked, with
+ * unusable rows dropped and a hard cap so one venue's very deep book cannot
+ * bloat every cached cycle. The cap is far beyond any size this desk can fund.
+ */
+export const MAX_PERSISTED_BOOK_LEVELS = 60;
+
+export function cappedLevels(levels: BookLevel[], side: "buy" | "sell"): BookLevel[] {
+  return [...levels]
+    .filter((l) => Number.isFinite(l.priceToman) && Number.isFinite(l.amountUsdt))
+    .filter((l) => l.priceToman > 0 && l.amountUsdt > 0)
+    .sort((a, b) => (side === "buy" ? a.priceToman - b.priceToman : b.priceToman - a.priceToman))
+    .slice(0, MAX_PERSISTED_BOOK_LEVELS);
+}
+
 export function sizesFromBook(bids: BookLevel[], asks: BookLevel[]): SizeExecutable[] {
   return SHADOW_TRADE_SIZES.map((sizeUsdt) => {
     const buy = executableVwap(asks, sizeUsdt, "buy");
@@ -418,6 +433,8 @@ export function snapshotFromResult(
     notes.push("پاسخ محدودیت نرخ در این چرخه دریافت شد");
   }
 
+  const walkable = result.kind === "BOOK" && result.depthAvailable;
+
   let sizes: SizeExecutable[];
   if (result.kind === "BOOK" && result.depthAvailable) {
     sizes = sizesFromBook(result.bids, result.asks);
@@ -466,6 +483,10 @@ export function snapshotFromResult(
     userBuyPriceToman: bestAsk,
     userSellPriceToman: bestBid,
     sizeExecutables: sizes,
+    // The walkable book, capped and canonically ordered. Only a real book is
+    // carried: an OTC quote has no levels to walk and must not pretend to.
+    bookBids: walkable ? cappedLevels(result.bids, "sell") : null,
+    bookAsks: walkable ? cappedLevels(result.asks, "buy") : null,
     depthUsdtBid: depthBid,
     depthUsdtAsk: depthAsk,
     maxExecutableUsdt: maxExecutable,
@@ -506,6 +527,8 @@ export function unavailableSnapshot(
     userBuyPriceToman: null,
     userSellPriceToman: null,
     sizeExecutables: emptySizes(),
+    bookBids: null,
+    bookAsks: null,
     depthUsdtBid: null,
     depthUsdtAsk: null,
     maxExecutableUsdt: null,

@@ -284,8 +284,7 @@ export async function GET(request: Request) {
       portfolioValueToman,
       exposureTomanBySource,
       policies,
-      slippageBufferBps: SLIPPAGE_BUFFER_BPS,
-      probeSizesUsdt: SHADOW_TRADE_SIZES
+      slippageBufferBps: SLIPPAGE_BUFFER_BPS
     })
   };
 

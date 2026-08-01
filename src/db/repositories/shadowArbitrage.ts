@@ -662,6 +662,8 @@ export async function completeCollectionRun(input: {
               stale: Boolean(s.stale),
               payload: {
                 sizeExecutables: s.sizeExecutables,
+                bookBids: s.bookBids,
+                bookAsks: s.bookAsks,
                 feeStatus: s.feeStatus,
                 feeBps: s.marketFeeBps,
                 feeLabel: s.feeLabel,

@@ -221,7 +221,6 @@ export type SizingContext = {
   /** Marked value each venue currently holds. */
   exposureTomanBySource: Map<string, number>;
   slippageBufferBps: number;
-  probeSizesUsdt: readonly number[];
 };
 
 export type EvaluateInput = {
@@ -385,8 +384,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
         portfolioValueToman: input.sizing.portfolioValueToman,
         buyVenueExposureToman: input.sizing.exposureTomanBySource.get(c.buySourceId) ?? null,
         policies: input.sizing.policies,
-        slippageBufferBps: input.sizing.slippageBufferBps,
-        probeSizesUsdt: input.sizing.probeSizesUsdt
+        slippageBufferBps: input.sizing.slippageBufferBps
       });
       sizingByRoute.set(routeKey, sizing);
     }

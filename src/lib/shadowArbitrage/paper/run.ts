@@ -25,7 +25,7 @@ import {
 import { loadRiskPolicyValues } from "@/db/repositories/shadowLive";
 import { buildAllReadiness } from "@/lib/shadowArbitrage/accounts";
 import { classifyAllVenues } from "@/lib/shadowArbitrage/capital";
-import { SHADOW_TRADE_SIZES, SLIPPAGE_BUFFER_BPS } from "@/lib/shadowArbitrage/config";
+import { SLIPPAGE_BUFFER_BPS } from "@/lib/shadowArbitrage/config";
 import { buildPolicyState } from "@/lib/shadowArbitrage/live/policy";
 import { mulPriceSizeToman } from "@/lib/shadowArbitrage/money";
 import { describeRebalance, evaluateCycle } from "@/lib/shadowArbitrage/paper/engine";
@@ -122,8 +122,7 @@ export async function runPaperExecutionForCycle(input: {
       allocationTomanBySource,
       portfolioValueToman,
       exposureTomanBySource,
-      slippageBufferBps: SLIPPAGE_BUFFER_BPS,
-      probeSizesUsdt: SHADOW_TRADE_SIZES
+      slippageBufferBps: SLIPPAGE_BUFFER_BPS
     }
   });
 

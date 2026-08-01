@@ -1860,6 +1860,13 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
       "src/lib/shadowArbitrage/paper/sizing.ts",
       "src/lib/shadowArbitrage/paper/engine.ts",
       "src/lib/shadowArbitrage/paper/reasons.ts",
+      // Phase 8C-4 liquidity-aware sizing: the book walker, the role-based
+      // allocator, and carrying the observed book through to the sizer
+      "src/lib/shadowArbitrage/paper/liquidity.ts",
+      "src/lib/shadowArbitrage/paper/allocation.ts",
+      "src/lib/shadowArbitrage/adapters/base.ts",
+      "src/lib/shadowArbitrage/store.ts",
+      "src/lib/shadowArbitrage/types.ts",
       "src/lib/shadowArbitrage/live/readiness.ts",
       // certifying Tetherland and Arzinja: direction proof, units, freshness,
       // depth, and routing the confirmed fees into the economics

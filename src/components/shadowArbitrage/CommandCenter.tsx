@@ -43,6 +43,20 @@ export type CommandSession = {
 
 export type CommandBalance = { sourceId: string; irtToman: number; usdt: number };
 
+/** One leg's child-fill ladder, as the API returns it. */
+export type BookWalkView = {
+  complete: boolean;
+  filledMicros: number;
+  unfilledMicros: number;
+  notionalToman: number;
+  vwapToman: number | null;
+  bestPriceToman: number | null;
+  worstPriceToman: number | null;
+  fills: Array<{ index: number; priceToman: number; quantityMicros: number; notionalToman: number }>;
+  bookParticipationPercent: number;
+  priceImpactPercent: number;
+};
+
 /** Phase 8C-3 — the calculated size for one route, as the API returns it. */
 export type RouteSizingView = {
   routeKey: string;
@@ -60,7 +74,24 @@ export type RouteSizingView = {
     }>;
     liquidityMaxUsdtMicros: number | null;
     policyMaxUsdtMicros: number | null;
-    quote: { probeSizeUsdt: number; buyVwapToman: number; sellVwapToman: number } | null;
+    maxFeasibleUsdtMicros: number | null;
+    candidates: Array<{
+      sizeUsdtMicros: number;
+      buyVwapToman: number;
+      sellVwapToman: number;
+      riskAdjustedPnlToman: number;
+      riskAdjustedEdgePercent: number;
+      buyLevels: number;
+      sellLevels: number;
+      bookParticipationPercent: number;
+      priceImpactPercent: number;
+    }>;
+    quote: {
+      buyVwapToman: number;
+      sellVwapToman: number;
+      buyWalk: BookWalkView;
+      sellWalk: BookWalkView;
+    } | null;
     economics: {
       capitalInvolvedToman: number;
       cashPnlIrtToman: number;
@@ -172,9 +203,10 @@ function tone(value: number): "good" | "warn" | "muted" {
  * result after fees and the slippage buffer.
  *
  * Every figure comes from data the server already returned. Nothing is invented
- * to fill a card: an unknown value shows an em dash and says why. The suggested
- * size is still the fixed diagnostic probe the engine uses today — this section
- * labels it as such rather than implying a sizing engine that does not exist yet.
+ * to fill a card: an unknown value shows an em dash and says why. Phase 8C-4
+ * sizes from the observed order book, so the size shown is the quantity that
+ * maximises risk-adjusted profit — reported next to the largest quantity the
+ * books could absorb, because those two are rarely the same number.
  */
 export function CommandCenter({
   loading,
@@ -758,14 +790,161 @@ export function CommandCenter({
                       </ul>
                     ) : null}
 
-                    {bestSizing.sizing.quote ? (
-                      <p className="sa-sub">
-                        قیمت‌گذاری بر پایهٔ عمیق‌ترین پروب اثبات‌شدهٔ همین چرخه (
-                        <Bidi>{toFaDigits(bestSizing.sizing.quote.probeSizeUsdt)}</Bidi> تتر) انجام
-                        شده است. چون حجم انتخابی از این پروب بزرگ‌تر نیست، این قیمت‌گذاری محافظه‌کارانه
-                        است و سود را کمتر از واقع نشان می‌دهد، نه بیشتر.
-                      </p>
+                    {/* Optimal versus what the books could physically absorb. */}
+                    <dl className="sa-cc-best-grid">
+                      <div>
+                        <dt>حجم بهینهٔ انتخاب‌شده</dt>
+                        <dd>
+                          {bestSizing.sizing.sizeUsdt === null ? (
+                            DASH
+                          ) : (
+                            <Bidi>{toFaDigits(bestSizing.sizing.sizeUsdt.toFixed(4))}</Bidi>
+                          )}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>بیشترین حجم ممکن</dt>
+                        <dd>
+                          {bestSizing.sizing.maxFeasibleUsdtMicros === null ? (
+                            DASH
+                          ) : (
+                            <Bidi>
+                              {toFaDigits(
+                                (bestSizing.sizing.maxFeasibleUsdtMicros / 1_000_000).toFixed(4)
+                              )}
+                            </Bidi>
+                          )}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>سهم از دفتر · اثر قیمتی</dt>
+                        <dd>
+                          {bestSizing.sizing.quote ? (
+                            <Bidi>
+                              {formatPercentFa(
+                                Math.max(
+                                  bestSizing.sizing.quote.buyWalk.bookParticipationPercent,
+                                  bestSizing.sizing.quote.sellWalk.bookParticipationPercent
+                                )
+                              )}{" "}
+                              ·{" "}
+                              {formatPercentFa(
+                                Math.max(
+                                  bestSizing.sizing.quote.buyWalk.priceImpactPercent,
+                                  bestSizing.sizing.quote.sellWalk.priceImpactPercent
+                                )
+                              )}
+                            </Bidi>
+                          ) : (
+                            DASH
+                          )}
+                        </dd>
+                      </div>
+                    </dl>
+
+                    {/* The child-fill ladder: what each leg would actually consume. */}
+                    {bestSizing.sizing.quote
+                      ? (
+                          [
+                            ["خرید", bestSizing.sizing.quote.buyWalk],
+                            ["فروش", bestSizing.sizing.quote.sellWalk]
+                          ] as Array<[string, BookWalkView]>
+                        ).map(([legFa, walk]) => (
+                          <div key={legFa} className="sa-table-wrap">
+                            <table className="sa-table">
+                              <caption className="sa-sub">
+                                نردبان اجرای {legFa} — {toFaDigits(walk.fills.length)} فیل فرزند ·
+                                میانگین <Bidi>{toFaDigits(walk.vwapToman ?? 0)}</Bidi> · بدترین قیمت{" "}
+                                <Bidi>{toFaDigits(walk.worstPriceToman ?? 0)}</Bidi>
+                                {walk.unfilledMicros > 0
+                                  ? ` · پرنشده ${(walk.unfilledMicros / 1_000_000).toFixed(4)} تتر`
+                                  : " · بدون باقی‌مانده"}
+                              </caption>
+                              <thead>
+                                <tr>
+                                  <th scope="col">#</th>
+                                  <th scope="col" className="num">قیمت</th>
+                                  <th scope="col" className="num">مقدار (تتر)</th>
+                                  <th scope="col" className="num">ارزش</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {walk.fills.map((f) => (
+                                  <tr key={f.index}>
+                                    <td>{toFaDigits(f.index)}</td>
+                                    <td className="num">
+                                      <TomanAmount value={f.priceToman} />
+                                    </td>
+                                    <td className="num">
+                                      <Bidi>{toFaDigits((f.quantityMicros / 1_000_000).toFixed(4))}</Bidi>
+                                    </td>
+                                    <td className="num">
+                                      <TomanAmount value={f.notionalToman} />
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        ))
+                      : null}
+
+                    {/* Route capacity at every breakpoint the books actually have. */}
+                    {bestSizing.sizing.candidates.length ? (
+                      <div className="sa-table-wrap">
+                        <table className="sa-table">
+                          <caption className="sa-sub">
+                            ظرفیت مسیر در نقاط شکست دفتر — حجم بهینه پررنگ است
+                          </caption>
+                          <thead>
+                            <tr>
+                              <th scope="col" className="num">حجم (تتر)</th>
+                              <th scope="col" className="num">VWAP خرید</th>
+                              <th scope="col" className="num">VWAP فروش</th>
+                              <th scope="col" className="num">سود تعدیل‌شده</th>
+                              <th scope="col" className="num">حاشیه</th>
+                              <th scope="col" className="num">سطوح</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {bestSizing.sizing.candidates.map((c) => {
+                              const chosen =
+                                bestSizing.sizing.sizeUsdt !== null &&
+                                Math.round(bestSizing.sizing.sizeUsdt * 1_000_000) === c.sizeUsdtMicros;
+                              return (
+                                <tr key={c.sizeUsdtMicros} className={chosen ? "sa-strong" : undefined}>
+                                  <td className="num">
+                                    <Bidi>{toFaDigits((c.sizeUsdtMicros / 1_000_000).toFixed(4))}</Bidi>
+                                    {chosen ? " ◂" : ""}
+                                  </td>
+                                  <td className="num">
+                                    <TomanAmount value={c.buyVwapToman} />
+                                  </td>
+                                  <td className="num">
+                                    <TomanAmount value={c.sellVwapToman} />
+                                  </td>
+                                  <td className={c.riskAdjustedPnlToman > 0 ? "num sa-pos" : "num sa-neg"}>
+                                    <TomanAmount value={c.riskAdjustedPnlToman} />
+                                  </td>
+                                  <td className="num">
+                                    <Bidi>{formatPercentFa(c.riskAdjustedEdgePercent)}</Bidi>
+                                  </td>
+                                  <td className="num">
+                                    <Bidi>{`${toFaDigits(c.buyLevels)}/${toFaDigits(c.sellLevels)}`}</Bidi>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
                     ) : null}
+
+                    <p className="sa-sub">
+                      قیمت‌گذاری با پیمایش واقعی سطوح دفتر انجام شده است، نه با یک قیمت سرصفحه یا
+                      پروب ثابت. حجم انتخابی بیشترین سود تعدیل‌شده را می‌دهد و لزوماً بزرگ‌ترین حجم
+                      ممکن نیست؛ فراتر از عمق مشاهده‌شده هیچ برون‌یابی انجام نمی‌شود.
+                    </p>
                   </div>
                 </details>
               ) : null}

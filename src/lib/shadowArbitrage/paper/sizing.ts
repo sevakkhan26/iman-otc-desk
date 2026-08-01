@@ -44,7 +44,16 @@ import {
   type VenueBalance
 } from "@/lib/shadowArbitrage/paper/broker";
 import { policyValueOrNull, type RiskPolicyKey, type RiskPolicyState } from "@/lib/shadowArbitrage/live/policy";
-import type { NormalizedSourceSnapshot } from "@/lib/shadowArbitrage/types";
+import {
+  candidateQuantities,
+  orderedLevels,
+  totalDepthMicros,
+  validateBook,
+  walkBook,
+  type BookSide,
+  type BookWalk
+} from "@/lib/shadowArbitrage/paper/liquidity";
+import type { BookLevel, NormalizedSourceSnapshot } from "@/lib/shadowArbitrage/types";
 
 /**
  * The policies sizing cannot proceed without.
@@ -99,7 +108,9 @@ export type SizingBlockerCode =
   | "slippage_over_limit"
   | "size_floor"
   | "edge_below_floor"
-  | "not_net_positive";
+  | "not_net_positive"
+  | "book_invalid"
+  | "depth_exhausted";
 
 export const SIZING_BLOCKER_FA: Record<SizingBlockerCode, string> = {
   missing_policy: "سیاست ریسک تعیین نشده است",
@@ -112,7 +123,9 @@ export const SIZING_BLOCKER_FA: Record<SizingBlockerCode, string> = {
   slippage_over_limit: "بافر لغزش مدل‌شده از سقف مجاز بیشتر است",
   size_floor: "حجم محاسبه‌شده به حداقل قابل معامله نمی‌رسد",
   edge_below_floor: "حاشیهٔ تعدیل‌شده از کف سیاست کمتر است",
-  not_net_positive: "سود تعدیل‌شده اکیداً مثبت نیست"
+  not_net_positive: "سود تعدیل‌شده اکیداً مثبت نیست",
+  book_invalid: "دفتر سفارش قابل استفاده نیست",
+  depth_exhausted: "عمق مشاهده‌شده برای هیچ حجم قابل قبولی کافی نیست"
 };
 
 export type SizingBlocker = {
@@ -135,13 +148,29 @@ export type SizingEconomics = {
 };
 
 export type SizingQuote = {
-  /** The probe size whose VWAPs priced this fill. Always ≥ the chosen size. */
-  probeSizeUsdt: number;
+  /** Executable VWAP for the CHOSEN quantity, walked over the real book. */
   buyVwapToman: number;
   sellVwapToman: number;
   markPriceToman: number;
   buyAgeMs: number;
   sellAgeMs: number;
+  /** The child-fill ladder each leg would consume. */
+  buyWalk: BookWalk;
+  sellWalk: BookWalk;
+};
+
+/** One evaluated quantity on the route's profit curve. */
+export type SizingCandidate = {
+  sizeUsdtMicros: number;
+  buyVwapToman: number;
+  sellVwapToman: number;
+  riskAdjustedPnlToman: number;
+  economicNetPnlToman: number;
+  riskAdjustedEdgePercent: number;
+  buyLevels: number;
+  sellLevels: number;
+  bookParticipationPercent: number;
+  priceImpactPercent: number;
 };
 
 export type SizingResult = {
@@ -156,6 +185,15 @@ export type SizingResult = {
   liquidityMaxUsdtMicros: number | null;
   /** What the risk policies alone would allow, before liquidity. */
   policyMaxUsdtMicros: number | null;
+  /**
+   * The largest quantity every hard constraint permits — profitable or not.
+   * Reported next to the chosen size so an operator can see when the optimum
+   * is deliberately smaller than the maximum, which is the normal case once a
+   * book is thin enough for VWAP to move against the trade.
+   */
+  maxFeasibleUsdtMicros: number | null;
+  /** Every quantity evaluated, in ascending order. The profit curve. */
+  candidates: SizingCandidate[];
   quote: SizingQuote | null;
   economics: SizingEconomics | null;
   blockers: SizingBlocker[];
@@ -199,10 +237,14 @@ export type SizingInput = {
   /** Marked value the buy venue already holds, for the concentration cap. */
   buyVenueExposureToman: number | null;
   policies: RiskPolicyState[];
-  /** Buffer the upstream economics already computed for this route. */
+  /**
+   * Latency and slippage allowance in bps, applied to the buy notional.
+   *
+   * Market impact is NOT in this buffer: walking the book already prices it,
+   * because a bigger quantity gets a worse VWAP. The buffer covers what the
+   * book cannot show — the delay between observing it and acting on it.
+   */
   slippageBufferBps: number;
-  /** Probe ladder, largest usable entry wins. Passed in, never assumed. */
-  probeSizesUsdt: readonly number[];
 };
 
 function blocker(code: SizingBlockerCode, subject: string, extraFa?: string): SizingBlocker {
@@ -222,30 +264,18 @@ function constraint(
 }
 
 /**
- * The deepest probe this cycle proved fillable on both legs.
+ * The best price the buy side can offer, used only to turn a toman ceiling into
+ * a quantity ceiling before the real walk happens.
  *
- * Walked largest-first so the answer is the most depth the evidence supports,
- * and the returned VWAPs belong to that probe — which is what makes pricing a
- * smaller size against them conservative rather than optimistic.
+ * It is deliberately optimistic: a cap computed at the best price is never too
+ * small, so no feasible quantity is excluded before it has been evaluated. The
+ * walk that follows prices the quantity honestly, and the balance check after it
+ * is the one that actually binds.
  */
-function deepestProvenProbe(
-  buy: NormalizedSourceSnapshot,
-  sell: NormalizedSourceSnapshot,
-  probeSizesUsdt: readonly number[]
-): { sizeUsdt: number; buyVwapToman: number; sellVwapToman: number } | null {
-  const ladder = [...probeSizesUsdt].sort((a, b) => b - a);
-  for (const size of ladder) {
-    const b = buy.sizeExecutables.find((x) => x.sizeUsdt === size);
-    const s = sell.sizeExecutables.find((x) => x.sizeUsdt === size);
-    if (!b?.buyFillable || b.userBuyVwapToman === null || b.userBuyVwapToman <= 0) continue;
-    if (!s?.sellFillable || s.userSellVwapToman === null || s.userSellVwapToman <= 0) continue;
-    return {
-      sizeUsdt: size,
-      buyVwapToman: Math.round(b.userBuyVwapToman),
-      sellVwapToman: Math.round(s.userSellVwapToman)
-    };
-  }
-  return null;
+function bestPriceToman(levels: BookLevel[] | null, side: BookSide): number | null {
+  if (!levels?.length) return null;
+  const ordered = orderedLevels(levels, side);
+  return ordered.length ? ordered[0].priceToman : null;
 }
 
 /**
@@ -359,6 +389,8 @@ function blocked(blockers: SizingBlocker[], constraints: SizingConstraint[] = []
     constraints,
     liquidityMaxUsdtMicros: null,
     policyMaxUsdtMicros: null,
+    maxFeasibleUsdtMicros: null,
+    candidates: [],
     quote: null,
     economics: null,
     blockers
@@ -443,34 +475,40 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     );
   }
 
-  /* ── 5. depth evidence ────────────────────────────────────────────────── */
-  const probe = deepestProvenProbe(buy, sell, input.probeSizesUsdt);
-  if (!probe) {
-    blockers.push(blocker("no_depth_evidence", `${input.buySourceId}→${input.sellSourceId}`));
-  }
+  /* ── 5. the books themselves must be usable ──────────────────────────── */
+  const buyCheck = validateBook(buy.bookBids, buy.bookAsks);
+  if (!buyCheck.ok) blockers.push(blocker("book_invalid", input.buySourceId, buyCheck.detailFa));
+  const sellCheck = validateBook(sell.bookBids, sell.bookAsks);
+  if (!sellCheck.ok) blockers.push(blocker("book_invalid", input.sellSourceId, sellCheck.detailFa));
 
-  if (blockers.length || !probe || !buyBalance || !sellBalance) {
+  if (blockers.length || !buyBalance || !sellBalance || !buy.bookAsks || !sell.bookBids) {
     return blocked(blockers);
   }
 
   const buyFeeBps = input.buyFeeBps as number;
   const sellFeeBps = input.sellFeeBps as number;
+  const buyAsks = buy.bookAsks;
+  const sellBids = sell.bookBids;
 
-  /* ── 6. the six caps ──────────────────────────────────────────────────── */
-  const depthCap = usdtToMicros(probe.sizeUsdt);
-  const irtCap = buyIrtCapMicros(buyBalance.irtToman, probe.buyVwapToman, buyFeeBps, input.buySettlement);
+  /* ── 6. the caps ─────────────────────────────────────────────────────────
+   *
+   * Toman ceilings become quantity ceilings at the BEST price, which is the
+   * most permissive conversion. That is deliberate: a cap must never exclude a
+   * quantity before it has been priced. The honest price comes from the walk,
+   * and the balance re-check after it is what actually binds.
+   */
+  const bestBuy = bestPriceToman(buyAsks, "buy") as number;
+  const depthCap = Math.min(totalDepthMicros(buyAsks), totalDepthMicros(sellBids));
+  const irtCap = buyIrtCapMicros(buyBalance.irtToman, bestBuy, buyFeeBps, input.buySettlement);
   const usdtCap = sellUsdtCapMicros(sellBalance.usdtMicros, sellFeeBps, input.sellSettlement);
 
   const allocationCap =
     input.buyVenueAllocationToman === null
       ? null
-      : tomanCapToMicros(input.buyVenueAllocationToman, probe.buyVwapToman);
+      : tomanCapToMicros(input.buyVenueAllocationToman, bestBuy);
 
   const orderCap = usdtToMicros(policy.max_order_size_usdt as number);
 
-  // Concentration: how much more the buy venue may hold before it breaches the
-  // admin's per-venue ceiling. Needs both the portfolio total and this venue's
-  // current share; without either it is not measurable and must not be guessed.
   let concentrationCap: number | null = null;
   let concentrationDetail = "ارزش پرتفوی یا سهم فعلی این صرافی در دسترس نیست؛ این سقف اندازه‌گیری نشد.";
   if (input.portfolioValueToman !== null && input.buyVenueExposureToman !== null) {
@@ -478,7 +516,7 @@ export function computeRouteSize(input: SizingInput): SizingResult {
       (input.portfolioValueToman * (policy.max_venue_exposure_percent as number)) / 100
     );
     const headroomToman = ceilingToman - input.buyVenueExposureToman;
-    concentrationCap = tomanCapToMicros(Math.max(0, headroomToman), probe.buyVwapToman);
+    concentrationCap = tomanCapToMicros(Math.max(0, headroomToman), bestBuy);
     concentrationDetail = `سقف ${policy.max_venue_exposure_percent}٪ پرتفوی = ${ceilingToman.toLocaleString("en-US")} تومان، فضای باقی‌مانده ${Math.max(0, headroomToman).toLocaleString("en-US")} تومان`;
   }
 
@@ -486,7 +524,7 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     constraint(
       "depth_evidence",
       depthCap,
-      `عمیق‌ترین پروبی که در همین چرخه هر دو سمت آن پر شد: ${probe.sizeUsdt} تتر`
+      `کمینهٔ عمق مشاهده‌شدهٔ دو دفتر: خرید ${(totalDepthMicros(buyAsks) / 1_000_000).toFixed(2)} تتر در ${buyAsks.length} سطح، فروش ${(totalDepthMicros(sellBids) / 1_000_000).toFixed(2)} تتر در ${sellBids.length} سطح`
     ),
     constraint(
       "buy_irt_balance",
@@ -513,7 +551,6 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     constraint("venue_concentration", concentrationCap, concentrationDetail)
   ];
 
-  /* ── 7. the minimum, split into its two halves for the report ─────────── */
   const liquidityKeys: SizingConstraintKey[] = [
     "depth_evidence",
     "buy_irt_balance",
@@ -528,95 +565,188 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     ? Math.min(...policyCaps.map((c) => c.capUsdtMicros as number))
     : null;
 
-  // Deterministic tie-break: constraint order above decides which cap is named
-  // as binding when two are exactly equal.
-  let sizeMicros = Number.POSITIVE_INFINITY;
-  let binding: SizingConstraintKey | null = null;
-  for (const c of measured) {
-    if ((c.capUsdtMicros as number) < sizeMicros) {
-      sizeMicros = c.capUsdtMicros as number;
-      binding = c.key;
-    }
-  }
-  sizeMicros = quantizeSizeMicros(sizeMicros);
+  /* ── 7. evaluate the real breakpoints ────────────────────────────────────
+   *
+   * Profit as a function of quantity is piecewise linear between book levels,
+   * so its maximum sits on a breakpoint or on a cap — never strictly between
+   * two of them. Evaluating exactly that set is an exact search, not a sample.
+   */
+  const quantities = candidateQuantities({
+    buyAsks,
+    sellBids,
+    capsMicros: measured.map((c) => c.capUsdtMicros as number),
+    minMicros: MIN_TRADEABLE_USDT_MICROS,
+    granularityMicros: SIZE_GRANULARITY_MICROS
+  });
 
-  const partial: Omit<SizingResult, "status" | "sizeUsdtMicros" | "sizeUsdt" | "economics"> = {
-    bindingConstraint: binding,
+  const capCeiling = Math.min(...measured.map((c) => c.capUsdtMicros as number));
+  const bindingFor = (q: number): SizingConstraintKey | null => {
+    for (const c of measured) if ((c.capUsdtMicros as number) <= q) return c.key;
+    return null;
+  };
+
+  const partialBase = {
     constraints,
     liquidityMaxUsdtMicros: Number.isFinite(liquidityMax) ? liquidityMax : null,
     policyMaxUsdtMicros: policyMax,
-    quote: {
-      probeSizeUsdt: probe.sizeUsdt,
-      buyVwapToman: probe.buyVwapToman,
-      sellVwapToman: probe.sellVwapToman,
-      // Same rule the broker uses: the executable buy VWAP for this cycle is
-      // the honest replacement cost of the USDT a sell-side fee consumes.
-      markPriceToman: probe.buyVwapToman,
-      buyAgeMs: Math.round(buy.ageMs),
-      sellAgeMs: Math.round(sell.ageMs)
-    },
-    blockers: []
+    maxFeasibleUsdtMicros: quantities.length ? quantities[quantities.length - 1] : null
   };
 
-  if (sizeMicros < MIN_TRADEABLE_USDT_MICROS) {
+  if (!quantities.length) {
     return {
-      ...partial,
+      ...partialBase,
       status: "BLOCKED",
       sizeUsdtMicros: null,
       sizeUsdt: null,
+      bindingConstraint: null,
+      candidates: [],
+      quote: null,
       economics: null,
       blockers: [
         blocker(
           "size_floor",
-          binding ?? "unknown",
-          `حجم محاسبه‌شده ${(sizeMicros / 1_000_000).toFixed(6)} تتر، کمتر از حداقل ۱ تتر؛ محدودکننده: ${binding ? SIZING_CONSTRAINT_FA[binding] : "—"}`
+          bindingFor(capCeiling) ?? "unknown",
+          `سقف‌ها به ${(capCeiling / 1_000_000).toFixed(6)} تتر می‌رسند که کمتر از حداقل ۱ تتر است؛ محدودکننده: ${
+            bindingFor(capCeiling) ? SIZING_CONSTRAINT_FA[bindingFor(capCeiling) as SizingConstraintKey] : "—"
+          }`
         )
       ]
     };
   }
 
-  /* ── 8. price it, then gate on risk-adjusted profit ───────────────────── */
-  const economics = priceAt(
-    sizeMicros,
-    probe,
-    buyFeeBps,
-    sellFeeBps,
-    input.buySettlement,
-    input.sellSettlement,
-    probe.buyVwapToman,
-    input.slippageBufferBps
-  );
+  /*
+   * Walk both books at every candidate. A quantity is only real when BOTH legs
+   * fill completely — a short fill is not a smaller trade, it is a trade the
+   * book cannot support, and extrapolating past the last level is exactly what
+   * this phase forbids.
+   */
+  const evaluated: Array<{ q: number; buyWalk: BookWalk; sellWalk: BookWalk; econ: SizingEconomics }> = [];
+  const candidates: SizingCandidate[] = [];
 
-  if (economics.riskAdjustedPnlToman <= 0) {
+  for (const q of quantities) {
+    const buyWalk = walkBook(buyAsks, q, "buy");
+    const sellWalk = walkBook(sellBids, q, "sell");
+    if (!buyWalk.complete || !sellWalk.complete) continue;
+    if (buyWalk.vwapToman === null || sellWalk.vwapToman === null) continue;
+
+    // Re-check the balance caps at the WALKED price. The pre-walk caps used the
+    // best price and are therefore permissive; this is the binding check.
+    const irtNeeded =
+      input.buySettlement.feeAsset === "IRT"
+        ? buyWalk.notionalToman + feeFromBps(buyWalk.notionalToman, buyFeeBps)
+        : buyWalk.notionalToman;
+    if (irtNeeded > buyBalance.irtToman) continue;
+
+    const econ = priceAt(
+      q,
+      { buyVwapToman: buyWalk.vwapToman, sellVwapToman: sellWalk.vwapToman },
+      buyFeeBps,
+      sellFeeBps,
+      input.buySettlement,
+      input.sellSettlement,
+      // Same rule the broker uses: the executable buy VWAP for this cycle is
+      // the honest replacement cost of the USDT a sell-side fee consumes.
+      buyWalk.vwapToman,
+      input.slippageBufferBps
+    );
+
+    evaluated.push({ q, buyWalk, sellWalk, econ });
+    candidates.push({
+      sizeUsdtMicros: q,
+      buyVwapToman: buyWalk.vwapToman,
+      sellVwapToman: sellWalk.vwapToman,
+      riskAdjustedPnlToman: econ.riskAdjustedPnlToman,
+      economicNetPnlToman: econ.economicNetPnlToman,
+      riskAdjustedEdgePercent: econ.riskAdjustedEdgePercent,
+      buyLevels: buyWalk.fills.length,
+      sellLevels: sellWalk.fills.length,
+      bookParticipationPercent: Math.max(
+        buyWalk.bookParticipationPercent,
+        sellWalk.bookParticipationPercent
+      ),
+      priceImpactPercent: Math.max(buyWalk.priceImpactPercent, sellWalk.priceImpactPercent)
+    });
+  }
+
+  const partial = { ...partialBase, candidates };
+
+  if (!evaluated.length) {
     return {
       ...partial,
       status: "BLOCKED",
       sizeUsdtMicros: null,
       sizeUsdt: null,
-      economics,
+      bindingConstraint: null,
+      quote: null,
+      economics: null,
+      blockers: [
+        blocker(
+          "depth_exhausted",
+          `${input.buySourceId}→${input.sellSourceId}`,
+          "هیچ حجم نامزدی روی هر دو دفتر به‌طور کامل پر نشد؛ فراتر از عمق مشاهده‌شده برون‌یابی نمی‌شود."
+        )
+      ]
+    };
+  }
+
+  /*
+   * 8. The optimum — the quantity that MAXIMISES risk-adjusted profit, which is
+   * not the largest one. Past a point each extra USDT is bought higher and sold
+   * lower, and total profit falls even though the trade is bigger. Ties break
+   * toward the SMALLER quantity: same profit for less capital and less market
+   * footprint is strictly better.
+   */
+  const best = [...evaluated].sort(
+    (a, b) =>
+      b.econ.riskAdjustedPnlToman - a.econ.riskAdjustedPnlToman ||
+      b.econ.riskAdjustedEdgePercent - a.econ.riskAdjustedEdgePercent ||
+      a.q - b.q
+  )[0];
+
+  const quote: SizingQuote = {
+    buyVwapToman: best.buyWalk.vwapToman as number,
+    sellVwapToman: best.sellWalk.vwapToman as number,
+    markPriceToman: best.buyWalk.vwapToman as number,
+    buyAgeMs: Math.round(buy.ageMs),
+    sellAgeMs: Math.round(sell.ageMs),
+    buyWalk: best.buyWalk,
+    sellWalk: best.sellWalk
+  };
+
+  if (best.econ.riskAdjustedPnlToman <= 0) {
+    return {
+      ...partial,
+      status: "BLOCKED",
+      sizeUsdtMicros: null,
+      sizeUsdt: null,
+      bindingConstraint: bindingFor(best.q),
+      quote,
+      economics: best.econ,
       blockers: [
         blocker(
           "not_net_positive",
-          `${economics.riskAdjustedPnlToman}`,
-          `سود تعدیل‌شده ${economics.riskAdjustedPnlToman.toLocaleString("en-US")} تومان است و باید اکیداً مثبت باشد`
+          `${best.econ.riskAdjustedPnlToman}`,
+          `بهترین حجم ممکن (${(best.q / 1_000_000).toFixed(4)} تتر) سود تعدیل‌شدهٔ ${best.econ.riskAdjustedPnlToman.toLocaleString("en-US")} تومان می‌دهد و باید اکیداً مثبت باشد`
         )
       ]
     };
   }
 
   const edgeFloor = policy.min_risk_adjusted_edge_percent as number;
-  if (economics.riskAdjustedEdgePercent < edgeFloor) {
+  if (best.econ.riskAdjustedEdgePercent < edgeFloor) {
     return {
       ...partial,
       status: "BLOCKED",
       sizeUsdtMicros: null,
       sizeUsdt: null,
-      economics,
+      bindingConstraint: bindingFor(best.q),
+      quote,
+      economics: best.econ,
       blockers: [
         blocker(
           "edge_below_floor",
-          `${economics.riskAdjustedEdgePercent}%`,
-          `حاشیهٔ تعدیل‌شده ${economics.riskAdjustedEdgePercent}٪ در برابر کف سیاست ${edgeFloor}٪`
+          `${best.econ.riskAdjustedEdgePercent}%`,
+          `حاشیهٔ تعدیل‌شده ${best.econ.riskAdjustedEdgePercent}٪ در برابر کف سیاست ${edgeFloor}٪`
         )
       ]
     };
@@ -625,9 +755,11 @@ export function computeRouteSize(input: SizingInput): SizingResult {
   return {
     ...partial,
     status: "SIZED",
-    sizeUsdtMicros: sizeMicros,
-    sizeUsdt: microsToUsdt(sizeMicros),
-    economics,
+    sizeUsdtMicros: best.q,
+    sizeUsdt: microsToUsdt(best.q),
+    bindingConstraint: bindingFor(best.q),
+    quote,
+    economics: best.econ,
     blockers: []
   };
 }
@@ -654,7 +786,6 @@ export function computeAllRouteSizes(input: {
   exposureTomanBySource: Map<string, number>;
   policies: RiskPolicyState[];
   slippageBufferBps: number;
-  probeSizesUsdt: readonly number[];
 }): RouteSizing[] {
   const out: RouteSizing[] = [];
   for (const buySourceId of input.venueIds) {
@@ -678,8 +809,7 @@ export function computeAllRouteSizes(input: {
           portfolioValueToman: input.portfolioValueToman,
           buyVenueExposureToman: input.exposureTomanBySource.get(buySourceId) ?? null,
           policies: input.policies,
-          slippageBufferBps: input.slippageBufferBps,
-          probeSizesUsdt: input.probeSizesUsdt
+          slippageBufferBps: input.slippageBufferBps
         })
       });
     }

@@ -193,6 +193,14 @@ function mockSource(
       buyFilledUsdt: sizeUsdt,
       sellFilledUsdt: sizeUsdt
     })),
+    /*
+     * Phase 8C-4 — a flat 100 USDT at the quoted price on each side, so these
+     * fixtures keep their existing VWAPs while giving the depth-aware sizer a
+     * real book to walk. One level means VWAP does not move with size, which is
+     * exactly what the Phase 6 selection tests assume.
+     */
+    bookBids: opts?.bookBids !== undefined ? opts.bookBids : [{ priceToman: sell, amountUsdt: 100 }],
+    bookAsks: opts?.bookAsks !== undefined ? opts.bookAsks : [{ priceToman: buy, amountUsdt: 100 }],
     depthUsdtBid: 100,
     depthUsdtAsk: 100,
     maxExecutableUsdt: 100,

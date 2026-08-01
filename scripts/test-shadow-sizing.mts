@@ -65,23 +65,30 @@ function policies(over: Partial<Record<string, number>> = {}) {
   );
 }
 
-/** A healthy snapshot with a walkable probe ladder. */
-function snap(sourceId: string, buyVwap: number, sellVwap: number, over: Any = {}): Any {
+/**
+ * A healthy snapshot with a real walkable book.
+ *
+ * Phase 8C-4 sizes from the book itself, so `depthUsdt` sets how much sits at
+ * the quoted price on each side. One level keeps VWAP flat with size, which is
+ * what the cap tests here are about — the nonlinear cases live in
+ * `test-shadow-liquidity.mts`.
+ */
+function snap(
+  sourceId: string,
+  buyVwap: number,
+  sellVwap: number,
+  over: Any = {},
+  depthUsdt = 25
+): Any {
   return {
     sourceId,
     sourceName: sourceId,
     ageMs: 5_000,
     stale: false,
     health: "healthy",
-    sizeExecutables: [5, 10, 20, 25].map((sizeUsdt) => ({
-      sizeUsdt,
-      userBuyVwapToman: buyVwap,
-      userSellVwapToman: sellVwap,
-      buyFillable: true,
-      sellFillable: true,
-      buyFilledUsdt: sizeUsdt,
-      sellFilledUsdt: sizeUsdt
-    })),
+    sizeExecutables: [],
+    bookAsks: [{ priceToman: buyVwap, amountUsdt: depthUsdt }],
+    bookBids: [{ priceToman: sellVwap, amountUsdt: depthUsdt }],
     ...over
   };
 }
@@ -109,7 +116,6 @@ function input(over: Any = {}): Any {
     buyVenueExposureToman: 1_000_000_000,
     policies: policies(),
     slippageBufferBps: 5,
-    probeSizesUsdt: [5, 10, 20, 25],
     ...over
   };
 }
@@ -191,21 +197,16 @@ await test("stale market data blocks, measured against the admin's own budget", 
   assert.ok(flagged.blockers.some((b) => b.code === "stale_quote" && b.subject === "wallex"));
 });
 
-await test("no proven depth on both legs blocks rather than assuming a size", () => {
-  const oneSided = snap("wallex", 101_100, 101_000, {
-    sizeExecutables: [5, 10, 20, 25].map((sizeUsdt) => ({
-      sizeUsdt,
-      userBuyVwapToman: 101_100,
-      userSellVwapToman: null,
-      buyFillable: true,
-      sellFillable: false,
-      buyFilledUsdt: sizeUsdt,
-      sellFilledUsdt: 0
-    }))
-  });
-  const r = run({ sellSnapshot: oneSided });
-  assert.equal(r.status, "BLOCKED");
-  assert.ok(r.blockers.some((b) => b.code === "no_depth_evidence"));
+await test("a missing or empty book blocks rather than assuming a size", () => {
+  // Phase 8C-4: depth comes from the book, so an absent book is the failure —
+  // a one-sided legacy probe ladder is no longer consulted at all.
+  const noBook = run({ sellSnapshot: snap("wallex", 101_100, 101_000, { bookBids: null, bookAsks: null }) });
+  assert.equal(noBook.status, "BLOCKED");
+  assert.ok(noBook.blockers.some((b) => b.code === "book_invalid" && b.subject === "wallex"));
+
+  const emptyBook = run({ sellSnapshot: snap("wallex", 101_100, 101_000, { bookBids: [] }) });
+  assert.equal(emptyBook.status, "BLOCKED");
+  assert.ok(emptyBook.blockers.some((b) => b.code === "book_invalid"));
 });
 
 await test("an unconfirmed fee or settlement blocks with the venue named", () => {
@@ -238,25 +239,16 @@ await test("a missing balance row blocks instead of sizing against nothing", () 
 const capOf = (r: { constraints: Array<{ key: string; capUsdtMicros: number | null }> }, key: string) =>
   r.constraints.find((c) => c.key === key)?.capUsdtMicros ?? null;
 
-await test("depth is capped by the deepest probe both legs actually filled", () => {
-  const shallow = (id: string, buyVwap: number, sellVwap: number) =>
-    snap(id, buyVwap, sellVwap, {
-      sizeExecutables: [5, 10, 20, 25].map((sizeUsdt) => ({
-        sizeUsdt,
-        userBuyVwapToman: sizeUsdt <= 10 ? buyVwap : null,
-        userSellVwapToman: sizeUsdt <= 10 ? sellVwap : null,
-        buyFillable: sizeUsdt <= 10,
-        sellFillable: sizeUsdt <= 10,
-        buyFilledUsdt: sizeUsdt <= 10 ? sizeUsdt : 0,
-        sellFilledUsdt: sizeUsdt <= 10 ? sizeUsdt : 0
-      }))
-    });
-  const r = run({ sellSnapshot: shallow("wallex", 101_100, 101_000) });
+await test("depth is capped by the shallower of the two observed books", () => {
+  // 10 USDT on the sell venue's bid side against 25 on the buy venue's asks.
+  const r = run({ sellSnapshot: snap("wallex", 101_100, 101_000, {}, 10) });
   assert.equal(capOf(r, "depth_evidence"), usdtToMicros(10));
   assert.equal(r.status, "SIZED");
   assert.equal(r.sizeUsdtMicros, usdtToMicros(10), "depth binds");
   assert.equal(r.bindingConstraint, "depth_evidence");
-  assert.equal(r.quote?.probeSizeUsdt, 10);
+  // The walk that priced it touched exactly that book.
+  assert.equal(r.quote?.sellWalk.filledMicros, usdtToMicros(10));
+  assert.equal(r.quote?.sellWalk.complete, true);
 });
 
 await test("the buy IRT cap includes the buy fee, not just the notional", () => {

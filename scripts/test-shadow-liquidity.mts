@@ -616,5 +616,46 @@ await test("the legacy probe ladder no longer sizes anything", () => {
   assert.equal(legacy.includes(shallow.sizeUsdtMicros as number), false, "off the legacy ladder");
 });
 
+await test("an unset policy blocks the trade but never hides the capacity study", () => {
+  const r = size({ policies: buildPolicyState([], Date.parse("2026-08-02T12:00:00.000Z")) });
+
+  // Still blocked, still naming every missing key — approval is unchanged.
+  assert.equal(r.status, "BLOCKED");
+  assert.equal(r.sizeUsdtMicros, null);
+  assert.deepEqual(
+    r.blockers.map((b) => b.subject).sort(),
+    [...SIZING_REQUIRED_POLICIES].sort()
+  );
+
+  // But the liquidity study is fully reported, which is the whole point: an
+  // administrator must be able to see whether a venue carries the intended
+  // scale BEFORE choosing the limit that would constrain it.
+  assert.ok((r.liquidityMaxUsdtMicros as number) > 0, "unconstrained capacity is measured");
+  assert.ok(r.candidates.length > 0, "the profit curve is still evaluated");
+  assert.ok(r.quote, "the child-fill ladder is still produced");
+  assert.ok((r.quote?.buyWalk.fills.length ?? 0) > 0);
+  assert.ok(r.economics, "and the economics of the best feasible size");
+
+  // An unset cap contributes nothing rather than a fabricated ceiling.
+  const order = r.constraints.find((c) => c.key === "policy_max_order_size");
+  assert.equal(order?.capUsdtMicros, null, "an unset policy is not a cap of zero");
+  assert.ok(order?.detailFa.includes("تعیین نشده"), "and says so");
+  const conc = r.constraints.find((c) => c.key === "venue_concentration");
+  assert.equal(conc?.capUsdtMicros, null, "the exposure cap is absent too");
+  assert.ok(conc?.detailFa.includes("تعیین نشده"));
+  // What remains on that side is the capital plan's own share, which is not a
+  // risk policy and is still a real ceiling.
+  const alloc = r.constraints.find((c) => c.key === "venue_allocation");
+  assert.equal(r.policyMaxUsdtMicros, alloc?.capUsdtMicros, "only the plan share remains");
+
+  // A malformed book still stops everything — that is a data fault, not a decision.
+  const badBook = size({
+    policies: buildPolicyState([], Date.now()),
+    buySnapshot: snap("nobitex", null as never, null as never)
+  });
+  assert.equal(badBook.candidates.length, 0, "no study without a usable book");
+  assert.ok(badBook.blockers.some((b) => b.code === "book_invalid"));
+});
+
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

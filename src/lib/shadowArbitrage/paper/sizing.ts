@@ -481,7 +481,21 @@ export function computeRouteSize(input: SizingInput): SizingResult {
   const sellCheck = validateBook(sell.bookBids, sell.bookAsks);
   if (!sellCheck.ok) blockers.push(blocker("book_invalid", input.sellSourceId, sellCheck.detailFa));
 
-  if (blockers.length || !buyBalance || !sellBalance || !buy.bookAsks || !sell.bookBids) {
+  /*
+   * A missing risk policy stops the trade, not the analysis.
+   *
+   * The administrator has to be able to see whether a venue can carry the
+   * intended scale BEFORE choosing the limits that would constrain it —
+   * otherwise the only way to inspect capacity is to approve a limit blind.
+   * So an unset policy leaves the liquidity study running with that cap simply
+   * absent, and the result is still BLOCKED with the exact key.
+   */
+  const policyBlockers = blockers.filter(
+    (b) => b.code === "missing_policy" || b.code === "expired_policy"
+  );
+  const fatal = blockers.filter((b) => !policyBlockers.includes(b));
+
+  if (fatal.length || !buyBalance || !sellBalance || !buy.bookAsks || !sell.bookBids) {
     return blocked(blockers);
   }
 
@@ -507,11 +521,16 @@ export function computeRouteSize(input: SizingInput): SizingResult {
       ? null
       : tomanCapToMicros(input.buyVenueAllocationToman, bestBuy);
 
-  const orderCap = usdtToMicros(policy.max_order_size_usdt as number);
+  const orderCap =
+    policy.max_order_size_usdt === undefined
+      ? null
+      : usdtToMicros(policy.max_order_size_usdt);
 
   let concentrationCap: number | null = null;
   let concentrationDetail = "ارزش پرتفوی یا سهم فعلی این صرافی در دسترس نیست؛ این سقف اندازه‌گیری نشد.";
-  if (input.portfolioValueToman !== null && input.buyVenueExposureToman !== null) {
+  if (policy.max_venue_exposure_percent === undefined) {
+    concentrationDetail = "سیاست «سقف تمرکز روی یک صرافی» تعیین نشده است؛ این سقف اعمال نشد.";
+  } else if (input.portfolioValueToman !== null && input.buyVenueExposureToman !== null) {
     const ceilingToman = Math.floor(
       (input.portfolioValueToman * (policy.max_venue_exposure_percent as number)) / 100
     );
@@ -546,7 +565,9 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     constraint(
       "policy_max_order_size",
       orderCap,
-      `سیاست «حداکثر حجم هر سفارش» = ${policy.max_order_size_usdt} تتر`
+      policy.max_order_size_usdt === undefined
+        ? "سیاست «حداکثر حجم هر سفارش» تعیین نشده است؛ این سقف اعمال نشد."
+        : `سیاست «حداکثر حجم هر سفارش» = ${policy.max_order_size_usdt} تتر`
     ),
     constraint("venue_concentration", concentrationCap, concentrationDetail)
   ];
@@ -690,7 +711,37 @@ export function computeRouteSize(input: SizingInput): SizingResult {
   }
 
   /*
-   * 8. The optimum — the quantity that MAXIMISES risk-adjusted profit, which is
+   * 8a. Risk policies gate approval, not analysis. Everything above — caps,
+   * breakpoints, walks, the whole profit curve — is already computed and is
+   * returned with the block, so capacity stays inspectable while the limits
+   * are still being decided.
+   */
+  if (policyBlockers.length) {
+    const study = [...evaluated].sort(
+      (a, b) => b.econ.riskAdjustedPnlToman - a.econ.riskAdjustedPnlToman || a.q - b.q
+    )[0];
+    return {
+      ...partial,
+      status: "BLOCKED",
+      sizeUsdtMicros: null,
+      sizeUsdt: null,
+      bindingConstraint: bindingFor(study.q),
+      quote: {
+        buyVwapToman: study.buyWalk.vwapToman as number,
+        sellVwapToman: study.sellWalk.vwapToman as number,
+        markPriceToman: study.buyWalk.vwapToman as number,
+        buyAgeMs: Math.round(buy.ageMs),
+        sellAgeMs: Math.round(sell.ageMs),
+        buyWalk: study.buyWalk,
+        sellWalk: study.sellWalk
+      },
+      economics: study.econ,
+      blockers: policyBlockers
+    };
+  }
+
+  /*
+   * 8b. The optimum — the quantity that MAXIMISES risk-adjusted profit, which is
    * not the largest one. Past a point each extra USDT is bought higher and sold
    * lower, and total profit falls even though the trade is bigger. Ties break
    * toward the SMALLER quantity: same profit for less capital and less market

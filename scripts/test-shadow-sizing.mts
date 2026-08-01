@@ -130,7 +130,13 @@ await test("a missing risk policy blocks with the exact key, and no default is u
   assert.equal(r.status, "BLOCKED");
   assert.equal(r.sizeUsdtMicros, null);
   assert.equal(r.sizeUsdt, null);
-  assert.equal(r.economics, null);
+  /*
+   * Phase 8C-4: the economics of the best FEASIBLE quantity are still reported
+   * while the policies are undecided — an administrator has to be able to see
+   * the capacity before choosing the limit that constrains it. Nothing is
+   * approved by that: the size stays null and every missing key is named.
+   */
+  assert.ok(r.economics, "the capacity study survives a missing policy");
 
   const keys = r.blockers.filter((b) => b.code === "missing_policy").map((b) => b.subject).sort();
   assert.deepEqual(keys, [...SIZING_REQUIRED_POLICIES].sort(), "every required key is named");

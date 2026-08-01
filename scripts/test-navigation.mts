@@ -29,9 +29,14 @@ const { sidebarNavItems } = await import("../src/lib/sidebarNav.ts");
 const { SHADOW_SHORTCUT_HREF, SHADOW_SHORTCUT_LABEL } = await import(
   "../src/components/ShadowArbitrageHeaderButton.tsx"
 );
-const { SHADOW_TABS, DEFAULT_SHADOW_TAB, parseShadowTab, shadowTabLabel } = await import(
-  "../src/components/shadowArbitrage/tabs.ts"
-);
+const {
+  SHADOW_TABS,
+  SHADOW_TAB_ALIASES,
+  DEFAULT_SHADOW_TAB,
+  isLegacyShadowTab,
+  parseShadowTab,
+  shadowTabLabel
+} = await import("../src/components/shadowArbitrage/tabs.ts");
 
 await test("Shadow Arbitrage is completely gone from the sidebar", () => {
   assert.equal(
@@ -213,45 +218,69 @@ await test("no page, layout, API, database or backend logic was touched", () => 
 });
 
 
-/* ── Phase 8A — tab shell and Overview presentation ──────────────────────── */
+/* ── Phase 8C-1 — four operator sections ─────────────────────────────────── */
 
-await test("8A the seven tabs exist in order with Persian labels", () => {
+await test("8C the four operator sections exist in order with Persian labels", () => {
   assert.deepEqual(
     SHADOW_TABS.map((t) => t.id),
-    ["overview", "opportunities", "sources", "capital", "paper", "live", "analytics"]
+    ["command", "capital", "trades", "settings"]
   );
   assert.deepEqual(
     SHADOW_TABS.map((t) => t.labelFa),
-    [
-      "نمای کلی",
-      "فرصت‌ها",
-      "منابع و کارمزدها",
-      "تخصیص سرمایه",
-      "اجرای کاغذی",
-      "آمادگی اجرای واقعی",
-      "تحلیل و تاریخچه"
-    ]
+    ["مرکز فرماندهی", "سرمایه و تخصیص", "فرصت‌ها و معاملات", "تنظیمات و ایمنی"]
   );
-  // Every tab carries a Persian one-line explanation for its tooltip.
+  // Every section carries a Persian one-line explanation for its tooltip.
   for (const t of SHADOW_TABS) {
     assert.ok(t.hintFa.length > 10, `${t.id} needs a hint`);
     assert.equal(/[a-zA-Z]{4,}/.test(t.labelFa), false, "labels are Persian, not codes");
   }
 });
 
-await test("8A the default tab is Overview and unknown values fall back to it", () => {
-  assert.equal(DEFAULT_SHADOW_TAB, "overview");
+await test("8C Command Center is the default and unknown values fall back to it", () => {
+  assert.equal(DEFAULT_SHADOW_TAB, "command");
   assert.equal(SHADOW_TABS[0].id, DEFAULT_SHADOW_TAB);
-  assert.equal(parseShadowTab(null), "overview");
-  assert.equal(parseShadowTab(undefined), "overview");
-  assert.equal(parseShadowTab(""), "overview");
-  assert.equal(parseShadowTab("nope"), "overview");
-  assert.equal(parseShadowTab("../etc"), "overview");
+  assert.equal(parseShadowTab(null), "command");
+  assert.equal(parseShadowTab(undefined), "command");
+  assert.equal(parseShadowTab(""), "command");
+  assert.equal(parseShadowTab("nope"), "command");
+  assert.equal(parseShadowTab("../etc"), "command");
   // A known slug round-trips exactly.
   for (const t of SHADOW_TABS) {
     assert.equal(parseShadowTab(t.id), t.id);
     assert.equal(shadowTabLabel(t.id), t.labelFa);
   }
+});
+
+await test("8C every retired tab URL still resolves, to the section that owns it", () => {
+  // The seven Phase 8A slugs, each landing where its content actually went.
+  const expected: Record<string, string> = {
+    overview: "command",
+    paper: "command",
+    opportunities: "trades",
+    analytics: "trades",
+    capital: "capital",
+    sources: "settings",
+    live: "settings"
+  };
+  assert.deepEqual({ ...SHADOW_TAB_ALIASES }, expected);
+  for (const [legacy, section] of Object.entries(expected)) {
+    assert.equal(parseShadowTab(legacy), section, `?tab=${legacy} must land on ${section}`);
+    // No retired slug may silently fall through to the default instead.
+    if (section !== DEFAULT_SHADOW_TAB) {
+      assert.notEqual(parseShadowTab(legacy), DEFAULT_SHADOW_TAB);
+    }
+  }
+  // A retired slug is recognised as such; a current one and junk are not.
+  assert.equal(isLegacyShadowTab("overview"), true);
+  assert.equal(isLegacyShadowTab("command"), false);
+  assert.equal(isLegacyShadowTab(null), false);
+  assert.equal(isLegacyShadowTab(""), false);
+
+  // The page rewrites a retired address to the new one, without a history entry.
+  const view = read("src/components/ShadowArbitrageView.tsx");
+  assert.ok(view.includes("if (!isLegacyShadowTab(rawTab)) return;"));
+  assert.ok(view.includes('params.set("tab", tab);'));
+  assert.ok(view.includes("router.replace("));
 });
 
 await test("8A the tab lives in the URL so back, forward and refresh restore it", () => {
@@ -269,17 +298,18 @@ await test("8A the tab lives in the URL so back, forward and refresh restore it"
   assert.ok(page.includes("<Suspense"));
 });
 
-await test("8A every existing section survives, in its correct tab", () => {
+await test("8C every existing panel survives, in the section that now owns it", () => {
   const view = read("src/components/ShadowArbitrageView.tsx");
   const sectionTab: Array<[string, string]> = [
-    ["OverviewPanel", "overview"],
-    ["OpportunitiesPanel", "opportunities"],
-    ["SourcesPanel", "sources"],
+    ["CommandCenter", "command"],
+    ["OverviewPanel", "command"],
+    ["ObservationHeader", "command"],
+    ["PaperExecution", "command"],
     ["CapitalSimulator", "capital"],
-    ["PaperExecution", "paper"],
-    ["LiveReadiness", "live"],
-    ["ObservationHeader", "analytics"],
-    ["AnalyticsPanels", "analytics"]
+    ["OpportunitiesPanel", "trades"],
+    ["AnalyticsPanels", "trades"],
+    ["SourcesPanel", "settings"],
+    ["LiveReadiness", "settings"]
   ];
   for (const [component, tab] of sectionTab) {
     assert.ok(view.includes(`<${component}`), `${component} must still be rendered`);
@@ -307,7 +337,7 @@ await test("8A the Shadow warning is permanent and the red Live warning is not",
     1,
     "LiveReadiness is mounted exactly once"
   );
-  const liveGuard = view.lastIndexOf('tab === "live"', view.indexOf("<LiveReadiness"));
+  const liveGuard = view.lastIndexOf('tab === "settings"', view.indexOf("<LiveReadiness"));
   assert.ok(liveGuard > 0);
   const ui = read("src/components/shadowArbitrage/LiveReadiness.tsx");
   assert.ok(ui.includes("LIVE EXECUTION IS NOT IMPLEMENTED — NO REAL ORDERS"));
@@ -498,7 +528,15 @@ function phase8aCss(): string {
 /** Only the Phase 8B section — the two redesigned tabs. */
 function phase8bCss(): string {
   const css = read("app/globals.css");
-  return css.slice(css.indexOf("Phase 8B opportunities and sources"));
+  const start = css.indexOf("Phase 8B opportunities and sources");
+  const end = css.indexOf("Phase 8C command center");
+  return css.slice(start, end > start ? end : undefined);
+}
+
+/** Only the Phase 8C section — the Command Center. */
+function phase8cCss(): string {
+  const css = read("app/globals.css");
+  return css.slice(css.indexOf("Phase 8C command center"));
 }
 
 await test("8A polish: the desktop tab strip uses the full content width", () => {
@@ -750,7 +788,7 @@ await test("preview harness renders the production shell, not a rebuilt one", ()
   assert.ok(preview.includes("standalone"), "it boots the production bundle");
   // It navigates the real route; the tab is a parameter, defaulting to Overview.
   assert.ok(preview.includes("/shadow-arbitrage?tab=${shot.tab}"), "it navigates the real route");
-  assert.ok(preview.includes('process.env.PREVIEW_TABS ?? "overview"'));
+  assert.ok(preview.includes('process.env.PREVIEW_TABS ?? "command"'));
   assert.ok(preview.includes("Page.captureScreenshot"), "a real browser takes the picture");
 
   // No substitute shell, sidebar, header or icon list may exist here.
@@ -1666,7 +1704,7 @@ await test("8B typography reuses the project's IRANYekan configuration", () => {
   assert.ok(globals.includes('src: url("/fonts/iranyekanweb'), "self-hosted, not a CDN");
 
   // Shadow declares no font of its own: its controls inherit, nothing else.
-  const shadowCss = stripComments(phase8aCss() + phase8bCss());
+  const shadowCss = stripComments(phase8aCss() + phase8bCss() + phase8cCss());
   const families = [...shadowCss.matchAll(/font-family:\s*([^;]+);/g)].map((m) => m[1].trim());
   assert.deepEqual([...new Set(families)], ["inherit"], "no Shadow-specific font stack");
   assert.equal(/@font-face/.test(shadowCss), false, "no duplicated face");
@@ -1676,7 +1714,8 @@ await test("8B typography reuses the project's IRANYekan configuration", () => {
     "src/components/shadowArbitrage/OpportunitiesPanel.tsx",
     "src/components/shadowArbitrage/SourcesPanel.tsx",
     "src/components/shadowArbitrage/panelKit.tsx",
-    "src/components/shadowArbitrage/OpportunityDrawer.tsx"
+    "src/components/shadowArbitrage/OpportunityDrawer.tsx",
+    "src/components/shadowArbitrage/CommandCenter.tsx"
   ]) {
     assert.equal(/font-family|fontFamily/.test(read(file)), false, `${file} must not set a font`);
   }
@@ -1814,6 +1853,8 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
       "src/lib/shadowArbitrage/accounts.ts",
       "src/lib/shadowArbitrage/paper/run.ts",
       "src/lib/shadowArbitrage/paper/broker.ts",
+      // the simple paper flow: portfolio maths, pure and dependency-free
+      "src/lib/shadowArbitrage/paper/portfolio.ts",
       "src/lib/shadowArbitrage/live/readiness.ts",
       // certifying Tetherland and Arzinja: direction proof, units, freshness,
       // depth, and routing the confirmed fees into the economics
@@ -1876,6 +1917,232 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
     }
   } else {
     console.log("        (note: tag v4.12.0 unavailable — import boundary checked only)");
+  }
+});
+
+/* ══ Phase 8C-2 — the Command Center ═════════════════════════════════════════ */
+
+await test("8C the Command Center answers the standing questions on one screen", () => {
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  // Every required figure has its own labelled card — no drawer, no fold.
+  const labels = [...cc.matchAll(/^\s+label="([^"]+)"$/gm)].map((m) => m[1]);
+  assert.deepEqual(labels, [
+    "سرمایهٔ کل مجازی",
+    "سرمایهٔ تخصیص‌یافته",
+    "سرمایهٔ آزاد",
+    "سود و زیان امروز",
+    "سود و زیان کل",
+    "بیشترین افت",
+    "معاملات انجام‌شده و رد‌شده",
+    "فرصت‌های معتبر"
+  ]);
+
+  // The best route is disclosed in full, not summarised into one number.
+  for (const dt of [
+    "صرافی خرید",
+    "صرافی فروش",
+    "حجم پیشنهادی",
+    "سرمایهٔ درگیر",
+    "سود خالص تعدیل‌شده",
+    "حاشیهٔ خالص"
+  ]) {
+    assert.ok(cc.includes(`<dt>${dt}</dt>`), `the best-opportunity card must state ${dt}`);
+  }
+
+  // Status, collector health and last cycle are in the strip above it.
+  for (const needle of ["فقط پایش آزمایشی", "COLLECTOR_STATE_FA[collectorState]", "آخرین چرخهٔ موفق"]) {
+    assert.ok(cc.includes(needle), `the status strip must show ${needle}`);
+  }
+});
+
+await test("8C session create, start, pause and stop live in the Command Center", () => {
+  const view = read("src/components/ShadowArbitrageView.tsx");
+  // The lifecycle controls are passed into the Command Center, not another tab.
+  assert.ok(
+    view.includes(
+      "sessionControls={<PaperSimple parts={{ session: true, summary: false, ledger: false }} />}"
+    ),
+    "the session panel is the Command Center's control slot"
+  );
+
+  const paper = read("src/components/shadowArbitrage/PaperSimple.tsx");
+  // Plain Persian for every step of the lifecycle.
+  for (const label of [
+    "ساخت نشست جدید از طرح فعلی",
+    "شروع ارزیابی",
+    "توقف موقت",
+    "ادامهٔ ارزیابی",
+    "پایان‌دادن نشست (حفظ سابقه)"
+  ]) {
+    assert.ok(paper.includes(label), `missing control label: ${label}`);
+  }
+  // Each control posts the action the existing API already accepts.
+  for (const action of ["create", "start", "pause", "resume", "stop"]) {
+    assert.ok(paper.includes(`action: "${action}"`), `missing ${action} action`);
+  }
+  const route = read("app/api/shadow-arbitrage/paper/route.ts");
+  assert.ok(route.includes('["create", "start", "pause", "resume", "stop"]'), "no new API action");
+
+  // The ledger moved to Opportunities & Trades; the same component renders it.
+  assert.ok(
+    view.includes("<PaperSimple parts={{ session: false, summary: false, ledger: true }} />")
+  );
+  assert.ok(paper.includes("export type PaperParts"), "the split is a declared contract");
+});
+
+await test("8C diagnostics, gates, policies and evidence sit behind one fold", () => {
+  const view = read("src/components/ShadowArbitrageView.tsx");
+  // LiveReadiness — gates, policies and evidence — is inside a <details>.
+  const live = view.indexOf("<LiveReadiness");
+  const fold = view.lastIndexOf("sa-advanced-details", live);
+  assert.ok(fold > 0 && fold < live, "readiness gates must be inside the advanced disclosure");
+
+  // So are the collector diagnostics and the raw paper-execution panel.
+  const advancedSlot = view.slice(view.indexOf("advanced={"), view.indexOf("/>\n        ) : null}\n\n        {/* ── 2."));
+  for (const panel of ["ObservationHeader", "OverviewPanel", "PaperExecution"]) {
+    assert.ok(advancedSlot.includes(`<${panel}`), `${panel} belongs behind the fold`);
+  }
+  assert.ok(view.includes("تشخیص‌های پیشرفته"), "the fold is labelled in Persian");
+
+  // Nothing on the primary surface can arm or execute anything.
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  for (const term of ["arm", "enable_live", "execute", "go_live", "placeOrder"]) {
+    assert.equal(cc.includes(`"${term}"`), false, `the Command Center must not offer ${term}`);
+  }
+  // And it states the boundary in Persian on the landing screen itself.
+  assert.ok(cc.includes("غیرمسلح"));
+  assert.ok(cc.includes("اجرای واقعی پیاده‌سازی نشده است"));
+});
+
+await test("8C dynamic sizing is not implemented and is not implied", () => {
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  // The suggested size is the opportunity's own probe size, unmodified.
+  assert.ok(cc.includes("toFaDigits(best.sizeUsdt)"));
+  assert.ok(
+    cc.includes("حجم پیشنهادی فعلاً از پروب‌های تشخیصی ثابت موتور می‌آید"),
+    "the screen says plainly that sizing is still the fixed probe"
+  );
+  // No sizing maths, no risk limit and no invented policy value entered the UI.
+  for (const banned of [
+    "max_order_size_usdt",
+    "max_venue_exposure_percent",
+    "concentration",
+    "depthUsable",
+    "SHADOW_TRADE_SIZES"
+  ]) {
+    assert.equal(cc.includes(banned), false, `sizing must not start here: ${banned}`);
+  }
+  // The fixed probes are untouched in the engine.
+  const config = read("src/lib/shadowArbitrage/config.ts");
+  assert.ok(config.includes("export const SHADOW_TRADE_SIZES: ShadowTradeSizeUsdt[] = [5, 10, 20, 25];"));
+});
+
+await test("8C unknown figures are em dashes, never invented numbers", () => {
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  assert.ok(cc.includes('const DASH = <span className="sa-unknown">—</span>'));
+  // Every portfolio card falls back to the dash when there is no session.
+  assert.ok(cc.includes("session ? <TomanAmount value={session.totalCapitalToman} /> : DASH"));
+  assert.ok(cc.includes("summary ? <TomanAmount value={summary.todayPnlToman} /> : DASH"));
+  assert.ok(cc.includes("summary ? <TomanAmount value={summary.economicPnlToman} /> : DASH"));
+  assert.ok(cc.includes("summary ? <TomanAmount value={summary.drawdownToman} /> : DASH"));
+  // Marked value without a mark price stays unknown rather than being guessed.
+  assert.ok(cc.includes("بدون قیمت مبنا محاسبه نمی‌شود"));
+  for (const fake of ["lorem", "placeholder", "sampleData", "MOCK", "dummy"]) {
+    assert.equal(cc.toLowerCase().includes(fake.toLowerCase()), false, `no ${fake}`);
+  }
+});
+
+await test("8C ratios are bidi-isolated so RTL cannot reverse them", () => {
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  assert.ok(cc.includes("function Ratio("));
+  assert.ok(cc.includes('className="sa-ratio" dir="ltr"'));
+  for (const use of [
+    "<Ratio part={summary.filled}",
+    "<Ratio part={healthySources}",
+    "<Ratio part={accounts.executable}",
+    "<Ratio part={readiness.passed}"
+  ]) {
+    assert.ok(cc.includes(use), `missing ${use}`);
+  }
+});
+
+await test("8C the Command Center reuses the shared glass primitives only", () => {
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  for (const [name, needle] of [
+    ["KPI card", "panel sa-panel sa-cc-kpi"],
+    ["status strip", 'className="panel sa-panel sa-cc-status"'],
+    ["best opportunity", 'className="panel sa-panel sa-cc-best"'],
+    ["health card", 'className="panel sa-panel sa-cc-mini"'],
+    ["refresh action", 'className="sa-cc-action glass-control"'],
+    ["advanced fold", 'className="panel sa-panel sa-advanced-details"']
+  ] as Array<[string, string]>) {
+    assert.ok(cc.includes(needle), `${name} must reuse a shared primitive (${needle})`);
+  }
+  // The only inline style is the progress bar's own width, which is a value.
+  assert.equal((cc.match(/style=\{\{/g) ?? []).length, 1);
+  assert.ok(cc.includes('className="sa-progress-fill"'));
+});
+
+await test("8C Phase 8C CSS declares layout only — no forked material", () => {
+  const css = stripComments(phase8cCss());
+
+  assert.equal(/backdrop-filter\s*:/.test(css), false, "blur must come from the primitives");
+  assert.equal(/box-shadow\s*:/.test(css), false, "shadows must come from the primitives");
+  assert.deepEqual([...new Set([...css.matchAll(/#[0-9a-fA-F]{3,8}/g)].map((m) => m[0]))], []);
+  assert.equal(/rgba?\(\s*\d/.test(css), false, "no raw rgb()/rgba() values");
+  assert.equal(/background\s*:/.test(css), false, "no card surface of its own");
+
+  const borders = [...css.matchAll(/border[a-z-]*\s*:\s*([^;]+);/g)].map((m) => m[1].trim());
+  for (const b of borders) {
+    assert.ok(
+      b === "0" || b.includes("999px") || b.includes("var(--radius") || b.includes("var(--line-soft)"),
+      `unexpected border declaration: ${b}`
+    );
+  }
+
+  // Every selector stays inside the Shadow scope.
+  const selectors = [...css.matchAll(/^(\.[a-z][^{\n,]*|:root\[[^\]]+\][^{\n,]*)\s*[,{]/gm)].map((m) =>
+    m[1].trim()
+  );
+  assert.ok(selectors.length > 15, "the phase adds real rules");
+  for (const sel of selectors) {
+    assert.ok(/\.sa-/.test(sel), `selector escapes the Shadow scope: ${sel}`);
+  }
+  assert.equal(/^\s*(body|html|main|\*)\s*[,{]/m.test(css), false);
+
+  // The dashboard type scale, and nothing below 12px.
+  const sizes = [...css.matchAll(/font-size:\s*([\d.]+)px/g)].map((m) => Number(m[1]));
+  assert.ok(sizes.length > 10);
+  assert.equal(sizes.filter((n) => n < 12).length, 0, "text must not shrink below 12px");
+  assert.ok(css.includes(".sa-cc-kpi-value {\n  font-size: 22px"), "22px headline numbers");
+  assert.ok(css.includes(".sa-cc-kpi-label {\n  font-size: 12px"), "12px labels");
+});
+
+await test("8C the Command Center never scrolls the page sideways", () => {
+  const css = stripComments(phase8cCss());
+  const tracks = [...css.matchAll(/grid-template-columns\s*:\s*([^;]+);/g)].map((m) => m[1].trim());
+  assert.ok(tracks.length > 4);
+  for (const track of tracks) {
+    assert.ok(track.includes("minmax(0,"), `grid track must be able to shrink: ${track}`);
+  }
+
+  // 4 → 2 → 2: eight cards become a 2×4 block on a phone, not one long column.
+  const kpis = css.slice(css.indexOf(".sa-cc-kpis {"), css.indexOf(".sa-cc-kpi {"));
+  assert.ok(kpis.includes("repeat(4, minmax(0, 1fr))"));
+  const tablet = css.slice(css.indexOf("@media (max-width: 1024px)"));
+  assert.ok(tablet.slice(0, 400).includes(".sa-cc-kpis"));
+  assert.ok(tablet.slice(0, 400).includes("repeat(2, minmax(0, 1fr))"));
+  const phone = css.slice(css.indexOf("@media (max-width: 560px)"));
+  assert.equal(phone.includes(".sa-cc-kpis {"), false, "the 2-column block carries over");
+  assert.ok(phone.includes("min-height: 36px"), "tap targets grow on touch");
+
+  // Long figures wrap instead of widening the track.
+  assert.ok(css.includes(".sa-cc-kpi-value") && css.includes("overflow-wrap: anywhere"));
+  // And the page-level guard covers the new containers.
+  const globals = read("app/globals.css");
+  const guard = globals.slice(globals.indexOf(".sa-tabs-wrap,"), globals.indexOf(".sa-tabs-wrap,") + 260);
+  for (const sel of [".sa-cc", ".sa-cc-kpis", ".sa-cc-health"]) {
+    assert.ok(guard.includes(sel), `${sel} must carry the min-width guard`);
   }
 });
 

@@ -5,6 +5,11 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { DeskPageHeader } from "@/components/DeskPageHeader";
 import { AnalyticsPanels } from "@/components/shadowArbitrage/AnalyticsPanels";
 import { CapitalSimulator } from "@/components/shadowArbitrage/CapitalSimulator";
+import {
+  CommandCenter,
+  type CommandBalance,
+  type CommandSession
+} from "@/components/shadowArbitrage/CommandCenter";
 import { ObservationHeader } from "@/components/shadowArbitrage/ObservationHeader";
 import { LiveReadiness } from "@/components/shadowArbitrage/LiveReadiness";
 import { OpportunitiesPanel } from "@/components/shadowArbitrage/OpportunitiesPanel";
@@ -24,7 +29,12 @@ import type {
   FeeConfirmationAudit,
   VenueReadiness
 } from "@/components/shadowArbitrage/sourcesModel";
-import { parseShadowTab, shadowTabLabel, type ShadowTabId } from "@/components/shadowArbitrage/tabs";
+import {
+  isLegacyShadowTab,
+  parseShadowTab,
+  shadowTabLabel,
+  type ShadowTabId
+} from "@/components/shadowArbitrage/tabs";
 import type {
   ObservationPayload,
   ShadowAnalytics,
@@ -40,10 +50,12 @@ import type {
  * Opportunities tab are the engine's own recorded numbers, never re-derived.
  */
 type PaperPayload = {
-  session: { status: string; mode: string } | null;
+  session: CommandSession | null;
   stats: { filled: number; skipped: number; economicNetPnlToman: number } | null;
+  balances?: CommandBalance[];
   trades?: PaperLedgerRow[];
   transitions?: PaperLedgerRow[];
+  wizard?: { markPriceToman: number | null };
 };
 
 /** Account and fee readiness, read once and shared by both redesigned tabs. */
@@ -75,6 +87,7 @@ export function ShadowArbitrageView() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const tab = parseShadowTab(searchParams.get("tab"));
+  const rawTab = searchParams.get("tab");
 
   const [matrix, setMatrix] = useState<ShadowMatrixResponse | null>(null);
   const [history, setHistory] = useState<ShadowOpportunity[]>([]);
@@ -101,6 +114,21 @@ export function ShadowArbitrageView() {
     },
     [pathname, router, searchParams]
   );
+
+  /**
+   * Backward compatibility for the seven retired tabs.
+   *
+   * `parseShadowTab` already resolves an old slug to the section that now owns
+   * its content, so the page renders correctly on arrival. This rewrites the
+   * address afterwards so the link the operator copies next is the new one, and
+   * `replace` keeps the retired URL out of the history stack.
+   */
+  useEffect(() => {
+    if (!isLegacyShadowTab(rawTab)) return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("tab", tab);
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  }, [rawTab, tab, pathname, router, searchParams]);
 
   const load = useCallback(async (refresh = false) => {
     setLoading(true);
@@ -248,9 +276,30 @@ export function ShadowArbitrageView() {
     };
   }, [paper]);
 
+  /**
+   * The portfolio slice the Command Center reads.
+   *
+   * Only fills carry a settled PnL, so only fills feed the summary; skips are
+   * counted separately and stay in the ledger where their reason is visible.
+   */
+  const portfolio = useMemo(() => {
+    if (!paper) return null;
+    return {
+      session: paper.session,
+      balances: paper.balances ?? [],
+      fills: (paper.trades ?? []).map((t) => ({
+        economicNetPnlToman: t.economicNetPnlToman,
+        riskAdjustedPnlToman: t.riskAdjustedPnlToman,
+        occurredAt: t.occurredAt
+      })),
+      rejected: paper.stats?.skipped ?? 0,
+      markPriceToman: paper.wizard?.markPriceToman ?? null
+    };
+  }, [paper]);
+
   const badges: Partial<Record<ShadowTabId, string>> = {};
   if (readinessSummary && readinessSummary.total > readinessSummary.passed) {
-    badges.live = String(readinessSummary.total - readinessSummary.passed);
+    badges.settings = String(readinessSummary.total - readinessSummary.passed);
   }
 
   return (
@@ -284,83 +333,133 @@ export function ShadowArbitrageView() {
         tabIndex={-1}
         aria-label={shadowTabLabel(tab)}
       >
-        {tab === "overview" ? (
-          <OverviewPanel
+        {/* ── 1. Command Center — the landing section ───────────────────── */}
+        {tab === "command" ? (
+          <CommandCenter
             loading={loading}
             error={error}
             stale={stale}
             observation={observation}
             worker={worker}
-            runStats={obs?.runStats ?? null}
-            analytics={analytics}
             opportunities={allOpportunities}
+            paperEvidence={paperEvidence}
             sources={sources}
-            serverNow={serverNow}
-            paper={paperSummary}
-            readiness={readinessSummary}
+            portfolio={portfolio}
             accounts={accountsSummary}
+            readiness={readinessSummary}
+            serverNow={serverNow}
             onRefresh={() => void load(true)}
-            onOpenTab={selectTab}
+            onOpenSection={selectTab}
+            /* Create, start, pause, resume and end the virtual session. */
+            sessionControls={<PaperSimple parts={{ session: true, summary: false, ledger: false }} />}
+            /*
+             * Diagnostics, gates, policies and evidence — everything an
+             * operator does not need on the first screen — behind one fold.
+             */
+            advanced={
+              <>
+                <ObservationHeader
+                  observation={observation}
+                  worker={worker}
+                  runStats={obs?.runStats ?? null}
+                  dataCoveragePercent={analytics?.dataCoveragePercent ?? null}
+                  serverNow={serverNow}
+                  loading={loading}
+                  onPause={() => void control("pause")}
+                  onResume={() => void control("resume")}
+                />
+                <OverviewPanel
+                  loading={loading}
+                  error={error}
+                  stale={stale}
+                  observation={observation}
+                  worker={worker}
+                  runStats={obs?.runStats ?? null}
+                  analytics={analytics}
+                  opportunities={allOpportunities}
+                  sources={sources}
+                  serverNow={serverNow}
+                  paper={paperSummary}
+                  readiness={readinessSummary}
+                  accounts={accountsSummary}
+                  onRefresh={() => void load(true)}
+                  onOpenTab={selectTab}
+                />
+                <PaperExecution />
+              </>
+            }
           />
         ) : null}
 
-        {tab === "opportunities" ? (
-          <OpportunitiesPanel
-            opportunities={allOpportunities}
-            sources={sources}
-            sizes={matrix?.sizes ?? [5, 10, 20, 25]}
-            venues={accounts?.venues ?? []}
-            paperLedger={paperLedger}
-            paperSessionPresent={Boolean(paper?.session)}
-            pollIntervalMs={pollIntervalMs}
-            loading={loading}
-            stale={stale}
-            error={error}
-            onSelect={setSelected}
-          />
-        ) : null}
-
-        {tab === "sources" ? (
-          <SourcesPanel
-            certifications={obs?.certifications ?? []}
-            health={obs?.sourceHealth ?? []}
-            snapshots={sources}
-            venues={accounts?.venues ?? []}
-            auditHistory={accounts?.auditHistory ?? []}
-            feeReverifyDays={accounts?.feeReverifyDays ?? null}
-            pollIntervalMs={pollIntervalMs}
-            loading={loading}
-            error={error}
-            onReload={() => void load(false)}
-          />
-        ) : null}
-
+        {/* ── 2. Capital & Allocation ───────────────────────────────────── */}
         {tab === "capital" ? <CapitalSimulator /> : null}
 
-        {/* The plain view leads; the full technical panel folds in behind it. */}
-        {tab === "paper" ? <PaperSimple advanced={<PaperExecution />} /> : null}
-
-        {/* The red live warning lives here and only here. */}
-        {tab === "live" ? <LiveReadiness /> : null}
-
-        {tab === "analytics" ? (
-          <>
-            <ObservationHeader
-              observation={observation}
-              worker={worker}
-              runStats={obs?.runStats ?? null}
-              dataCoveragePercent={analytics?.dataCoveragePercent ?? null}
-              serverNow={serverNow}
+        {/* ── 3. Opportunities & Trades ─────────────────────────────────── */}
+        {tab === "trades" ? (
+          <div className="sa-stack">
+            <OpportunitiesPanel
+              opportunities={allOpportunities}
+              sources={sources}
+              sizes={matrix?.sizes ?? [5, 10, 20, 25]}
+              venues={accounts?.venues ?? []}
+              paperLedger={paperLedger}
+              paperSessionPresent={Boolean(paper?.session)}
+              pollIntervalMs={pollIntervalMs}
               loading={loading}
-              onPause={() => void control("pause")}
-              onResume={() => void control("resume")}
+              stale={stale}
+              error={error}
+              onSelect={setSelected}
             />
-            <AnalyticsPanels
-              analytics={analytics}
-              costRecords={obs?.costRecords ?? []}
+            {/* The immutable ledger of what the paper engine actually did. */}
+            <PaperSimple parts={{ session: false, summary: false, ledger: true }} />
+            <details className="panel sa-panel sa-advanced-details">
+              <summary className="panel-header sa-panel-header">
+                <span className="panel-title">تشخیص‌های پیشرفته</span>
+                <span className="sa-panel-note">تحلیل بازهٔ پایش، مسیرها و هزینه‌ها</span>
+              </summary>
+              <div className="panel-body">
+                <AnalyticsPanels
+                  analytics={analytics}
+                  costRecords={obs?.costRecords ?? []}
+                  loading={loading}
+                />
+              </div>
+            </details>
+          </div>
+        ) : null}
+
+        {/* ── 4. Settings & Safety ──────────────────────────────────────── */}
+        {tab === "settings" ? (
+          <div className="sa-stack">
+            <SourcesPanel
+              certifications={obs?.certifications ?? []}
+              health={obs?.sourceHealth ?? []}
+              snapshots={sources}
+              venues={accounts?.venues ?? []}
+              auditHistory={accounts?.auditHistory ?? []}
+              feeReverifyDays={accounts?.feeReverifyDays ?? null}
+              pollIntervalMs={pollIntervalMs}
               loading={loading}
+              error={error}
+              onReload={() => void load(false)}
             />
-          </>
+            {/*
+              Readiness gates, risk policies and evidence are diagnostics, not
+              daily work — and the red live banner lives inside this panel, so
+              it is still mounted exactly once on the page.
+            */}
+            <details className="panel sa-panel sa-advanced-details">
+              <summary className="panel-header sa-panel-header">
+                <span className="panel-title">تشخیص‌های پیشرفته</span>
+                <span className="sa-panel-note">
+                  دروازه‌های آمادگی اجرای واقعی، سیاست‌های ریسک و شواهد
+                </span>
+              </summary>
+              <div className="panel-body">
+                <LiveReadiness />
+              </div>
+            </details>
+          </div>
         ) : null}
       </div>
 

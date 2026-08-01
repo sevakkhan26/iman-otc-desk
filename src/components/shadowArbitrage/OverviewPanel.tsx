@@ -357,7 +357,7 @@ export function OverviewPanel({
               hint={
                 <>
                   از {formatCountFa(classified.length)} فرصت مشاهده‌شده ·{" "}
-                  <button type="button" className="sa-linkish" onClick={() => onOpenTab("opportunities")}>
+                  <button type="button" className="sa-linkish" onClick={() => onOpenTab("trades")}>
                     مشاهدهٔ فهرست
                   </button>
                 </>
@@ -410,7 +410,7 @@ export function OverviewPanel({
         <section className="panel sa-panel sa-ov-mini">
           <div className="sa-ov-mini-head">
             <h3 className="sa-ov-mini-title">ارزیابی کاغذی</h3>
-            <DetailsAction onClick={() => onOpenTab("paper")} />
+            <DetailsAction onClick={() => onOpenTab("command")} />
           </div>
           {paper?.present ? (
             <dl className="sa-ov-mini-list">
@@ -457,7 +457,7 @@ export function OverviewPanel({
         <section className="panel sa-panel sa-ov-mini">
           <div className="sa-ov-mini-head">
             <h3 className="sa-ov-mini-title">آمادگی حساب و کارمزد</h3>
-            <DetailsAction onClick={() => onOpenTab("sources")} />
+            <DetailsAction onClick={() => onOpenTab("settings")} />
           </div>
           {accounts ? (
             <dl className="sa-ov-mini-list sa-ov-mini-list-2">
@@ -482,7 +482,7 @@ export function OverviewPanel({
         <section className="panel sa-panel sa-ov-mini">
           <div className="sa-ov-mini-head">
             <h3 className="sa-ov-mini-title">آمادگی اجرای واقعی</h3>
-            <DetailsAction onClick={() => onOpenTab("live")} />
+            <DetailsAction onClick={() => onOpenTab("settings")} />
           </div>
           <div className="sa-ov-disarmed" role="status">
             <span className="sa-chip sa-chip-sm sa-chip-danger">غیرمسلح</span>

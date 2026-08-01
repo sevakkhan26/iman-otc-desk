@@ -23,35 +23,44 @@ import { preparePage, startPreviewApp } from "./previewRuntime.mts";
 const EXPECTED = "IRANYekan";
 
 /**
- * Where to look, and what each selector represents. `only` marks the surfaces
- * that exist on one tab: the filter rail belongs to Opportunities, the venue
- * cards to Sources.
+ * Where to look, and what each selector represents. `only` lists the sections a
+ * surface actually exists on: the filter rail belongs to Opportunities, the
+ * venue cards to Sources, the eight standing numbers to the Command Center.
+ *
+ * The two retired slugs are used on purpose — they exercise the backward
+ * compatibility mapping while measuring the sections they now resolve to.
  */
-type Target = { label: string; selector: string; only?: "opportunities" | "sources" };
+type Section = "command" | "opportunities" | "sources";
+type Target = { label: string; selector: string; only?: Section[] };
 
 const TARGETS: Target[] = [
   { label: "ریشهٔ صفحهٔ سایه", selector: ".sa-page" },
   { label: "عنوان پنل", selector: ".panel-title" },
   { label: "بدنهٔ پنل", selector: ".panel-body" },
-  { label: "کارت KPI", selector: ".sa-kpi-value" },
-  { label: "برچسب KPI", selector: ".sa-kpi-label" },
-  { label: "کنترل بخش‌بندی", selector: ".sa-seg" },
-  { label: "برچسب فیلتر", selector: ".sa-field-label", only: "opportunities" },
-  { label: "ورودی جست‌وجو", selector: ".sa-control[type=search]", only: "opportunities" },
-  { label: "فهرست کشویی", selector: "select.sa-control", only: "opportunities" },
-  { label: "چیپ فیلتر", selector: ".sa-chip-toggle", only: "opportunities" },
-  { label: "دکمهٔ پاک‌کردن", selector: ".sa-btn-clear", only: "opportunities" },
+  { label: "کارت KPI", selector: ".sa-kpi-value", only: ["opportunities", "sources"] },
+  { label: "برچسب KPI", selector: ".sa-kpi-label", only: ["opportunities", "sources"] },
+  { label: "کنترل بخش‌بندی", selector: ".sa-seg", only: ["opportunities", "sources"] },
+  { label: "عدد مرکز فرماندهی", selector: ".sa-cc-kpi-value", only: ["command"] },
+  { label: "برچسب مرکز فرماندهی", selector: ".sa-cc-kpi-label", only: ["command"] },
+  { label: "برچسب نوار وضعیت", selector: ".sa-cc-status-label", only: ["command"] },
+  { label: "کنش به‌روزرسانی", selector: ".sa-cc-action", only: ["command"] },
+  { label: "بهترین فرصت", selector: ".sa-cc-best-grid dd", only: ["command"] },
+  { label: "برچسب فیلتر", selector: ".sa-field-label", only: ["opportunities"] },
+  { label: "ورودی جست‌وجو", selector: ".sa-control[type=search]", only: ["opportunities"] },
+  { label: "فهرست کشویی", selector: "select.sa-control", only: ["opportunities"] },
+  { label: "چیپ فیلتر", selector: ".sa-chip-toggle", only: ["opportunities"] },
+  { label: "دکمهٔ پاک‌کردن", selector: ".sa-btn-clear", only: ["opportunities"] },
   { label: "دکمهٔ جزئیات", selector: ".sa-btn-details" },
-  { label: "دکمهٔ صفحه‌بندی", selector: ".sa-btn-page" },
-  { label: "شمارندهٔ صفحه‌بندی", selector: ".sa-pager-count" },
+  { label: "دکمهٔ صفحه‌بندی", selector: ".sa-btn-page", only: ["opportunities", "sources"] },
+  { label: "شمارندهٔ صفحه‌بندی", selector: ".sa-pager-count", only: ["opportunities", "sources"] },
   { label: "چیپ وضعیت", selector: ".sa-chip" },
-  { label: "سلول جدول", selector: ".sa-table td", only: "sources" },
-  { label: "سرستون جدول", selector: ".sa-table th", only: "sources" },
-  { label: "جدول فرصت‌ها", selector: ".sa-op-table td", only: "opportunities" },
-  { label: "کارت موبایل فرصت", selector: ".sa-op-card", only: "opportunities" },
-  { label: "کارت صرافی", selector: ".sa-venue-card", only: "sources" },
-  { label: "برچسب سنجهٔ صرافی", selector: ".sa-venue-metric-label", only: "sources" },
-  { label: "کشوی محاسبه", selector: ".sa-drawer", only: "opportunities" }
+  { label: "سلول جدول", selector: ".sa-table td", only: ["sources"] },
+  { label: "سرستون جدول", selector: ".sa-table th", only: ["sources"] },
+  { label: "جدول فرصت‌ها", selector: ".sa-op-table td", only: ["opportunities"] },
+  { label: "کارت موبایل فرصت", selector: ".sa-op-card", only: ["opportunities"] },
+  { label: "کارت صرافی", selector: ".sa-venue-card", only: ["sources"] },
+  { label: "برچسب سنجهٔ صرافی", selector: ".sa-venue-metric-label", only: ["sources"] },
+  { label: "کشوی محاسبه", selector: ".sa-drawer", only: ["opportunities"] }
 ];
 
 type Sample = { label: string; selector: string; family: string; found: boolean };
@@ -61,7 +70,7 @@ const VIEWS = [
   { name: "mobile", width: 390, height: 1400, mobile: true }
 ] as const;
 
-const TABS = ["opportunities", "sources"] as const;
+const TABS: Section[] = ["command", "opportunities", "sources"];
 
 let failed = 0;
 
@@ -116,7 +125,7 @@ async function main() {
           console.log(`  PASS  ${view.name}/${tab} · «${EXPECTED}» is loaded`);
         }
 
-        const scoped = TARGETS.filter((t) => !t.only || t.only === tab);
+        const scoped = TARGETS.filter((t) => !t.only || t.only.includes(tab));
         const probe = `JSON.stringify(${JSON.stringify(scoped)}.map((t) => {
           const el = document.querySelector(t.selector);
           return {

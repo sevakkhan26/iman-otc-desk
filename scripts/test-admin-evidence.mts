@@ -769,8 +769,13 @@ await test("the summary marks the portfolio and never invents a price", async ()
 
 await test("the paper view keeps capital, sessions and safety straight", () => {
   const view = read("src/components/shadowArbitrage/PaperSimple.tsx");
-  // One prominent action, named exactly.
-  assert.ok(view.includes("ساخت نشست ۱۰ میلیاردی از طرح فعلی"));
+  /*
+   * One prominent action. Phase 8C-1 dropped the amount from the label: the
+   * total is editable in step one, so naming a fixed figure on the button
+   * implied a size the flow does not actually impose.
+   */
+  assert.ok(view.includes("ساخت نشست جدید از طرح فعلی"));
+  assert.equal(view.includes("ساخت نشست ۱۰ میلیاردی"), false, "no amount baked into a control");
   // Three steps, in order.
   for (const label of ["سرمایهٔ کل", "تخصیص بین صرافی‌ها", "بازبینی و ساخت"]) {
     assert.ok(view.includes(label), `${label} step must exist`);

@@ -15,7 +15,7 @@
  *
  * Environment:
  *   PREVIEW_SEED=1      fill the throwaway database with demonstration data
- *   PREVIEW_TABS=a,b    which Shadow tabs to photograph (default: overview);
+ *   PREVIEW_TABS=a,b    which Shadow sections to photograph (default: command);
  *                       a tab may carry its own query, e.g. "sources&sv=accounts"
  *   PREVIEW_VIEWS=x,y   which viewports to use (default: all four)
  *   PREVIEW_HEIGHT=n    override the viewport height, to frame a longer section
@@ -42,7 +42,7 @@ const VIEWPORTS = [
  * Tabs to photograph. `PREVIEW_TABS` narrows the list; the default is the tab
  * shell's own default so an unchanged run keeps producing the same four files.
  */
-const TABS = (process.env.PREVIEW_TABS ?? "overview")
+const TABS = (process.env.PREVIEW_TABS ?? "command")
   .split(",")
   .map((t) => t.trim())
   .filter(Boolean);
@@ -63,7 +63,7 @@ const SHOTS = TABS.flatMap((tab) =>
     tab,
     // A single-tab run keeps the historical file names.
     file:
-      TABS.length === 1 && tab === "overview"
+      TABS.length === 1 && tab === "command"
         ? v.name
         : `${tab.replace(/[^a-z0-9]+/gi, "-")}-${v.name}`
   }))

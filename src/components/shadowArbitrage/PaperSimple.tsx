@@ -88,6 +88,25 @@ const STATUS_FA: Record<string, string> = {
 };
 
 /**
+ * Which pieces of this view to render.
+ *
+ * Phase 8C-1 splits the paper surface across two sections: the session and its
+ * creation flow belong to the Command Center, the ledger belongs to
+ * «فرصت‌ها و معاملات». Both read the same endpoint and the same records — this
+ * prop only decides what is painted, never what is fetched or computed.
+ */
+export type PaperParts = {
+  /** Session identity, the three-step creation flow and the lifecycle controls. */
+  session?: boolean;
+  /** The four-card portfolio summary. */
+  summary?: boolean;
+  /** The trade ledger with its filters and pagination. */
+  ledger?: boolean;
+};
+
+const ALL_PARTS: Required<PaperParts> = { session: true, summary: true, ledger: true };
+
+/**
  * The plain paper-trading view.
  *
  * It answers three questions and hides everything else: how is the portfolio
@@ -99,7 +118,14 @@ const STATUS_FA: Record<string, string> = {
  * plan is the intended split of virtual money, the session is a run that used a
  * snapshot of one. The header always says which snapshot a session came from.
  */
-export function PaperSimple({ advanced }: { advanced?: React.ReactNode }) {
+export function PaperSimple({
+  advanced,
+  parts = ALL_PARTS
+}: {
+  advanced?: React.ReactNode;
+  parts?: PaperParts;
+}) {
+  const show = { ...ALL_PARTS, ...parts };
   const [data, setData] = useState<Payload | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -253,14 +279,17 @@ export function PaperSimple({ advanced }: { advanced?: React.ReactNode }) {
 
   return (
     <div className="sa-stack">
-      <div className="sa-callout sa-callout-muted" role="status">
-        {data?.paperBannerFa ?? "اجرای کاغذی — هیچ سفارش یا انتقال واقعی انجام نمی‌شود"} · موجودی‌ها
-        مجازی‌اند
-      </div>
+      {show.session ? (
+        <div className="sa-callout sa-callout-muted" role="status">
+          {data?.paperBannerFa ?? "اجرای کاغذی — هیچ سفارش یا انتقال واقعی انجام نمی‌شود"} ·
+          موجودی‌ها مجازی‌اند
+        </div>
+      ) : null}
 
       {notice ? <div className="sa-callout sa-callout-muted">{notice}</div> : null}
 
       {/* ── current session identity ─────────────────────────────────────── */}
+      {show.session ? (
       <section className="panel sa-panel" aria-label="نشست اجرای کاغذی">
         <div className="panel-header sa-panel-header">
           <h3 className="panel-title">نشست اجرای کاغذی</h3>
@@ -292,6 +321,12 @@ export function PaperSimple({ advanced }: { advanced?: React.ReactNode }) {
             <div className="sa-sub">هنوز نشستی ساخته نشده است.</div>
           )}
 
+          {/*
+            The full session lifecycle, in plain Persian and in the order an
+            operator uses it: build, start, pause, resume, end. Each control is
+            offered only in the status where the API accepts it, so a disabled
+            path never looks available.
+          */}
           <div className="sa-op-card-foot">
             {step === 0 ? (
               <button
@@ -300,22 +335,7 @@ export function PaperSimple({ advanced }: { advanced?: React.ReactNode }) {
                 disabled={busy || !wizard || !markPrice}
                 onClick={startWizard}
               >
-                ساخت نشست ۱۰ میلیاردی از طرح فعلی
-              </button>
-            ) : null}
-            {session && session.status === "RUNNING" ? (
-              <button
-                type="button"
-                className="sa-btn-clear glass-control"
-                disabled={busy}
-                onClick={() =>
-                  void act(
-                    { action: "stop", sessionId: session.id },
-                    "نشست پایان یافت و به‌عنوان سابقه نگه داشته شد؛ دفترهای آن دست‌نخورده باقی می‌ماند."
-                  )
-                }
-              >
-                پایان‌دادن نشست فعلی (حفظ سابقه)
+                ساخت نشست جدید از طرح فعلی
               </button>
             ) : null}
             {session && session.status === "NOT_STARTED" ? (
@@ -328,12 +348,55 @@ export function PaperSimple({ advanced }: { advanced?: React.ReactNode }) {
                 شروع ارزیابی
               </button>
             ) : null}
+            {session && session.status === "RUNNING" ? (
+              <button
+                type="button"
+                className="sa-btn-clear glass-control"
+                disabled={busy}
+                onClick={() =>
+                  void act(
+                    { action: "pause", sessionId: session.id },
+                    "نشست موقتاً متوقف شد؛ دفترها دست‌نخورده باقی می‌مانند."
+                  )
+                }
+              >
+                توقف موقت
+              </button>
+            ) : null}
+            {session && session.status === "PAUSED" ? (
+              <button
+                type="button"
+                className="sa-btn-clear glass-control"
+                disabled={busy}
+                onClick={() =>
+                  void act({ action: "resume", sessionId: session.id }, "نشست ادامه یافت.")
+                }
+              >
+                ادامهٔ ارزیابی
+              </button>
+            ) : null}
+            {session && (session.status === "RUNNING" || session.status === "PAUSED") ? (
+              <button
+                type="button"
+                className="sa-btn-clear glass-control"
+                disabled={busy}
+                onClick={() =>
+                  void act(
+                    { action: "stop", sessionId: session.id },
+                    "نشست پایان یافت و به‌عنوان سابقه نگه داشته شد؛ دفترهای آن دست‌نخورده باقی می‌ماند."
+                  )
+                }
+              >
+                پایان‌دادن نشست (حفظ سابقه)
+              </button>
+            ) : null}
           </div>
         </div>
       </section>
+      ) : null}
 
       {/* ── the three-step flow ──────────────────────────────────────────── */}
-      {step > 0 ? (
+      {show.session && step > 0 ? (
         <section className="panel sa-panel" aria-label="ساخت نشست جدید">
           <div className="panel-header sa-panel-header">
             <h3 className="panel-title">
@@ -505,7 +568,7 @@ export function PaperSimple({ advanced }: { advanced?: React.ReactNode }) {
       ) : null}
 
       {/* ── summary ──────────────────────────────────────────────────────── */}
-      {summary ? (
+      {show.summary && summary ? (
         <div className="sa-kpi-grid">
           <Kpi
             label="سرمایهٔ اولیه"
@@ -549,7 +612,7 @@ export function PaperSimple({ advanced }: { advanced?: React.ReactNode }) {
       ) : null}
 
       {/* ── ledger ───────────────────────────────────────────────────────── */}
-      {session ? (
+      {show.ledger && session ? (
         <section className="panel sa-panel" aria-label="دفتر معاملات">
           <div className="panel-header sa-panel-header">
             <h3 className="panel-title">دفتر معاملات</h3>
@@ -688,6 +751,13 @@ export function PaperSimple({ advanced }: { advanced?: React.ReactNode }) {
             }}
           />
         </section>
+      ) : null}
+
+      {show.ledger && !session ? (
+        <div className="panel sa-panel sa-empty">
+          هنوز نشست کاغذی‌ای وجود ندارد، پس دفتری هم ثبت نشده است. نشست را از «مرکز فرماندهی»
+          بسازید.
+        </div>
       ) : null}
 
       {/* ── everything technical, folded away ────────────────────────────── */}

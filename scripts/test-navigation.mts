@@ -1758,7 +1758,7 @@ await test("8B every new selector is scoped under .sa-*", () => {
   }
 });
 
-await test("8B the redesign touches presentation only — backend files are untouched", async () => {
+await test("8B the UI redesign added no backend logic of its own", async () => {
   const uiFiles = [
     "src/components/shadowArbitrage/OpportunitiesPanel.tsx",
     "src/components/shadowArbitrage/SourcesPanel.tsx",
@@ -1793,10 +1793,47 @@ await test("8B the redesign touches presentation only — backend files are unto
     baseline = "";
   }
   if (baseline) {
+    /*
+     * Phase 8B itself changed no backend file. The admin-evidence import that
+     * followed it deliberately did — an append-only confirmation model needs a
+     * table, a writer and the routes that read it — so those files are listed
+     * explicitly here. Anything else appearing in this diff is unintended drift.
+     */
+    const evidenceSurface = new Set([
+      "app/api/shadow-arbitrage/accounts/route.ts",
+      "app/api/shadow-arbitrage/capital/route.ts",
+      "app/api/shadow-arbitrage/live-readiness/route.ts",
+      "app/api/shadow-arbitrage/paper/route.ts",
+      "src/db/repositories/shadowArbitrage.ts",
+      "src/db/schema.ts",
+      "src/lib/shadowArbitrage/accounts.ts",
+      "src/lib/shadowArbitrage/paper/run.ts"
+    ]);
     const changed = execFileSync("git", ["diff", "--name-only", baseline, "--", ...paths], {
       encoding: "utf8"
-    }).trim();
-    assert.equal(changed, "", `backend files changed since v4.12.0: ${changed}`);
+    })
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .filter((f) => !evidenceSurface.has(f));
+    assert.deepEqual(changed, [], `unexpected backend change since v4.12.0: ${changed.join(", ")}`);
+
+    // Whatever those files gained, the safety boundary did not move.
+    const capability = read("src/lib/shadowArbitrage/live/capability.ts");
+    assert.ok(capability.includes("export const LIVE_EXECUTION_IMPLEMENTED = false as const"));
+    for (const file of [...evidenceSurface]) {
+      const src = stripComments(read(file));
+      for (const banned of [/placeOrder/i, /cancelOrder/i, /\bwithdraw\(/i, /transferFunds/i]) {
+        assert.equal(banned.test(src), false, `${file} must not contain ${banned}`);
+      }
+      // Credential names appear in these routes only as refusal lists.
+      if (/privateKey|apiSecret/.test(src)) {
+        assert.ok(
+          /forbidden|reject|refus/i.test(src),
+          `${file} names a credential field outside a refusal list`
+        );
+      }
+    }
 
     /*
      * next.config.ts is allowed exactly one change: the release version now

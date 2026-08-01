@@ -185,12 +185,12 @@ export function SourcesPanel({
           tone={summary.healthy >= 7 ? "good" : summary.healthy >= 4 ? "warn" : "danger"}
         />
         <Kpi
-          label="حساب‌های آماده"
+          label="احراز هویت تأییدشده"
           value={
-            <Bidi>{`${toFaDigits(summary.accountsReady)} / ${toFaDigits(summary.total)}`}</Bidi>
+            <Bidi>{`${toFaDigits(summary.kycConfirmed)} / ${toFaDigits(summary.total)}`}</Bidi>
           }
-          hint="حساب احرازشده و قابل استفاده"
-          tone={summary.accountsReady ? "good" : "muted"}
+          hint={`حساب قابل استفاده: ${toFaDigits(summary.accountsReady)} — احراز هویت به‌تنهایی مجوز اجرا نیست`}
+          tone={summary.kycConfirmed === summary.total ? "good" : "warn"}
         />
         <Kpi
           label="کارمزد معتبر"
@@ -540,7 +540,21 @@ function AccountCard({
         />
         <div className="sa-venue-metrics">
           <Metric
-            label="کارمزد taker"
+            label="احراز هویت"
+            value={
+              row.kycComplete === null ? (
+                <span className="sa-unknown" title="شواهد احراز هویت ثبت نشده است">
+                  —
+                </span>
+              ) : (
+                <span className={`sa-chip sa-chip-sm sa-chip-${row.kycComplete ? "good" : "warn"}`}>
+                  {row.kycComplete ? "تکمیل‌شده" : "ناتمام"}
+                </span>
+              )
+            }
+          />
+          <Metric
+            label="کارمزد taker (اعمال‌شده)"
             value={
               row.takerFeeBps !== null ? (
                 <Bidi>{formatPercentFa(row.takerFeeBps / 100, 3)}</Bidi>
@@ -551,6 +565,18 @@ function AccountCard({
               )
             }
           />
+          <Metric label="تسویهٔ کارمزد خرید" value={<Settlement side={row.buySettlement} />} />
+          <Metric label="تسویهٔ کارمزد فروش" value={<Settlement side={row.sellSettlement} />} />
+        </div>
+        {row.executionEligible === false ? (
+          <div className="sa-venue-bar">
+            <span className="sa-chip sa-chip-sm sa-chip-warn">اجرا مجاز نیست</span>
+            <span className="sa-sub">
+              {row.ineligibleReason ?? "این صرافی مبنای اجرا قرار نمی‌گیرد."}
+            </span>
+          </div>
+        ) : null}
+        <VenueDetails>
           <Metric
             label="اعتبار کارمزد"
             value={
@@ -560,10 +586,6 @@ function AccountCard({
               </span>
             }
           />
-          <Metric label="تسویهٔ کارمزد خرید" value={<Settlement side={row.buySettlement} />} />
-          <Metric label="تسویهٔ کارمزد فروش" value={<Settlement side={row.sellSettlement} />} />
-        </div>
-        <VenueDetails>
           <Metric
             label="تاریخ تأیید"
             value={row.feeVerifiedAt ? formatTehran(row.feeVerifiedAt) : "—"}
@@ -573,6 +595,19 @@ function AccountCard({
             value={row.feeExpiresAt ? formatTehran(row.feeExpiresAt) : "—"}
           />
           <Metric label="پلهٔ کارمزد" value={row.feeTier ?? "—"} />
+          <Metric
+            label="کارمزد maker (فقط مرجع)"
+            value={
+              row.makerFeeBps !== null ? (
+                <span>
+                  <Bidi>{formatPercentFa(row.makerFeeBps / 100, 3)}</Bidi>
+                  <span className="sa-sub"> — تا نبودِ شبیه‌سازی سفارش maker اعمال نمی‌شود</span>
+                </span>
+              ) : (
+                "—"
+              )
+            }
+          />
           <Metric
             label="توان API"
             value={

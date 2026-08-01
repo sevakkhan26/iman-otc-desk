@@ -527,14 +527,53 @@ export const shadowFeeConfirmations = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     sourceId: text("source_id").notNull(),
     takerFeeBps: integer("taker_fee_bps").notNull(),
+    /** Reference only — no maker-order simulation exists, so it never settles. */
+    makerFeeBps: integer("maker_fee_bps"),
     feeTier: text("fee_tier"),
     sourceUrl: text("source_url"),
+    /** How the number was evidenced. NULL on legacy rows = ADMIN_CONFIRMED. */
+    provenance: text("provenance"),
+    /** Per-confirmation validity; NULL falls back to the global window. */
+    validDays: integer("valid_days"),
+    /** Quoted-market and easy-trade rates that must never touch USDT/IRT maths. */
+    referenceMetadata: jsonb("reference_metadata"),
+    /** Idempotency handle: the same evidence imported twice is one row. */
+    evidenceKey: text("evidence_key"),
     confirmedBy: text("confirmed_by").notNull(),
     confirmedAt: ts("confirmed_at").notNull(),
     note: text("note"),
     createdAt: ts("created_at").notNull().defaultNow()
   },
   (t) => [index("shadow_fee_conf_source_time_idx").on(t.sourceId, t.confirmedAt)]
+);
+
+/**
+ * Admin-confirmed account / KYC evidence, append-only.
+ *
+ * Account state used to be compiled-in configuration; a confirmation is real
+ * evidence about this desk's accounts and belongs here, with provenance and an
+ * expiry like every other piece of evidence. `executionEligible` is deliberately
+ * separate from `kycComplete`: a venue can be fully verified and still be barred
+ * from execution (degraded data, reference-only venue).
+ */
+export const shadowAccountConfirmations = pgTable(
+  "shadow_account_confirmations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sourceId: text("source_id").notNull(),
+    kycComplete: boolean("kyc_complete").notNull(),
+    accountState: text("account_state").notNull(),
+    executionEligible: boolean("execution_eligible").notNull(),
+    ineligibleReason: text("ineligible_reason"),
+    provenance: text("provenance").notNull(),
+    validDays: integer("valid_days"),
+    evidenceKey: text("evidence_key"),
+    confirmedBy: text("confirmed_by").notNull(),
+    confirmedAt: ts("confirmed_at").notNull(),
+    note: text("note"),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [index("shadow_account_conf_source_time_idx").on(t.sourceId, t.confirmedAt)]
 );
 
 /**

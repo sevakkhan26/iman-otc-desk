@@ -9,7 +9,10 @@
  * The whole entry point is wrapped so a paper failure can never take down the
  * collector — the observation must keep running no matter what happens here.
  */
-import { loadLatestFeeConfirmations } from "@/db/repositories/shadowArbitrage";
+import {
+  loadLatestAccountConfirmations,
+  loadLatestFeeConfirmations
+} from "@/db/repositories/shadowArbitrage";
 import {
   commitPaperCycle,
   getActivePaperSession,
@@ -63,13 +66,16 @@ export async function runPaperExecutionForCycle(input: {
   if (!session) return { ran: false, reason: "no_session" };
   if (session.status !== "RUNNING") return { ran: false, reason: "not_running", sessionId: session.id };
 
-  const [latestFees, balanceRows, filledIds] = await Promise.all([
+  const [latestFees, accountEvidence, balanceRows, filledIds] = await Promise.all([
     loadLatestFeeConfirmations(),
+    loadLatestAccountConfirmations(),
     loadPaperBalances(session.id),
     loadFilledLifecycleIds(session.id)
   ]);
 
-  const venueStates = classifyAllVenues(buildAllReadiness(Object.values(latestFees)));
+  const venueStates = classifyAllVenues(
+    buildAllReadiness(Object.values(latestFees), Date.now(), Object.values(accountEvidence))
+  );
   const balances: VenueBalance[] = balanceRows.map((b) => ({
     sourceId: b.sourceId as ShadowSourceId,
     irtToman: b.irtToman,

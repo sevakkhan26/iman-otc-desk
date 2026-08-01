@@ -5,6 +5,7 @@ import {
   getObservation,
   loadLatestCapitalApproval,
   loadLatestCapitalPlan,
+  loadLatestAccountConfirmations,
   loadLatestFeeConfirmations,
   loadLatestSourceSnapshots
 } from "@/db/repositories/shadowArbitrage";
@@ -235,7 +236,12 @@ export async function POST(request: Request) {
       );
     }
 
-    const readiness = buildAllReadiness(Object.values(latestFees));
+    const accountEvidence = await loadLatestAccountConfirmations();
+    const readiness = buildAllReadiness(
+      Object.values(latestFees),
+      Date.now(),
+      Object.values(accountEvidence)
+    );
     const venueStates = classifyAllVenues(readiness);
 
     let plan: CapitalPlanInput;

@@ -3,6 +3,7 @@ import { isSession } from "@/lib/requireApiAuth";
 import { requireAdminSession } from "@/lib/requireAdmin";
 import {
   loadFeeConfirmations,
+  loadLatestAccountConfirmations,
   loadLatestFeeConfirmations,
   recordFeeConfirmation
 } from "@/db/repositories/shadowArbitrage";
@@ -24,11 +25,16 @@ export async function GET() {
   const session = await requireAdminSession();
   if (!isSession(session)) return session;
 
-  const [latest, history] = await Promise.all([
+  const [latest, history, accountEvidence] = await Promise.all([
     loadLatestFeeConfirmations(),
-    loadFeeConfirmations()
+    loadFeeConfirmations(),
+    loadLatestAccountConfirmations()
   ]);
-  const readiness = buildAllReadiness(Object.values(latest));
+  const readiness = buildAllReadiness(
+    Object.values(latest),
+    Date.now(),
+    Object.values(accountEvidence)
+  );
 
   return new NextResponse(
     JSON.stringify({
@@ -107,7 +113,11 @@ export async function POST(request: Request) {
       JSON.stringify({
         banner: SHADOW_BANNER,
         saved,
-        venues: buildAllReadiness(Object.values(latest))
+        venues: buildAllReadiness(
+          Object.values(latest),
+          Date.now(),
+          Object.values(await loadLatestAccountConfirmations())
+        )
       }),
       { status: 200, headers: SHADOW_NO_STORE }
     );

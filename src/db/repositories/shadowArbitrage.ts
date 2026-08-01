@@ -26,6 +26,7 @@ import {
   shadowSourceSnapshots,
   shadowWorkerHeartbeat,
   shadowFeeConfirmations,
+  shadowAccountConfirmations,
   shadowCapitalPlans,
   shadowCapitalApprovals
 } from "@/db/schema";
@@ -1457,12 +1458,70 @@ export type FeeConfirmationRow = {
   id: string;
   sourceId: string;
   takerFeeBps: number;
+  /** Reference only until maker-order simulation exists; never settled. */
+  makerFeeBps: number | null;
   feeTier: string | null;
   sourceUrl: string | null;
+  /** NULL on legacy rows, which keep reading as ADMIN_CONFIRMED. */
+  provenance: string | null;
+  validDays: number | null;
+  referenceMetadata: Record<string, unknown> | null;
+  evidenceKey: string | null;
   confirmedBy: string;
   confirmedAt: string;
   note: string | null;
 };
+
+/** Admin-confirmed account / KYC evidence. Append-only, expiring, provenanced. */
+export type AccountConfirmationRow = {
+  id: string;
+  sourceId: string;
+  kycComplete: boolean;
+  accountState: string;
+  executionEligible: boolean;
+  ineligibleReason: string | null;
+  provenance: string;
+  validDays: number | null;
+  evidenceKey: string | null;
+  confirmedBy: string;
+  confirmedAt: string;
+  note: string | null;
+};
+
+function toFeeConfirmationRow(r: {
+  id: string;
+  sourceId: string;
+  takerFeeBps: number;
+  makerFeeBps: number | null;
+  feeTier: string | null;
+  sourceUrl: string | null;
+  provenance: string | null;
+  validDays: number | null;
+  referenceMetadata: unknown;
+  evidenceKey: string | null;
+  confirmedBy: string;
+  confirmedAt: string;
+  note: string | null;
+}): FeeConfirmationRow {
+  return {
+    id: r.id,
+    sourceId: r.sourceId,
+    takerFeeBps: r.takerFeeBps,
+    makerFeeBps: r.makerFeeBps ?? null,
+    feeTier: r.feeTier,
+    sourceUrl: r.sourceUrl,
+    provenance: r.provenance ?? null,
+    validDays: r.validDays ?? null,
+    referenceMetadata:
+      r.referenceMetadata && typeof r.referenceMetadata === "object"
+        ? (r.referenceMetadata as Record<string, unknown>)
+        : null,
+    evidenceKey: r.evidenceKey ?? null,
+    confirmedBy: r.confirmedBy,
+    confirmedAt: r.confirmedAt,
+    note: r.note
+  };
+}
 
 /** Full history, newest first. Nothing is ever updated or deleted. */
 export async function loadFeeConfirmations(sourceId?: string): Promise<FeeConfirmationRow[]> {
@@ -1473,16 +1532,7 @@ export async function loadFeeConfirmations(sourceId?: string): Promise<FeeConfir
       const filtered = sourceId ? q.where(eq(shadowFeeConfirmations.sourceId, sourceId)) : q;
       return filtered.orderBy(desc(shadowFeeConfirmations.confirmedAt)).limit(500);
     });
-    return rows.map((r) => ({
-      id: r.id,
-      sourceId: r.sourceId,
-      takerFeeBps: r.takerFeeBps,
-      feeTier: r.feeTier,
-      sourceUrl: r.sourceUrl,
-      confirmedBy: r.confirmedBy,
-      confirmedAt: r.confirmedAt,
-      note: r.note
-    }));
+    return rows.map(toFeeConfirmationRow);
   } catch {
     return [];
   }
@@ -1499,38 +1549,183 @@ export async function loadLatestFeeConfirmations(): Promise<Record<string, FeeCo
   return out;
 }
 
+/**
+ * Append a fee confirmation.
+ *
+ * `evidenceKey` makes an import idempotent: the unique index on
+ * (source_id, evidence_key) turns a second run into a no-op that returns the
+ * row already stored, so re-running an import never duplicates evidence.
+ * `makerFeeBps` and `referenceMetadata` are recorded but never settled — only
+ * the taker rate reaches the paper engine.
+ */
 export async function recordFeeConfirmation(input: {
   sourceId: string;
   takerFeeBps: number;
+  makerFeeBps?: number | null;
   feeTier?: string | null;
   sourceUrl?: string | null;
+  provenance?: string | null;
+  validDays?: number | null;
+  referenceMetadata?: Record<string, unknown> | null;
+  evidenceKey?: string | null;
   confirmedBy: string;
+  confirmedAt?: string;
   note?: string | null;
 }): Promise<FeeConfirmationRow> {
   const db = await getDbAsync();
-  const now = new Date().toISOString();
+  const now = input.confirmedAt ?? new Date().toISOString();
+
+  if (input.evidenceKey) {
+    const existing = await serial(async () =>
+      db
+        .select()
+        .from(shadowFeeConfirmations)
+        .where(
+          and(
+            eq(shadowFeeConfirmations.sourceId, input.sourceId),
+            eq(shadowFeeConfirmations.evidenceKey, input.evidenceKey!)
+          )
+        )
+        .limit(1)
+    );
+    if (existing[0]) return toFeeConfirmationRow(existing[0]);
+  }
+
   const row = {
     id: randomUUID(),
     sourceId: input.sourceId,
     takerFeeBps: Math.round(input.takerFeeBps),
+    makerFeeBps:
+      input.makerFeeBps === null || input.makerFeeBps === undefined
+        ? null
+        : Math.round(input.makerFeeBps),
     feeTier: input.feeTier ?? null,
     sourceUrl: input.sourceUrl ?? null,
+    provenance: input.provenance ?? null,
+    validDays: input.validDays ?? null,
+    referenceMetadata: input.referenceMetadata ?? null,
+    evidenceKey: input.evidenceKey ?? null,
     confirmedBy: input.confirmedBy,
     confirmedAt: now,
     note: input.note ?? null,
-    createdAt: now
+    createdAt: new Date().toISOString()
   };
   await serial(async () => db.insert(shadowFeeConfirmations).values(row));
+  return toFeeConfirmationRow(row);
+}
+
+/* ── admin-confirmed account / KYC evidence ───────────────────────────────── */
+
+function toAccountConfirmationRow(r: {
+  id: string;
+  sourceId: string;
+  kycComplete: boolean;
+  accountState: string;
+  executionEligible: boolean;
+  ineligibleReason: string | null;
+  provenance: string;
+  validDays: number | null;
+  evidenceKey: string | null;
+  confirmedBy: string;
+  confirmedAt: string;
+  note: string | null;
+}): AccountConfirmationRow {
   return {
-    id: row.id,
-    sourceId: row.sourceId,
-    takerFeeBps: row.takerFeeBps,
-    feeTier: row.feeTier,
-    sourceUrl: row.sourceUrl,
-    confirmedBy: row.confirmedBy,
-    confirmedAt: row.confirmedAt,
-    note: row.note
+    id: r.id,
+    sourceId: r.sourceId,
+    kycComplete: r.kycComplete,
+    accountState: r.accountState,
+    executionEligible: r.executionEligible,
+    ineligibleReason: r.ineligibleReason,
+    provenance: r.provenance,
+    validDays: r.validDays ?? null,
+    evidenceKey: r.evidenceKey ?? null,
+    confirmedBy: r.confirmedBy,
+    confirmedAt: r.confirmedAt,
+    note: r.note
   };
+}
+
+/** Append account/KYC evidence. Idempotent on (source, evidenceKey). */
+export async function recordAccountConfirmation(input: {
+  sourceId: string;
+  kycComplete: boolean;
+  accountState: string;
+  executionEligible: boolean;
+  ineligibleReason?: string | null;
+  provenance: string;
+  validDays?: number | null;
+  evidenceKey?: string | null;
+  confirmedBy: string;
+  confirmedAt?: string;
+  note?: string | null;
+}): Promise<AccountConfirmationRow> {
+  const db = await getDbAsync();
+  const now = input.confirmedAt ?? new Date().toISOString();
+
+  if (input.evidenceKey) {
+    const existing = await serial(async () =>
+      db
+        .select()
+        .from(shadowAccountConfirmations)
+        .where(
+          and(
+            eq(shadowAccountConfirmations.sourceId, input.sourceId),
+            eq(shadowAccountConfirmations.evidenceKey, input.evidenceKey!)
+          )
+        )
+        .limit(1)
+    );
+    if (existing[0]) return toAccountConfirmationRow(existing[0]);
+  }
+
+  const row = {
+    id: randomUUID(),
+    sourceId: input.sourceId,
+    kycComplete: input.kycComplete,
+    accountState: input.accountState,
+    executionEligible: input.executionEligible,
+    ineligibleReason: input.ineligibleReason ?? null,
+    provenance: input.provenance,
+    validDays: input.validDays ?? null,
+    evidenceKey: input.evidenceKey ?? null,
+    confirmedBy: input.confirmedBy,
+    confirmedAt: now,
+    note: input.note ?? null,
+    createdAt: new Date().toISOString()
+  };
+  await serial(async () => db.insert(shadowAccountConfirmations).values(row));
+  return toAccountConfirmationRow(row);
+}
+
+/** Full account-evidence history, newest first. Never updated or deleted. */
+export async function loadAccountConfirmations(): Promise<AccountConfirmationRow[]> {
+  try {
+    const db = await getDbAsync();
+    const rows = await serial(async () =>
+      db
+        .select()
+        .from(shadowAccountConfirmations)
+        .orderBy(desc(shadowAccountConfirmations.confirmedAt))
+        .limit(500)
+    );
+    return rows.map(toAccountConfirmationRow);
+  } catch {
+    return [];
+  }
+}
+
+/** Latest account evidence per venue — what readiness should apply. */
+export async function loadLatestAccountConfirmations(): Promise<
+  Record<string, AccountConfirmationRow>
+> {
+  const all = await loadAccountConfirmations();
+  const out: Record<string, AccountConfirmationRow> = {};
+  for (const row of all) {
+    const prev = out[row.sourceId];
+    if (!prev || Date.parse(row.confirmedAt) > Date.parse(prev.confirmedAt)) out[row.sourceId] = row;
+  }
+  return out;
 }
 
 /* ── Phase 5 — virtual capital allocation plans ───────────────────────────── */

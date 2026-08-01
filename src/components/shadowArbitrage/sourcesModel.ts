@@ -28,8 +28,24 @@ export type VenueReadiness = {
   sourceId: string;
   nameFa: string;
   accountState: "VERIFIED" | "NEEDS_ACCOUNT" | "REFERENCE_ONLY";
+  /** Identity verification finished at this venue, per admin evidence. */
+  kycComplete?: boolean;
+  /** May this venue ever back an execution? Separate from KYC on purpose. */
+  executionEligible?: boolean;
+  ineligibleReason?: string | null;
   takerFeeBps: number | null;
-  feeProvenance: "OFFICIAL_PUBLISHED" | "ADMIN_CONFIRMED" | "PROVISIONAL" | "UNKNOWN";
+  /** Reference only until maker-order simulation exists; never settled. */
+  makerFeeBps?: number | null;
+  /** Quoted-market / easy-trade rates. Never applied to USDT/IRT maths. */
+  referenceMetadata?: Record<string, unknown> | null;
+  /** Server-computed expiry of this evidence. */
+  feeExpiresAt?: string | null;
+  feeProvenance:
+    | "OFFICIAL_PUBLISHED"
+    | "ADMIN_CONFIRMED"
+    | "ADMIN_CONFIRMED_SCREENSHOT"
+    | "PROVISIONAL"
+    | "UNKNOWN";
   feeTier: string | null;
   officialSourceUrl: string | null;
   feeVerifiedAt: string | null;
@@ -76,6 +92,7 @@ export const SETTLEMENT_PROVENANCE_FA: Record<string, string> = {
 export const FEE_PROVENANCE_FA: Record<VenueReadiness["feeProvenance"], string> = {
   OFFICIAL_PUBLISHED: "سند رسمی",
   ADMIN_CONFIRMED: "تأیید مدیر",
+  ADMIN_CONFIRMED_SCREENSHOT: "تأیید مدیر (تصویر پنل)",
   PROVISIONAL: "موقت",
   UNKNOWN: "نامشخص"
 };
@@ -116,7 +133,11 @@ export type VenueRow = {
 
   /* account and fee readiness */
   accountState: VenueReadiness["accountState"] | null;
+  kycComplete: boolean | null;
+  executionEligible: boolean | null;
+  ineligibleReason: string | null;
   takerFeeBps: number | null;
+  makerFeeBps: number | null;
   feeProvenance: VenueReadiness["feeProvenance"] | null;
   feeTier: string | null;
   officialSourceUrl: string | null;
@@ -209,12 +230,17 @@ export function buildVenueRows(input: BuildVenueRowsInput): VenueRow[] {
       lastProbeAt: cert?.lastProbeAt ?? null,
 
       accountState: v?.accountState ?? null,
+      kycComplete: v?.kycComplete ?? null,
+      executionEligible: v?.executionEligible ?? null,
+      ineligibleReason: v?.ineligibleReason ?? null,
       takerFeeBps: v?.takerFeeBps ?? null,
+      makerFeeBps: v?.makerFeeBps ?? null,
       feeProvenance: v?.feeProvenance ?? null,
       feeTier: v?.feeTier ?? null,
       officialSourceUrl: v?.officialSourceUrl ?? null,
       feeVerifiedAt: v?.feeVerifiedAt ?? null,
-      feeExpiresAt: feeExpiryIso(v?.feeVerifiedAt ?? null, input.feeReverifyDays),
+      // The server knows the per-confirmation validity; only fall back locally.
+      feeExpiresAt: v?.feeExpiresAt ?? feeExpiryIso(v?.feeVerifiedAt ?? null, input.feeReverifyDays),
       feeStale: v?.feeStale ?? null,
       apiCapabilities: v?.apiCapabilities ?? [],
       requiredAction: v?.requiredAction ?? null,
@@ -227,6 +253,8 @@ export function buildVenueRows(input: BuildVenueRowsInput): VenueRow[] {
 
 export type VenueSummary = {
   total: number;
+  /** Venues whose identity verification the admin has confirmed. */
+  kycConfirmed: number;
   healthy: number;
   degraded: number;
   unavailable: number;
@@ -247,6 +275,7 @@ export type VenueSummary = {
 export function summarizeVenues(rows: VenueRow[]): VenueSummary {
   const summary: VenueSummary = {
     total: rows.length,
+    kycConfirmed: 0,
     healthy: 0,
     degraded: 0,
     unavailable: 0,
@@ -261,6 +290,7 @@ export function summarizeVenues(rows: VenueRow[]): VenueSummary {
     else if (r.health === "degraded") summary.degraded += 1;
     else if (r.health === "unavailable") summary.unavailable += 1;
 
+    if (r.kycComplete) summary.kycConfirmed += 1;
     if (r.accountState === "VERIFIED") summary.accountsReady += 1;
     if (r.referenceOnly) summary.referenceOnly += 1;
 

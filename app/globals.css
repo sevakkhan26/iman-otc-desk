@@ -7737,3 +7737,12 @@ table th {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Execution bar on a venue card — a status note, not a new surface. */
+.sa-venue-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 12px;
+}

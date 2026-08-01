@@ -6,6 +6,7 @@ import {
   getWorkerHeartbeat,
   loadLatestCapitalApproval,
   loadLatestCapitalPlan,
+  loadLatestAccountConfirmations,
   loadLatestFeeConfirmations,
   loadLatestSourceSnapshots,
   loadRunStats
@@ -110,7 +111,12 @@ async function buildReport() {
     loadRiskPolicyValues()
   ]);
 
-  const readiness = buildAllReadiness(Object.values(latestFees));
+  const accountEvidence = await loadLatestAccountConfirmations();
+  const readiness = buildAllReadiness(
+    Object.values(latestFees),
+    Date.now(),
+    Object.values(accountEvidence)
+  );
   const venueStates = classifyAllVenues(readiness);
   const policies = buildPolicyState(policyValues);
 

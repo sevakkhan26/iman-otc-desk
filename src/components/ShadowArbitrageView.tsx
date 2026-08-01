@@ -8,7 +8,8 @@ import { CapitalSimulator } from "@/components/shadowArbitrage/CapitalSimulator"
 import {
   CommandCenter,
   type CommandBalance,
-  type CommandSession
+  type CommandSession,
+  type SizingView
 } from "@/components/shadowArbitrage/CommandCenter";
 import { ObservationHeader } from "@/components/shadowArbitrage/ObservationHeader";
 import { LiveReadiness } from "@/components/shadowArbitrage/LiveReadiness";
@@ -56,6 +57,7 @@ type PaperPayload = {
   trades?: PaperLedgerRow[];
   transitions?: PaperLedgerRow[];
   wizard?: { markPriceToman: number | null };
+  sizing?: SizingView;
 };
 
 /** Account and fee readiness, read once and shared by both redesigned tabs. */
@@ -345,6 +347,7 @@ export function ShadowArbitrageView() {
             paperEvidence={paperEvidence}
             sources={sources}
             portfolio={portfolio}
+            sizing={paper?.sizing ?? null}
             accounts={accountsSummary}
             readiness={readinessSummary}
             serverNow={serverNow}

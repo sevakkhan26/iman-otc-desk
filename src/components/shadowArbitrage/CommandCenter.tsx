@@ -43,6 +43,43 @@ export type CommandSession = {
 
 export type CommandBalance = { sourceId: string; irtToman: number; usdt: number };
 
+/** Phase 8C-3 — the calculated size for one route, as the API returns it. */
+export type RouteSizingView = {
+  routeKey: string;
+  buySourceId: string;
+  sellSourceId: string;
+  sizing: {
+    status: "SIZED" | "BLOCKED";
+    sizeUsdt: number | null;
+    bindingConstraint: string | null;
+    constraints: Array<{
+      key: string;
+      labelFa: string;
+      capUsdtMicros: number | null;
+      detailFa: string;
+    }>;
+    liquidityMaxUsdtMicros: number | null;
+    policyMaxUsdtMicros: number | null;
+    quote: { probeSizeUsdt: number; buyVwapToman: number; sellVwapToman: number } | null;
+    economics: {
+      capitalInvolvedToman: number;
+      cashPnlIrtToman: number;
+      sellFeeValueToman: number;
+      economicNetPnlToman: number;
+      slippageBufferToman: number;
+      riskAdjustedPnlToman: number;
+      riskAdjustedEdgePercent: number;
+    } | null;
+    blockers: Array<{ code: string; subject: string; detailFa: string }>;
+  };
+};
+
+export type SizingView = {
+  requiredPolicies: string[];
+  missingPolicies: string[];
+  routes: RouteSizingView[];
+};
+
 export type CommandPortfolio = {
   session: CommandSession | null;
   balances: CommandBalance[];
@@ -65,6 +102,8 @@ type Props = {
   paperEvidence: Map<string, PaperEvidence>;
   sources: NormalizedSourceSnapshot[];
   portfolio: CommandPortfolio | null;
+  /** Calculated sizes per route. Null until the first read lands. */
+  sizing: SizingView | null;
   accounts: { executable: number; total: number } | null;
   readiness: { passed: number; total: number; topBlockerFa: string | null } | null;
   serverNow: string | null;
@@ -147,6 +186,7 @@ export function CommandCenter({
   paperEvidence,
   sources,
   portfolio,
+  sizing,
   accounts,
   readiness,
   serverNow,
@@ -240,6 +280,20 @@ export function CommandCenter({
 
   const best = valid[0] ?? null;
   const bestEvidence = best ? (evidenceFor(best, paperEvidence) ?? null) : null;
+
+  /*
+   * The calculated size for the best route. The fixed 5/10/20/25 ladder is a
+   * diagnostic probe of the order book, so it is never shown as the
+   * recommendation — this is, together with the one constraint that decided it.
+   */
+  const bestSizing = useMemo(() => {
+    if (!best || !sizing) return null;
+    return (
+      sizing.routes.find((r) => r.routeKey === `${best.buySourceId}->${best.sellSourceId}`) ?? null
+    );
+  }, [best, sizing]);
+
+  const sizedCount = sizing?.routes.filter((r) => r.sizing.status === "SIZED").length ?? 0;
 
   const healthySources = sources.filter((s) => s.health === "healthy").length;
   const progress = observation?.progressPercent ?? null;
@@ -355,6 +409,27 @@ export function CommandCenter({
         <div className="sa-callout sa-callout-warn">
           دادهٔ نمایش‌داده‌شده از آخرین چرخهٔ جمع‌آوری قدیمی‌تر از حد انتظار است؛ اگر جمع‌آورنده
           متوقف شده باشد، ارقام زیر به‌روز نیستند.
+        </div>
+      ) : null}
+
+      {/*
+        Sizing status. A blocked sizing engine must never look like an idle one:
+        when a required risk policy is unset, nothing can trade, and the screen
+        says so with the exact policy names rather than showing an empty ledger.
+      */}
+      {sizing && sizing.missingPolicies.length ? (
+        <div className="sa-callout sa-callout-warn" role="status">
+          حجم پویا محاسبه نمی‌شود چون {toFaDigits(sizing.missingPolicies.length)} سیاست ریسک لازم
+          هنوز تعیین نشده است:{" "}
+          <span className="sa-strong">{sizing.missingPolicies.join("، ")}</span>. تا زمانی که مدیر
+          این مقادیر را تعیین نکند هیچ حجمی انتخاب نمی‌شود و هیچ معاملهٔ کاغذی تازه‌ای ثبت
+          نمی‌گردد — هیچ مقدار پیش‌فرضی جایگزین نمی‌شود.
+        </div>
+      ) : null}
+      {sizing && !sizing.missingPolicies.length ? (
+        <div className="sa-callout sa-callout-muted" role="status">
+          حجم پویا فعال است — {toFaDigits(sizedCount)} مسیر از {toFaDigits(sizing.routes.length)}{" "}
+          مسیر بررسی‌شده حجم گرفت.
         </div>
       ) : null}
 
@@ -494,30 +569,206 @@ export function CommandCenter({
                   <dd>{best.sellSourceName}</dd>
                 </div>
                 <div>
-                  <dt>حجم پیشنهادی</dt>
+                  <dt>حجم محاسبه‌شده</dt>
                   <dd>
-                    <Bidi>{toFaDigits(best.sizeUsdt)}</Bidi> تتر
+                    {bestSizing?.sizing.status === "SIZED" && bestSizing.sizing.sizeUsdt !== null ? (
+                      <>
+                        <Bidi>{toFaDigits(bestSizing.sizing.sizeUsdt.toFixed(4))}</Bidi> تتر
+                      </>
+                    ) : (
+                      DASH
+                    )}
                   </dd>
                 </div>
                 <div>
                   <dt>سرمایهٔ درگیر</dt>
                   <dd>
-                    <TomanAmount value={best.buyCostToman} />
+                    {bestSizing?.sizing.economics ? (
+                      <TomanAmount value={bestSizing.sizing.economics.capitalInvolvedToman} />
+                    ) : (
+                      DASH
+                    )}
                   </dd>
                 </div>
                 <div>
                   <dt>سود خالص تعدیل‌شده</dt>
-                  <dd className={best.netProfitToman >= 0 ? "sa-pos" : "sa-neg"}>
-                    <TomanAmount value={best.netProfitToman} />
+                  <dd
+                    className={
+                      (bestSizing?.sizing.economics?.riskAdjustedPnlToman ?? 0) >= 0
+                        ? "sa-pos"
+                        : "sa-neg"
+                    }
+                  >
+                    {bestSizing?.sizing.economics ? (
+                      <TomanAmount value={bestSizing.sizing.economics.riskAdjustedPnlToman} />
+                    ) : (
+                      DASH
+                    )}
                   </dd>
                 </div>
                 <div>
-                  <dt>حاشیهٔ خالص</dt>
+                  <dt>حاشیهٔ تعدیل‌شده</dt>
                   <dd>
-                    <Bidi>{formatPercentFa(best.netEdgePercent)}</Bidi>
+                    {bestSizing?.sizing.economics ? (
+                      <Bidi>
+                        {formatPercentFa(bestSizing.sizing.economics.riskAdjustedEdgePercent)}
+                      </Bidi>
+                    ) : (
+                      DASH
+                    )}
                   </dd>
                 </div>
               </dl>
+
+              {/* One line: the size, or the single reason there is none. */}
+              <p className={bestSizing?.sizing.status === "SIZED" ? "sa-sub" : "sa-sub sa-neg"}>
+                {bestSizing
+                  ? bestSizing.sizing.status === "SIZED"
+                    ? `محدودکنندهٔ اصلی حجم: ${
+                        bestSizing.sizing.constraints.find(
+                          (c) => c.key === bestSizing.sizing.bindingConstraint
+                        )?.labelFa ?? "—"
+                      }`
+                    : `حجمی انتخاب نشد — ${bestSizing.sizing.blockers[0]?.detailFa ?? "دلیل ثبت نشده"}`
+                  : "برای این مسیر هنوز محاسبه‌ای انجام نشده است."}
+              </p>
+
+              {/* The full calculation, folded away by default. */}
+              {bestSizing ? (
+                <details className="sa-advanced-details sa-cc-calc">
+                  <summary>
+                    <span>محاسبهٔ کامل حجم و سقف‌های محدودکننده</span>
+                  </summary>
+                  <div className="sa-cc-calc-body">
+                    <div className="sa-table-wrap">
+                      <table className="sa-table">
+                        <thead>
+                          <tr>
+                            <th scope="col">سقف</th>
+                            <th scope="col" className="num">
+                              حداکثر حجم
+                            </th>
+                            <th scope="col">مبنا</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {bestSizing.sizing.constraints.map((c) => (
+                            <tr
+                              key={c.key}
+                              className={
+                                c.key === bestSizing.sizing.bindingConstraint ? "sa-strong" : undefined
+                              }
+                            >
+                              <td>
+                                {c.labelFa}
+                                {c.key === bestSizing.sizing.bindingConstraint ? " ◂ محدودکننده" : ""}
+                              </td>
+                              <td className="num">
+                                {c.capUsdtMicros === null ? (
+                                  <span className="sa-unknown" title="اندازه‌گیری نشد">
+                                    —
+                                  </span>
+                                ) : (
+                                  <Bidi>{toFaDigits((c.capUsdtMicros / 1_000_000).toFixed(4))}</Bidi>
+                                )}
+                              </td>
+                              <td className="sa-sub">{c.detailFa}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <dl className="sa-cc-best-grid">
+                      <div>
+                        <dt>سقف نقدشوندگی و موجودی</dt>
+                        <dd>
+                          {bestSizing.sizing.liquidityMaxUsdtMicros === null ? (
+                            DASH
+                          ) : (
+                            <Bidi>
+                              {toFaDigits(
+                                (bestSizing.sizing.liquidityMaxUsdtMicros / 1_000_000).toFixed(4)
+                              )}
+                            </Bidi>
+                          )}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>سقف سیاست ریسک</dt>
+                        <dd>
+                          {bestSizing.sizing.policyMaxUsdtMicros === null ? (
+                            DASH
+                          ) : (
+                            <Bidi>
+                              {toFaDigits(
+                                (bestSizing.sizing.policyMaxUsdtMicros / 1_000_000).toFixed(4)
+                              )}
+                            </Bidi>
+                          )}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>جریان نقدی تومانی</dt>
+                        <dd>
+                          {bestSizing.sizing.economics ? (
+                            <TomanAmount value={bestSizing.sizing.economics.cashPnlIrtToman} />
+                          ) : (
+                            DASH
+                          )}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>ارزش تومانی کارمزد تتری</dt>
+                        <dd>
+                          {bestSizing.sizing.economics ? (
+                            <TomanAmount value={bestSizing.sizing.economics.sellFeeValueToman} />
+                          ) : (
+                            DASH
+                          )}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>سود خالص اقتصادی</dt>
+                        <dd>
+                          {bestSizing.sizing.economics ? (
+                            <TomanAmount value={bestSizing.sizing.economics.economicNetPnlToman} />
+                          ) : (
+                            DASH
+                          )}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>بافر لغزش</dt>
+                        <dd>
+                          {bestSizing.sizing.economics ? (
+                            <TomanAmount value={bestSizing.sizing.economics.slippageBufferToman} />
+                          ) : (
+                            DASH
+                          )}
+                        </dd>
+                      </div>
+                    </dl>
+
+                    {bestSizing.sizing.blockers.length ? (
+                      <ul className="sa-cc-blockers">
+                        {bestSizing.sizing.blockers.map((b) => (
+                          <li key={`${b.code}:${b.subject}`}>{b.detailFa}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+
+                    {bestSizing.sizing.quote ? (
+                      <p className="sa-sub">
+                        قیمت‌گذاری بر پایهٔ عمیق‌ترین پروب اثبات‌شدهٔ همین چرخه (
+                        <Bidi>{toFaDigits(bestSizing.sizing.quote.probeSizeUsdt)}</Bidi> تتر) انجام
+                        شده است. چون حجم انتخابی از این پروب بزرگ‌تر نیست، این قیمت‌گذاری محافظه‌کارانه
+                        است و سود را کمتر از واقع نشان می‌دهد، نه بیشتر.
+                      </p>
+                    ) : null}
+                  </div>
+                </details>
+              ) : null}
               <p className="sa-sub">
                 پس از کارمزد خرید <TomanAmount value={best.buyFeeToman} />، کارمزد فروش{" "}
                 <TomanAmount value={best.sellFeeToman} /> و بافر لغزش{" "}
@@ -532,8 +783,9 @@ export function CommandCenter({
                 ) : null}
               </p>
               <p className="sa-sub">
-                حجم پیشنهادی فعلاً از پروب‌های تشخیصی ثابت موتور می‌آید و هنوز با عمق دفتر، موجودی
-                مجازی صرافی و حدود ریسک محاسبه نمی‌شود؛ اندازه‌گیری پویا در مرحلهٔ بعد پیاده می‌شود.
+                حجم از کمینهٔ عمق اثبات‌شدهٔ دفتر، موجودی تومانی و تتری دو صرافی با احتساب کارمزد،
+                سهم طرح سرمایه و سقف‌های سیاست ریسک محاسبه می‌شود. هیچ حد ریسکی به‌جای مدیر فرض
+                نمی‌شود؛ اگر سیاستی تعیین نشده باشد، حجم انتخاب نمی‌گردد.
               </p>
             </>
           ) : (

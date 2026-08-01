@@ -11,6 +11,8 @@
  * the slippage buffer, account readiness and the virtual balances.
  */
 import { SHADOW_STALE_MS, SHADOW_TRADE_SIZES } from "@/lib/shadowArbitrage/config";
+import type { RiskPolicyState } from "@/lib/shadowArbitrage/live/policy";
+import { computeRouteSize, type SizingResult } from "@/lib/shadowArbitrage/paper/sizing";
 import type { VenueCapitalState } from "@/lib/shadowArbitrage/capital";
 import {
   applyFill,
@@ -105,6 +107,12 @@ export type CycleEvaluation = {
   /** Opportunities that were eligible before balance checks. */
   eligibleCandidates: number;
   executedCount: number;
+  /**
+   * Phase 8C-3 — the dynamic size worked out for each route this cycle, kept
+   * whether it produced a size or a blocker. This is the evidence the UI shows
+   * and the reason a route did or did not trade.
+   */
+  sizing: Array<{ routeKey: string; result: SizingResult }>;
 };
 
 /** A candidate whose economics have already been priced for this cycle. */
@@ -197,6 +205,25 @@ function depthUsable(
     : ex.sellFillable && ex.userSellVwapToman !== null;
 }
 
+/**
+ * Everything dynamic sizing needs that the cycle itself does not carry.
+ *
+ * There is no optional fallback to the fixed probe ladder: if the caller cannot
+ * supply this, sizing blocks. Silently trading a diagnostic probe size because
+ * the risk context was unavailable is exactly the failure this phase removes.
+ */
+export type SizingContext = {
+  policies: RiskPolicyState[];
+  /** Capital-plan share per venue, in toman. Missing venues size as unknown. */
+  allocationTomanBySource: Map<string, number>;
+  /** Marked value of the whole virtual portfolio. Null blocks concentration. */
+  portfolioValueToman: number | null;
+  /** Marked value each venue currently holds. */
+  exposureTomanBySource: Map<string, number>;
+  slippageBufferBps: number;
+  probeSizesUsdt: readonly number[];
+};
+
 export type EvaluateInput = {
   opportunities: ShadowOpportunity[];
   sources: NormalizedSourceSnapshot[];
@@ -204,6 +231,7 @@ export type EvaluateInput = {
   /** Lifecycle ids this session already filled — each executes at most once. */
   executedLifecycleIds: Set<string>;
   balances: VenueBalance[];
+  sizing: SizingContext;
 };
 
 /**
@@ -326,29 +354,76 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
     viable.push(c);
   }
 
-  // 2. Price every viable candidate for this cycle. Pricing needs the mark
-  //    price, so an unpriceable candidate is skipped here with its own reason.
+  /*
+   * 2. Size every route, then price it.
+   *
+   * The candidate's own `sizeUsdt` is a diagnostic probe of the order book and
+   * is NOT what trades. One size is calculated per route from depth, balances,
+   * the capital plan and the risk policies, and every candidate on that route
+   * is priced at it. A route whose size cannot be justified is skipped with the
+   * exact reasons — never quietly executed at a probe size.
+   */
   const priced: PricedCandidate[] = [];
+  const sizingByRoute = new Map<string, SizingResult>();
+  const sourceForSizing = (id: string) => input.sources.find((s) => s.sourceId === id);
+
   for (const c of viable) {
-    const markPriceToman = resolveMarkPriceToman(input.sources, c.buySourceId, c.sizeUsdt);
+    const routeKey = `${c.buySourceId}->${c.sellSourceId}`;
+    let sizing = sizingByRoute.get(routeKey);
+    if (!sizing) {
+      sizing = computeRouteSize({
+        buySourceId: c.buySourceId,
+        sellSourceId: c.sellSourceId,
+        buySnapshot: sourceForSizing(c.buySourceId),
+        sellSnapshot: sourceForSizing(c.sellSourceId),
+        buyFeeBps: c.buyFeeBps,
+        sellFeeBps: c.sellFeeBps,
+        buySettlement: settlementFor(c.buySourceId, "buy"),
+        sellSettlement: settlementFor(c.sellSourceId, "sell"),
+        balances: input.balances,
+        buyVenueAllocationToman: input.sizing.allocationTomanBySource.get(c.buySourceId) ?? null,
+        portfolioValueToman: input.sizing.portfolioValueToman,
+        buyVenueExposureToman: input.sizing.exposureTomanBySource.get(c.buySourceId) ?? null,
+        policies: input.sizing.policies,
+        slippageBufferBps: input.sizing.slippageBufferBps,
+        probeSizesUsdt: input.sizing.probeSizesUsdt
+      });
+      sizingByRoute.set(routeKey, sizing);
+    }
+
+    if (sizing.status !== "SIZED" || sizing.sizeUsdtMicros === null || !sizing.quote || !sizing.economics) {
+      skip(c, ["sizing_blocked"]);
+      continue;
+    }
+
+    // From here the candidate carries the CALCULATED size, not the probe size,
+    // so the ledger records what actually traded.
+    const sizedCandidate: PaperCandidate = {
+      ...c,
+      sizeUsdt: microsToUsdt(sizing.sizeUsdtMicros),
+      buyVwapToman: sizing.quote.buyVwapToman,
+      sellVwapToman: sizing.quote.sellVwapToman,
+      slippageBufferToman: sizing.economics.slippageBufferToman
+    };
+    const markPriceToman = sizing.quote.markPriceToman;
     const plan = planFill({
-      buySourceId: c.buySourceId,
-      sellSourceId: c.sellSourceId,
-      sizeUsdt: c.sizeUsdt,
-      buyVwapToman: c.buyVwapToman,
-      sellVwapToman: c.sellVwapToman,
-      buyFeeBps: c.buyFeeBps,
-      sellFeeBps: c.sellFeeBps,
-      buySettlement: settlementFor(c.buySourceId, "buy"),
-      sellSettlement: settlementFor(c.sellSourceId, "sell"),
+      buySourceId: sizedCandidate.buySourceId,
+      sellSourceId: sizedCandidate.sellSourceId,
+      sizeUsdt: sizedCandidate.sizeUsdt,
+      buyVwapToman: sizedCandidate.buyVwapToman,
+      sellVwapToman: sizedCandidate.sellVwapToman,
+      buyFeeBps: sizedCandidate.buyFeeBps,
+      sellFeeBps: sizedCandidate.sellFeeBps,
+      buySettlement: settlementFor(sizedCandidate.buySourceId, "buy"),
+      sellSettlement: settlementFor(sizedCandidate.sellSourceId, "sell"),
       markPriceToman,
-      slippageBufferToman: c.slippageBufferToman
+      slippageBufferToman: sizedCandidate.slippageBufferToman
     });
     if (!plan.ok) {
       const code = fromBrokerCode(plan.code);
       decisions.push({
         kind: "SKIP",
-        candidate: c,
+        candidate: sizedCandidate,
         code,
         codes: [code],
         reasonFa: reasonLabel(code),
@@ -356,7 +431,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       });
       continue;
     }
-    priced.push({ candidate: c, plan });
+    priced.push({ candidate: sizedCandidate, plan });
   }
 
   // 3. One size per route, then a total order across the whole cycle.
@@ -393,7 +468,11 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
     decisions,
     balancesAfter: book,
     eligibleCandidates: priced.length,
-    executedCount
+    executedCount,
+    // Sorted so two runs over the same cycle report routes in the same order.
+    sizing: [...sizingByRoute.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([routeKey, result]) => ({ routeKey, result }))
   };
 }
 

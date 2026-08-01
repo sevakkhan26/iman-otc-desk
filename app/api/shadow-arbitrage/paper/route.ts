@@ -37,9 +37,17 @@ import {
   readinessFingerprint,
   type CapitalPlanInput
 } from "@/lib/shadowArbitrage/capital";
-import { SHADOW_BANNER, SHADOW_SOURCES } from "@/lib/shadowArbitrage/config";
+import { SHADOW_BANNER, SHADOW_SOURCES, SHADOW_TRADE_SIZES, SLIPPAGE_BUFFER_BPS } from "@/lib/shadowArbitrage/config";
+import { loadRiskPolicyValues } from "@/db/repositories/shadowLive";
+import { loadLastMatrix } from "@/lib/shadowArbitrage/store";
+import { buildPolicyState } from "@/lib/shadowArbitrage/live/policy";
+import {
+  computeAllRouteSizes,
+  SIZING_REQUIRED_POLICIES
+} from "@/lib/shadowArbitrage/paper/sizing";
+import type { ShadowSourceId } from "@/lib/shadowArbitrage/types";
 import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
-import { PAPER_FEE_SETTLEMENT, microsToUsdt } from "@/lib/shadowArbitrage/paper/broker";
+import { PAPER_FEE_SETTLEMENT, microsToUsdt, settlementFor, usdtToMicros } from "@/lib/shadowArbitrage/paper/broker";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -220,7 +228,68 @@ export async function GET(request: Request) {
       : null
   };
 
-  return new NextResponse(JSON.stringify(envelope({ ...snap, history, wizard })), {
+  /*
+   * Phase 8C-3 — the dynamic size, recomputed read-only for every eligible
+   * route so the screen can show what would trade right now and, when nothing
+   * would, exactly which policy or piece of evidence is missing. Same pure
+   * function the engine uses; this endpoint still cannot trade.
+   */
+  const [policyValues, lastMatrix] = await Promise.all([loadRiskPolicyValues(), loadLastMatrix()]);
+  const policies = buildPolicyState(policyValues);
+  // Normalized snapshots — the same cached cycle the matrix serves, so the size
+  // shown here is computed from exactly the evidence the engine last saw.
+  const snapshotById = new Map((lastMatrix?.sources ?? []).map((s) => [s.sourceId as string, s]));
+  const feeBpsById = new Map<string, number | null>(
+    Object.values(wizardReadiness).map((r) => [r.sourceId as string, r.takerFeeBps ?? null])
+  );
+  const sizingBalances = (snap.balances ?? []).map((b) => ({
+    sourceId: b.sourceId as ShadowSourceId,
+    irtToman: b.irtToman,
+    usdtMicros: usdtToMicros(b.usdt)
+  }));
+  const valuationPriceToman = snap.session?.valuationPriceToman ?? null;
+  const exposureTomanBySource = new Map<string, number>();
+  const allocationTomanBySource = new Map<string, number>();
+  if (valuationPriceToman !== null && valuationPriceToman > 0) {
+    for (const b of sizingBalances) {
+      exposureTomanBySource.set(
+        b.sourceId as string,
+        b.irtToman + Math.round(microsToUsdt(b.usdtMicros) * valuationPriceToman)
+      );
+    }
+    for (const a of snap.session?.openingAllocations ?? []) {
+      allocationTomanBySource.set(
+        a.sourceId as string,
+        Math.round(a.irtToman + a.usdtUnits * valuationPriceToman)
+      );
+    }
+  }
+  const portfolioValueToman = exposureTomanBySource.size
+    ? [...exposureTomanBySource.values()].reduce((s, v) => s + v, 0)
+    : null;
+
+  const sizing = {
+    requiredPolicies: SIZING_REQUIRED_POLICIES,
+    missingPolicies: SIZING_REQUIRED_POLICIES.filter(
+      (k) => !policies.find((p) => p.definition.key === k)?.configured
+    ),
+    probeSizesUsdt: SHADOW_TRADE_SIZES,
+    routes: computeAllRouteSizes({
+      venueIds: wizard.eligibleVenues.map((v) => v.sourceId),
+      snapshotById,
+      feeBpsById,
+      settlementFor: (id, side) => settlementFor(id as ShadowSourceId, side),
+      balances: sizingBalances,
+      allocationTomanBySource,
+      portfolioValueToman,
+      exposureTomanBySource,
+      policies,
+      slippageBufferBps: SLIPPAGE_BUFFER_BPS,
+      probeSizesUsdt: SHADOW_TRADE_SIZES
+    })
+  };
+
+  return new NextResponse(JSON.stringify(envelope({ ...snap, history, wizard, sizing })), {
     status: 200,
     headers: SHADOW_NO_STORE
   });

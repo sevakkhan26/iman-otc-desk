@@ -22,10 +22,14 @@ import {
   type PaperSessionRow,
   type PaperSkipRecord
 } from "@/db/repositories/shadowPaper";
+import { loadRiskPolicyValues } from "@/db/repositories/shadowLive";
 import { buildAllReadiness } from "@/lib/shadowArbitrage/accounts";
 import { classifyAllVenues } from "@/lib/shadowArbitrage/capital";
+import { SHADOW_TRADE_SIZES, SLIPPAGE_BUFFER_BPS } from "@/lib/shadowArbitrage/config";
+import { buildPolicyState } from "@/lib/shadowArbitrage/live/policy";
+import { mulPriceSizeToman } from "@/lib/shadowArbitrage/money";
 import { describeRebalance, evaluateCycle } from "@/lib/shadowArbitrage/paper/engine";
-import type { VenueBalance } from "@/lib/shadowArbitrage/paper/broker";
+import { microsToUsdt, type VenueBalance } from "@/lib/shadowArbitrage/paper/broker";
 import type { NormalizedSourceSnapshot, ShadowOpportunity, ShadowSourceId } from "@/lib/shadowArbitrage/types";
 
 export type PaperCycleOutcome = {
@@ -66,11 +70,12 @@ export async function runPaperExecutionForCycle(input: {
   if (!session) return { ran: false, reason: "no_session" };
   if (session.status !== "RUNNING") return { ran: false, reason: "not_running", sessionId: session.id };
 
-  const [latestFees, accountEvidence, balanceRows, filledIds] = await Promise.all([
+  const [latestFees, accountEvidence, balanceRows, filledIds, policyValues] = await Promise.all([
     loadLatestFeeConfirmations(),
     loadLatestAccountConfirmations(),
     loadPaperBalances(session.id),
-    loadFilledLifecycleIds(session.id)
+    loadFilledLifecycleIds(session.id),
+    loadRiskPolicyValues()
   ]);
 
   const venueStates = classifyAllVenues(
@@ -82,12 +87,44 @@ export async function runPaperExecutionForCycle(input: {
     usdtMicros: b.usdtMicros
   }));
 
+  /*
+   * Phase 8C-3 — the risk context dynamic sizing needs.
+   *
+   * The session's own valuation price marks the portfolio and each venue's
+   * share, so exposure is measured the same way the session was opened. The
+   * capital plan comes from the session's opening allocations rather than the
+   * latest saved plan: a running session must be sized against the money it
+   * actually started with, not against a plan edited after it began.
+   */
+  const valuationPriceToman = session.valuationPriceToman;
+  const exposureTomanBySource = new Map<string, number>(
+    balances.map((b) => [
+      b.sourceId as string,
+      b.irtToman + mulPriceSizeToman(valuationPriceToman, microsToUsdt(b.usdtMicros))
+    ])
+  );
+  const allocationTomanBySource = new Map<string, number>(
+    session.openingAllocations.map((a) => [
+      a.sourceId as string,
+      Math.round(a.irtToman + mulPriceSizeToman(valuationPriceToman, a.usdtUnits))
+    ])
+  );
+  const portfolioValueToman = [...exposureTomanBySource.values()].reduce((s, v) => s + v, 0);
+
   const evaluation = evaluateCycle({
     opportunities: input.opportunities,
     sources: input.sources,
     venueStates,
     executedLifecycleIds: filledIds,
-    balances
+    balances,
+    sizing: {
+      policies: buildPolicyState(policyValues),
+      allocationTomanBySource,
+      portfolioValueToman,
+      exposureTomanBySource,
+      slippageBufferBps: SLIPPAGE_BUFFER_BPS,
+      probeSizesUsdt: SHADOW_TRADE_SIZES
+    }
   });
 
   const fills: PaperFillRecord[] = [];

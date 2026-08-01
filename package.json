@@ -12,7 +12,7 @@
     "db:import:dry": "npx --yes tsx scripts/import-legacy-to-postgres.mts --dry-run",
     "db:production-setup": "bash scripts/production-pg-setup.sh",
     "db:production-setup:dry": "bash scripts/production-pg-setup.sh --dry-run",
-    "test": "npx --yes tsx scripts/test-auth-cookies.mts && npx --yes tsx scripts/test-viewer-auth.mts && npx --yes tsx scripts/test-user-store.mts && npx --yes tsx scripts/test-impact-news.mts && npx --yes tsx scripts/test-price-alerts.mts && npx --yes tsx scripts/test-okex-tetherland.mts && npx --yes tsx scripts/test-bubble.mts && npx --yes tsx scripts/test-market-snapshot.mts && npx --yes tsx scripts/test-tether-api-keys.mts && npx --yes tsx scripts/test-postgres.mts && npx --yes tsx scripts/test-shadow-arbitrage.mts && npx --yes tsx scripts/test-shadow-persistence.mts && npx --yes tsx scripts/test-ops-hardening.mts && npx --yes tsx scripts/test-navigation.mts && npx --yes tsx scripts/test-admin-evidence.mts",
+    "test": "npx --yes tsx scripts/test-auth-cookies.mts && npx --yes tsx scripts/test-viewer-auth.mts && npx --yes tsx scripts/test-user-store.mts && npx --yes tsx scripts/test-impact-news.mts && npx --yes tsx scripts/test-price-alerts.mts && npx --yes tsx scripts/test-okex-tetherland.mts && npx --yes tsx scripts/test-bubble.mts && npx --yes tsx scripts/test-market-snapshot.mts && npx --yes tsx scripts/test-tether-api-keys.mts && npx --yes tsx scripts/test-postgres.mts && npx --yes tsx scripts/test-shadow-arbitrage.mts && npx --yes tsx scripts/test-shadow-persistence.mts && npx --yes tsx scripts/test-ops-hardening.mts && npx --yes tsx scripts/test-navigation.mts && npx --yes tsx scripts/test-admin-evidence.mts && npx --yes tsx scripts/test-shadow-sizing.mts",
     "test:shadow": "npx --yes tsx scripts/test-shadow-arbitrage.mts && npx --yes tsx scripts/test-shadow-persistence.mts",
     "shadow:local": "npx --yes tsx scripts/shadow-local.mts",
     "shadow:worker": "npx --yes tsx scripts/shadow-worker.mts",
@@ -35,6 +35,7 @@
     "preview:shadow": "npx --yes tsx scripts/preview-shadow-ui.mts",
     "test:fonts": "npx --yes tsx scripts/test-shadow-fonts.mts",
     "test:evidence": "npx --yes tsx scripts/test-admin-evidence.mts",
+    "test:sizing": "npx --yes tsx scripts/test-shadow-sizing.mts",
     "evidence:import": "npx --yes tsx scripts/import-admin-evidence.mts"
   },
   "dependencies": {

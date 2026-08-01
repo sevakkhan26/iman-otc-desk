@@ -7993,6 +7993,39 @@ table th {
   line-height: 1.7;
   overflow-wrap: anywhere;
 }
+/* ── dynamic-sizing disclosure ────────────────────────────────────────────── */
+.sa-cc-calc {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.sa-cc-calc > summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 13px;
+  font-weight: 700;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+}
+.sa-cc-calc > summary::-webkit-details-marker {
+  display: none;
+}
+.sa-cc-calc-body {
+  display: grid;
+  gap: 14px;
+  margin-top: 12px;
+  min-width: 0;
+}
+.sa-cc-blockers {
+  margin: 0;
+  padding-inline-start: 18px;
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--muted);
+}
 .sa-cc-disarmed {
   display: flex;
   flex-wrap: wrap;

@@ -1855,6 +1855,11 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
       "src/lib/shadowArbitrage/paper/broker.ts",
       // the simple paper flow: portfolio maths, pure and dependency-free
       "src/lib/shadowArbitrage/paper/portfolio.ts",
+      // Phase 8C-3 dynamic sizing: the pure sizer, its wiring into the engine,
+      // the orchestration that feeds it the risk context, and its reason code
+      "src/lib/shadowArbitrage/paper/sizing.ts",
+      "src/lib/shadowArbitrage/paper/engine.ts",
+      "src/lib/shadowArbitrage/paper/reasons.ts",
       "src/lib/shadowArbitrage/live/readiness.ts",
       // certifying Tetherland and Arzinja: direction proof, units, freshness,
       // depth, and routing the confirmed fees into the economics
@@ -1941,10 +1946,10 @@ await test("8C the Command Center answers the standing questions on one screen",
   for (const dt of [
     "صرافی خرید",
     "صرافی فروش",
-    "حجم پیشنهادی",
+    "حجم محاسبه‌شده",
     "سرمایهٔ درگیر",
     "سود خالص تعدیل‌شده",
-    "حاشیهٔ خالص"
+    "حاشیهٔ تعدیل‌شده"
   ]) {
     assert.ok(cc.includes(`<dt>${dt}</dt>`), `the best-opportunity card must state ${dt}`);
   }
@@ -2014,27 +2019,91 @@ await test("8C diagnostics, gates, policies and evidence sit behind one fold", (
   assert.ok(cc.includes("اجرای واقعی پیاده‌سازی نشده است"));
 });
 
-await test("8C dynamic sizing is not implemented and is not implied", () => {
+await test("8C-3 the recommendation is the calculated size, not the fixed probe", () => {
   const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
-  // The suggested size is the opportunity's own probe size, unmodified.
-  assert.ok(cc.includes("toFaDigits(best.sizeUsdt)"));
-  assert.ok(
-    cc.includes("حجم پیشنهادی فعلاً از پروب‌های تشخیصی ثابت موتور می‌آید"),
-    "the screen says plainly that sizing is still the fixed probe"
-  );
-  // No sizing maths, no risk limit and no invented policy value entered the UI.
-  for (const banned of [
-    "max_order_size_usdt",
-    "max_venue_exposure_percent",
-    "concentration",
-    "depthUsable",
-    "SHADOW_TRADE_SIZES"
-  ]) {
-    assert.equal(cc.includes(banned), false, `sizing must not start here: ${banned}`);
+  // The probe size is no longer what the card recommends.
+  assert.equal(cc.includes("toFaDigits(best.sizeUsdt)"), false, "the probe size is not the answer");
+  assert.ok(cc.includes("bestSizing.sizing.sizeUsdt"), "the calculated size is");
+  assert.ok(cc.includes("<dt>حجم محاسبه‌شده</dt>"));
+
+  // The primary reason sits next to it, on the first screen.
+  assert.ok(cc.includes("محدودکنندهٔ اصلی حجم"), "the binding constraint is stated");
+  assert.ok(cc.includes("حجمی انتخاب نشد"), "and so is the reason when there is none");
+
+  // Headline figures stay on the card: the size, what it ties up, the result.
+  const headline = cc.slice(cc.indexOf("<dt>حجم محاسبه‌شده</dt>"), cc.indexOf("sa-cc-calc"));
+  for (const figure of ["capitalInvolvedToman", "riskAdjustedPnlToman", "riskAdjustedEdgePercent"]) {
+    assert.ok(headline.includes(figure), `the card must state ${figure}`);
   }
-  // The fixed probes are untouched in the engine.
+
+  // The full calculation is one expandable step away, not on the first screen.
+  assert.ok(cc.includes("محاسبهٔ کامل حجم و سقف‌های محدودکننده"));
+  const detail = cc.slice(cc.indexOf("sa-cc-calc"));
+  for (const figure of [
+    "liquidityMaxUsdtMicros",
+    "policyMaxUsdtMicros",
+    "cashPnlIrtToman",
+    "sellFeeValueToman",
+    "economicNetPnlToman",
+    "slippageBufferToman"
+  ]) {
+    assert.ok(detail.includes(figure), `the detail view must report ${figure}`);
+  }
+  // Every limiting constraint is listed, with the binding one marked.
+  assert.ok(detail.includes("bestSizing.sizing.constraints.map"));
+  assert.ok(detail.includes("محدودکننده"));
+
+  // The fixed ladder survives only as a diagnostic probe, unchanged.
   const config = read("src/lib/shadowArbitrage/config.ts");
   assert.ok(config.includes("export const SHADOW_TRADE_SIZES: ShadowTradeSizeUsdt[] = [5, 10, 20, 25];"));
+});
+
+await test("8C-3 sizing never invents a risk limit and blocks visibly instead", () => {
+  const sizing = read("src/lib/shadowArbitrage/paper/sizing.ts");
+  // Every required policy is read through the null-returning accessor.
+  assert.ok(sizing.includes("policyValueOrNull("));
+  assert.equal(
+    /policyValueOrNull\([^)]*\)\s*\?\?\s*\d/.test(sizing),
+    false,
+    "no numeric fallback may follow a policy lookup"
+  );
+  for (const key of [
+    "max_order_size_usdt",
+    "max_venue_exposure_percent",
+    "min_risk_adjusted_edge_percent",
+    "max_quote_age_ms",
+    "max_slippage_bps"
+  ]) {
+    assert.ok(sizing.includes(`"${key}"`), `${key} must be required`);
+    assert.equal(
+      new RegExp(`${key}\\s*[:=]\\s*\\d`).test(sizing),
+      false,
+      `${key} must never be assigned a literal`
+    );
+  }
+  // A blocked size is null, with reasons — never a silent zero or a guess.
+  assert.ok(sizing.includes("sizeUsdtMicros: null"));
+  assert.ok(sizing.includes('status: "BLOCKED"'));
+
+  // The engine refuses to trade a probe size when sizing did not produce one.
+  const engine = read("src/lib/shadowArbitrage/paper/engine.ts");
+  assert.ok(engine.includes('skip(c, ["sizing_blocked"]);'));
+  assert.ok(engine.includes("sizeUsdt: microsToUsdt(sizing.sizeUsdtMicros)"));
+
+  // And the operator is told, on the landing screen, which policy is missing.
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  assert.ok(cc.includes("sizing.missingPolicies"));
+  assert.ok(cc.includes("هیچ مقدار پیش‌فرضی جایگزین نمی‌شود"));
+});
+
+await test("8C-3 sizing stays pure: no database, network, clock or order path", () => {
+  const sizing = read("src/lib/shadowArbitrage/paper/sizing.ts");
+  for (const banned of ["@/db/", "next/server", "fetch(", "apiKey", "placeOrder", "withdraw"]) {
+    assert.equal(sizing.includes(banned), false, `sizing must not contain ${banned}`);
+  }
+  assert.equal(/Date\.now\(\)|new Date\(\)/.test(sizing), false, "a clock would break replay");
+  const capability = read("src/lib/shadowArbitrage/live/capability.ts");
+  assert.ok(capability.includes("export const LIVE_EXECUTION_IMPLEMENTED = false as const"));
 });
 
 await test("8C unknown figures are em dashes, never invented numbers", () => {

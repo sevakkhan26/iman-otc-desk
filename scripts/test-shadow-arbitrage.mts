@@ -1785,6 +1785,43 @@ function paperBalances(over: Partial<Record<string, [number, number]>> = {}): Ve
   }));
 }
 
+/**
+ * Phase 8C-3 — the risk context `evaluateCycle` now requires.
+ *
+ * Every policy value below is the TEST'S choice. Production code contains no
+ * default for any of them, which `test-shadow-sizing.mts` proves separately;
+ * these values are deliberately permissive so the Phase 6 selection tests keep
+ * exercising ranking and balance contention rather than the risk caps.
+ */
+function paperSizing() {
+  const values = {
+    max_order_size_usdt: 1_000,
+    max_venue_exposure_percent: 100,
+    min_risk_adjusted_edge_percent: 0,
+    max_quote_age_ms: 90_000,
+    max_slippage_bps: 100
+  };
+  return {
+    policies: buildPolicyState(
+      Object.entries(values).map(([key, value]) => ({
+        key: key as never,
+        value,
+        provenance: "ADMIN_APPROVED" as const,
+        setBy: "test",
+        setAt: new Date(CAP_NOW).toISOString(),
+        validForDays: null,
+        note: null
+      })),
+      CAP_NOW
+    ),
+    allocationTomanBySource: new Map<string, number>(),
+    portfolioValueToman: null,
+    exposureTomanBySource: new Map<string, number>(),
+    slippageBufferBps: 5,
+    probeSizesUsdt: [5, 10, 20, 25] as const
+  };
+}
+
 function paperOpportunity(over: Partial<ShadowOpportunity> = {}): ShadowOpportunity {
   const now = new Date(CAP_NOW).toISOString();
   const size = (over.sizeUsdt ?? 25) as 5 | 10 | 20 | 25;
@@ -2279,7 +2316,7 @@ await test("Phase 6 applies the best-ranked candidate first when balances are sc
   });
 
   const run = (opportunities: ShadowOpportunity[]) =>
-    evaluateCycle({
+    evaluateCycle({ sizing: paperSizing(),
       opportunities,
       sources: paperSources(),
       venueStates: paperReadiness(),
@@ -2306,7 +2343,7 @@ await test("Phase 6 applies the best-ranked candidate first when balances are sc
 
 await test("Phase 6 executes a lifecycle at most once, however long it stays open", () => {
   const o = paperOpportunity();
-  const first = evaluateCycle({
+  const first = evaluateCycle({ sizing: paperSizing(),
     opportunities: [o],
     sources: paperSources(),
     venueStates: paperReadiness(),
@@ -2316,7 +2353,7 @@ await test("Phase 6 executes a lifecycle at most once, however long it stays ope
   assert.equal(first.executedCount, 1);
 
   // The same unchanged opportunity in the next cycle must not refill.
-  const second = evaluateCycle({
+  const second = evaluateCycle({ sizing: paperSizing(),
     opportunities: [o],
     sources: paperSources(),
     venueStates: paperReadiness(),
@@ -2335,7 +2372,7 @@ await test("Phase 6 skips stale data, thin depth and ineligible venues with a re
   const states = paperReadiness();
   const book = paperBalances();
 
-  const staleCycle = evaluateCycle({
+  const staleCycle = evaluateCycle({ sizing: paperSizing(),
     opportunities: [paperOpportunity()],
     sources: paperSources({ wallex: { stale: true } }),
     venueStates: states,
@@ -2361,7 +2398,7 @@ await test("Phase 6 skips stale data, thin depth and ineligible venues with a re
         }
       : src
   );
-  const thin = evaluateCycle({
+  const thin = evaluateCycle({ sizing: paperSizing(),
     opportunities: [paperOpportunity()],
     sources: thinSources,
     venueStates: states,
@@ -2372,7 +2409,7 @@ await test("Phase 6 skips stale data, thin depth and ineligible venues with a re
   assert.ok(thin.decisions.some((d) => d.kind === "SKIP" && d.code === "insufficient_depth"));
 
   // A venue with no usable account can never be traded, even with a live book.
-  const ineligible = evaluateCycle({
+  const ineligible = evaluateCycle({ sizing: paperSizing(),
     opportunities: [paperOpportunity({ sellSourceId: "bitpin", routeKey: "nobitex->bitpin@25" })],
     sources: [...paperSources(), mockSource("bitpin", "بیت‌پین", 103_000, 102_000)],
     venueStates: states,
@@ -2385,7 +2422,7 @@ await test("Phase 6 skips stale data, thin depth and ineligible venues with a re
   assert.ok(ineligible.decisions.some((d) => d.kind === "SKIP" && d.code === "fee_unknown"));
 
   // A blocked opportunity is never executed regardless of the book.
-  const blockedOpp = evaluateCycle({
+  const blockedOpp = evaluateCycle({ sizing: paperSizing(),
     opportunities: [paperOpportunity({ blockedReasons: ["fee_unknown"] as BlockedReasonCode[] })],
     sources: paperSources(),
     venueStates: states,
@@ -2397,24 +2434,40 @@ await test("Phase 6 skips stale data, thin depth and ineligible venues with a re
   assert.ok(blockedOpp.decisions.some((d) => d.kind === "SKIP" && d.code === "fee_unknown"));
 });
 
-await test("Phase 6 blocks on thin inventory and reports the required rebalance", () => {
+await test("Phase 6 blocks on thin inventory, now at sizing rather than at the fill", () => {
+  /*
+   * Phase 8C-3 moved this check earlier. The engine used to propose a fixed
+   * 25 USDT fill and let the broker reject it for insufficient USDT; the sizer
+   * now caps the size at what the sell venue can actually deliver — 1 USDT
+   * cannot cover 1 USDT plus a 35bps fee — so the trade is never proposed. The
+   * guarantee under test is unchanged and stronger: nothing executes, the book
+   * is untouched, and the exact limiting constraint is named.
+   */
+  const thin = paperBalances({ wallex: [20_000_000, 1] });
   const result = evaluateCycle({
+    sizing: paperSizing(),
     opportunities: [paperOpportunity()],
     sources: paperSources(),
     venueStates: paperReadiness(),
     executedLifecycleIds: new Set(),
-    balances: paperBalances({ wallex: [20_000_000, 1] })
+    balances: thin
   });
   assert.equal(result.executedCount, 0);
   const skip = result.decisions.find((d) => d.kind === "SKIP");
   assert.ok(skip && skip.kind === "SKIP");
-  if (skip && skip.kind === "SKIP") {
-    assert.equal(skip.code, "insufficient_usdt");
-    assert.equal(skip.requiredRebalance?.sourceId, "wallex");
-    assert.ok((skip.requiredRebalance?.usdtMicrosShort ?? 0) > 0);
-  }
+  if (skip && skip.kind === "SKIP") assert.equal(skip.code, "sizing_blocked");
+
+  // The sizing evidence says exactly which venue and which cap stopped it.
+  const route = result.sizing.find((s) => s.routeKey === "nobitex->wallex");
+  assert.ok(route, "the route's sizing is reported even though it did not trade");
+  assert.equal(route?.result.status, "BLOCKED");
+  assert.equal(route?.result.sizeUsdtMicros, null);
+  assert.equal(route?.result.blockers[0]?.code, "size_floor");
+  const sellCap = route?.result.constraints.find((c) => c.key === "sell_usdt_balance");
+  assert.ok((sellCap?.capUsdtMicros ?? 0) < 1_000_000, "the fee-inclusive cap is below one USDT");
+
   // Rebalancing stays simulated: the engine never moves inventory itself.
-  assert.deepEqual(result.balancesAfter, paperBalances({ wallex: [20_000_000, 1] }));
+  assert.deepEqual(result.balancesAfter, thin);
 });
 
 await test("Phase 6 opening book comes from the plan with integer micros", () => {
@@ -2490,7 +2543,7 @@ await test("Phase 6 modules are structurally incapable of trading", () => {
 });
 
 await test("Phase 6 never runs on a venue outside the nine Shadow sources", () => {
-  const result = evaluateCycle({
+  const result = evaluateCycle({ sizing: paperSizing(),
     opportunities: [
       paperOpportunity({
         buySourceId: "ompfinex" as ShadowSourceId,
@@ -2572,7 +2625,7 @@ await test("v4.9.1 multi-cause candidates get a deterministic primary reason", (
 });
 
 await test("v4.9.1 the engine reports the exact upstream cause on every skip", () => {
-  const blocked = evaluateCycle({
+  const blocked = evaluateCycle({ sizing: paperSizing(),
     opportunities: [
       paperOpportunity({
         id: "lc-blocked",
@@ -2605,7 +2658,7 @@ await test("v4.9.1 the engine reports the exact upstream cause on every skip", (
       ? { ...s, executable: false, capitalClass: "REFERENCE_ONLY" as const, blockingReason: "منبع فقط مرجع است" }
       : s
   );
-  const refOnly = evaluateCycle({
+  const refOnly = evaluateCycle({ sizing: paperSizing(),
     opportunities: [
       paperOpportunity({ id: "lc-ref", sellSourceId: "arzinja", routeKey: "nobitex->arzinja@25" })
     ],
@@ -2620,7 +2673,7 @@ await test("v4.9.1 the engine reports the exact upstream cause on every skip", (
   );
 
   // Already-processed uses its own precise code.
-  const done = evaluateCycle({
+  const done = evaluateCycle({ sizing: paperSizing(),
     opportunities: [paperOpportunity({ id: "lc-done" })],
     sources: paperSources(),
     venueStates: paperReadiness(),

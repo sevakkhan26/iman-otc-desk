@@ -1800,14 +1800,27 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
      * explicitly here. Anything else appearing in this diff is unintended drift.
      */
     const evidenceSurface = new Set([
+      // append-only admin evidence
       "app/api/shadow-arbitrage/accounts/route.ts",
       "app/api/shadow-arbitrage/capital/route.ts",
       "app/api/shadow-arbitrage/live-readiness/route.ts",
       "app/api/shadow-arbitrage/paper/route.ts",
       "src/db/repositories/shadowArbitrage.ts",
       "src/db/schema.ts",
+      "drizzle/0010_shadow_admin_evidence.sql",
       "src/lib/shadowArbitrage/accounts.ts",
-      "src/lib/shadowArbitrage/paper/run.ts"
+      "src/lib/shadowArbitrage/paper/run.ts",
+      // certifying Tetherland and Arzinja: direction proof, units, freshness,
+      // depth, and routing the confirmed fees into the economics
+      "src/lib/shadowArbitrage/adapters/base.ts",
+      "src/lib/shadowArbitrage/adapters/index.ts",
+      "src/lib/shadowArbitrage/adapters/arzinja.ts",
+      "src/lib/shadowArbitrage/adapters/tetherland.ts",
+      "src/lib/shadowArbitrage/certification.ts",
+      "src/lib/shadowArbitrage/collector.ts",
+      "src/lib/shadowArbitrage/config.ts",
+      "src/lib/shadowArbitrage/calculate.ts",
+      "src/lib/shadowArbitrage/fees.ts"
     ]);
     const changed = execFileSync("git", ["diff", "--name-only", baseline, "--", ...paths], {
       encoding: "utf8"

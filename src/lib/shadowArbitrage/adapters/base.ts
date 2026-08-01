@@ -335,6 +335,56 @@ function metaFrom(result: AdapterResult, directionVerified: boolean): SourceResp
  * a headline price never yields fillable sizes, and a crossed or
  * unresolvable book never yields a verified direction.
  */
+/**
+ * Prove which array is which side of the book, instead of trusting the names.
+ *
+ * A real order book never crosses: every buy offer sits below every sell offer.
+ * So given two candidate arrays, at most one assignment can be uncrossed, and
+ * when exactly one is, the mapping is *proved* rather than inferred — a venue
+ * that swaps its field names cannot fool it, and a venue that changes its
+ * convention later fails the check instead of silently inverting the market.
+ *
+ * Returns `verified: false` when the evidence is ambiguous (both readings cross,
+ * or both are uncrossed because the two clusters overlap), which keeps the
+ * source degraded rather than guessing.
+ */
+export function proveBookDirection(
+  candidateBids: BookLevel[],
+  candidateAsks: BookLevel[]
+): { verified: boolean; crossedUnderStated: boolean; reason: string } {
+  if (!candidateBids.length || !candidateAsks.length) {
+    return { verified: false, crossedUnderStated: false, reason: "یکی از دو سمت دفتر خالی است" };
+  }
+  const bestBid = Math.max(...candidateBids.map((l) => l.priceToman));
+  const bestAsk = Math.min(...candidateAsks.map((l) => l.priceToman));
+  // The mirror reading: what the book would look like with the arrays swapped.
+  const mirrorBestBid = Math.max(...candidateAsks.map((l) => l.priceToman));
+  const mirrorBestAsk = Math.min(...candidateBids.map((l) => l.priceToman));
+
+  const uncrossed = bestBid < bestAsk;
+  const mirrorUncrossed = mirrorBestBid < mirrorBestAsk;
+
+  if (uncrossed && !mirrorUncrossed) {
+    return {
+      verified: true,
+      crossedUnderStated: false,
+      reason: `جهت اثبات شد: بهترین خرید ${bestBid} < بهترین فروش ${bestAsk}، و خواندن معکوس متقاطع می‌شود`
+    };
+  }
+  if (!uncrossed && mirrorUncrossed) {
+    return {
+      verified: false,
+      crossedUnderStated: true,
+      reason: `این نگاشت متقاطع است (${bestBid} ≥ ${bestAsk})؛ خواندن معکوس سازگار است`
+    };
+  }
+  return {
+    verified: false,
+    crossedUnderStated: !uncrossed,
+    reason: "هر دو خوانش مبهم‌اند — جهت اثبات نشد"
+  };
+}
+
 export function snapshotFromResult(
   cfg: ShadowSourceConfig,
   result: AdapterResult,

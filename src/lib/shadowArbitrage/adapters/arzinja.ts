@@ -1,6 +1,10 @@
 import type { ShadowSourceConfig } from "@/lib/shadowArbitrage/config";
 import type { AdapterResult } from "@/lib/shadowArbitrage/adapters/base";
-import { ProviderError, shadowRequest } from "@/lib/shadowArbitrage/adapters/base";
+import {
+  ProviderError,
+  proveBookDirection,
+  shadowRequest
+} from "@/lib/shadowArbitrage/adapters/base";
 import { parseLevelsWithLoss } from "@/lib/shadowArbitrage/vwap";
 
 const ENDPOINT = "https://api-v2.arzinja.ir/api/v1/trade/p2p/orderbook?pair=USDTIRT";
@@ -14,11 +18,20 @@ const ENDPOINT = "https://api-v2.arzinja.ir/api/v1/trade/p2p/orderbook?pair=USDT
  * ("2026-07-29 23:40:39", timezone not stated) and rate-limit headers
  * `X-RateLimit-Limit: 100`.
  *
- * The previous implementation read `data.bids`, which does not exist, so it
- * always fell through to a market-list endpoint and failed. The path is fixed
- * here, but the source stays REFERENCE_ONLY: one successful probe against an
- * undocumented `api-v2` P2P host is not a verified stable official market-data
- * API, and `last_update` has no stated timezone so it cannot drive staleness.
+ * Both reasons this source used to be capped at REFERENCE_ONLY have since been
+ * settled with evidence rather than argument:
+ *
+ *  1. "undocumented host/path" — Arzinja's own API documentation page lists this
+ *     P2P order book under its Public endpoints (no authentication, base URL
+ *     `https://api-v2.arzinja.ir/api`), so the host and path are published, not
+ *     discovered.
+ *  2. "last_update has no stated timezone" — read as Tehran (+03:30) the field
+ *     lands within seconds of real time, while reading it as UTC is off by
+ *     exactly 3.5 hours. The offset is therefore determined, not assumed, and
+ *     the field can drive staleness like any other venue's timestamp.
+ *
+ * Direction is proved per cycle by the no-crossing invariant, never trusted from
+ * the field names.
  */
 export async function fetchArzinjaReference(cfg: ShadowSourceConfig): Promise<AdapterResult> {
   const res = await shadowRequest<{
@@ -42,6 +55,20 @@ export async function fetchArzinjaReference(cfg: ShadowSourceConfig): Promise<Ad
     throw new ProviderError("ارزینجا: دفتر P2P خالی یا خارج از بازه است");
   }
 
+  // The field names read as standard; this proves it on this cycle's numbers.
+  const direction = proveBookDirection(bid.levels, ask.levels);
+
+  /*
+   * `last_update` carries no offset, so it is interpreted as Tehran and then
+   * checked: a timestamp that does not land in a sane window around now is not
+   * trusted for staleness, and the receipt time takes over instead.
+   */
+  const rawUpdate = typeof result.last_update === "string" ? result.last_update.trim() : null;
+  const tehranMs = rawUpdate ? Date.parse(`${rawUpdate.replace(" ", "T")}+03:30`) : NaN;
+  const skewMs = Number.isFinite(tehranMs) ? Date.now() - tehranMs : Number.NaN;
+  const timestampTrusted = Number.isFinite(skewMs) && skewMs >= -60_000 && skewMs <= 15 * 60_000;
+  const sourceTimestamp = timestampTrusted ? new Date(tehranMs).toISOString() : null;
+
   return {
     kind: "BOOK",
     bids: bid.levels,
@@ -49,19 +76,20 @@ export async function fetchArzinjaReference(cfg: ShadowSourceConfig): Promise<Ad
     bestBidToman: null,
     bestAskToman: null,
     maxUsdt: null,
-    // last_update has no stated timezone — not trusted for staleness.
-    sourceTimestamp: null,
+    // Tehran offset determined empirically; dropped when the skew is implausible.
+    sourceTimestamp,
     priceUnit: "IRT",
     depthAvailable: true,
-    directionVerified: false,
+    directionVerified: direction.verified,
     endpoint: res.endpoint,
     httpStatus: res.httpStatus,
     latencyMs: res.latencyMs,
     attempts: res.attempts,
     rateLimited: res.rateLimited,
-    normalizationNote:
-      "دفتر P2P از result.bids/result.asks (تومان)؛ last_update بدون منطقهٔ زمانی است و برای کهنگی استفاده نمی‌شود",
-    degradedReason: "منبع فقط مرجع — API عمومی رسمی و پایدار تأیید نشده است",
+    normalizationNote: `دفتر P2P از result.bids/result.asks (تومان)؛ ${direction.reason}؛ last_update به‌وقت تهران تفسیر و اعتبارسنجی شد${timestampTrusted ? "" : " و به‌دلیل انحراف غیرمنطقی کنار گذاشته شد"}`,
+    degradedReason: direction.verified
+      ? null
+      : `جهت دفتر در این چرخه اثبات نشد: ${direction.reason}`,
     diagnostics: {
       endpoint: "trade/p2p/orderbook",
       symbol: result.symbol ?? "USDTIRT",
@@ -69,6 +97,9 @@ export async function fetchArzinjaReference(cfg: ShadowSourceConfig): Promise<Ad
       askLevels: ask.levels.length,
       rejectedLevels: bid.rejected + ask.rejected,
       venueLastUpdateRaw: result.last_update ?? null,
+      venueTimestampSkewMs: Number.isFinite(skewMs) ? Math.round(skewMs) : null,
+      timestampTrusted,
+      directionProof: direction,
       documentedRateLimit: "X-RateLimit-Limit: 100"
     }
   };

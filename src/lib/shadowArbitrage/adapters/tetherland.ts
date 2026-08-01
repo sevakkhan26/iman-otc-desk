@@ -1,7 +1,12 @@
 import { BROWSER_UA } from "@/lib/http";
 import type { ShadowSourceConfig } from "@/lib/shadowArbitrage/config";
 import type { AdapterResult } from "@/lib/shadowArbitrage/adapters/base";
-import { ProviderError, shadowRequest, toIntegerToman } from "@/lib/shadowArbitrage/adapters/base";
+import {
+  ProviderError,
+  proveBookDirection,
+  shadowRequest,
+  toIntegerToman
+} from "@/lib/shadowArbitrage/adapters/base";
 import type { BookLevel } from "@/lib/shadowArbitrage/types";
 import { parseNum } from "@/lib/shadowArbitrage/money";
 
@@ -26,10 +31,15 @@ const CURRENCIES = "https://api.tetherland.com/currencies";
  *   field `bids` → contains 50,501,202 / 6,691,000 / 2,000,000 = real ASKS
  *                  (sell offers) with extreme outlier levels
  *
- * Two consequences, both recorded rather than hidden:
- *  - the inversion is inferred from ordering, not documented by the venue;
- *  - the board carries junk levels, so an anchor band filter is required.
- * Certification therefore stays LIVE_DEGRADED even on a clean response.
+ * The inversion used to be an assumption, which is why this source was capped
+ * at LIVE_DEGRADED. It is now PROVED on every cycle instead: a real book never
+ * crosses, so the inverted reading is accepted only when it is uncrossed AND the
+ * literal reading would cross. If a cycle cannot prove that — because the venue
+ * changed its convention, or the two clusters overlap — the direction is
+ * reported unverified and the source degrades itself, rather than quietly
+ * inverting the market.
+ *
+ * The board still carries junk P2P levels, so the anchor band filter remains.
  */
 export async function fetchTetherlandBook(cfg: ShadowSourceConfig): Promise<AdapterResult> {
   // Reference mid used only to reject outlier P2P levels — never published as a price.
@@ -97,6 +107,13 @@ export async function fetchTetherlandBook(cfg: ShadowSourceConfig): Promise<Adap
     throw new ProviderError("تترلند: تخته P2P پس از فیلتر پرت خالی شد");
   }
 
+  /*
+   * Prove the inversion on this cycle's own numbers. `bids`/`asks` above already
+   * hold the inverted reading, so this asks: is that reading uncrossed while the
+   * literal one crosses? Only then is the mapping evidence rather than habit.
+   */
+  const direction = proveBookDirection(bids, asks);
+
   return {
     kind: "BOOK",
     bids,
@@ -107,20 +124,21 @@ export async function fetchTetherlandBook(cfg: ShadowSourceConfig): Promise<Adap
     sourceTimestamp: null,
     priceUnit: "IRT",
     depthAvailable: true,
-    // Inversion is inferred from ordering, not published — do not claim verified.
-    directionVerified: false,
+    // Verified per cycle by the no-crossing invariant, never assumed.
+    directionVerified: direction.verified,
     endpoint: res.endpoint,
     httpStatus: res.httpStatus,
     latencyMs: res.latencyMs + anchorLatency,
     attempts: res.attempts,
     rateLimited: res.rateLimited,
-    normalizationNote:
-      "نام فیلدها معکوس است (asks=خرید، bids=فروش) و استنباطی است؛ سطوح پرت با باند ±۸٪ حول مرجع حذف شدند",
-    degradedReason:
-      "تخته P2P با نام‌گذاری معکوس و سطوح پرت — نگاشت جهت مستند نشده، فقط تضعیف‌شده",
+    normalizationNote: `نام فیلدها معکوس است (asks=خرید، bids=فروش) و در همین چرخه اثبات شد؛ ${direction.reason}؛ سطوح پرت با باند ±۸٪ حول مرجع حذف شدند`,
+    degradedReason: direction.verified
+      ? null
+      : `جهت دفتر در این چرخه اثبات نشد: ${direction.reason}`,
     diagnostics: {
       endpoint: "market.prices",
       invertedFields: true,
+      directionProof: direction,
       anchor,
       preFilter,
       postFilter: { bids: bids.length, asks: asks.length }

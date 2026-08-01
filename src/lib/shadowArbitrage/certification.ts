@@ -192,15 +192,20 @@ export const CERTIFICATION_BASE: Record<ShadowSourceId, SourceCertificationBase>
     priceUnit: "IRT",
     quantityUnit: "USDT",
     directionNote:
-      "نام فیلدها معکوس است: فیلد asks حاوی سفارش‌های خرید (bid) و فیلد bids حاوی سفارش‌های فروش (ask) — استنباطی از ترتیب، مستند نشده",
+      "نام فیلدها معکوس است (asks=خرید، bids=فروش) و این نگاشت در هر چرخه با ناوردای عدم‌تقاطع اثبات می‌شود: خوانش معکوس بدون تقاطع است و خوانش تحت‌اللفظی متقاطع می‌شود",
     depthNote: "تخته پیشنهاد P2P؛ سطوح پرت (تا ۵۰٫۵ میلیون تومان) با باند ±۸٪ حول مرجع حذف می‌شوند",
     timestampNote: "timestamp منتشر نمی‌شود — زمان دریافت سرور مبنا است",
     rateLimitNote: "هدر محدودیت نرخ منتشر نمی‌شود؛ نیازمند هدرهای مرورگرمانند",
-    feeNote: "کارمزد تأییدنشده — نتایج «پتانسیل خام» هستند",
-    // Direction mapping is inferred, so this source is capped below verified.
-    maxStatus: "LIVE_DEGRADED",
+    feeNote: "کارمزد taker از پنل حساب تأیید شده است (تأیید مدیر، تصویر پنل)",
+    /*
+     * The ceiling used to sit at LIVE_DEGRADED because the field inversion was
+     * assumed. It is now proved on every cycle by the no-crossing invariant, and
+     * a cycle that cannot prove it degrades itself — so the cap is no longer
+     * warranted. Outlier levels are still filtered deterministically.
+     */
+    maxStatus: "LIVE_VERIFIED",
     limitations:
-      "نگاشت جهت استنباطی است و تخته حاوی سطوح پرت است؛ بنابراین سقف گواهی این منبع LIVE_DEGRADED است."
+      "نگاشت جهت در هر چرخه اثبات می‌شود؛ اگر صرافی قرارداد خود را تغییر دهد، همان چرخه جهت را تأییدنشده گزارش و منبع را تضعیف می‌کند. سطوح پرت P2P همچنان فیلتر می‌شوند."
   },
   bit24: {
     sourceId: "bit24",
@@ -228,15 +233,22 @@ export const CERTIFICATION_BASE: Record<ShadowSourceId, SourceCertificationBase>
     marketModel: "REFERENCE",
     priceUnit: "IRT",
     quantityUnit: "USDT",
-    directionNote: "result.asks / result.bids استاندارد به نظر می‌رسند اما مستند نشده‌اند",
-    depthNote: "دفتر P2P چندسطحی در result.bids/result.asks",
-    timestampNote: "result.last_update بدون منطقهٔ زمانی است؛ برای کهنگی استفاده نمی‌شود",
+    directionNote:
+      "result.bids/result.asks استاندارد است و در هر چرخه با ناوردای عدم‌تقاطع اثبات می‌شود (بهترین خرید < بهترین فروش)",
+    depthNote: "دفتر P2P چندسطحی در result.bids/result.asks — ۲۰ سطح در هر سمت",
+    timestampNote:
+      "result.last_update به‌وقت تهران (+۰۳:۳۰) است — با نمونه‌برداری زنده اثبات شد (انحراف چند ثانیه، در حالی که خواندن UTC دقیقاً ۳٫۵ ساعت خطا دارد) و مبنای کهنگی قرار می‌گیرد؛ انحراف غیرمنطقی آن را کنار می‌گذارد",
     rateLimitNote: "تنها منبعی که محدودیت نرخ منتشر می‌کند: X-RateLimit-Limit: 100",
-    feeNote: "کارمزد تأییدنشده",
-    // Mandated ceiling.
-    maxStatus: "REFERENCE_ONLY",
+    feeNote: "کارمزد taker از پنل حساب تأیید شده است (تأیید مدیر، تصویر پنل)",
+    /*
+     * The REFERENCE_ONLY cap existed because the host and P2P path were not
+     * documented as an official public API. Arzinja's own API documentation page
+     * lists this order book under its Public (no-authentication) endpoints with
+     * base URL https://api-v2.arzinja.ir/api, so that reason no longer holds.
+     */
+    maxStatus: "LIVE_VERIFIED",
     limitations:
-      "با وجود پاسخ ۲۰۰ و بدنهٔ قابل تجزیه، این منبع به‌دستور فقط مرجع می‌ماند: میزبان api-v2 و مسیر P2P به‌عنوان API رسمی و پایدار مستند نشده‌اند."
+      "مسیر دفتر سفارش P2P در صفحهٔ مستندات API خود ارزینجا ذیل اندپوینت‌های عمومی (بدون احراز هویت) منتشر شده است. جهت، واحد قیمت، عمق و تازگی در هر چرخه اعتبارسنجی می‌شوند و شکست هر کدام منبع را تضعیف می‌کند."
   }
 };
 

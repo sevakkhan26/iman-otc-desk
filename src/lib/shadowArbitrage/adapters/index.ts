@@ -42,20 +42,17 @@ async function runOne(id: ShadowSourceId): Promise<NormalizedSourceSnapshot> {
 
   try {
     const result = await FETCHERS[id](cfg);
-    const snap = snapshotFromResult(cfg, result, receivedAt);
-    if (id === "arzinja") {
-      // Mandated: reference only regardless of how well the probe went.
-      return {
-        ...snap,
-        marketModel: "REFERENCE",
-        eligibilityBase: "REFERENCE_ONLY",
-        sourceBlockedReasons: [
-          ...new Set([...snap.sourceBlockedReasons, "reference_only" as const])
-        ],
-        degradedReason: snap.degradedReason ?? "منبع مرجع — اجرا و پایداری API تأیید نشده است"
-      };
-    }
-    return snap;
+    /*
+     * No per-venue clamp lives here any more.
+     *
+     * Arzinja used to be forced to REFERENCE_ONLY on every cycle regardless of
+     * how the probe went, which meant no amount of evidence could ever change
+     * its standing. Its endpoint is now documented public, its direction is
+     * proved per cycle and its book is walked like any other, so the venue is
+     * judged by the same checks as the rest: certification decides, not a
+     * hard-coded exception.
+     */
+    return snapshotFromResult(cfg, result, receivedAt);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     if (error instanceof ShadowSourceError) {

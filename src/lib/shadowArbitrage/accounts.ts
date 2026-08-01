@@ -75,12 +75,18 @@ const ACCOUNT_STATE: Record<ShadowSourceId, AccountState> = {
   nobitex: "VERIFIED",
   wallex: "VERIFIED",
   tabdeal: "VERIFIED",
-  bitpin: "NEEDS_ACCOUNT",
-  abantether: "NEEDS_ACCOUNT",
-  ramzinex: "NEEDS_ACCOUNT",
-  tetherland: "NEEDS_ACCOUNT",
-  bit24: "NEEDS_ACCOUNT",
-  arzinja: "REFERENCE_ONLY"
+  bitpin: "VERIFIED",
+  abantether: "VERIFIED",
+  ramzinex: "VERIFIED",
+  tetherland: "VERIFIED",
+  bit24: "VERIFIED",
+  /*
+   * Arzinja is no longer reference-only: its P2P order book is a documented
+   * public endpoint whose direction, units, depth and freshness are certified
+   * per cycle. The venue still has to clear every gate every cycle, like the
+   * other eight — promotion removes a blanket bar, not the checks.
+   */
+  arzinja: "VERIFIED"
 };
 
 /** Public market data is verified per venue by the certification layer. */

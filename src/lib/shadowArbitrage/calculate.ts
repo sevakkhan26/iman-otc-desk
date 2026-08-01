@@ -62,6 +62,12 @@ function baseEligibility(
 export type BuildOptions = {
   /** Certification status per source; anything below LIVE_VERIFIED blocks execution claims. */
   certStatuses?: Partial<Record<ShadowSourceId, CertificationStatus>>;
+  /**
+   * Admin-confirmed taker fees per venue, in basis points. Without these a venue
+   * whose fee was confirmed from its own panel would still read as fee-unknown,
+   * because the compiled-in config only carries provisional values.
+   */
+  confirmedFeeBps?: Partial<Record<ShadowSourceId, number | null>>;
 };
 
 export type BuildResult = {
@@ -148,7 +154,8 @@ export function buildOpportunitiesDetailed(
           sellSourceId: sell.sourceId,
           sizeUsdt: size,
           buyVwapToman: buyVwap,
-          sellVwapToman: sellVwap
+          sellVwapToman: sellVwap,
+          confirmedFeeBps: options.confirmedFeeBps
         });
         for (const r of econ.blocked) reasons.add(r);
 

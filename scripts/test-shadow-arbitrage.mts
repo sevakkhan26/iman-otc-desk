@@ -545,15 +545,26 @@ await test("certification: unreachable source is UNSUPPORTED until it ever worke
   assert.equal(afterOutage.status, "LIVE_DEGRADED");
 });
 
-await test("Arzinja and Tetherland are capped below LIVE_VERIFIED", () => {
+await test("Arzinja and Tetherland certify to LIVE_VERIFIED once their checks pass", () => {
   resetCertifications();
-  assert.equal(CERTIFICATION_BASE.arzinja.maxStatus, "REFERENCE_ONLY");
-  assert.equal(CERTIFICATION_BASE.tetherland.maxStatus, "LIVE_DEGRADED");
+  // Both ceilings were lifted only after the reasons behind them were settled:
+  // a documented public endpoint for Arzinja, a per-cycle direction proof for
+  // Tetherland. The ceiling no longer caps a clean response.
+  assert.equal(CERTIFICATION_BASE.arzinja.maxStatus, "LIVE_VERIFIED");
+  assert.equal(CERTIFICATION_BASE.tetherland.maxStatus, "LIVE_VERIFIED");
   const arz = certifyFromSnapshot(mockSource("arzinja", "a", 194_750, 193_000));
-  assert.equal(arz.status, "REFERENCE_ONLY");
+  assert.equal(arz.status, "LIVE_VERIFIED");
   const tl = certifyFromSnapshot(mockSource("tetherland", "t", 193_290, 190_010));
-  assert.equal(tl.status, "LIVE_DEGRADED");
-  assert.equal(getCertification("arzinja").status, "REFERENCE_ONLY");
+  assert.equal(tl.status, "LIVE_VERIFIED");
+  // The shared registry still starts un-probed: a raised ceiling grants nothing
+  // until an actual cycle certifies the venue.
+  assert.equal(getCertification("arzinja").status, "PENDING_PROBE");
+
+  // But an unproved direction still degrades them — the cap moved, the gate did not.
+  const unproved = mockSource("arzinja", "a", 194_750, 193_000);
+  unproved.meta.directionVerified = false;
+  unproved.sourceBlockedReasons = ["quote_direction_unverified"];
+  assert.notEqual(certifyFromSnapshot(unproved).status, "LIVE_VERIFIED");
 });
 
 /* ── economics ────────────────────────────────────────────────────────────── */
@@ -1042,11 +1053,11 @@ await test("14-day storage estimate stays in the designed budget", () => {
 await test("account gating: only verified accounts with known fees are usable", () => {
   const all = buildAllReadiness([]);
   assert.equal(all.length, 9);
+  // All nine venues now hold verified accounts, Arzinja and Tetherland included.
   const verified = all.filter((v) => v.accountState === "VERIFIED").map((v) => v.sourceId).sort();
-  assert.deepEqual(verified, ["nobitex", "tabdeal", "wallex"]);
-  const needs = all.filter((v) => v.accountState === "NEEDS_ACCOUNT").map((v) => v.sourceId).sort();
-  assert.deepEqual(needs, ["abantether", "bit24", "bitpin", "ramzinex", "tetherland"]);
-  assert.equal(all.find((v) => v.sourceId === "arzinja")!.accountState, "REFERENCE_ONLY");
+  assert.equal(verified.length, 9, `expected nine verified accounts, got ${verified.join(",")}`);
+  assert.equal(all.filter((v) => v.accountState === "NEEDS_ACCOUNT").length, 0);
+  assert.equal(all.filter((v) => v.accountState === "REFERENCE_ONLY").length, 0);
 
   // Reference-only and account-less venues can never back net profit.
   for (const v of all) {
@@ -1211,12 +1222,18 @@ const simulateCap = (plan: CapitalPlanInput, over: Partial<Parameters<typeof sim
     ...over
   });
 
-await test("Phase 5 executable set is exactly the three verified venues", () => {
+await test("Phase 5 executable set follows the fee evidence, not a venue allow-list", () => {
   const states = classifyAllVenues(capReadiness());
+  /*
+   * Every venue now holds a verified account, so what limits the executable set
+   * is fee evidence alone: only the three venues carrying a configured fee
+   * qualify in this fixture, and the rest are disabled for an unknown fee rather
+   * than for being reference-only.
+   */
   const executable = states.filter((s) => s.executable).map((s) => s.sourceId).sort();
   assert.deepEqual(executable, ["nobitex", "tabdeal", "wallex"]);
-  assert.equal(states.find((s) => s.sourceId === "arzinja")!.capitalClass, "REFERENCE_ONLY");
-  for (const id of ["bitpin", "abantether", "ramzinex", "tetherland", "bit24"]) {
+  assert.equal(states.filter((s) => s.capitalClass === "REFERENCE_ONLY").length, 0);
+  for (const id of ["bitpin", "abantether", "ramzinex", "tetherland", "bit24", "arzinja"]) {
     const s = states.find((x) => x.sourceId === id)!;
     assert.equal(s.capitalClass, "WHATIF_DISABLED");
     assert.ok(s.blockingReason, `${id} must state why it is disabled`);
@@ -2574,12 +2591,22 @@ await test("v4.9.1 the engine reports the exact upstream cause on every skip", (
   }
 
   // A venue that is unusable says WHY, not merely that it is unusable.
+  /*
+   * Arzinja is a certified venue now, so this exercises the vocabulary with an
+   * explicitly reference-only state instead: the code path must still name the
+   * cause exactly when a venue really is reference-only.
+   */
+  const referenceStates = paperReadiness().map((s) =>
+    s.sourceId === "arzinja"
+      ? { ...s, executable: false, capitalClass: "REFERENCE_ONLY" as const, blockingReason: "منبع فقط مرجع است" }
+      : s
+  );
   const refOnly = evaluateCycle({
     opportunities: [
       paperOpportunity({ id: "lc-ref", sellSourceId: "arzinja", routeKey: "nobitex->arzinja@25" })
     ],
     sources: [...paperSources(), mockSource("arzinja", "ارزینجا", 103_000, 102_000)],
-    venueStates: paperReadiness(),
+    venueStates: referenceStates,
     executedLifecycleIds: new Set(),
     balances: [...paperBalances(), { sourceId: "arzinja" as ShadowSourceId, irtToman: 0, usdtMicros: 0 }]
   });

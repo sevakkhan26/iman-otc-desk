@@ -18,6 +18,11 @@ import {
   type FeeOverride
 } from "../src/lib/shadowArbitrage/accounts.ts";
 import { applyFill, planFill, PAPER_FEE_SETTLEMENT, usdtToMicros } from "../src/lib/shadowArbitrage/paper/broker.ts";
+import { proveBookDirection } from "../src/lib/shadowArbitrage/adapters/base.ts";
+import { certifyFromSnapshot } from "../src/lib/shadowArbitrage/certification.ts";
+import { parseLevels } from "../src/lib/shadowArbitrage/vwap.ts";
+import { buildOpportunities } from "../src/lib/shadowArbitrage/calculate.ts";
+import type { NormalizedSourceSnapshot } from "../src/lib/shadowArbitrage/types.ts";
 
 let passed = 0;
 let failed = 0;
@@ -84,6 +89,68 @@ function accountOverride(sourceId: string, over: Partial<AccountOverride> = {}):
   };
 }
 
+/** A healthy, certified-looking snapshot for one venue. */
+function snapshotFor(sourceId: string, buy: number, sell: number, over: Record<string, unknown> = {}): NormalizedSourceSnapshot {
+  return {
+    sourceId: sourceId as never,
+    sourceName: sourceId,
+    marketModel: "ORDER_BOOK",
+    accountStatus: "verified",
+    eligibilityBase: "EXECUTABLE_NOW",
+    bestBidToman: sell,
+    bestAskToman: buy,
+    userBuyPriceToman: buy,
+    userSellPriceToman: sell,
+    sizeExecutables: [5, 10, 20, 25].map((sizeUsdt) => ({
+      sizeUsdt: sizeUsdt as 5 | 10 | 20 | 25,
+      userBuyVwapToman: buy,
+      userSellVwapToman: sell,
+      buyFillable: true,
+      sellFillable: true,
+      buyFilledUsdt: sizeUsdt,
+      sellFilledUsdt: sizeUsdt
+    })),
+    depthUsdtBid: 5_000,
+    depthUsdtAsk: 5_000,
+    maxExecutableUsdt: 5_000,
+    marketFeeBps: CONFIRMED[sourceId]?.taker ?? 25,
+    feeStatus: "account_api",
+    feeLabel: "confirmed",
+    feeReferenceUrl: null,
+    feeVerifiedAt: new Date(NOW).toISOString(),
+    sourceTimestamp: new Date(NOW).toISOString(),
+    receivedAt: new Date(NOW).toISOString(),
+    ageMs: 0,
+    health: "healthy",
+    errorReason: null,
+    degradedReason: null,
+    stale: false,
+    meta: {
+      endpoint: "https://example.test/book",
+      httpStatus: 200,
+      latencyMs: 120,
+      attempts: 1,
+      rateLimited: false,
+      timedOut: false,
+      depthAvailable: true,
+      directionVerified: true,
+      priceUnit: "IRT",
+      normalizationNote: null
+    },
+    sourceBlockedReasons: [],
+    ...over
+  } as NormalizedSourceSnapshot;
+}
+
+/** The same snapshot, with one certification input flipped. */
+function mockSnapshot(sourceId: string, over: Record<string, unknown>): NormalizedSourceSnapshot {
+  const { directionVerified, depthAvailable, ...rest } = over as Record<string, never>;
+  const snap = snapshotFor(sourceId, 195_470, 194_600, rest);
+  if (directionVerified !== undefined) snap.meta.directionVerified = directionVerified;
+  if (depthAvailable !== undefined) snap.meta.depthAvailable = depthAvailable;
+  return snap;
+}
+
 /* ── the confirmed schedule reaches readiness intact ───────────────────────── */
 
 await test("all nine venues carry KYC confirmation and their exact tier", () => {
@@ -147,34 +214,150 @@ await test("evidence expires 30 days after confirmation, not 90", () => {
 
 /* ── the safety bars outrank every piece of fee evidence ───────────────────── */
 
-await test("Tetherland stays degraded and Arzinja reference-only, whatever the fees say", () => {
-  const tetherland = buildVenueReadiness(
+await test("all nine venues are execution-eligible once certified", () => {
+  const rows = buildAllReadiness(
+    Object.keys(CONFIRMED).map((id) => feeOverride(id)),
+    NOW,
+    Object.keys(CONFIRMED).map((id) => accountOverride(id))
+  );
+  assert.equal(rows.filter((r) => r.kycComplete).length, 9, "KYC 9/9");
+  assert.equal(rows.filter((r) => r.executionEligible).length, 9, "execution-eligible 9/9");
+  assert.equal(rows.filter((r) => venueUsableForNetProfit(r)).length, 9, "all nine can back net profit");
+  // Tetherland and Arzinja specifically — the two that used to be barred.
+  for (const id of ["tetherland", "arzinja"]) {
+    const row = rows.find((r) => r.sourceId === id)!;
+    assert.equal(row.accountState, "VERIFIED", `${id} account`);
+    assert.equal(row.executionEligible, true, `${id} eligibility`);
+    assert.equal(row.blockingReason, null, `${id} must have nothing blocking it`);
+  }
+});
+
+await test("promotion removed the bar, not the gates", () => {
+  // An expired confirmation still blocks a promoted venue.
+  const expired = buildVenueReadiness(
+    "arzinja",
+    feeOverride("arzinja", { confirmedAt: new Date(NOW - 31 * DAY).toISOString() }),
+    NOW,
+    accountOverride("arzinja")
+  );
+  assert.equal(expired.feeStale, true);
+  assert.equal(venueUsableForNetProfit(expired), false, "expired evidence blocks Arzinja too");
+
+  // And an explicit ineligibility still blocks Tetherland.
+  const barred = buildVenueReadiness(
     "tetherland",
     feeOverride("tetherland"),
     NOW,
-    accountOverride("tetherland", { executionEligible: false, ineligibleReason: "degraded" })
+    accountOverride("tetherland", { executionEligible: false, ineligibleReason: "منبع دچار اختلال" })
   );
-  assert.equal(tetherland.kycComplete, true, "KYC is complete");
-  assert.equal(tetherland.executionEligible, false, "and it still may not execute");
-  assert.equal(venueUsableForNetProfit(tetherland), false);
-  assert.ok(tetherland.blockingReason, "the bar is stated, not silent");
+  assert.equal(barred.executionEligible, false);
+  assert.equal(venueUsableForNetProfit(barred), false);
+  assert.ok(barred.blockingReason);
+});
 
-  // Even an admin confirmation claiming eligibility cannot promote it.
-  const arzinja = buildVenueReadiness(
-    "arzinja",
-    feeOverride("arzinja"),
-    NOW,
-    accountOverride("arzinja", { accountState: "VERIFIED", executionEligible: true })
+/* ── certification regressions for the two promoted venues ─────────────────── */
+
+await test("direction is proved by the no-crossing invariant, never by field names", () => {
+  // Tetherland's real shape: the array named "asks" holds the LOWER cluster.
+  const lower = [
+    { priceToman: 193_000, amountUsdt: 716.73 },
+    { priceToman: 192_500, amountUsdt: 590.91 }
+  ];
+  const higher = [
+    { priceToman: 193_200, amountUsdt: 12 },
+    { priceToman: 194_000, amountUsdt: 30 }
+  ];
+  const inverted = proveBookDirection(lower, higher);
+  assert.equal(inverted.verified, true, "the inverted reading is uncrossed and provable");
+
+  // The literal reading of the same payload crosses, so it is rejected.
+  const literal = proveBookDirection(higher, lower);
+  assert.equal(literal.verified, false);
+  assert.equal(literal.crossedUnderStated, true);
+
+  // Overlapping clusters are ambiguous: neither reading may be claimed.
+  const ambiguous = proveBookDirection(
+    [{ priceToman: 100, amountUsdt: 1 }, { priceToman: 300, amountUsdt: 1 }],
+    [{ priceToman: 200, amountUsdt: 1 }, { priceToman: 400, amountUsdt: 1 }]
   );
-  assert.equal(arzinja.accountState, "REFERENCE_ONLY", "a reference venue is never promoted");
-  assert.equal(arzinja.executionEligible, false);
-  assert.equal(venueUsableForNetProfit(arzinja), false);
+  assert.equal(ambiguous.verified, false, "ambiguity must not certify");
+  // An empty side proves nothing.
+  assert.equal(proveBookDirection([], higher).verified, false);
+});
 
-  // The seven executable venues do pass.
-  const executable = ["nobitex", "wallex", "tabdeal", "bitpin", "abantether", "ramzinex", "bit24"];
-  for (const id of executable) {
-    const row = buildVenueReadiness(id as never, feeOverride(id), NOW, accountOverride(id));
-    assert.equal(venueUsableForNetProfit(row), true, `${id} should be usable`);
+await test("an unproved direction degrades the venue instead of inverting the market", () => {
+  const snap = mockSnapshot("tetherland", { directionVerified: false });
+  const cert = certifyFromSnapshot(snap);
+  assert.notEqual(cert.status, "LIVE_VERIFIED");
+  assert.ok(cert.statusReason, "the exact failing check is stated");
+});
+
+await test("IRT and IRR are distinguished, and a rial payload never reads as toman", () => {
+  // Arzinja and Tetherland publish toman. A rial-scaled payload is ten times
+  // larger and must not survive the plausibility band as a toman price.
+  const toman = parseLevels([["195470", "436.65"]], "toman");
+  assert.equal(toman.length, 1);
+  assert.equal(toman[0].priceToman, 195_470);
+
+  const rial = parseLevels([["1954700", "436.65"]], "rial");
+  assert.equal(rial.length, 1);
+  assert.equal(rial[0].priceToman, 195_470, "rial is divided by ten");
+
+  // The same rial figure read as toman is implausible and is dropped.
+  assert.deepEqual(parseLevels([["1954700", "436.65"]], "toman"), []);
+  // And a toman figure read as rial is likewise out of band.
+  assert.deepEqual(parseLevels([["195470", "436.65"]], "rial"), []);
+});
+
+await test("stale data blocks a promoted venue like any other", () => {
+  const fresh = certifyFromSnapshot(mockSnapshot("arzinja", {}));
+  assert.equal(fresh.status, "LIVE_VERIFIED");
+
+  const stale = certifyFromSnapshot(mockSnapshot("arzinja", { stale: true, ageMs: 10 * 60_000 }));
+  assert.equal(stale.status, "LIVE_DEGRADED");
+  assert.ok(String(stale.statusReason).includes("تازگی"), "staleness is named as the cause");
+});
+
+await test("depth is required: a headline-only response cannot certify", () => {
+  const noDepth = certifyFromSnapshot(mockSnapshot("tetherland", { depthAvailable: false }));
+  assert.equal(noDepth.status, "LIVE_DEGRADED");
+  assert.ok(String(noDepth.statusReason).includes("عمق"));
+
+  // With depth, the walk produces fillable sizes at every traded size.
+  const withDepth = mockSnapshot("arzinja", {});
+  assert.equal(withDepth.sizeExecutables.filter((x) => x.buyFillable && x.sellFillable).length, 4);
+});
+
+await test("both promoted venues appear in valid, net-positive opportunities", () => {
+  const now = new Date().toISOString();
+  const sources = [
+    snapshotFor("nobitex", 100_000, 99_900),
+    // Tetherland and Arzinja quote higher, so selling into them is profitable.
+    snapshotFor("tetherland", 102_000, 101_800),
+    snapshotFor("arzinja", 102_500, 102_300)
+  ];
+  const built = buildOpportunities(sources, [], now, {
+    certStatuses: {
+      nobitex: "LIVE_VERIFIED",
+      tetherland: "LIVE_VERIFIED",
+      arzinja: "LIVE_VERIFIED"
+    },
+    // The confirmed schedule, exactly as the collector supplies it.
+    confirmedFeeBps: {
+      nobitex: CONFIRMED.nobitex.taker,
+      tetherland: CONFIRMED.tetherland.taker,
+      arzinja: CONFIRMED.arzinja.taker
+    }
+  });
+
+  for (const venue of ["tetherland", "arzinja"]) {
+    const routes = built.filter((o) => o.sellSourceId === venue && o.buySourceId === "nobitex");
+    assert.ok(routes.length, `${venue} must produce routes`);
+    const valid = routes.filter(
+      (o) => o.eligibility === "EXECUTABLE_NOW" && !o.feeUnknown && o.netProfitToman > 0
+    );
+    assert.ok(valid.length, `${venue} must reach a valid net-positive opportunity`);
+    assert.equal(valid[0].blockedReasons.length, 0, `${venue} must carry no blocking reason`);
   }
 });
 

@@ -244,8 +244,8 @@ export const SHADOW_SOURCES: ShadowSourceConfig[] = [
     id: "tetherland",
     nameFa: "تترلند",
     marketModel: "ORDER_BOOK",
-    accountStatus: "unverified",
-    eligibilityBase: "ACCOUNT_REQUIRED",
+    accountStatus: "verified",
+    eligibilityBase: "EXECUTABLE_NOW",
     feeBps: null,
     feeStatus: "unknown",
     feeLabel: "کارمزد تأییدنشده",
@@ -277,9 +277,14 @@ export const SHADOW_SOURCES: ShadowSourceConfig[] = [
   {
     id: "arzinja",
     nameFa: "ارزینجا",
-    marketModel: "REFERENCE",
-    accountStatus: "unverified",
-    eligibilityBase: "REFERENCE_ONLY",
+    /*
+     * Promoted from REFERENCE after certification: the P2P order book is a
+     * documented public endpoint, its direction is proved per cycle, and it
+     * publishes real multi-level depth. It is now walked like any other book.
+     */
+    marketModel: "ORDER_BOOK",
+    accountStatus: "verified",
+    eligibilityBase: "EXECUTABLE_NOW",
     feeBps: null,
     feeStatus: "unknown",
     feeLabel: "مرجع / API پایدار تأییدنشده",

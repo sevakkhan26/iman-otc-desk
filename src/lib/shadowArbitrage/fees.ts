@@ -29,15 +29,28 @@ export function computeRouteEconomics(input: {
   sizeUsdt: number;
   buyVwapToman: number;
   sellVwapToman: number;
+  /**
+   * Admin-confirmed taker fees, in basis points, keyed by venue.
+   *
+   * A confirmation from the venue's own panel is better evidence than the
+   * compiled-in provisional value, so it wins when present. Absent an entry the
+   * configured fee is used, and when neither exists the route stays
+   * fee-unknown — a missing fee is never treated as zero.
+   */
+  confirmedFeeBps?: Partial<Record<ShadowSourceId, number | null>>;
 }): RouteFeeBreakdown {
   const buyCfg = getSourceConfig(input.buySourceId);
   const sellCfg = getSourceConfig(input.sellSourceId);
   const buyCost = mulPriceSizeToman(input.buyVwapToman, input.sizeUsdt);
   const sellProceeds = mulPriceSizeToman(input.sellVwapToman, input.sizeUsdt);
 
-  const feeUnknown = buyCfg.feeBps === null || sellCfg.feeBps === null;
-  const buyFeeBps = buyCfg.feeBps ?? 0;
-  const sellFeeBps = sellCfg.feeBps ?? 0;
+  const resolvedBuyFee = input.confirmedFeeBps?.[input.buySourceId] ?? buyCfg.feeBps;
+  const resolvedSellFee = input.confirmedFeeBps?.[input.sellSourceId] ?? sellCfg.feeBps;
+
+  const feeUnknown = resolvedBuyFee === null || resolvedSellFee === null ||
+    resolvedBuyFee === undefined || resolvedSellFee === undefined;
+  const buyFeeBps = resolvedBuyFee ?? 0;
+  const sellFeeBps = resolvedSellFee ?? 0;
   const buyFee = feeUnknown ? 0 : feeFromBps(buyCost, buyFeeBps);
   const sellFee = feeUnknown ? 0 : feeFromBps(sellProceeds, sellFeeBps);
   const slippage = feeFromBps(buyCost, SLIPPAGE_BUFFER_BPS);

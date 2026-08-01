@@ -29,6 +29,7 @@ import {
   ensureObservationSession,
   getObservation,
   loadLastSourceStates,
+  loadLatestFeeConfirmations,
   loadLifecyclesForMerge,
   retentionCleanup,
   touchHeartbeat,
@@ -208,8 +209,19 @@ async function runCycleLocked(input: {
     });
 
   const previousLifecycles = await loadLifecyclesForMerge();
+  /*
+   * Admin-confirmed taker fees are better evidence than the compiled-in
+   * provisional values, and for several venues they are the only fee evidence
+   * that exists. Without them those venues would report fee-unknown forever.
+   */
+  const confirmedFees = await loadLatestFeeConfirmations();
+  const confirmedFeeBps: Partial<Record<ShadowSourceId, number | null>> = {};
+  for (const [sourceId, row] of Object.entries(confirmedFees)) {
+    confirmedFeeBps[sourceId as ShadowSourceId] = (row as { takerFeeBps: number }).takerFeeBps;
+  }
   const built = buildOpportunitiesDetailed(aged, previousLifecycles, serverNow, {
-    certStatuses: certStatusMap(certBySource)
+    certStatuses: certStatusMap(certBySource),
+    confirmedFeeBps
   });
 
   const ok = aged.filter((s) => s.health === "healthy" || s.health === "degraded").length;

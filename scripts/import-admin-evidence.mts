@@ -109,18 +109,16 @@ const FEES: Array<{
     tier: "Level 1",
     makerBps: 0,
     takerBps: 0,
-    reference: {
-      note: "reference evidence only — never execution-eligible",
-      easyTradeBps: 50,
-      conversionBps: 20
-    }
+    reference: { easyTradeBps: 50, conversionBps: 20 }
   }
 ];
 
 /**
- * Account evidence. All nine are KYC-complete per the admin's confirmation.
- * Execution eligibility is a separate, stricter question: Tetherland stays
- * degraded and Arzinja stays reference-only, so neither may ever execute.
+ * Account evidence. All nine are KYC-complete per the admin's confirmation, and
+ * all nine are execution-eligible now that Tetherland and Arzinja are certified
+ * LIVE_VERIFIED. Eligibility is still a separate field from KYC: it records the
+ * outcome of certification, and a venue that fails a cycle's checks is blocked
+ * by those checks regardless of what is stored here.
  */
 const ACCOUNTS: Array<{
   sourceId: string;
@@ -134,16 +132,11 @@ const ACCOUNTS: Array<{
   { sourceId: "abantether", executionEligible: true, ineligibleReason: null },
   { sourceId: "ramzinex", executionEligible: true, ineligibleReason: null },
   { sourceId: "bit24", executionEligible: true, ineligibleReason: null },
-  {
-    sourceId: "tetherland",
-    executionEligible: false,
-    ineligibleReason: "منبع در وضعیت اختلال است؛ هیچ‌گاه مبنای اجرا قرار نمی‌گیرد."
-  },
-  {
-    sourceId: "arzinja",
-    executionEligible: false,
-    ineligibleReason: "منبع فقط مرجع است؛ هیچ‌گاه مبنای اجرا قرار نمی‌گیرد."
-  }
+  // Both were certified LIVE_VERIFIED on live data: direction proved per cycle,
+  // IRT units, real depth and validated freshness. They now clear the same gates
+  // as the other seven, every cycle, with no blanket bar.
+  { sourceId: "tetherland", executionEligible: true, ineligibleReason: null },
+  { sourceId: "arzinja", executionEligible: true, ineligibleReason: null }
 ];
 
 const known = new Set(SHADOW_SOURCES.map((s) => s.id));
@@ -184,7 +177,7 @@ for (const account of ACCOUNTS) {
     sourceId: account.sourceId,
     kycComplete: true,
     // KYC being complete never grants execution on its own.
-    accountState: account.executionEligible ? "VERIFIED" : "VERIFIED",
+    accountState: "VERIFIED",
     executionEligible: account.executionEligible,
     ineligibleReason: account.ineligibleReason,
     provenance: PROVENANCE,

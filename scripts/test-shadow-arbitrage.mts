@@ -2003,16 +2003,20 @@ await test("Phase 6 stores settlement per venue and per side, never as one fee c
   assert.equal(buy.provenance, "ADMIN_CONFIRMED");
   assert.equal(sell.provenance, "ADMIN_CONFIRMED");
 
-  for (const id of ["nobitex", "wallex", "tabdeal"] as const) {
-    assert.equal(settlementUsable(settlementFor(id, "buy")), true);
-    assert.equal(settlementUsable(settlementFor(id, "sell")), true);
+  /*
+   * The confirmed rule now covers every venue the desk holds an account on —
+   * all nine — but it is still stored per venue AND per side, never collapsed
+   * into a single fee currency.
+   */
+  for (const id of Object.keys(PAPER_FEE_SETTLEMENT) as Array<keyof typeof PAPER_FEE_SETTLEMENT>) {
+    assert.equal(settlementUsable(settlementFor(id, "buy")), true, `${id} buy`);
+    assert.equal(settlementUsable(settlementFor(id, "sell")), true, `${id} sell`);
+    assert.equal(settlementFor(id, "buy").feeAsset, "IRT", `${id} buy asset`);
+    assert.equal(settlementFor(id, "sell").feeAsset, "USDT", `${id} sell asset`);
   }
-  // Unknown venues remain blocked on both sides.
-  for (const id of ["bitpin", "abantether", "ramzinex", "tetherland", "bit24", "arzinja"] as const) {
-    assert.equal(PAPER_FEE_SETTLEMENT[id].buy.provenance, "UNKNOWN");
-    assert.equal(settlementUsable(settlementFor(id, "buy")), false);
-    assert.equal(settlementUsable(settlementFor(id, "sell")), false);
-  }
+  // A venue nobody confirmed is still blocked on both sides.
+  assert.equal(settlementUsable(settlementFor("unlisted-venue" as never, "buy")), false);
+  assert.equal(settlementUsable(settlementFor("unlisted-venue" as never, "sell")), false);
 
   // A fee can only be added to the debit in the asset that side actually pays.
   assert.equal(settlementCoherent(BUY_SETTLEMENT, "buy"), true);
@@ -3166,11 +3170,12 @@ await test("7A the paper surface is the only executable implementation", async (
   });
   assert.equal(again.duplicateOfPriorRequest, true, "the paper surface is idempotent too");
 
-  // A venue with unconfirmed settlement is refused rather than simulated.
+  // A venue with unconfirmed settlement is refused rather than simulated. Every
+  // configured venue is confirmed now, so this uses one that is not.
   const refused = await paper.simulateLeg({
     clientOrderId: clientOrderId("plan-p", "SELL", 1),
     side: "SELL",
-    sourceId: "bitpin",
+    sourceId: "unlisted-venue" as never,
     sizeUsdt: 25,
     limitPriceToman: 100_000
   });

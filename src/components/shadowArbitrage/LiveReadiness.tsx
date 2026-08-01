@@ -7,10 +7,13 @@ import { formatCountFa, toFaDigits } from "@/components/shadowArbitrage/labels";
 /** Permanent, never hidden, never conditional. */
 export const LIVE_BANNER_EN = "LIVE EXECUTION IS NOT IMPLEMENTED — NO REAL ORDERS";
 
+type BlockerKind = "SYSTEM_FAILURE" | "MISSING_POLICY" | "MISSING_EVIDENCE" | "GATE_NOT_MATURE";
+
 type Gate = {
   id: string;
   labelFa: string;
   status: "PASSED" | "BLOCKED" | "UNKNOWN";
+  blockerKind: BlockerKind | null;
   evidenceFa: string;
   expiresAt: string | null;
   expired: boolean;
@@ -41,8 +44,19 @@ type PolicyState = {
   requiredActionFa: string;
 };
 
+type OperationalHealth = {
+  healthy: boolean;
+  running: boolean;
+  heartbeatStale: boolean;
+  duplicateIdempotencyKeys: number;
+  successfulCycles: number;
+  summaryFa: string;
+};
+
 type Report = {
   gateState: string;
+  operationalHealth?: OperationalHealth;
+  blockerCounts?: Record<BlockerKind, number>;
   effectiveState: string;
   liveExecutionImplemented: boolean;
   unavailableReasonFa: string;
@@ -51,6 +65,24 @@ type Report = {
   blockedCount: number;
   blockers: Array<{ gate: string; labelFa: string; blockerFa: string }>;
   nextActionsFa: string[];
+};
+
+/**
+ * A blocked gate is not automatically an error. Naming the cause lets a reader
+ * tell a real fault from a decision nobody has made yet.
+ */
+const BLOCKER_KIND_FA: Record<BlockerKind, string> = {
+  SYSTEM_FAILURE: "خرابی سامانه",
+  MISSING_POLICY: "سیاست تعیین‌نشده",
+  MISSING_EVIDENCE: "شواهد ثبت‌نشده",
+  GATE_NOT_MATURE: "در حال تکمیل"
+};
+
+const BLOCKER_KIND_TONE: Record<BlockerKind, string> = {
+  SYSTEM_FAILURE: "danger",
+  MISSING_POLICY: "warn",
+  MISSING_EVIDENCE: "warn",
+  GATE_NOT_MATURE: "muted"
 };
 
 type Review = {
@@ -82,8 +114,15 @@ type Attestation = {
   note: string | null;
 };
 
+type EvidenceEnvironment = {
+  kind: "TEMPORARY_LOCAL" | "LOCAL" | "SHARED";
+  noteFa: string;
+};
+
 type Payload = {
   liveBanner: string;
+  /** Whether this picture came from a throwaway local database. */
+  evidenceEnvironment?: EvidenceEnvironment;
   liveExecutionImplemented: boolean;
   canArm: boolean;
   canPlaceRealOrders: boolean;
@@ -203,6 +242,17 @@ export function LiveReadiness() {
         </span>
       </div>
 
+      {/*
+        A throwaway local database has its own observation window starting at
+        zero. Saying so stops a reviewer reading a local 0-day window as a
+        production regression.
+      */}
+      {data?.evidenceEnvironment?.kind === "TEMPORARY_LOCAL" ? (
+        <div className="sa-callout sa-callout-warn" role="status">
+          شواهد موقت محلی — {data.evidenceEnvironment.noteFa}
+        </div>
+      ) : null}
+
       {!open ? null : (
         <>
           <div className="panel-body">
@@ -243,6 +293,43 @@ export function LiveReadiness() {
                 </div>
                 <div className="sa-metric-note">مسدود: {formatCountFa(report.blockedCount)}</div>
               </div>
+              {report.operationalHealth ? (
+                <div className="sa-metric">
+                  <div className="sa-metric-label">سلامت عملیاتی</div>
+                  <div className="sa-metric-value">
+                    <span
+                      className={`sa-chip sa-chip-sm sa-chip-${report.operationalHealth.healthy ? "good" : "danger"}`}
+                    >
+                      {report.operationalHealth.healthy ? "سالم" : "دارای اشکال"}
+                    </span>
+                  </div>
+                  <div className="sa-metric-note">{report.operationalHealth.summaryFa}</div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {report?.blockerCounts ? (
+            <div className="panel-body">
+              <div className="sa-subpanel-title">تفکیک موانع</div>
+              <div className="sa-blocker-kinds">
+                {(
+                  ["SYSTEM_FAILURE", "MISSING_POLICY", "MISSING_EVIDENCE", "GATE_NOT_MATURE"] as const
+                ).map((kind) => (
+                  <span
+                    key={kind}
+                    className={`sa-chip sa-chip-sm sa-chip-${
+                      report.blockerCounts![kind] ? BLOCKER_KIND_TONE[kind] : "muted"
+                    }`}
+                  >
+                    {BLOCKER_KIND_FA[kind]}: {toFaDigits(report.blockerCounts![kind])}
+                  </span>
+                ))}
+              </div>
+              <div className="sa-footnote">
+                فقط «خرابی سامانه» به‌معنای اشکال فعلی است. «سیاست تعیین‌نشده» یعنی عددی هنوز انتخاب
+                نشده، «شواهد ثبت‌نشده» یعنی مدرکی ثبت نشده و «در حال تکمیل» یعنی شواهد در حال جمع‌شدن است.
+              </div>
             </div>
           ) : null}
 
@@ -253,6 +340,7 @@ export function LiveReadiness() {
                 <colgroup>
                   <col className="sa-col-gate" />
                   <col className="sa-col-status" />
+                  <col className="sa-col-status" />
                   <col className="sa-col-evidence" />
                   <col className="sa-col-expiry" />
                   <col className="sa-col-blocker" />
@@ -262,6 +350,7 @@ export function LiveReadiness() {
                   <tr>
                     <th>دروازه</th>
                     <th>وضعیت</th>
+                    <th>نوع مانع</th>
                     <th className="sa-col-optional">شواهد</th>
                     <th className="sa-col-optional">انقضا</th>
                     <th>مانع</th>
@@ -278,6 +367,17 @@ export function LiveReadiness() {
                         <span className={`sa-chip sa-chip-sm sa-chip-${STATUS_TONE[g.status]}`}>
                           {STATUS_FA[g.status]}
                         </span>
+                      </td>
+                      <td data-label="نوع مانع">
+                        {g.blockerKind ? (
+                          <span
+                            className={`sa-chip sa-chip-sm sa-chip-${BLOCKER_KIND_TONE[g.blockerKind]}`}
+                          >
+                            {BLOCKER_KIND_FA[g.blockerKind]}
+                          </span>
+                        ) : (
+                          "—"
+                        )}
                       </td>
                       <td data-label="شواهد" className="sa-col-optional text-micro">
                         {g.evidenceFa}

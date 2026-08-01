@@ -1267,9 +1267,12 @@ await test("8B the sources tab keeps health and readiness apart, with per-side s
   assert.equal(nobitex.buySettlement.feeAsset, "IRT");
   assert.equal(nobitex.sellSettlement.feeAsset, "USDT");
   assert.equal(nobitex.buySettlement.provenance, "ADMIN_CONFIRMED");
-  assert.equal(arzinja.buySettlement.feeAsset, "UNKNOWN");
-  assert.equal(arzinja.sellSettlement.provenance, "UNKNOWN");
-  assert.deepEqual(settlementFor("bit24", "sell"), {
+  // Arzinja is a confirmed venue now, like the rest.
+  assert.equal(arzinja.buySettlement.feeAsset, "IRT");
+  assert.equal(arzinja.sellSettlement.feeAsset, "USDT");
+  assert.equal(arzinja.sellSettlement.provenance, "ADMIN_CONFIRMED");
+  // A venue nobody confirmed still reads as unknown.
+  assert.deepEqual(settlementFor("unlisted-venue", "sell"), {
     feeAsset: "UNKNOWN",
     debitMode: "UNKNOWN",
     provenance: "UNKNOWN"
@@ -1810,6 +1813,8 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
       "drizzle/0010_shadow_admin_evidence.sql",
       "src/lib/shadowArbitrage/accounts.ts",
       "src/lib/shadowArbitrage/paper/run.ts",
+      "src/lib/shadowArbitrage/paper/broker.ts",
+      "src/lib/shadowArbitrage/live/readiness.ts",
       // certifying Tetherland and Arzinja: direction proof, units, freshness,
       // depth, and routing the confirmed fees into the economics
       "src/lib/shadowArbitrage/adapters/base.ts",

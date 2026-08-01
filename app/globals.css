@@ -7746,3 +7746,11 @@ table th {
   gap: 8px;
   margin-top: 12px;
 }
+
+/* Blocker-kind chips on the readiness panel — layout only. */
+.sa-blocker-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}

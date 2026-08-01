@@ -17,7 +17,7 @@ import {
   type AccountOverride,
   type FeeOverride
 } from "../src/lib/shadowArbitrage/accounts.ts";
-import { applyFill, planFill, PAPER_FEE_SETTLEMENT, usdtToMicros } from "../src/lib/shadowArbitrage/paper/broker.ts";
+import { applyFill, planFill, PAPER_FEE_SETTLEMENT, settlementFor, usdtToMicros } from "../src/lib/shadowArbitrage/paper/broker.ts";
 import { proveBookDirection } from "../src/lib/shadowArbitrage/adapters/base.ts";
 import { certifyFromSnapshot } from "../src/lib/shadowArbitrage/certification.ts";
 import { parseLevels } from "../src/lib/shadowArbitrage/vwap.ts";
@@ -507,6 +507,129 @@ await test("network and transfer costs stay UNKNOWN until a snapshot exists", ()
   const config = read("src/lib/shadowArbitrage/config.ts");
   const rebalance = config.slice(config.indexOf('key: "rebalance_cost"'));
   assert.ok(rebalance.slice(0, 400).includes('status: "provisional"'));
+});
+
+
+/* ── live-readiness panel: honest categories, honest health ────────────────── */
+
+await test("fee settlement is confirmed for all nine venues, unknown for any other", () => {
+  const ids = Object.keys(PAPER_FEE_SETTLEMENT);
+  assert.equal(ids.length, 9);
+  for (const id of ids) {
+    const buy = PAPER_FEE_SETTLEMENT[id as keyof typeof PAPER_FEE_SETTLEMENT].buy;
+    const sell = PAPER_FEE_SETTLEMENT[id as keyof typeof PAPER_FEE_SETTLEMENT].sell;
+    assert.equal(buy.feeAsset, "IRT", `${id} buy settles in toman`);
+    assert.equal(sell.feeAsset, "USDT", `${id} sell settles in USDT`);
+    assert.equal(buy.provenance, "ADMIN_CONFIRMED");
+    assert.equal(sell.provenance, "ADMIN_CONFIRMED");
+  }
+  // A venue nobody confirmed is still blocked, not silently inheriting the rule.
+  const unlisted = settlementFor("some-new-venue" as never, "buy");
+  assert.equal(unlisted.feeAsset, "UNKNOWN");
+  assert.equal(unlisted.provenance, "UNKNOWN");
+});
+
+await test("a blocked gate states which kind of blocker it is", async () => {
+  const { evaluateReadiness } = await import("../src/lib/shadowArbitrage/live/readiness.ts");
+  const { buildPolicyState } = await import("../src/lib/shadowArbitrage/live/policy.ts");
+
+  const report = evaluateReadiness({
+    observation: { status: "RUNNING", elapsedMs: 0, successCoveragePercent: 73.5 },
+    collector: {
+      running: true,
+      heartbeatStale: false,
+      duplicateIdempotencyKeys: 0,
+      successfulCycles: 527
+    },
+    capitalRecommendation: { status: "PROVISIONAL", reasonFa: "قفل" },
+    paper: null,
+    venueStates: [],
+    policies: buildPolicyState([], Date.now()),
+    attestations: [],
+    reconciliation: null
+  } as never);
+
+  // Every blocked gate is classified; nothing is left unexplained.
+  for (const gate of report.gates.filter((g) => g.status !== "PASSED")) {
+    assert.ok(gate.blockerKind, `${gate.id} must state its blocker kind`);
+  }
+  // And a passing gate carries no kind at all.
+  for (const gate of report.gates.filter((g) => g.status === "PASSED")) {
+    assert.equal(gate.blockerKind, null, `${gate.id} passes, so it has no blocker`);
+  }
+
+  // With no policies configured, the risk gate is a decision, not a fault.
+  const risk = report.gates.find((g) => g.id === "risk_policies")!;
+  assert.equal(risk.blockerKind, "MISSING_POLICY");
+  // A healthy collector blocked only by unset policies is not a system failure.
+  const collector = report.gates.find((g) => g.id === "collector_health")!;
+  assert.equal(collector.status, "BLOCKED");
+  assert.equal(collector.blockerKind, "MISSING_POLICY");
+  // The counts add up to the blocked gates.
+  const counted = Object.values(report.blockerCounts).reduce((a, b) => a + b, 0);
+  assert.equal(counted, report.blockedCount);
+});
+
+await test("operational health is reported separately from arming readiness", async () => {
+  const { evaluateReadiness } = await import("../src/lib/shadowArbitrage/live/readiness.ts");
+  const { buildPolicyState } = await import("../src/lib/shadowArbitrage/live/policy.ts");
+  const base = {
+    observation: { status: "RUNNING", elapsedMs: 0, successCoveragePercent: 73.5 },
+    capitalRecommendation: null,
+    paper: null,
+    venueStates: [],
+    policies: buildPolicyState([], Date.now()),
+    attestations: [],
+    reconciliation: null
+  };
+
+  const healthy = evaluateReadiness({
+    ...base,
+    collector: { running: true, heartbeatStale: false, duplicateIdempotencyKeys: 0, successfulCycles: 527 }
+  } as never);
+  assert.equal(healthy.operationalHealth.healthy, true, "running, fresh, no duplicates");
+  assert.equal(healthy.effectiveState, "DISARMED", "and still disarmed");
+  assert.ok(healthy.operationalHealth.summaryFa.includes("سالم"));
+
+  // A real fault flips health and is classified as a system failure.
+  const stalled = evaluateReadiness({
+    ...base,
+    collector: { running: false, heartbeatStale: true, duplicateIdempotencyKeys: 3, successfulCycles: 10 }
+  } as never);
+  assert.equal(stalled.operationalHealth.healthy, false);
+  assert.equal(
+    stalled.gates.find((g) => g.id === "collector_health")!.blockerKind,
+    "SYSTEM_FAILURE"
+  );
+});
+
+await test("the panel separates the four blocker kinds and shows operational health", () => {
+  const panel = read("src/components/shadowArbitrage/LiveReadiness.tsx");
+  for (const kind of ["SYSTEM_FAILURE", "MISSING_POLICY", "MISSING_EVIDENCE", "GATE_NOT_MATURE"]) {
+    assert.ok(panel.includes(kind), `${kind} must be rendered`);
+  }
+  assert.ok(panel.includes("سلامت عملیاتی"), "operational health has its own metric");
+  assert.ok(panel.includes("نوع مانع"), "the gate table names the blocker kind");
+  assert.ok(panel.includes("شواهد موقت محلی"), "temporary local evidence is labelled");
+  // The temporary-local label is driven by the server, not guessed client-side.
+  const route = read("app/api/shadow-arbitrage/live-readiness/route.ts");
+  assert.ok(route.includes("TEMPORARY_LOCAL"));
+  assert.ok(route.includes('databaseUrl.startsWith("pglite:")'));
+});
+
+await test("the readiness panel changes nothing about the safety boundary", () => {
+  const readiness = read("src/lib/shadowArbitrage/live/readiness.ts");
+  const route = read("app/api/shadow-arbitrage/live-readiness/route.ts");
+  // Still structurally disarmed, still no live execution.
+  assert.ok(readiness.includes('effectiveState: "DISARMED"'));
+  assert.ok(route.includes("canArm: false"));
+  assert.ok(route.includes("canPlaceRealOrders: false"));
+  const capability = read("src/lib/shadowArbitrage/live/capability.ts");
+  assert.ok(capability.includes("export const LIVE_EXECUTION_IMPLEMENTED = false as const"));
+  // The evidence gates that need human attestation are untouched.
+  for (const gate of ["api_capability", "key_permissions", "transfer_costs", "reconciliation_runbook"]) {
+    assert.ok(readiness.includes(`id: "${gate}"`), `${gate} still exists`);
+  }
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

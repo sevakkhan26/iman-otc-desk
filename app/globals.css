@@ -7754,3 +7754,12 @@ table th {
   gap: 8px;
   margin-bottom: 10px;
 }
+
+/* Advanced disclosure on the paper tab — layout only. */
+.sa-advanced-details > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.sa-advanced-details > summary::-webkit-details-marker {
+  display: none;
+}

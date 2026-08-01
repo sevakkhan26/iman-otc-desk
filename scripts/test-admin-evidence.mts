@@ -632,5 +632,188 @@ await test("the readiness panel changes nothing about the safety boundary", () =
   }
 });
 
+
+/* ── simple paper trading: capital is a portfolio, not a trade size ────────── */
+
+await test("the offered allocation conserves the portfolio exactly at any mark price", async () => {
+  const { defaultAllocation, validateAllocation, allocationToBalances } = await import(
+    "../src/lib/shadowArbitrage/paper/portfolio.ts"
+  );
+  const venues = [
+    "nobitex", "wallex", "tabdeal", "bitpin", "abantether",
+    "ramzinex", "tetherland", "bit24", "arzinja"
+  ];
+
+  for (const mark of [194_496, 195_470, 100_000, 87_654]) {
+    const rows = defaultAllocation(10_000_000_000, venues, mark);
+    assert.equal(rows.length, 9, "every eligible venue gets a share");
+    const v = validateAllocation({
+      totalCapitalToman: 10_000_000_000,
+      allocations: rows,
+      markPriceToman: mark,
+      eligibleVenueIds: venues
+    });
+    assert.equal(v.residualToman, 0, `mark ${mark} must conserve exactly`);
+    assert.equal(v.ok, true);
+    assert.equal(v.allocatedToman, 10_000_000_000);
+
+    /*
+     * Conservation must hold for the money the ledger will actually hold, not
+     * only for a per-venue rounding that happens to cancel. Both are checked at
+     * every mark price because the two readings can disagree by a rial.
+     */
+    const balances = allocationToBalances(rows);
+    const ledgerValue = Math.round(
+      balances.reduce((sum, b) => sum + b.irtToman, 0) +
+        (balances.reduce((sum, b) => sum + b.usdtMicros, 0) / 1_000_000) * mark
+    );
+    assert.equal(ledgerValue, 10_000_000_000, `mark ${mark}: opening balances must be exact`);
+
+    // Equal share, and roughly half of each venue held in USDT.
+    for (const row of v.perVenue) {
+      assert.ok(Math.abs(row.sharePercent - 100 / 9) < 0.01, "shares are equal");
+      const usdtValue = row.usdtUnits * mark;
+      assert.ok(Math.abs(usdtValue / row.valueToman - 0.5) < 0.001, "half the venue sits in USDT");
+    }
+  }
+
+  // The mark price is never invented: no price, no allocation.
+  assert.throws(() => defaultAllocation(10_000_000_000, venues, 0));
+
+  // Opening balances carry the same money into the session.
+  const rows = defaultAllocation(10_000_000_000, venues, 194_496);
+  const balances = allocationToBalances(rows);
+  const carried = Math.round(
+    balances.reduce((s, b) => s + b.irtToman, 0) +
+      (balances.reduce((s, b) => s + b.usdtMicros, 0) / 1_000_000) * 194_496
+  );
+  assert.equal(carried, 10_000_000_000, "balances carry the portfolio across exactly");
+});
+
+await test("an edited allocation that does not add up is refused, with the residual shown", async () => {
+  const { defaultAllocation, validateAllocation } = await import(
+    "../src/lib/shadowArbitrage/paper/portfolio.ts"
+  );
+  const venues = ["nobitex", "wallex"];
+  const rows = defaultAllocation(1_000_000_000, venues, 100_000);
+
+  // One toman too many is still wrong.
+  const over = validateAllocation({
+    totalCapitalToman: 1_000_000_000,
+    allocations: [{ ...rows[0], irtToman: rows[0].irtToman + 1 }, rows[1]],
+    markPriceToman: 100_000,
+    eligibleVenueIds: venues
+  });
+  assert.equal(over.ok, false);
+  assert.equal(over.residualToman, 1);
+  assert.ok(over.errorsFa[0].includes("اختلاف"));
+
+  // A venue that is not execution-eligible may not hold capital.
+  const ineligible = validateAllocation({
+    totalCapitalToman: 1_000_000_000,
+    allocations: rows,
+    markPriceToman: 100_000,
+    eligibleVenueIds: ["nobitex"]
+  });
+  assert.equal(ineligible.ok, false);
+  assert.ok(ineligible.errorsFa.some((e) => e.includes("اجراپذیر نیست")));
+
+  // Negative shares are refused outright.
+  const negative = validateAllocation({
+    totalCapitalToman: 1_000_000_000,
+    allocations: [{ sourceId: "nobitex", irtToman: -1, usdtUnits: 0 }],
+    markPriceToman: 100_000
+  });
+  assert.equal(negative.ok, false);
+});
+
+await test("the summary marks the portfolio and never invents a price", async () => {
+  const { summarisePortfolio } = await import("../src/lib/shadowArbitrage/paper/portfolio.ts");
+  const balances = [
+    { sourceId: "nobitex" as never, irtToman: 600_000_000, usdtMicros: 2_000 * 1_000_000 }
+  ];
+  const fills = [
+    { economicNetPnlToman: 50_000, riskAdjustedPnlToman: 40_000, occurredAt: "2026-08-01T08:00:00.000Z" },
+    { economicNetPnlToman: -20_000, riskAdjustedPnlToman: -25_000, occurredAt: "2026-08-01T09:00:00.000Z" }
+  ];
+  const summary = summarisePortfolio({
+    initialCapitalToman: 1_000_000_000,
+    balances,
+    markPriceToman: 200_000,
+    fills,
+    rejectedCount: 7,
+    todayStartMs: Date.parse("2026-08-01T00:00:00.000Z")
+  });
+  assert.equal(summary.markedValueToman, 600_000_000 + 2_000 * 200_000);
+  assert.equal(summary.economicPnlToman, 30_000);
+  assert.equal(summary.riskAdjustedPnlToman, 15_000);
+  assert.equal(summary.todayPnlToman, 30_000);
+  // Peak was 50,000 and it gave back 20,000.
+  assert.equal(summary.drawdownToman, 20_000);
+  assert.equal(summary.filled, 2);
+  assert.equal(summary.rejected, 7);
+  assert.equal(summary.lastTradeAt, "2026-08-01T09:00:00.000Z");
+
+  // Without a price there is no marked value and no ROI — not a zero.
+  const priceless = summarisePortfolio({
+    initialCapitalToman: 1_000_000_000,
+    balances,
+    markPriceToman: null,
+    fills,
+    rejectedCount: 0,
+    todayStartMs: 0
+  });
+  assert.equal(priceless.markedValueToman, null);
+  assert.equal(priceless.roiPercent, null);
+});
+
+await test("the paper view keeps capital, sessions and safety straight", () => {
+  const view = read("src/components/shadowArbitrage/PaperSimple.tsx");
+  // One prominent action, named exactly.
+  assert.ok(view.includes("ساخت نشست ۱۰ میلیاردی از طرح فعلی"));
+  // Three steps, in order.
+  for (const label of ["سرمایهٔ کل", "تخصیص بین صرافی‌ها", "بازبینی و ساخت"]) {
+    assert.ok(view.includes(label), `${label} step must exist`);
+  }
+  // The capital figure is stated as a portfolio, not a trade size.
+  assert.ok(view.includes("کل پرتفوی مجازی است، نه اندازهٔ هر معامله"));
+  // Plan and session are named as different things.
+  assert.ok(view.includes("طرح سرمایه و نشست دو چیز"));
+  assert.ok(view.includes("برگرفته از طرح سرمایه"));
+  // The new session is labelled virtual, provisional and non-final.
+  assert.ok(view.includes("مجازی، موقت و غیرنهایی"));
+  // Stopping preserves history rather than deleting it.
+  assert.ok(view.includes("حفظ سابقه"));
+  assert.equal(/delete|حذف نشست/i.test(view), false, "nothing deletes a session");
+  // The default is offered, not saved silently.
+  assert.ok(view.includes("تا زمانی که در گام سوم تأیید نکنید ذخیره نمی‌شود"));
+  // Advanced material is folded away.
+  assert.ok(view.includes("جزئیات پیشرفته"));
+  // The ledger carries the columns a reviewer needs.
+  for (const col of [
+    "صرافی خرید", "صرافی فروش", "حجم", "کارمزد تومانی خرید",
+    "کارمزد تتری فروش", "سود خالص اقتصادی", "سود تعدیل‌شده"
+  ]) {
+    assert.ok(view.includes(col), `ledger column ${col}`);
+  }
+  // No credential or real-order path.
+  for (const banned of [/apiKey/i, /placeOrder/i, /\bwithdraw/i, /transferFunds/i]) {
+    assert.equal(banned.test(view), false, `must not contain ${banned}`);
+  }
+});
+
+await test("the server re-validates a proposed allocation instead of trusting it", () => {
+  const route = read("app/api/shadow-arbitrage/paper/route.ts");
+  assert.ok(route.includes("validateAllocation("), "the server checks conservation itself");
+  assert.ok(route.includes("invalid_allocation"), "and refuses a bad one");
+  assert.ok(route.includes("eligibleVenueIds: eligibleIds"), "against its own eligibility list");
+  // The mark price used is the one derived on the server this request.
+  assert.ok(route.includes("markPriceToman: valuationPriceToman"));
+  // Creating a session never approves Phase 5.
+  assert.equal(/saveCapitalApproval/.test(route), false);
+  // Real orders stay off.
+  assert.ok(route.includes("realOrders: false"));
+});
+
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

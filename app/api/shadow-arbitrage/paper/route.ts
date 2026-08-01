@@ -25,6 +25,10 @@ import {
 } from "@/db/repositories/shadowPaper";
 import { buildAllReadiness } from "@/lib/shadowArbitrage/accounts";
 import {
+  validateAllocation,
+  type VenueAllocation
+} from "@/lib/shadowArbitrage/paper/portfolio";
+import {
   DEFAULT_CAPITAL_TOMAN,
   buildOptimizedPlan,
   classifyAllVenues,
@@ -184,7 +188,39 @@ export async function GET(request: Request) {
   // Optional server-side filter so a large session never ships every candidate.
   const reason = new URL(request.url).searchParams.get("reason");
   const [snap, history] = await Promise.all([snapshot(reason), listPaperSessions(20)]);
-  return new NextResponse(JSON.stringify(envelope({ ...snap, history })), {
+  /*
+   * The wizard needs two facts it must not invent: today's mark price and which
+   * venues may hold capital. Both are derived here, on the server, from the same
+   * evidence the engine uses.
+   */
+  const [wizardSnapshots, wizardFees, wizardAccounts, latestPlan] = await Promise.all([
+    loadLatestSourceSnapshots(),
+    loadLatestFeeConfirmations(),
+    loadLatestAccountConfirmations(),
+    loadLatestCapitalPlan()
+  ]);
+  const wizardReadiness = buildAllReadiness(
+    Object.values(wizardFees),
+    Date.now(),
+    Object.values(wizardAccounts)
+  );
+  const wizard = {
+    markPriceToman: deriveValuationPrice(wizardSnapshots),
+    eligibleVenues: classifyAllVenues(wizardReadiness)
+      .filter((v) => v.executable)
+      .map((v) => ({ sourceId: v.sourceId, nameFa: v.nameFa })),
+    capitalPlan: latestPlan
+      ? {
+          id: latestPlan.id,
+          name: latestPlan.name,
+          totalCapitalToman: latestPlan.totalCapitalToman,
+          createdAt: latestPlan.createdAt,
+          allocations: latestPlan.allocations
+        }
+      : null
+  };
+
+  return new NextResponse(JSON.stringify(envelope({ ...snap, history, wizard })), {
     status: 200,
     headers: SHADOW_NO_STORE
   });
@@ -289,6 +325,49 @@ export async function POST(request: Request) {
         );
       }
       approvalFingerprint = `${planFingerprint(plan)}|${readinessFingerprint(venueStates)}`;
+    } else if (Array.isArray(body.allocations)) {
+      /*
+       * A snapshot of the capital plan the admin just reviewed.
+       *
+       * The client proposes; the server re-checks everything that matters: the
+       * venues must be execution-eligible, and the allocation must conserve the
+       * stated total exactly at the mark price derived here, not at whatever
+       * price the client happened to see. A residual of even one toman is
+       * refused rather than rounded away.
+       */
+      const eligibleIds = venueStates.filter((v) => v.executable).map((v) => v.sourceId);
+      const allocations = (body.allocations as VenueAllocation[]).map((a) => ({
+        sourceId: String(a.sourceId),
+        irtToman: Math.round(Number(a.irtToman) || 0),
+        usdtUnits: Number(a.usdtUnits) || 0
+      }));
+      const totalCapitalToman = Math.round(Number(body.totalCapitalToman) || 0);
+
+      const validation = validateAllocation({
+        totalCapitalToman,
+        allocations,
+        markPriceToman: valuationPriceToman,
+        eligibleVenueIds: eligibleIds
+      });
+      if (!validation.ok) {
+        return new NextResponse(
+          JSON.stringify({
+            error: "invalid_allocation",
+            message: validation.errorsFa.join(" "),
+            validation
+          }),
+          { status: 400, headers: SHADOW_NO_STORE }
+        );
+      }
+
+      plan = {
+        totalCapitalToman,
+        valuationPriceToman,
+        allocations: allocations.filter((a) =>
+          VALID_IDS.has(a.sourceId)
+        ) as CapitalPlanInput["allocations"],
+        mode: "MANUAL"
+      };
     } else {
       // Provisional evaluation runs on a draft 50,000,000-toman virtual plan.
       plan = buildOptimizedPlan({

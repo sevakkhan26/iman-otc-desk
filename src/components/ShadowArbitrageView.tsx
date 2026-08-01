@@ -11,6 +11,7 @@ import { OpportunitiesPanel } from "@/components/shadowArbitrage/OpportunitiesPa
 import { OpportunityDrawer } from "@/components/shadowArbitrage/OpportunityDrawer";
 import { OverviewPanel } from "@/components/shadowArbitrage/OverviewPanel";
 import { PaperExecution } from "@/components/shadowArbitrage/PaperExecution";
+import { PaperSimple } from "@/components/shadowArbitrage/PaperSimple";
 import { ShadowTabs } from "@/components/shadowArbitrage/ShadowTabs";
 import { SourcesPanel } from "@/components/shadowArbitrage/SourcesPanel";
 import { SHADOW_WARNING_FA } from "@/components/shadowArbitrage/labels";
@@ -336,7 +337,8 @@ export function ShadowArbitrageView() {
 
         {tab === "capital" ? <CapitalSimulator /> : null}
 
-        {tab === "paper" ? <PaperExecution /> : null}
+        {/* The plain view leads; the full technical panel folds in behind it. */}
+        {tab === "paper" ? <PaperSimple advanced={<PaperExecution />} /> : null}
 
         {/* The red live warning lives here and only here. */}
         {tab === "live" ? <LiveReadiness /> : null}

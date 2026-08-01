@@ -319,11 +319,31 @@ export function CommandCenter({
    * recommendation — this is, together with the one constraint that decided it.
    */
   const bestSizing = useMemo(() => {
-    if (!best || !sizing) return null;
-    return (
-      sizing.routes.find((r) => r.routeKey === `${best.buySourceId}->${best.sellSourceId}`) ?? null
-    );
+    if (!sizing) return null;
+    if (best) {
+      const match = sizing.routes.find(
+        (r) => r.routeKey === `${best.buySourceId}->${best.sellSourceId}`
+      );
+      if (match) return match;
+    }
+    /*
+     * No profitable route right now. The capacity study is still the thing an
+     * operator needs to see — whether these venues could carry the intended
+     * scale at all — so fall back to the route with the deepest analysed
+     * liquidity rather than showing nothing. It is labelled as a capacity
+     * study, never as a trade.
+     */
+    const analysed = sizing.routes.filter((r) => r.sizing.candidates.length > 0);
+    if (!analysed.length) return null;
+    return [...analysed].sort(
+      (a, b) =>
+        (b.sizing.liquidityMaxUsdtMicros ?? 0) - (a.sizing.liquidityMaxUsdtMicros ?? 0) ||
+        a.routeKey.localeCompare(b.routeKey)
+    )[0];
   }, [best, sizing]);
+
+  /** True when the panel is showing capacity rather than a tradeable route. */
+  const capacityOnly = !best && Boolean(bestSizing);
 
   const sizedCount = sizing?.routes.filter((r) => r.sizing.status === "SIZED").length ?? 0;
 
@@ -585,20 +605,31 @@ export function CommandCenter({
         <div className="panel-header sa-panel-header">
           <h3 className="panel-title">بهترین فرصت فعلی</h3>
           <div className="sa-panel-note">
-            {best ? "معتبر و خالص مثبت پس از کارمزد و بافر لغزش" : NO_VALID_OPPORTUNITY_FA}
+            {best
+              ? "معتبر و خالص مثبت پس از کارمزد و بافر لغزش"
+              : capacityOnly
+                ? "مطالعهٔ ظرفیت — عمیق‌ترین مسیر تحلیل‌شده"
+                : NO_VALID_OPPORTUNITY_FA}
           </div>
         </div>
         <div className="panel-body">
-          {best ? (
+          {capacityOnly ? (
+            <div className="sa-callout sa-callout-muted" role="status">
+              در این لحظه هیچ مسیر خالص مثبتی وجود ندارد. آنچه در ادامه می‌بینید یک{" "}
+              <strong>مطالعهٔ ظرفیت</strong> است، نه یک معاملهٔ پیشنهادی: عمیق‌ترین مسیر
+              تحلیل‌شده ({bestSizing?.routeKey}) تا کجا می‌توانست حجم بگیرد و چرا سودآور نیست.
+            </div>
+          ) : null}
+          {best || bestSizing ? (
             <>
               <dl className="sa-cc-best-grid">
                 <div>
                   <dt>صرافی خرید</dt>
-                  <dd>{best.buySourceName}</dd>
+                  <dd>{best ? best.buySourceName : (bestSizing?.buySourceId ?? "—")}</dd>
                 </div>
                 <div>
                   <dt>صرافی فروش</dt>
-                  <dd>{best.sellSourceName}</dd>
+                  <dd>{best ? best.sellSourceName : (bestSizing?.sellSourceId ?? "—")}</dd>
                 </div>
                 <div>
                   <dt>حجم محاسبه‌شده</dt>
@@ -948,6 +979,7 @@ export function CommandCenter({
                   </div>
                 </details>
               ) : null}
+              {best ? (
               <p className="sa-sub">
                 پس از کارمزد خرید <TomanAmount value={best.buyFeeToman} />، کارمزد فروش{" "}
                 <TomanAmount value={best.sellFeeToman} /> و بافر لغزش{" "}
@@ -961,6 +993,7 @@ export function CommandCenter({
                   </>
                 ) : null}
               </p>
+              ) : null}
               <p className="sa-sub">
                 حجم از کمینهٔ عمق اثبات‌شدهٔ دفتر، موجودی تومانی و تتری دو صرافی با احتساب کارمزد،
                 سهم طرح سرمایه و سقف‌های سیاست ریسک محاسبه می‌شود. هیچ حد ریسکی به‌جای مدیر فرض

@@ -34,6 +34,7 @@
     "test:navigation": "npx --yes tsx scripts/test-navigation.mts",
     "preview:shadow": "npx --yes tsx scripts/preview-shadow-ui.mts",
     "test:fonts": "npx --yes tsx scripts/test-shadow-fonts.mts",
+    "test:paper-browser": "npx --yes tsx scripts/test-paper-browser.mts",
     "test:evidence": "npx --yes tsx scripts/test-admin-evidence.mts",
     "test:sizing": "npx --yes tsx scripts/test-shadow-sizing.mts && npx --yes tsx scripts/test-shadow-liquidity.mts && npx --yes tsx scripts/test-shadow-allocation-store.mts",
     "evidence:import": "npx --yes tsx scripts/import-admin-evidence.mts"

@@ -29,15 +29,36 @@ export function computeRouteEconomics(input: {
   sizeUsdt: number;
   buyVwapToman: number;
   sellVwapToman: number;
+  /**
+   * The effective taker fee per venue, in basis points.
+   *
+   * Phase 8E-B — PRESENCE IS AUTHORITATIVE. A venue that appears in this map is
+   * answered by it, including when its value is `null`: null means the evidence
+   * was checked and refused (wrong tier, wrong execution mode, expired, absent),
+   * and the route must stay fee-unknown. Falling back to `cfg.feeBps` there
+   * would be exactly the venue-wide default the fail-closed selector exists to
+   * prevent. Only a venue the caller did not describe at all falls back to the
+   * configured value.
+   */
+  confirmedFeeBps?: Partial<Record<ShadowSourceId, number | null>>;
 }): RouteFeeBreakdown {
   const buyCfg = getSourceConfig(input.buySourceId);
   const sellCfg = getSourceConfig(input.sellSourceId);
   const buyCost = mulPriceSizeToman(input.buyVwapToman, input.sizeUsdt);
   const sellProceeds = mulPriceSizeToman(input.sellVwapToman, input.sizeUsdt);
 
-  const feeUnknown = buyCfg.feeBps === null || sellCfg.feeBps === null;
-  const buyFeeBps = buyCfg.feeBps ?? 0;
-  const sellFeeBps = sellCfg.feeBps ?? 0;
+  const supplied = input.confirmedFeeBps ?? {};
+  const resolvedBuyFee = input.buySourceId in supplied
+    ? supplied[input.buySourceId]
+    : buyCfg.feeBps;
+  const resolvedSellFee = input.sellSourceId in supplied
+    ? supplied[input.sellSourceId]
+    : sellCfg.feeBps;
+
+  const feeUnknown = resolvedBuyFee === null || resolvedSellFee === null ||
+    resolvedBuyFee === undefined || resolvedSellFee === undefined;
+  const buyFeeBps = resolvedBuyFee ?? 0;
+  const sellFeeBps = resolvedSellFee ?? 0;
   const buyFee = feeUnknown ? 0 : feeFromBps(buyCost, buyFeeBps);
   const sellFee = feeUnknown ? 0 : feeFromBps(sellProceeds, sellFeeBps);
   const slippage = feeFromBps(buyCost, SLIPPAGE_BUFFER_BPS);

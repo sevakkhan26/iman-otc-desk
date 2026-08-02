@@ -42,14 +42,37 @@ function opportunityId(route: string, firstSeenAt: string): string {
   return createHash("sha256").update(`${route}|${firstSeenAt}`).digest("hex").slice(0, 24);
 }
 
+/**
+ * Whether this venue's account may back an execution.
+ *
+ * Persisted admin evidence WINS. The compiled-in `accountStatus` is a default
+ * for a venue nobody has confirmed anything about yet — it is not a second
+ * opinion that outranks a recorded confirmation. Four venues still carry
+ * `unverified` in config while the admin's own KYC evidence says otherwise, and
+ * while config decided this, every route touching them was blocked as
+ * `account_required` no matter what the evidence said.
+ *
+ * The fallback direction is deliberate: absence of evidence keeps the
+ * conservative default, it does not invent an approval.
+ */
+function accountVerified(
+  snapshot: NormalizedSourceSnapshot,
+  evidence: BuildOptions["accountEvidence"]
+): boolean {
+  const confirmed = evidence?.[snapshot.sourceId];
+  if (confirmed) return confirmed.executionEligible;
+  return snapshot.accountStatus === "verified";
+}
+
 function baseEligibility(
   buy: NormalizedSourceSnapshot,
-  sell: NormalizedSourceSnapshot
+  sell: NormalizedSourceSnapshot,
+  evidence: BuildOptions["accountEvidence"]
 ): { eligibility: OpportunityEligibility; reasons: BlockedReasonCode[] } {
   const reasons: BlockedReasonCode[] = [];
   const referenceOnly =
     buy.eligibilityBase === "REFERENCE_ONLY" || sell.eligibilityBase === "REFERENCE_ONLY";
-  const accountMissing = buy.accountStatus !== "verified" || sell.accountStatus !== "verified";
+  const accountMissing = !accountVerified(buy, evidence) || !accountVerified(sell, evidence);
 
   if (referenceOnly) reasons.push("reference_only");
   if (accountMissing) reasons.push("account_required");
@@ -62,6 +85,21 @@ function baseEligibility(
 export type BuildOptions = {
   /** Certification status per source; anything below LIVE_VERIFIED blocks execution claims. */
   certStatuses?: Partial<Record<ShadowSourceId, CertificationStatus>>;
+  /**
+   * Admin-confirmed taker fees per venue, in basis points. Without these a venue
+   * whose fee was confirmed from its own panel would still read as fee-unknown,
+   * because the compiled-in config only carries provisional values.
+   */
+  confirmedFeeBps?: Partial<Record<ShadowSourceId, number | null>>;
+  /**
+   * Persisted admin account evidence per venue — the authoritative answer to
+   * "may this account back an execution?". Supplied by the collector from the
+   * same readiness layer every other surface reads, so the opportunity table
+   * and the readiness panel cannot disagree about a venue.
+   */
+  accountEvidence?: Partial<
+    Record<ShadowSourceId, { executionEligible: boolean; kycComplete: boolean }>
+  >;
 };
 
 export type BuildResult = {
@@ -148,11 +186,16 @@ export function buildOpportunitiesDetailed(
           sellSourceId: sell.sourceId,
           sizeUsdt: size,
           buyVwapToman: buyVwap,
-          sellVwapToman: sellVwap
+          sellVwapToman: sellVwap,
+          confirmedFeeBps: options.confirmedFeeBps
         });
         for (const r of econ.blocked) reasons.add(r);
 
-        const { eligibility: baseEl, reasons: elReasons } = baseEligibility(buy, sell);
+        const { eligibility: baseEl, reasons: elReasons } = baseEligibility(
+          buy,
+          sell,
+          options.accountEvidence
+        );
         for (const r of elReasons) reasons.add(r);
 
         let eligibility: OpportunityEligibility = baseEl;

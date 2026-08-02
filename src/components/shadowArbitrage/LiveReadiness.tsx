@@ -7,10 +7,13 @@ import { formatCountFa, toFaDigits } from "@/components/shadowArbitrage/labels";
 /** Permanent, never hidden, never conditional. */
 export const LIVE_BANNER_EN = "LIVE EXECUTION IS NOT IMPLEMENTED — NO REAL ORDERS";
 
+type BlockerKind = "SYSTEM_FAILURE" | "MISSING_POLICY" | "MISSING_EVIDENCE" | "GATE_NOT_MATURE";
+
 type Gate = {
   id: string;
   labelFa: string;
   status: "PASSED" | "BLOCKED" | "UNKNOWN";
+  blockerKind: BlockerKind | null;
   evidenceFa: string;
   expiresAt: string | null;
   expired: boolean;
@@ -41,8 +44,19 @@ type PolicyState = {
   requiredActionFa: string;
 };
 
+type OperationalHealth = {
+  healthy: boolean;
+  running: boolean;
+  heartbeatStale: boolean;
+  duplicateIdempotencyKeys: number;
+  successfulCycles: number;
+  summaryFa: string;
+};
+
 type Report = {
   gateState: string;
+  operationalHealth?: OperationalHealth;
+  blockerCounts?: Record<BlockerKind, number>;
   effectiveState: string;
   liveExecutionImplemented: boolean;
   unavailableReasonFa: string;
@@ -51,6 +65,24 @@ type Report = {
   blockedCount: number;
   blockers: Array<{ gate: string; labelFa: string; blockerFa: string }>;
   nextActionsFa: string[];
+};
+
+/**
+ * A blocked gate is not automatically an error. Naming the cause lets a reader
+ * tell a real fault from a decision nobody has made yet.
+ */
+const BLOCKER_KIND_FA: Record<BlockerKind, string> = {
+  SYSTEM_FAILURE: "خرابی سامانه",
+  MISSING_POLICY: "سیاست تعیین‌نشده",
+  MISSING_EVIDENCE: "شواهد ثبت‌نشده",
+  GATE_NOT_MATURE: "در حال تکمیل"
+};
+
+const BLOCKER_KIND_TONE: Record<BlockerKind, string> = {
+  SYSTEM_FAILURE: "danger",
+  MISSING_POLICY: "warn",
+  MISSING_EVIDENCE: "warn",
+  GATE_NOT_MATURE: "muted"
 };
 
 type Review = {
@@ -82,8 +114,15 @@ type Attestation = {
   note: string | null;
 };
 
+type EvidenceEnvironment = {
+  kind: "TEMPORARY_LOCAL" | "LOCAL" | "SHARED";
+  noteFa: string;
+};
+
 type Payload = {
   liveBanner: string;
+  /** Whether this picture came from a throwaway local database. */
+  evidenceEnvironment?: EvidenceEnvironment;
   liveExecutionImplemented: boolean;
   canArm: boolean;
   canPlaceRealOrders: boolean;
@@ -137,6 +176,62 @@ const ATTESTATION_FA: Record<string, string> = {
  * There is deliberately no control on this page that can arm or execute live
  * trading: live execution is not implemented in this build at all.
  */
+/**
+ * The four evidence groups an administrator can attest to.
+ *
+ * Every claim is a statement about the world, not a capability the system
+ * gains: recording one never arms a gate, never activates anything, and never
+ * accepts a key, a secret or an endpoint. The claim texts are deliberately
+ * specific so "attested" cannot come to mean "somebody clicked yes".
+ */
+const ATTESTATION_FORMS: Array<{
+  kind: string;
+  titleFa: string;
+  hintFa: string;
+  claims: Array<{ key: string; labelFa: string }>;
+}> = [
+  {
+    kind: "api_capability",
+    titleFa: "توان API صرافی",
+    hintFa: "آنچه API عمومی/خصوصی صرافی واقعاً پشتیبانی می‌کند — بدون ثبت هیچ کلیدی.",
+    claims: [
+      { key: "order_endpoint_documented", labelFa: "مستندات ثبت سفارش بررسی شده است" },
+      { key: "rate_limits_known", labelFa: "محدودیت نرخ درخواست مشخص است" },
+      { key: "no_credentials_stored", labelFa: "هیچ کلید یا رمزی در این سامانه ذخیره نشده است" }
+    ]
+  },
+  {
+    kind: "key_permissions",
+    titleFa: "محدودیت کلیدها",
+    hintFa: "دامنهٔ مجاز کلیدها، در صورتی که روزی ساخته شوند.",
+    claims: [
+      { key: "trade_only_scope", labelFa: "کلید فقط‌معاملاتی است و مجوز برداشت ندارد" },
+      { key: "ip_allowlist", labelFa: "محدودیت IP تعریف شده است" },
+      { key: "rotation_procedure", labelFa: "رویهٔ چرخش کلید مشخص است" }
+    ]
+  },
+  {
+    kind: "transfer_costs",
+    titleFa: "هزینهٔ انتقال و بازتوازن",
+    hintFa: "هزینهٔ واقعی جابه‌جایی موجودی بین صرافی‌ها؛ تا ثبت نشود UNKNOWN می‌ماند.",
+    claims: [
+      { key: "network_fee_measured", labelFa: "کارمزد شبکه اندازه‌گیری شده است" },
+      { key: "settlement_time_known", labelFa: "مدت تسویه مشخص است" },
+      { key: "rebalance_path_documented", labelFa: "مسیر بازتوازن مستند شده است" }
+    ]
+  },
+  {
+    kind: "reconciliation_runbook",
+    titleFa: "رویهٔ تطبیق و حادثه",
+    hintFa: "اینکه در مغایرت یا حادثه چه کسی چه می‌کند.",
+    claims: [
+      { key: "runbook_written", labelFa: "دستورالعمل نوشته شده است" },
+      { key: "owner_assigned", labelFa: "مسئول مشخص شده است" },
+      { key: "drill_performed", labelFa: "تمرین انجام شده است" }
+    ]
+  }
+];
+
 export function LiveReadiness() {
   const [data, setData] = useState<Payload | null>(null);
   const [open, setOpen] = useState(false);
@@ -144,6 +239,9 @@ export function LiveReadiness() {
   const [notice, setNotice] = useState<string | null>(null);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [validity, setValidity] = useState<Record<string, string>>({});
+  /** Per-kind claim checkboxes and notes for the four evidence groups. */
+  const [claims, setClaims] = useState<Record<string, Record<string, boolean>>>({});
+  const [notes, setNotes] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     const res = await fetch("/api/shadow-arbitrage/live-readiness", {
@@ -203,6 +301,17 @@ export function LiveReadiness() {
         </span>
       </div>
 
+      {/*
+        A throwaway local database has its own observation window starting at
+        zero. Saying so stops a reviewer reading a local 0-day window as a
+        production regression.
+      */}
+      {data?.evidenceEnvironment?.kind === "TEMPORARY_LOCAL" ? (
+        <div className="sa-callout sa-callout-warn" role="status">
+          شواهد موقت محلی — {data.evidenceEnvironment.noteFa}
+        </div>
+      ) : null}
+
       {!open ? null : (
         <>
           <div className="panel-body">
@@ -243,6 +352,43 @@ export function LiveReadiness() {
                 </div>
                 <div className="sa-metric-note">مسدود: {formatCountFa(report.blockedCount)}</div>
               </div>
+              {report.operationalHealth ? (
+                <div className="sa-metric">
+                  <div className="sa-metric-label">سلامت عملیاتی</div>
+                  <div className="sa-metric-value">
+                    <span
+                      className={`sa-chip sa-chip-sm sa-chip-${report.operationalHealth.healthy ? "good" : "danger"}`}
+                    >
+                      {report.operationalHealth.healthy ? "سالم" : "دارای اشکال"}
+                    </span>
+                  </div>
+                  <div className="sa-metric-note">{report.operationalHealth.summaryFa}</div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {report?.blockerCounts ? (
+            <div className="panel-body">
+              <div className="sa-subpanel-title">تفکیک موانع</div>
+              <div className="sa-blocker-kinds">
+                {(
+                  ["SYSTEM_FAILURE", "MISSING_POLICY", "MISSING_EVIDENCE", "GATE_NOT_MATURE"] as const
+                ).map((kind) => (
+                  <span
+                    key={kind}
+                    className={`sa-chip sa-chip-sm sa-chip-${
+                      report.blockerCounts![kind] ? BLOCKER_KIND_TONE[kind] : "muted"
+                    }`}
+                  >
+                    {BLOCKER_KIND_FA[kind]}: {toFaDigits(report.blockerCounts![kind])}
+                  </span>
+                ))}
+              </div>
+              <div className="sa-footnote">
+                فقط «خرابی سامانه» به‌معنای اشکال فعلی است. «سیاست تعیین‌نشده» یعنی عددی هنوز انتخاب
+                نشده، «شواهد ثبت‌نشده» یعنی مدرکی ثبت نشده و «در حال تکمیل» یعنی شواهد در حال جمع‌شدن است.
+              </div>
             </div>
           ) : null}
 
@@ -253,6 +399,7 @@ export function LiveReadiness() {
                 <colgroup>
                   <col className="sa-col-gate" />
                   <col className="sa-col-status" />
+                  <col className="sa-col-status" />
                   <col className="sa-col-evidence" />
                   <col className="sa-col-expiry" />
                   <col className="sa-col-blocker" />
@@ -262,6 +409,7 @@ export function LiveReadiness() {
                   <tr>
                     <th>دروازه</th>
                     <th>وضعیت</th>
+                    <th>نوع مانع</th>
                     <th className="sa-col-optional">شواهد</th>
                     <th className="sa-col-optional">انقضا</th>
                     <th>مانع</th>
@@ -278,6 +426,17 @@ export function LiveReadiness() {
                         <span className={`sa-chip sa-chip-sm sa-chip-${STATUS_TONE[g.status]}`}>
                           {STATUS_FA[g.status]}
                         </span>
+                      </td>
+                      <td data-label="نوع مانع">
+                        {g.blockerKind ? (
+                          <span
+                            className={`sa-chip sa-chip-sm sa-chip-${BLOCKER_KIND_TONE[g.blockerKind]}`}
+                          >
+                            {BLOCKER_KIND_FA[g.blockerKind]}
+                          </span>
+                        ) : (
+                          "—"
+                        )}
                       </td>
                       <td data-label="شواهد" className="sa-col-optional text-micro">
                         {g.evidenceFa}
@@ -296,6 +455,52 @@ export function LiveReadiness() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          ) : null}
+
+          {/*
+            Phase 8E — what each blocked gate is actually waiting for.
+            Time, a manager's number and an administrator's evidence are three
+            different queues with three different owners; one combined count of
+            "10 blocked" hides which of them anyone can act on today.
+          */}
+          {data?.report?.gates?.length ? (
+            <div className="panel-body">
+              <div className="sa-subpanel-title">دروازه‌ها بر حسب اینکه منتظر چه چیزی هستند</div>
+              <div className="sa-decision-groups">
+                {(
+                  [
+                    ["GATE_NOT_MATURE", "منتظر زمان", "شواهد درست در حال انباشته‌شدن است؛ کاری لازم نیست."],
+                    ["MISSING_POLICY", "منتظر تصمیم مدیر", "یک حد باید انتخاب شود؛ هیچ عددی فرض نمی‌شود."],
+                    ["MISSING_EVIDENCE", "منتظر ثبت شواهد", "واقعیتی هنوز تأیید و ثبت نشده است."],
+                    ["SYSTEM_FAILURE", "خرابی سامانه", "چیزی همین الان درست کار نمی‌کند."]
+                  ] as Array<[string, string, string]>
+                ).map(([kind, titleFa, hintFa]) => {
+                  const gates = (data.report?.gates ?? []).filter(
+                    (g) => g.status !== "PASSED" && g.blockerKind === kind
+                  );
+                  if (!gates.length) return null;
+                  return (
+                    <section className="panel sa-panel sa-decision-group" key={kind}>
+                      <div className="sa-decision-group-head">
+                        <span className="sa-strong">{titleFa}</span>
+                        <span className="sa-chip sa-chip-sm sa-chip-muted">
+                          {toFaDigits(gates.length)}
+                        </span>
+                      </div>
+                      <p className="sa-sub">{hintFa}</p>
+                      <ul className="sa-decision-list">
+                        {gates.map((g) => (
+                          <li key={g.id}>
+                            <span className="sa-strong">{g.labelFa}</span>
+                            <span className="sa-sub"> — {g.blockerFa ?? "بدون توضیح"}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  );
+                })}
+              </div>
             </div>
           ) : null}
 
@@ -409,6 +614,81 @@ export function LiveReadiness() {
               </table>
             </div>
           ) : null}
+
+          {/*
+            Phase 8E — the four evidence groups.
+            Recording an attestation states a fact; it never arms a gate and
+            never activates anything. Nothing here accepts a key or a secret.
+          */}
+          <div className="panel-body">
+            <div className="sa-subpanel-title">
+              ثبت شواهد اداری — هر ثبت فقط یک واقعیت را اعلام می‌کند و هیچ دروازه‌ای را مسلح نمی‌کند
+            </div>
+            <div className="sa-decision-groups">
+              {ATTESTATION_FORMS.map((form) => (
+                <section className="panel sa-panel sa-decision-group" key={form.kind}>
+                  <div className="sa-decision-group-head">
+                    <span className="sa-strong">{form.titleFa}</span>
+                    <span className="sa-chip sa-chip-sm sa-chip-muted">
+                      {(data?.attestations ?? []).some((a) => a.kind === form.kind)
+                        ? "ثبت‌شده"
+                        : "ثبت‌نشده"}
+                    </span>
+                  </div>
+                  <p className="sa-sub">{form.hintFa}</p>
+                  <div className="sa-decision-claims">
+                    {form.claims.map((claim) => (
+                      <label className="sa-decision-claim" key={claim.key}>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(claims[form.kind]?.[claim.key])}
+                          onChange={(e) =>
+                            setClaims((prev) => ({
+                              ...prev,
+                              [form.kind]: { ...(prev[form.kind] ?? {}), [claim.key]: e.target.checked }
+                            }))
+                          }
+                        />
+                        <span>{claim.labelFa}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <label className="sa-field">
+                    <span className="sa-field-label">یادداشت (اختیاری)</span>
+                    <input
+                      className="sa-control glass-control"
+                      value={notes[form.kind] ?? ""}
+                      onChange={(e) =>
+                        setNotes((prev) => ({ ...prev, [form.kind]: e.target.value }))
+                      }
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="sa-btn-details glass-control"
+                    disabled={busy || !form.claims.every((c) => claims[form.kind]?.[c.key])}
+                    onClick={() =>
+                      void post(
+                        {
+                          action: "attest",
+                          kind: form.kind,
+                          claims: claims[form.kind] ?? {},
+                          note: notes[form.kind] || null
+                        },
+                        `تأییدیهٔ «${form.titleFa}» ثبت شد. این ثبت هیچ دروازه‌ای را مسلح نمی‌کند.`
+                      )
+                    }
+                  >
+                    ثبت تأییدیه
+                  </button>
+                  <p className="sa-sub">
+                    ثبت فقط وقتی ممکن است که همهٔ موارد بالا تأیید شده باشند. ثبت افزودنی است و
+                    ثبت قبلی را بازنویسی نمی‌کند.
+                  </p>
+                </section>
+              ))}
+            </div>
+          </div>
 
           {data?.attestations?.length ? (
             <div className="panel-body sa-table-wrap">

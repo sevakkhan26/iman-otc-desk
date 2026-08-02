@@ -7165,7 +7165,10 @@ table th {
 .sa-tabpanel,
 .sa-ov,
 .sa-ov-grid,
-.sa-ov-secondary {
+.sa-ov-secondary,
+.sa-cc,
+.sa-cc-kpis,
+.sa-cc-health {
   min-width: 0;
   max-width: 100%;
 }
@@ -7734,6 +7737,489 @@ table th {
     gap: 10px 12px;
   }
   .sa-dw-headline-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Execution bar on a venue card — a status note, not a new surface. */
+.sa-venue-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* Blocker-kind chips on the readiness panel — layout only. */
+.sa-blocker-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+/* Advanced disclosure on the paper tab — layout only. */
+.sa-advanced-details > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.sa-advanced-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+
+/* ── Shadow Arbitrage · Phase 8C command center ───────────────────────────── */
+/*
+ * LAYOUT ONLY — the same contract as Phase 8A and 8B above.
+ *
+ * Material comes from the shared OTC Liquid Glass primitives: `.panel` with
+ * `.panel-header` / `.panel-body` for every surface, `.glass-control` for the
+ * refresh action. Nothing here declares a background, border colour, box-shadow
+ * or blur of its own, and the type scale is the dashboard's own — 12px labels,
+ * 22px headline numbers, 13px body.
+ *
+ * The eight standing numbers sit in a 4 / 2 / 2 grid so a phone reads them as a
+ * compact block instead of a long column, and every track is `minmax(0, …)` so
+ * one long figure can never widen the page.
+ */
+.sa-cc {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+
+/* ── status strip ─────────────────────────────────────────────────────────── */
+.sa-cc-status {
+  padding: 14px 16px;
+  display: grid;
+  gap: 12px;
+}
+.sa-cc-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 18px;
+  min-width: 0;
+}
+.sa-cc-status-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 18px;
+  padding-inline-end: 18px;
+  border-inline-end: 1px solid var(--line-soft);
+  min-width: 0;
+}
+.sa-cc-status-tail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin-inline-start: auto;
+  min-width: 0;
+}
+.sa-cc-status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.sa-cc-status-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.sa-cc-status-value {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.sa-cc-status-sub {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+/* Tertiary action — the material is .glass-control, this is only the shape. */
+.sa-cc-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+}
+.sa-cc-action:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.sa-cc-action:focus-visible {
+  outline: 2px solid var(--line);
+  outline-offset: 2px;
+}
+
+.sa-cc-progress {
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.sa-cc-progress-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.sa-cc-progress-value {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* ── the eight standing numbers ───────────────────────────────────────────── */
+.sa-cc-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+.sa-cc-kpi {
+  min-width: 0;
+}
+.sa-cc-kpi-body {
+  display: grid;
+  gap: 6px;
+  min-height: 108px;
+  align-content: start;
+}
+.sa-cc-kpi-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.sa-cc-kpi-value {
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.4;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.sa-cc-kpi-hint {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* ── best opportunity ─────────────────────────────────────────────────────── */
+.sa-cc-best-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px 18px;
+  margin: 0 0 12px;
+}
+.sa-cc-best-grid dt {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.sa-cc-best-grid dd {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.sa-cc-empty {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--muted);
+}
+
+/* ── health and safety row ────────────────────────────────────────────────── */
+.sa-cc-health {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+.sa-cc-mini {
+  padding: 14px 16px;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  min-width: 0;
+}
+.sa-cc-mini-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+.sa-cc-mini-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin: 0;
+}
+.sa-cc-mini-list dt {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.sa-cc-mini-list dd {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+/*
+ * A blocking reason is a sentence, not a status code, so it takes the whole row
+ * and wraps. The older `.sa-reason` chip is `nowrap` by design — correct for a
+ * short code, wrong here, and not something to change underneath its own users.
+ */
+.sa-cc-mini-list .sa-cc-wide {
+  grid-column: 1 / -1;
+}
+.sa-cc-reason {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+/* ── dynamic-sizing disclosure ────────────────────────────────────────────── */
+.sa-cc-calc {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.sa-cc-calc > summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 13px;
+  font-weight: 700;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+}
+.sa-cc-calc > summary::-webkit-details-marker {
+  display: none;
+}
+.sa-cc-calc-body {
+  display: grid;
+  gap: 14px;
+  margin-top: 12px;
+  min-width: 0;
+}
+.sa-cc-blockers {
+  margin: 0;
+  padding-inline-start: 18px;
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--muted);
+}
+.sa-cc-disarmed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.sa-cc-foot {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/*
+ * Dark mode: secondary text is lifted toward the primary token so a hint stays
+ * legible on the darker glass, without flattening the hierarchy — the headline
+ * number keeps its own colour and weight. Derived from existing tokens only.
+ */
+:root[data-theme="dark"] .sa-cc-kpi-hint,
+:root[data-theme="dark"] .sa-cc-kpi-label,
+:root[data-theme="dark"] .sa-cc-status-label,
+:root[data-theme="dark"] .sa-cc-status-sub,
+:root[data-theme="dark"] .sa-cc-mini-list dt,
+:root[data-theme="dark"] .sa-cc-best-grid dt,
+:root[data-theme="dark"] .sa-cc-empty,
+:root[data-theme="dark"] .sa-cc-disarmed,
+:root[data-theme="dark"] .sa-cc-action {
+  color: color-mix(in srgb, var(--text) 72%, var(--muted));
+}
+
+/* ── responsive ───────────────────────────────────────────────────────────── */
+@media (max-width: 1180px) {
+  .sa-cc-best-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1024px) {
+  .sa-cc-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .sa-cc-health {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .sa-cc {
+    gap: 14px;
+  }
+  .sa-cc-health {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* The divider would read as a stray line once the row wraps. */
+  .sa-cc-status-group {
+    padding-inline-end: 0;
+    border-inline-end: 0;
+  }
+  .sa-cc-status-tail {
+    margin-inline-start: 0;
+  }
+}
+
+@media (max-width: 560px) {
+  /* Two columns stay: a 2×4 block, never one long column of eight cards. */
+  .sa-cc-kpi-body {
+    min-height: 94px;
+  }
+  .sa-cc-kpi-value {
+    font-size: 20px;
+  }
+  .sa-cc-best-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* Tap targets grow rather than shrink on touch. */
+  .sa-cc-action {
+    min-height: 36px;
+  }
+}
+
+
+/* ── Shadow Arbitrage · Phase 8D paper execution ──────────────────────────── */
+/*
+ * LAYOUT ONLY — same contract as 8A/8B/8C. Material comes from `.panel`,
+ * `.glass-control` and `.glass-tabbar`; nothing here declares a background,
+ * border colour, shadow or blur of its own, and the type scale is the
+ * dashboard's own (12px labels, 13px body).
+ */
+.sa-paper {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Desktop shows tables; a phone gets real cards instead of a squeezed table. */
+.sa-paper-cards {
+  display: none;
+}
+.sa-paper-card {
+  padding: 12px 14px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.sa-paper-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+.sa-paper-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin: 0;
+}
+.sa-paper-card-grid dt {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+.sa-paper-card-grid dd {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 768px) {
+  .sa-paper-desktop {
+    display: none;
+  }
+  .sa-paper-cards {
+    display: grid;
+    gap: 12px;
+  }
+  /* Touch targets grow rather than shrink. */
+  .sa-paper .sa-btn-details,
+  .sa-paper .sa-btn-clear,
+  .sa-paper .sa-seg {
+    min-height: 36px;
+  }
+}
+
+
+/* ── Shadow Arbitrage · Phase 8E admin decision desk ──────────────────────── */
+/* LAYOUT ONLY — material from `.panel` and `.glass-control`, as everywhere. */
+.sa-decision-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  min-width: 0;
+}
+.sa-decision-group {
+  padding: 14px 16px;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  min-width: 0;
+}
+.sa-decision-group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+.sa-decision-list {
+  margin: 0;
+  padding-inline-start: 18px;
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.sa-decision-claims {
+  display: grid;
+  gap: 8px;
+}
+.sa-decision-claim {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.7;
+  min-height: 36px;
+}
+
+@media (max-width: 900px) {
+  .sa-decision-groups {
     grid-template-columns: minmax(0, 1fr);
   }
 }

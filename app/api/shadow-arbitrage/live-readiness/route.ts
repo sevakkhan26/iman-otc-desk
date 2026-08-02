@@ -6,7 +6,7 @@ import {
   getWorkerHeartbeat,
   loadLatestCapitalApproval,
   loadLatestCapitalPlan,
-  loadLatestFeeConfirmations,
+  loadLatestAccountConfirmations,
   loadLatestSourceSnapshots,
   loadRunStats
 } from "@/db/repositories/shadowArbitrage";
@@ -27,6 +27,7 @@ import {
 import { buildAllReadiness } from "@/lib/shadowArbitrage/accounts";
 import { classifyAllVenues, evaluateRecommendation } from "@/lib/shadowArbitrage/capital";
 import { SHADOW_BANNER } from "@/lib/shadowArbitrage/config";
+import { loadEffectiveFees } from "@/lib/shadowArbitrage/effectiveFees";
 import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
 import {
   LIVE_EXECUTION_IMPLEMENTED,
@@ -90,7 +91,7 @@ async function buildReport() {
     observation,
     worker,
     runStats,
-    latestFees,
+    effectiveFees,
     snapshots,
     savedPlan,
     approvalRow,
@@ -101,7 +102,7 @@ async function buildReport() {
     getObservation(),
     getWorkerHeartbeat(),
     loadRunStats(),
-    loadLatestFeeConfirmations(),
+    loadEffectiveFees(Date.now()),
     loadLatestSourceSnapshots(),
     loadLatestCapitalPlan(),
     loadLatestCapitalApproval(),
@@ -110,7 +111,35 @@ async function buildReport() {
     loadRiskPolicyValues()
   ]);
 
-  const readiness = buildAllReadiness(Object.values(latestFees));
+  const accountEvidence = await loadLatestAccountConfirmations();
+  /*
+   * Where is this evidence from?
+   *
+   * A PGlite directory outside `.data/` is a throwaway local database — a
+   * release candidate or a test run — so its observation window starts at zero
+   * and says nothing about the production history. The panel must label that
+   * rather than let a reviewer read a local 0-day window as a regression.
+   */
+  const databaseUrl = process.env.DATABASE_URL ?? "";
+  const isPglite = databaseUrl.startsWith("pglite:");
+  const pglitePath = isPglite ? databaseUrl.slice("pglite:".length) : "";
+  const isTemporaryLocal =
+    isPglite && !pglitePath.includes("/.data/") && !pglitePath.endsWith("/.data");
+  const evidenceEnvironment = {
+    kind: isTemporaryLocal ? ("TEMPORARY_LOCAL" as const) : isPglite ? ("LOCAL" as const) : ("SHARED" as const),
+    noteFa: isTemporaryLocal
+      ? "این شواهد از یک پایگاه‌دادهٔ موقت محلی خوانده می‌شود؛ پنجرهٔ مشاهده از صفر شروع شده و تاریخچهٔ تولید را نشان نمی‌دهد."
+      : isPglite
+        ? "پایگاه‌دادهٔ محلی پروژه."
+        : "پایگاه‌دادهٔ مشترک."
+  };
+
+  const readiness = buildAllReadiness(
+    effectiveFees.overrides,
+    Date.now(),
+    Object.values(accountEvidence),
+    effectiveFees.blocks
+  );
   const venueStates = classifyAllVenues(readiness);
   const policies = buildPolicyState(policyValues);
 
@@ -207,14 +236,15 @@ async function buildReport() {
     nowMs: Date.now()
   });
 
-  return { report, policies, attestations };
+  return { report, policies, attestations, evidenceEnvironment };
 }
 
 export async function GET() {
   const session = await requireAdminSession();
   if (!isSession(session)) return session;
 
-  const [{ report, policies, attestations }, reviews, policyHistory] = await Promise.all([
+  const [{ report, policies, attestations, evidenceEnvironment }, reviews, policyHistory] =
+    await Promise.all([
     buildReport(),
     loadReadinessReviews(30),
     loadRiskPolicyHistory(undefined, 100)
@@ -231,6 +261,8 @@ export async function GET() {
       canPlaceRealOrders: false,
       unavailableReasonFa: LIVE_UNAVAILABLE_REASON_FA,
       serverNow: new Date().toISOString(),
+      // Says whether this readiness picture came from a throwaway local database.
+      evidenceEnvironment,
       report,
       policies,
       policyDefinitions: REQUIRED_RISK_POLICIES,

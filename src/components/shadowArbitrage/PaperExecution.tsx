@@ -1,100 +1,33 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { TomanAmount } from "@/components/TomanAmount";
 import { formatTehran } from "@/components/format";
+import { Bidi } from "@/components/shadowArbitrage/Bidi";
+import { Kpi, Pager } from "@/components/shadowArbitrage/panelKit";
 import { formatCountFa, formatPercentFa, toFaDigits } from "@/components/shadowArbitrage/labels";
+import { OPPORTUNITY_PAGE_SIZES, paginate } from "@/components/shadowArbitrage/opportunityModel";
+import { readInt, useShadowViewState } from "@/components/shadowArbitrage/urlState";
+import { CAP_LABEL_FA, VENUE_CAPACITY_REASON_FA } from "@/lib/shadowArbitrage/paper/liquidity";
 
 /** Permanent, never hidden, never conditional. */
 export const PAPER_BANNER_EN = "PAPER EXECUTION — NO REAL ORDERS OR TRANSFERS";
 
-type SessionRow = {
+/* ── server DTOs, rendered as-is ──────────────────────────────────────────────
+ *
+ * Every figure below is computed on the server and displayed verbatim. This
+ * component performs no capacity, VWAP, fee or PnL arithmetic: a second
+ * implementation living in React would be a second answer, and the two would
+ * diverge exactly when it mattered. A structural test enforces the rule.
+ */
+
+type Session = {
   id: string;
+  observationId?: string | null;
   name: string;
-  mode: "PROVISIONAL_EVALUATION" | "APPROVED_PLAN";
-  status: "NOT_STARTED" | "RUNNING" | "PAUSED" | "STOPPED";
-  totalCapitalToman: number;
-  valuationPriceToman: number;
-  observationId: string | null;
+  status: string;
+  mode: string;
   startedAt: string | null;
-  lastCycleAt: string | null;
-  cyclesEvaluated: number;
-  createdBy: string;
-  createdAt: string;
-};
-
-type Settlement = { feeAsset: string; debitMode: string; provenance: string };
-
-type Balance = {
-  sourceId: string;
-  irtToman: number;
-  usdt: number;
-  buySettlement: Settlement;
-  sellSettlement: Settlement;
-};
-
-type Trade = {
-  id: string;
-  lifecycleId: string;
-  routeKey: string;
-  buySourceId: string;
-  sellSourceId: string;
-  sizeUsdt: number;
-  buyVwapToman: number | null;
-  sellVwapToman: number | null;
-  buyNotionalToman: number | null;
-  sellNotionalToman: number | null;
-  buyFeeBps: number | null;
-  sellFeeBps: number | null;
-  buyFeeAsset: string | null;
-  buyFeeDebitMode: string | null;
-  sellFeeAsset: string | null;
-  sellFeeDebitMode: string | null;
-  feeTomanTotal: number | null;
-  feeUsdtMicrosTotal: number | null;
-  slippageBufferToman: number | null;
-  grossSpreadToman: number | null;
-  markPriceToman: number | null;
-  cashPnlIrtToman: number | null;
-  inventoryDeltaUsdtMicros: number | null;
-  sellFeeValueToman: number | null;
-  economicNetPnlToman: number | null;
-  riskAdjustedPnlToman: number | null;
-  occurredAt: string;
-};
-
-type Transition = {
-  id: string;
-  routeKey: string;
-  sizeUsdt: number;
-  eventType: string | null;
-  reasonCodes: string[];
-  rejectionCode: string | null;
-  rejectionReason: string | null;
-  requiredRebalance: string | null;
-  occurredAt: string;
-};
-
-type CandidateState = {
-  lifecycleId: string;
-  routeKey: string;
-  sizeUsdt: number;
-  primaryReason: string | null;
-  reasonCodes: string[];
-  occurrences: number;
-  firstSeenAt: string;
-  lastSeenAt: string;
-  lastChangedAt: string;
-};
-
-type ReasonGroup = { code: string; candidates: number; observations: number };
-
-type CycleSummary = {
-  id: string;
-  occurredAt: string;
-  candidatesEvaluated: number;
-  filled: number;
-  skipped: number;
-  detailedEventsWritten: number;
 };
 
 type Stats = {
@@ -108,152 +41,170 @@ type Stats = {
   feeTomanTotal: number;
   feeUsdtTotal: number;
   opportunityCaptureRatePercent: number | null;
-  blockReasons: Array<{ code: string; reasonFa: string; count: number }>;
-  drift: Array<{ sourceId: string; irtTomanDelta: number; usdtDelta: number }>;
   lastFillAt: string | null;
 };
 
+type Trade = {
+  id: string;
+  lifecycleId: string;
+  routeKey: string;
+  outcome: "FILLED" | "SKIPPED";
+  buySourceId: string;
+  sellSourceId: string;
+  sizeUsdt: number;
+  buyVwapToman: number | null;
+  sellVwapToman: number | null;
+  buyFeeBps: number | null;
+  sellFeeBps: number | null;
+  buyFeeAsset: string | null;
+  sellFeeAsset: string | null;
+  markPriceToman: number | null;
+  slippageBufferToman: number | null;
+  cashPnlIrtToman: number | null;
+  inventoryDeltaUsdtMicros: number | null;
+  sellFeeValueToman: number | null;
+  economicNetPnlToman: number | null;
+  riskAdjustedPnlToman: number | null;
+  rejectionCode: string | null;
+  rejectionReason: string | null;
+  reasonCodes: string[] | null;
+  occurredAt: string;
+};
+
+type Candidate = {
+  lifecycleId: string;
+  routeKey: string;
+  reason?: string | null;
+  reasonCodes?: string[] | null;
+  observationCount?: number;
+};
+
+type MatrixRow = {
+  sourceId: string;
+  nameFa: string;
+  dataType: string;
+  allocationRole: string | null;
+  buyCapacityUsdtMicros: number | null;
+  sellCapacityUsdtMicros: number | null;
+  buyLimiter: string | null;
+  sellLimiter: string | null;
+  buyReason: string;
+  sellReason: string;
+  blockerFa: string | null;
+};
+
 type Payload = {
-  paperBanner: string;
-  session: SessionRow | null;
-  balances: Balance[];
-  trades: Trade[];
-  transitions: Transition[];
-  candidates: CandidateState[];
-  reasonBreakdown: ReasonGroup[];
-  cycleSummaries: CycleSummary[];
+  realOrders: boolean;
+  paperBannerFa: string;
+  serverNow: string;
+  session: Session | null;
   stats: Stats | null;
-  history?: SessionRow[];
+  balances: Array<{ sourceId: string; irtToman: number; usdt: number }>;
+  trades: Trade[];
+  transitions: Trade[];
+  candidates: Candidate[];
+  reasonBreakdown: Array<{ reason: string; count: number }>;
+  cycleSummaries: Array<{
+    occurredAt: string;
+    evaluated?: number;
+    filled?: number;
+    skipped?: number;
+  }>;
+  sizing?: { venueSemantics?: { matrix: MatrixRow[] } };
   message?: string;
 };
 
-const STATUS_FA: Record<SessionRow["status"], string> = {
+const STATUS_FA: Record<string, string> = {
   NOT_STARTED: "شروع‌نشده",
   RUNNING: "در حال اجرا",
-  PAUSED: "متوقف",
+  PAUSED: "متوقف موقت",
   STOPPED: "پایان‌یافته"
 };
 
-const STATUS_TONE: Record<SessionRow["status"], string> = {
-  NOT_STARTED: "muted",
-  RUNNING: "good",
-  PAUSED: "warn",
-  STOPPED: "muted"
+const MODE_FA: Record<string, string> = {
+  PROVISIONAL_EVALUATION: "ارزیابی موقت",
+  SHADOW: "سایه"
 };
 
-const MODE_FA: Record<SessionRow["mode"], string> = {
-  PROVISIONAL_EVALUATION: "ارزیابی موقت (غیرنهایی)",
-  APPROVED_PLAN: "طرح تأییدشدهٔ فاز ۵"
-};
-
-const REASON_FA: Record<string, string> = {
-  account_not_ready: "حساب کاربری صرافی آماده نیست",
-  fee_unknown: "کارمزد تأییدنشده",
-  fee_stale: "اعتبار کارمزد منقضی شده",
-  fee_settlement_unknown: "تسویهٔ کارمزد تأییدنشده",
-  fee_settlement_unsupported: "ترکیب تسویهٔ کارمزد نامعتبر",
-  net_non_positive: "سود اقتصادی مثبت نیست",
-  insufficient_depth: "عمق دفتر ناکافی",
-  reference_only: "منبع فقط مرجع",
-  source_unhealthy: "منبع ناسالم یا گواهی‌نشده",
-  stale_market_data: "دادهٔ بازار کهنه",
-  market_data_missing: "دادهٔ بازار موجود نیست",
-  market_data_unverified: "واحد یا جهت قیمت تأییدنشده",
-  rate_limited: "محدودیت نرخ درخواست",
-  same_venue: "یک صرافی",
-  mark_price_unavailable: "قیمت مرجع در دسترس نیست",
-  insufficient_irt: "موجودی تومانی ناکافی",
-  insufficient_usdt: "موجودی تتری ناکافی",
-  negative_balance_guard: "موجودی منفی می‌شد",
-  no_balance_record: "موجودی مجازی ثبت نشده",
-  lifecycle_already_processed: "قبلاً پردازش شده",
-  size_not_selected: "حجم بهتری انتخاب شد",
-  venue_not_executable: "صرافی اجراپذیر نیست"
-};
-
-const EVENT_FA: Record<string, string> = {
-  FIRST_SEEN: "نخستین مشاهده",
-  CHANGED: "تغییر وضعیت",
-  FILLED: "اجرا",
-  CLOSED: "خروج از بازار"
-};
-
-function reasonFa(code: string | null | undefined): string {
-  if (!code) return "—";
-  return REASON_FA[code] ?? code;
-}
-
-const ASSET_FA: Record<string, string> = { IRT: "تومان", USDT: "تتر", UNKNOWN: "نامشخص" };
-
-const MODE_FA_SHORT: Record<string, string> = {
-  ADD_TO_DEBIT: "افزوده به بدهکاری",
-  DEDUCT_FROM_CREDIT: "کسر از بستانکاری",
-  UNKNOWN: "نامشخص"
-};
-
-/** Settlement is shown per side; it is never collapsed into one fee currency. */
-function settlementText(s: Settlement | undefined) {
-  if (!s || s.provenance !== "ADMIN_CONFIRMED") {
-    return <span className="sa-reason">تأییدنشده — مسدود</span>;
-  }
+/** An unknown value is an em dash carrying its own reason, never a zero. */
+function Unknown({ why }: { why: string }) {
   return (
-    <span>
-      {ASSET_FA[s.feeAsset] ?? s.feeAsset} · {MODE_FA_SHORT[s.debitMode] ?? s.debitMode}
+    <span className="sa-unknown" title={why}>
+      —
     </span>
   );
 }
 
-function toman(v: number | null | undefined): string {
-  if (v === null || v === undefined || !Number.isFinite(v)) return "—";
-  return `${toFaDigits(Math.round(v).toLocaleString("en-US"))} تومان`;
-}
-
-function usdtText(v: number | null | undefined): string {
-  if (v === null || v === undefined || !Number.isFinite(v)) return "—";
-  return `${toFaDigits(v.toFixed(2))} تتر`;
-}
-
-function signedToman(v: number | null | undefined): { text: string; cls: string } {
-  if (v === null || v === undefined || !Number.isFinite(v)) return { text: "—", cls: "" };
-  return {
-    text: `${v > 0 ? "+" : ""}${toFaDigits(Math.round(v).toLocaleString("en-US"))}`,
-    cls: v > 0 ? "sa-pos" : v < 0 ? "sa-neg" : ""
-  };
-}
+const PAPER_VIEWS = [
+  { key: "balances", labelFa: "موجودی و ظرفیت" },
+  { key: "fills", labelFa: "دفتر معاملات" },
+  { key: "candidates", labelFa: "نامزدها و دلایل" },
+  { key: "cycles", labelFa: "خلاصهٔ چرخه‌ها" }
+] as const;
 
 /**
- * Phase 6 — admin-only paper execution panel.
+ * Phase 8D-B — the Paper Execution tab.
  *
- * Everything shown here is simulated. No control on this page can place a real
- * order or move real funds.
+ * This replaces the previous layout in place; there is no second competing
+ * panel. Every surface reuses the shared glass primitives — `.panel`,
+ * `.glass-control`, `.glass-tabbar` — so Shadow never forks the OTC material
+ * system, and the font is whatever the page inherits.
+ *
+ * Nothing here can trade. Mounting, reloading or deploying never creates,
+ * starts or resumes a session: `pause` and `resume` are the only mutations, and
+ * each needs an explicit confirmation first.
  */
 export function PaperExecution() {
   const [data, setData] = useState<Payload | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<Trade | null>(null);
-  const [reasonFilter, setReasonFilter] = useState<string>("");
+  const [confirming, setConfirming] = useState<"pause" | "resume" | null>(null);
+
+  const { read, write } = useShadowViewState();
+  const view = read("pv", "balances");
+  const query = read("pq", "");
+  const outcome = read("pout", "ALL");
+  const reason = read("preason", "");
+  const perPage = readInt(read("pper", "20"), 20, 10, 50);
+  const rawPage = readInt(read("ppage", "1"), 1, 1, 10_000);
 
   const load = useCallback(async () => {
-    const q = reasonFilter ? `?reason=${encodeURIComponent(reasonFilter)}` : "";
-    const res = await fetch(`/api/shadow-arbitrage/paper${q}`, {
-      cache: "no-store",
-      credentials: "same-origin"
-    });
-    if (!res.ok) return;
-    setData((await res.json()) as Payload);
-  }, [reasonFilter]);
+    setLoading(true);
+    try {
+      const res = await fetch("/api/shadow-arbitrage/paper", {
+        cache: "no-store",
+        credentials: "same-origin"
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { message?: string } | null;
+        setError(body?.message ?? "دریافت دادهٔ اجرای کاغذی ممکن نشد.");
+        return;
+      }
+      setError(null);
+      setData((await res.json()) as Payload);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "خطای غیرمنتظره در دریافت داده.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
+  /*
+   * Read-only polling. Mounting must never create, start or resume a session —
+   * a deployment that silently began trading, even on paper, would be
+   * indistinguishable from one that was told to.
+   */
   useEffect(() => {
-    if (!open) return;
     void load();
     const id = window.setInterval(() => void load(), 30_000);
     return () => window.clearInterval(id);
-  }, [open, load]);
+  }, [load]);
 
   const act = useCallback(
-    async (action: "create" | "start" | "pause" | "resume" | "stop", mode?: SessionRow["mode"]) => {
+    async (action: "pause" | "resume", sessionId: string) => {
       setBusy(true);
       setNotice(null);
       try {
@@ -261,543 +212,892 @@ export function PaperExecution() {
           method: "POST",
           headers: { "content-type": "application/json" },
           credentials: "same-origin",
-          body: JSON.stringify({ action, mode })
+          body: JSON.stringify({ action, sessionId })
         });
-        const j = (await res.json().catch(() => null)) as (Payload & { message?: string }) | null;
-        if (!res.ok) throw new Error(j?.message ?? "درخواست ناموفق بود");
-        if (j) setData(j);
-        if (action === "create") setNotice("نشست کاغذی ساخته شد. برای اجرا باید آن را شروع کنید.");
-        if (action === "start") setNotice("نشست کاغذی شروع شد.");
-        if (action === "pause") setNotice("نشست کاغذی متوقف شد.");
-        if (action === "resume") setNotice("نشست کاغذی ادامه یافت.");
+        const j = (await res.json().catch(() => null)) as { message?: string } | null;
+        if (!res.ok) throw new Error(j?.message ?? "تغییر وضعیت ممکن نشد");
+        setNotice(action === "pause" ? "نشست متوقف شد." : "نشست ادامه یافت.");
+        await load();
       } catch (e) {
-        setNotice(e instanceof Error ? e.message : "درخواست ناموفق بود");
+        setNotice(e instanceof Error ? e.message : "تغییر وضعیت ممکن نشد");
       } finally {
         setBusy(false);
+        setConfirming(null);
       }
     },
-    []
+    [load]
   );
 
-  const s = data?.session ?? null;
+  const session = data?.session ?? null;
   const stats = data?.stats ?? null;
+  const matrix = data?.sizing?.venueSemantics?.matrix ?? [];
+  const balanceById = useMemo(
+    () => new Map((data?.balances ?? []).map((b) => [b.sourceId, b])),
+    [data]
+  );
+
+  /** Fills and skips together, newest first. Both are evidence. */
+  const ledger = useMemo(() => {
+    const all = [...(data?.trades ?? []), ...(data?.transitions ?? [])];
+    const q = query.trim().toLowerCase();
+    return all
+      .filter((t) => (outcome === "ALL" ? true : t.outcome === outcome))
+      .filter((t) => (reason ? (t.rejectionCode ?? "") === reason : true))
+      .filter((t) =>
+        q
+          ? t.routeKey.toLowerCase().includes(q) ||
+            t.lifecycleId.toLowerCase().includes(q) ||
+            t.buySourceId.toLowerCase().includes(q) ||
+            t.sellSourceId.toLowerCase().includes(q)
+          : true
+      )
+      .sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt));
+  }, [data, query, outcome, reason]);
+
+  // An out-of-range page self-corrects rather than rendering an empty table.
+  const page = useMemo(() => paginate(ledger, rawPage, perPage), [ledger, rawPage, perPage]);
+
+  /** Any filter change returns to page 1; paging never resets a filter. */
+  const setFilter = (patch: Record<string, string | null>) => write({ ...patch, ppage: "1" });
+
+  if (loading && !data) {
+    return (
+      <div className="sa-stack">
+        <div className="panel sa-panel sa-empty">در حال بارگذاری وضعیت اجرای کاغذی…</div>
+      </div>
+    );
+  }
 
   return (
-    <section className="panel sa-panel">
-      <div className="panel-header sa-panel-header">
-        <h3 className="panel-title sa-panel-title">اجرای کاغذی خودکار</h3>
-        <div className="sa-panel-note">
-          <button type="button" className="sa-linkish" onClick={() => setOpen((v) => !v)}>
-            {open ? "بستن" : "باز کردن"}
-          </button>
+    <div className="sa-stack sa-paper">
+      <div className="sa-callout sa-callout-warn" role="status">
+        <span className="sa-strong">{PAPER_BANNER_EN}</span>
+        <span className="sa-sub">
+          {" "}
+          — {data?.paperBannerFa ?? "اجرای کاغذی"} · موجودی‌ها مجازی‌اند و هیچ سفارش یا انتقال
+          واقعی انجام نمی‌شود.
+        </span>
+      </div>
+
+      {error ? (
+        <div className="sa-callout sa-callout-danger" role="alert">
+          {error}
         </div>
-      </div>
+      ) : null}
+      {notice ? <div className="sa-callout sa-callout-muted">{notice}</div> : null}
 
-      {/* Permanent banner — rendered whether or not the panel is expanded. */}
-      <div className="sa-warning" role="status">
-        <span className="sa-warning-icon" aria-hidden="true">
-          ⚠
-        </span>
-        <span>
-          {PAPER_BANNER_EN} · اجرای کاغذی — بدون سفارش واقعی و بدون انتقال وجه
-        </span>
-      </div>
-
-      {!open ? null : (
-        <>
-          {notice ? (
-            <div className="panel-body">
-              <div className="sa-callout sa-callout-muted">{notice}</div>
-            </div>
-          ) : null}
-
-          {s?.mode === "PROVISIONAL_EVALUATION" ? (
-            <div className="panel-body">
-              <div className="sa-callout sa-callout-warn">
-                این نشست یک <strong>ارزیابی موقت</strong> روی طرح مجازی پیش‌فرض
-                ۵۰٬۰۰۰٬۰۰۰ تومانی است. نتایج آن نهایی نیستند و مبنای تصمیم واقعی قرار نمی‌گیرند.
-              </div>
-            </div>
-          ) : null}
-
-          <div className="panel-body sa-capital-controls">
-            {s ? (
-              <>
-                <div className="sa-field">
-                  <span>وضعیت نشست</span>
-                  <strong>
-                    <span className={`sa-chip sa-chip-sm sa-chip-${STATUS_TONE[s.status]}`}>
-                      {STATUS_FA[s.status]}
-                    </span>
-                  </strong>
-                </div>
-                <div className="sa-field">
-                  <span>حالت</span>
-                  <strong>{MODE_FA[s.mode]}</strong>
-                </div>
-                <div className="sa-field">
-                  <span>سرمایهٔ مجازی</span>
-                  <strong>{toman(s.totalCapitalToman)}</strong>
-                </div>
-                <div className="sa-field">
-                  <span>آخرین چرخه</span>
-                  <strong className="text-micro">
-                    {s.lastCycleAt ? formatTehran(s.lastCycleAt) : "—"}
-                  </strong>
-                </div>
-                <div className="sa-capital-actions">
-                  {s.status === "NOT_STARTED" ? (
-                    <button type="button" className="sa-btn sa-btn-primary" disabled={busy} onClick={() => void act("start")}>
-                      شروع نشست
-                    </button>
-                  ) : null}
-                  {s.status === "RUNNING" ? (
-                    <button type="button" className="sa-btn" disabled={busy} onClick={() => void act("pause")}>
-                      توقف موقت
-                    </button>
-                  ) : null}
-                  {s.status === "PAUSED" ? (
-                    <button type="button" className="sa-btn sa-btn-primary" disabled={busy} onClick={() => void act("resume")}>
-                      ادامهٔ نشست
-                    </button>
-                  ) : null}
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="sa-field">
-                  <span>نشست فعالی وجود ندارد</span>
-                  <strong className="text-micro">استقرار به‌تنهایی هیچ نشستی را شروع نمی‌کند.</strong>
-                </div>
-                <div className="sa-capital-actions">
-                  <button
-                    type="button"
-                    className="sa-btn"
-                    disabled={busy}
-                    onClick={() => void act("create", "PROVISIONAL_EVALUATION")}
-                  >
-                    ساخت نشست ارزیابی موقت
-                  </button>
-                  <button
-                    type="button"
-                    className="sa-btn sa-btn-primary"
-                    disabled={busy}
-                    onClick={() => void act("create", "APPROVED_PLAN")}
-                  >
-                    ساخت نشست طرح تأییدشده
-                  </button>
-                </div>
-              </>
-            )}
+      {/* ── session ─────────────────────────────────────────────────────── */}
+      <section className="panel sa-panel" aria-label="نشست اجرای کاغذی">
+        <div className="panel-header sa-panel-header">
+          <h3 className="panel-title">نشست اجرای کاغذی</h3>
+          <div className="sa-panel-note">
+            {session ? (STATUS_FA[session.status] ?? session.status) : "نشستی وجود ندارد"}
           </div>
+        </div>
+        <div className="panel-body sa-stack-2">
+          {session ? (
+            <>
+              <dl className="sa-cc-best-grid">
+                <div>
+                  <dt>وضعیت</dt>
+                  <dd>
+                    <span
+                      className={`sa-chip sa-chip-sm sa-chip-${
+                        session.status === "RUNNING"
+                          ? "good"
+                          : session.status === "PAUSED"
+                            ? "warn"
+                            : "muted"
+                      }`}
+                    >
+                      {STATUS_FA[session.status] ?? session.status}
+                    </span>
+                  </dd>
+                </div>
+                <div>
+                  <dt>حالت</dt>
+                  <dd>{MODE_FA[session.mode] ?? session.mode}</dd>
+                </div>
+                <div>
+                  <dt>شناسهٔ نشست</dt>
+                  <dd>
+                    <Bidi>{session.id.slice(0, 8)}</Bidi>
+                  </dd>
+                </div>
+                <div>
+                  <dt>شناسهٔ مشاهده</dt>
+                  <dd>
+                    {session.observationId ? (
+                      <Bidi>{session.observationId.slice(0, 8)}</Bidi>
+                    ) : (
+                      <Unknown why="این نشست به نشست مشاهده‌ای متصل نشده است" />
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>آخرین چرخهٔ ارزیابی‌شده</dt>
+                  <dd>
+                    {data?.cycleSummaries?.length ? (
+                      formatTehran(data.cycleSummaries[0].occurredAt)
+                    ) : (
+                      <Unknown why="هنوز چرخه‌ای برای این نشست ثبت نشده است" />
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>آخرین معاملهٔ انجام‌شده</dt>
+                  <dd>
+                    {stats?.lastFillAt ? (
+                      formatTehran(stats.lastFillAt)
+                    ) : (
+                      <Unknown why="هنوز هیچ معامله‌ای در این نشست پر نشده است" />
+                    )}
+                  </dd>
+                </div>
+              </dl>
 
-          {stats ? (
-            <div className="panel-body sa-metric-grid">
-              <div className="sa-metric">
-                <div className="sa-metric-label">معاملات کاغذی</div>
-                <div className="sa-metric-value">{formatCountFa(stats.filled)}</div>
-                <div className="sa-metric-note">ردشده: {formatCountFa(stats.skipped)}</div>
+              <div className="sa-chips">
+                {confirming ? (
+                  <>
+                    <span className="sa-sub">
+                      {confirming === "pause"
+                        ? "نشست متوقف شود؟ چرخه‌های بعدی ارزیابی نمی‌شوند."
+                        : "نشست ادامه یابد؟ ارزیابی چرخه‌ها از سر گرفته می‌شود."}
+                    </span>
+                    <button
+                      type="button"
+                      className="sa-btn-clear glass-control"
+                      disabled={busy}
+                      onClick={() => void act(confirming, session.id)}
+                    >
+                      بله، انجام بده
+                    </button>
+                    <button
+                      type="button"
+                      className="sa-btn-clear glass-control"
+                      onClick={() => setConfirming(null)}
+                    >
+                      انصراف
+                    </button>
+                  </>
+                ) : session.status === "RUNNING" ? (
+                  <button
+                    type="button"
+                    className="sa-btn-clear glass-control"
+                    disabled={busy}
+                    onClick={() => setConfirming("pause")}
+                  >
+                    توقف موقت…
+                  </button>
+                ) : session.status === "PAUSED" ? (
+                  <button
+                    type="button"
+                    className="sa-btn-clear glass-control"
+                    disabled={busy}
+                    onClick={() => setConfirming("resume")}
+                  >
+                    ادامهٔ ارزیابی…
+                  </button>
+                ) : (
+                  <span className="sa-sub">
+                    این نشست پایان یافته است؛ ساخت نشست تازه از «مرکز فرماندهی» انجام می‌شود.
+                  </span>
+                )}
               </div>
-              <div className="sa-metric">
-                <div className="sa-metric-label">سود نقدی تومانی</div>
-                <div className={`sa-metric-value ${signedToman(stats.cashPnlIrtToman).cls}`}>
-                  {signedToman(stats.cashPnlIrtToman).text}
-                </div>
-                <div className="sa-metric-note">
-                  فقط جابه‌جایی نقد — کارمزد تتری در آن دیده نمی‌شود
-                </div>
-              </div>
-              <div className="sa-metric">
-                <div className="sa-metric-label">تغییر موجودی تتر</div>
-                <div
-                  className={`sa-metric-value ${
-                    stats.inventoryDeltaUsdtMicros < 0 ? "sa-neg" : ""
-                  }`}
-                >
-                  {toFaDigits((stats.inventoryDeltaUsdtMicros / 1_000_000).toFixed(4))}
-                </div>
-                <div className="sa-metric-note">کاهش به اندازهٔ کارمزد تتری سمت فروش</div>
-              </div>
-              <div className="sa-metric">
-                <div className="sa-metric-label">ارزش تومانی کارمزد تتری</div>
-                <div className="sa-metric-value sa-neg">
-                  −{toFaDigits(Math.round(stats.sellFeeValueToman).toLocaleString("en-US"))}
-                </div>
-                <div className="sa-metric-note">به قیمت مرجع همان چرخه</div>
-              </div>
-              <div className="sa-metric">
-                <div className="sa-metric-label">سود خالص اقتصادی</div>
-                <div className={`sa-metric-value ${signedToman(stats.economicNetPnlToman).cls}`}>
-                  {signedToman(stats.economicNetPnlToman).text}
-                </div>
-                <div className="sa-metric-note">سود نقدی منهای ارزش کارمزد تتری</div>
-              </div>
-              <div className="sa-metric">
-                <div className="sa-metric-label">سود تعدیل‌شده با بافر</div>
-                <div className={`sa-metric-value ${signedToman(stats.riskAdjustedPnlToman).cls}`}>
-                  {signedToman(stats.riskAdjustedPnlToman).text}
-                </div>
-                <div className="sa-metric-note">مبنای دروازهٔ اجرا — نه سود نقدی</div>
-              </div>
-              <div className="sa-metric">
-                <div className="sa-metric-label">کارمزد پرداختی</div>
-                <div className="sa-metric-value">{toman(stats.feeTomanTotal)}</div>
-                <div className="sa-metric-note">و {usdtText(stats.feeUsdtTotal)}</div>
-              </div>
-              <div className="sa-metric">
-                <div className="sa-metric-label">نرخ گرفتن فرصت</div>
-                <div className="sa-metric-value">
-                  {stats.opportunityCaptureRatePercent === null
-                    ? "—"
-                    : formatPercentFa(stats.opportunityCaptureRatePercent)}
-                </div>
-                <div className="sa-metric-note">اجراشده از کل نامزدها</div>
-              </div>
-            </div>
-          ) : null}
+              <p className="sa-sub">
+                استقرار یا بازکردن این صفحه هرگز نشستی نمی‌سازد، شروع نمی‌کند و از سر نمی‌گیرد.
+              </p>
+            </>
+          ) : (
+            <p className="sa-cc-empty">
+              نشست کاغذی فعالی وجود ندارد. ساخت نشست از «مرکز فرماندهی» انجام می‌شود — این صفحه
+              هیچ نشستی ایجاد نمی‌کند.
+            </p>
+          )}
+        </div>
+      </section>
 
-          {data?.balances?.length ? (
-            <div className="panel-body sa-table-wrap">
-              <div className="sa-subpanel-title">موجودی مجازی و رانش موجودی</div>
-              <table className="sa-table">
-                <thead>
-                  <tr>
-                    <th>صرافی</th>
-                    <th className="num">تومان</th>
-                    <th className="num">تتر</th>
-                    <th className="num">تغییر تومان</th>
-                    <th className="num">تغییر تتر</th>
-                    <th>تسویهٔ کارمزد خرید</th>
-                    <th>تسویهٔ کارمزد فروش</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.balances.map((b) => {
-                    const d = stats?.drift.find((x) => x.sourceId === b.sourceId);
-                    const irtD = signedToman(d?.irtTomanDelta);
-                    return (
-                      <tr key={b.sourceId}>
-                        <td>
-                          <strong>{b.sourceId}</strong>
-                        </td>
-                        <td className="num">{toman(b.irtToman)}</td>
-                        <td className="num">{usdtText(b.usdt)}</td>
-                        <td className={`num ${irtD.cls}`}>{irtD.text}</td>
-                        <td className="num">
-                          {d ? `${d.usdtDelta > 0 ? "+" : ""}${toFaDigits(d.usdtDelta.toFixed(2))}` : "—"}
-                        </td>
-                        <td>{settlementText(b.buySettlement)}</td>
-                        <td>{settlementText(b.sellSettlement)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ) : null}
+      {/* ── five financial metrics, never merged ────────────────────────── */}
+      {stats ? (
+        <>
+          <div className="sa-kpi-grid">
+            <Kpi
+              label="جریان نقدی تومانی"
+              value={<TomanAmount value={stats.cashPnlIrtToman} />}
+              hint="فقط حرکت تومان — کارمزد تتری در آن دیده نمی‌شود"
+              tone={
+                stats.cashPnlIrtToman > 0 ? "good" : stats.cashPnlIrtToman < 0 ? "warn" : "muted"
+              }
+            />
+            <Kpi
+              label="تغییر موجودی تتری"
+              value={
+                <Bidi>{toFaDigits((stats.inventoryDeltaUsdtMicros / 1_000_000).toFixed(6))}</Bidi>
+              }
+              hint="تتری که کارمزد فروش مصرف کرده است"
+              tone={stats.inventoryDeltaUsdtMicros < 0 ? "warn" : "muted"}
+            />
+            <Kpi
+              label="ارزش تومانی کارمزد تتری"
+              value={<TomanAmount value={stats.sellFeeValueToman} />}
+              hint="به قیمت مرجع همان چرخه ارزش‌گذاری شده"
+              tone="muted"
+            />
+            <Kpi
+              label="سود خالص اقتصادی"
+              value={<TomanAmount value={stats.economicNetPnlToman} />}
+              hint="جریان نقدی منهای ارزش کارمزد تتری"
+              tone={
+                stats.economicNetPnlToman > 0
+                  ? "good"
+                  : stats.economicNetPnlToman < 0
+                    ? "warn"
+                    : "muted"
+              }
+            />
+          </div>
+          <div className="sa-kpi-grid">
+            <Kpi
+              label="سود تعدیل‌شده با ریسک"
+              value={<TomanAmount value={stats.riskAdjustedPnlToman} />}
+              hint="دروازهٔ اجرا — فقط وقتی اکیداً مثبت باشد معامله انجام می‌شود"
+              tone={stats.riskAdjustedPnlToman > 0 ? "good" : "warn"}
+            />
+            <Kpi
+              label="معاملات"
+              value={
+                <Bidi>{`${toFaDigits(stats.filled)} / ${toFaDigits(stats.filled + stats.skipped)}`}</Bidi>
+              }
+              hint={`رد‌شده: ${formatCountFa(stats.skipped)}`}
+              tone="muted"
+            />
+            <Kpi
+              label="نرخ تبدیل فرصت"
+              value={
+                stats.opportunityCaptureRatePercent === null ? (
+                  <Unknown why="هنوز نامزدی ارزیابی نشده است" />
+                ) : (
+                  <Bidi>{formatPercentFa(stats.opportunityCaptureRatePercent, 2)}</Bidi>
+                )
+              }
+              hint="انجام‌شده ÷ همهٔ نامزدهای بررسی‌شده"
+              tone="muted"
+            />
+            <Kpi
+              label="کارمزد پرداخت‌شده"
+              value={<TomanAmount value={stats.feeTomanTotal} />}
+              hint={`و ${toFaDigits(stats.feeUsdtTotal.toFixed(6))} تتر`}
+              tone="muted"
+            />
+          </div>
+        </>
+      ) : null}
 
-          {data?.trades?.length ? (
-            <div className="panel-body sa-table-wrap">
-              <div className="sa-subpanel-title">معاملات کاغذی</div>
-              <table className="sa-table">
-                <thead>
-                  <tr>
-                    <th>مسیر</th>
-                    <th className="num">حجم</th>
-                    <th className="num">اسپرد ناخالص</th>
-                    <th className="num">کارمزد</th>
-                    <th className="num">سود نقدی</th>
-                    <th className="num">سود اقتصادی</th>
-                    <th>زمان</th>
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.trades.map((t) => {
-                    const cash = signedToman(t.cashPnlIrtToman);
-                    const econ = signedToman(t.economicNetPnlToman);
-                    return (
-                      <tr key={t.id}>
-                        <td className="sa-route-cell">
-                          {t.buySourceId} ← {t.sellSourceId}
-                        </td>
-                        <td className="num">{usdtText(t.sizeUsdt)}</td>
-                        <td className="num">{toman(t.grossSpreadToman)}</td>
-                        <td className="num">{toman(t.feeTomanTotal)}</td>
-                        <td className={`num ${cash.cls}`}>{cash.text}</td>
-                        <td className={`num ${econ.cls}`}>{econ.text}</td>
-                        <td className="text-micro">{formatTehran(t.occurredAt)}</td>
-                        <td>
-                          <button type="button" className="sa-linkish" onClick={() => setDetail(t)}>
-                            محاسبات
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ) : null}
+      {/* ── segmented view control ──────────────────────────────────────── */}
+      <div className="sa-segmented glass-tabbar" role="tablist" aria-label="نمای اجرای کاغذی">
+        {PAPER_VIEWS.map((v) => (
+          <button
+            key={v.key}
+            type="button"
+            role="tab"
+            aria-selected={view === v.key}
+            className={`sa-seg${view === v.key ? " is-active glass-control" : ""}`}
+            onClick={() => write({ pv: v.key })}
+          >
+            {v.labelFa}
+          </button>
+        ))}
+      </div>
 
-          {data?.reasonBreakdown?.length ? (
-            <div className="panel-body sa-table-wrap">
-              <div className="sa-subpanel-title">
-                دلایل رد شدن — گروه‌بندی‌شده بر اساس علت دقیق
-              </div>
-              <table className="sa-table">
-                <thead>
-                  <tr>
-                    <th>دلیل</th>
-                    <th className="num">تعداد نامزد</th>
-                    <th className="num">تعداد مشاهده</th>
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.reasonBreakdown.map((r) => (
-                    <tr key={r.code}>
-                      <td>{reasonFa(r.code)}</td>
-                      <td className="num">{formatCountFa(r.candidates)}</td>
-                      <td className="num">{formatCountFa(r.observations)}</td>
-                      <td>
-                        <button
-                          type="button"
-                          className="sa-linkish"
-                          onClick={() => setReasonFilter(reasonFilter === r.code ? "" : r.code)}
-                        >
-                          {reasonFilter === r.code ? "حذف فیلتر" : "فیلتر"}
-                        </button>
+      {/* ── balances and capacity ───────────────────────────────────────── */}
+      {view === "balances" ? (
+        <section className="panel sa-panel" aria-label="موجودی مجازی و ظرفیت">
+          <div className="panel-header sa-panel-header">
+            <h3 className="panel-title">موجودی مجازی و ظرفیت هر صرافی</h3>
+            <div className="sa-panel-note">{formatCountFa(matrix.length)} صرافی</div>
+          </div>
+          <div className="panel-body sa-table-wrap sa-paper-desktop">
+            <table className="sa-table">
+              <thead>
+                <tr>
+                  <th scope="col">صرافی</th>
+                  <th scope="col">مدل داده</th>
+                  <th scope="col">نقش</th>
+                  <th scope="col" className="num">تومان مجازی</th>
+                  <th scope="col" className="num">تتر مجازی</th>
+                  <th scope="col" className="num">ظرفیت خرید</th>
+                  <th scope="col">محدودکنندهٔ خرید</th>
+                  <th scope="col" className="num">ظرفیت فروش</th>
+                  <th scope="col">محدودکنندهٔ فروش</th>
+                </tr>
+              </thead>
+              <tbody>
+                {matrix.map((m) => {
+                  const b = balanceById.get(m.sourceId);
+                  return (
+                    <tr key={m.sourceId}>
+                      <td>{m.nameFa}</td>
+                      <td className="sa-sub">
+                        {m.dataType === "EXECUTABLE_QUOTE" ? "نقل‌قول اجراپذیر" : "دفتر سفارش"}
                       </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <div className="sa-footnote">
-                «تعداد مشاهده» یعنی این نامزد در چند چرخه با همین وضعیت دیده شده است؛ برای هر
-                چرخه ردیف تازه‌ای ذخیره نمی‌شود.
-              </div>
-            </div>
-          ) : null}
-
-          {data?.candidates?.length ? (
-            <div className="panel-body sa-table-wrap">
-              <div className="sa-subpanel-title">
-                نامزدهای باز{reasonFilter ? ` — فیلتر: ${reasonFa(reasonFilter)}` : ""}
-              </div>
-              <table className="sa-table">
-                <thead>
-                  <tr>
-                    <th>مسیر</th>
-                    <th className="num">حجم</th>
-                    <th>دلیل اصلی</th>
-                    <th>همهٔ دلایل</th>
-                    <th className="num">مشاهده</th>
-                    <th>آخرین تغییر</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.candidates.slice(0, 50).map((c) => (
-                    <tr key={c.lifecycleId}>
-                      <td className="sa-route-cell">{c.routeKey}</td>
-                      <td className="num">{usdtText(c.sizeUsdt)}</td>
-                      <td>{reasonFa(c.primaryReason)}</td>
-                      <td className="sa-wrap-cell">
-                        {c.reasonCodes.map(reasonFa).join(" · ") || "—"}
-                      </td>
-                      <td className="num">{formatCountFa(c.occurrences)}</td>
-                      <td className="text-micro">{formatTehran(c.lastChangedAt)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : null}
-
-          {data?.transitions?.length ? (
-            <div className="panel-body sa-table-wrap">
-              <div className="sa-subpanel-title">آخرین تغییرات وضعیت</div>
-              <table className="sa-table">
-                <thead>
-                  <tr>
-                    <th>رویداد</th>
-                    <th>مسیر</th>
-                    <th className="num">حجم</th>
-                    <th>دلیل</th>
-                    <th>بازتوازن لازم</th>
-                    <th>زمان</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.transitions.slice(0, 40).map((t) => (
-                    <tr key={t.id}>
-                      <td>
-                        <span className="sa-chip sa-chip-sm sa-chip-muted">
-                          {EVENT_FA[t.eventType ?? ""] ?? t.eventType ?? "—"}
-                        </span>
-                      </td>
-                      <td className="sa-route-cell">{t.routeKey}</td>
-                      <td className="num">{usdtText(t.sizeUsdt)}</td>
-                      <td className="sa-wrap-cell">
-                        {t.reasonCodes?.length
-                          ? t.reasonCodes.map(reasonFa).join(" · ")
-                          : (t.rejectionReason ?? reasonFa(t.rejectionCode))}
-                      </td>
-                      <td className="sa-wrap-cell">
-                        {t.requiredRebalance ? (
-                          <span className="sa-reason">{t.requiredRebalance}</span>
+                      <td className="sa-sub">{m.allocationRole ?? "—"}</td>
+                      <td className="num">
+                        {b ? (
+                          <TomanAmount value={b.irtToman} />
                         ) : (
-                          "—"
+                          <Unknown why="موجودی مجازی برای این صرافی ثبت نشده است" />
                         )}
                       </td>
-                      <td className="text-micro">{formatTehran(t.occurredAt)}</td>
+                      <td className="num">
+                        {b ? (
+                          <Bidi>{toFaDigits(b.usdt.toFixed(4))}</Bidi>
+                        ) : (
+                          <Unknown why="موجودی مجازی برای این صرافی ثبت نشده است" />
+                        )}
+                      </td>
+                      <td className="num">
+                        {m.buyCapacityUsdtMicros === null ? (
+                          <Unknown
+                            why={
+                              VENUE_CAPACITY_REASON_FA[
+                                m.buyReason as keyof typeof VENUE_CAPACITY_REASON_FA
+                              ] ?? m.buyReason
+                            }
+                          />
+                        ) : (
+                          <Bidi>
+                            {toFaDigits((m.buyCapacityUsdtMicros / 1_000_000).toFixed(2))}
+                          </Bidi>
+                        )}
+                      </td>
+                      <td className="sa-sub">
+                        {CAP_LABEL_FA[m.buyLimiter as keyof typeof CAP_LABEL_FA] ??
+                          VENUE_CAPACITY_REASON_FA[
+                            m.buyReason as keyof typeof VENUE_CAPACITY_REASON_FA
+                          ] ??
+                          "—"}
+                      </td>
+                      <td className="num">
+                        {m.sellCapacityUsdtMicros === null ? (
+                          <Unknown
+                            why={
+                              VENUE_CAPACITY_REASON_FA[
+                                m.sellReason as keyof typeof VENUE_CAPACITY_REASON_FA
+                              ] ?? m.sellReason
+                            }
+                          />
+                        ) : (
+                          <Bidi>
+                            {toFaDigits((m.sellCapacityUsdtMicros / 1_000_000).toFixed(2))}
+                          </Bidi>
+                        )}
+                      </td>
+                      <td className="sa-sub">
+                        {CAP_LABEL_FA[m.sellLimiter as keyof typeof CAP_LABEL_FA] ??
+                          VENUE_CAPACITY_REASON_FA[
+                            m.sellReason as keyof typeof VENUE_CAPACITY_REASON_FA
+                          ] ??
+                          "—"}
+                      </td>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : null}
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
 
-          {data?.cycleSummaries?.length ? (
+          {/* Real cards on a phone, never a squeezed table. */}
+          <div className="panel-body sa-paper-cards">
+            {matrix.map((m) => {
+              const b = balanceById.get(m.sourceId);
+              return (
+                <div className="panel sa-panel sa-paper-card" key={m.sourceId}>
+                  <div className="sa-paper-card-head">
+                    <span className="sa-strong">{m.nameFa}</span>
+                    <span className="sa-chip sa-chip-sm sa-chip-muted">
+                      {m.dataType === "EXECUTABLE_QUOTE" ? "نقل‌قول اجراپذیر" : "دفتر سفارش"}
+                    </span>
+                  </div>
+                  <dl className="sa-paper-card-grid">
+                    <div>
+                      <dt>نقش</dt>
+                      <dd>{m.allocationRole ?? "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>تومان</dt>
+                      <dd>{b ? <TomanAmount value={b.irtToman} /> : "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>تتر</dt>
+                      <dd>{b ? <Bidi>{toFaDigits(b.usdt.toFixed(2))}</Bidi> : "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>ظرفیت خرید</dt>
+                      <dd>
+                        {m.buyCapacityUsdtMicros === null ? (
+                          "—"
+                        ) : (
+                          <Bidi>
+                            {toFaDigits((m.buyCapacityUsdtMicros / 1_000_000).toFixed(2))}
+                          </Bidi>
+                        )}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>ظرفیت فروش</dt>
+                      <dd>
+                        {m.sellCapacityUsdtMicros === null ? (
+                          "—"
+                        ) : (
+                          <Bidi>
+                            {toFaDigits((m.sellCapacityUsdtMicros / 1_000_000).toFixed(2))}
+                          </Bidi>
+                        )}
+                      </dd>
+                    </div>
+                  </dl>
+                  {m.blockerFa ? <p className="sa-sub">{m.blockerFa}</p> : null}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+
+      {/* ── ledger ─────────────────────────────────────────────────────── */}
+      {view === "fills" ? (
+        <section className="panel sa-panel" aria-label="دفتر معاملات">
+          <div className="panel-header sa-panel-header">
+            <h3 className="panel-title">دفتر معاملات</h3>
+            <div className="sa-panel-note">{formatCountFa(ledger.length)} رکورد</div>
+          </div>
+
+          <div className="panel-body sa-filter-body">
+            <label className="sa-field">
+              <span className="sa-field-label">جست‌وجوی مسیر یا شناسهٔ چرخهٔ عمر</span>
+              <input
+                type="search"
+                className="sa-control glass-control"
+                value={query}
+                onChange={(e) => setFilter({ pq: e.target.value || null })}
+              />
+            </label>
+            <label className="sa-field">
+              <span className="sa-field-label">نتیجه</span>
+              <select
+                className="sa-control glass-control"
+                value={outcome}
+                onChange={(e) => setFilter({ pout: e.target.value })}
+              >
+                <option value="ALL">همه</option>
+                <option value="FILLED">انجام‌شده</option>
+                <option value="SKIPPED">رد‌شده</option>
+              </select>
+            </label>
+            <label className="sa-field">
+              <span className="sa-field-label">دلیل رد</span>
+              <select
+                className="sa-control glass-control"
+                value={reason}
+                onChange={(e) => setFilter({ preason: e.target.value || null })}
+              >
+                <option value="">همهٔ دلایل</option>
+                {(data?.reasonBreakdown ?? []).map((r) => (
+                  <option key={r.reason} value={r.reason}>
+                    {r.reason} ({r.count})
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="panel-body sa-table-wrap sa-paper-desktop">
+            <table className="sa-table">
+              <thead>
+                <tr>
+                  <th scope="col">مسیر</th>
+                  <th scope="col" className="num">حجم</th>
+                  <th scope="col" className="num">جریان نقدی</th>
+                  <th scope="col" className="num">کارمزد تتری</th>
+                  <th scope="col" className="num">خالص اقتصادی</th>
+                  <th scope="col" className="num">تعدیل‌شده</th>
+                  <th scope="col">وضعیت و زمان</th>
+                  <th scope="col">جزئیات</th>
+                </tr>
+              </thead>
+              <tbody>
+                {page.rows.map((t) => (
+                  <tr key={t.id}>
+                    <td>
+                      <Bidi>{t.routeKey}</Bidi>
+                    </td>
+                    <td className="num">
+                      <Bidi>{toFaDigits(t.sizeUsdt.toFixed(4))}</Bidi>
+                    </td>
+                    <td className="num">
+                      {t.cashPnlIrtToman === null ? (
+                        <Unknown why="این رکورد اجرا نشده است" />
+                      ) : (
+                        <TomanAmount value={t.cashPnlIrtToman} />
+                      )}
+                    </td>
+                    <td className="num">
+                      {t.sellFeeValueToman === null ? (
+                        <Unknown why="این رکورد اجرا نشده است" />
+                      ) : (
+                        <TomanAmount value={t.sellFeeValueToman} />
+                      )}
+                    </td>
+                    <td className="num">
+                      {t.economicNetPnlToman === null ? (
+                        <Unknown why="این رکورد اجرا نشده است" />
+                      ) : (
+                        <TomanAmount value={t.economicNetPnlToman} />
+                      )}
+                    </td>
+                    <td className="num">
+                      {t.riskAdjustedPnlToman === null ? (
+                        <Unknown why="این رکورد اجرا نشده است" />
+                      ) : (
+                        <TomanAmount value={t.riskAdjustedPnlToman} />
+                      )}
+                    </td>
+                    <td>
+                      <div className="sa-stack-2">
+                        <span
+                          className={`sa-chip sa-chip-sm sa-chip-${
+                            t.outcome === "FILLED" ? "good" : "muted"
+                          }`}
+                        >
+                          {t.outcome === "FILLED" ? "انجام‌شده" : "رد‌شده"}
+                        </span>
+                        <span className="sa-sub">{formatTehran(t.occurredAt)}</span>
+                        {t.rejectionReason ? (
+                          <span className="sa-sub">{t.rejectionReason}</span>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="sa-btn-details glass-control"
+                        onClick={() => setDetail(t)}
+                        aria-label={`جزئیات محاسبهٔ ${t.routeKey}`}
+                      >
+                        محاسبه
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="panel-body sa-paper-cards">
+            {page.rows.map((t) => (
+              <div className="panel sa-panel sa-paper-card" key={t.id}>
+                <div className="sa-paper-card-head">
+                  <span className="sa-strong">
+                    <Bidi>{t.routeKey}</Bidi>
+                  </span>
+                  <span
+                    className={`sa-chip sa-chip-sm sa-chip-${
+                      t.outcome === "FILLED" ? "good" : "muted"
+                    }`}
+                  >
+                    {t.outcome === "FILLED" ? "انجام‌شده" : "رد‌شده"}
+                  </span>
+                </div>
+                <dl className="sa-paper-card-grid">
+                  <div>
+                    <dt>حجم</dt>
+                    <dd>
+                      <Bidi>{toFaDigits(t.sizeUsdt.toFixed(4))}</Bidi>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>تعدیل‌شده</dt>
+                    <dd>
+                      {t.riskAdjustedPnlToman === null ? (
+                        "—"
+                      ) : (
+                        <TomanAmount value={t.riskAdjustedPnlToman} />
+                      )}
+                    </dd>
+                  </div>
+                </dl>
+                <div className="sa-sub">{formatTehran(t.occurredAt)}</div>
+                {t.rejectionReason ? <div className="sa-sub">{t.rejectionReason}</div> : null}
+                <button
+                  type="button"
+                  className="sa-btn-details glass-control"
+                  onClick={() => setDetail(t)}
+                >
+                  محاسبه
+                </button>
+              </div>
+            ))}
+          </div>
+
+          {ledger.length ? (
+            <Pager
+              page={page.page}
+              pageCount={page.pageCount}
+              total={page.total}
+              from={page.from}
+              to={page.to}
+              perPage={perPage}
+              pageSizes={OPPORTUNITY_PAGE_SIZES}
+              onPage={(p) => write({ ppage: String(p) })}
+              onPerPage={(n) => write({ pper: String(n), ppage: "1" })}
+            />
+          ) : (
+            <div className="panel-body sa-cc-empty">با این فیلترها هیچ رکوردی وجود ندارد.</div>
+          )}
+        </section>
+      ) : null}
+
+      {/* ── candidates and grouped reasons ─────────────────────────────── */}
+      {view === "candidates" ? (
+        <>
+          <section className="panel sa-panel" aria-label="شمارش گروهی دلایل">
+            <div className="panel-header sa-panel-header">
+              <h3 className="panel-title">شمارش گروهی دلایل</h3>
+            </div>
+            <div className="panel-body sa-chips">
+              {(data?.reasonBreakdown ?? []).length ? (
+                (data?.reasonBreakdown ?? []).map((r) => (
+                  <span className="sa-chip sa-chip-sm sa-chip-muted" key={r.reason}>
+                    {r.reason}: {formatCountFa(r.count)}
+                  </span>
+                ))
+              ) : (
+                <span className="sa-sub">هنوز دلیلی ثبت نشده است.</span>
+              )}
+            </div>
+          </section>
+
+          <section className="panel sa-panel" aria-label="نامزدهای باز">
+            <div className="panel-header sa-panel-header">
+              <h3 className="panel-title">نامزدهای باز</h3>
+              <div className="sa-panel-note">
+                {formatCountFa((data?.candidates ?? []).length)} نامزد
+              </div>
+            </div>
             <div className="panel-body sa-table-wrap">
-              <div className="sa-subpanel-title">خلاصهٔ فشردهٔ چرخه‌ها</div>
               <table className="sa-table">
                 <thead>
                   <tr>
-                    <th>زمان</th>
-                    <th className="num">نامزد بررسی‌شده</th>
-                    <th className="num">اجراشده</th>
-                    <th className="num">ردشده</th>
-                    <th className="num">ردیف جزئی نوشته‌شده</th>
+                    <th scope="col">مسیر</th>
+                    <th scope="col">دلیل اصلی</th>
+                    <th scope="col">همهٔ دلایل</th>
+                    <th scope="col" className="num">مشاهده</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {data.cycleSummaries.slice(0, 20).map((c) => (
-                    <tr key={c.id}>
-                      <td className="text-micro">{formatTehran(c.occurredAt)}</td>
-                      <td className="num">{formatCountFa(c.candidatesEvaluated)}</td>
-                      <td className="num">{formatCountFa(c.filled)}</td>
-                      <td className="num">{formatCountFa(c.skipped)}</td>
-                      <td className="num">{formatCountFa(c.detailedEventsWritten)}</td>
+                  {(data?.candidates ?? []).slice(0, 100).map((c) => (
+                    <tr key={c.lifecycleId}>
+                      <td>
+                        <Bidi>{c.routeKey}</Bidi>
+                      </td>
+                      <td>{c.reason ?? <Unknown why="دلیلی برای این نامزد ثبت نشده است" />}</td>
+                      <td className="sa-sub">{(c.reasonCodes ?? []).join("، ") || "—"}</td>
+                      <td className="num">
+                        {c.observationCount === undefined ? (
+                          "—"
+                        ) : (
+                          <Bidi>{toFaDigits(c.observationCount)}</Bidi>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          ) : null}
-
-          {stats?.blockReasons?.length ? (
-            <div className="panel-body">
-              <div className="sa-subpanel">
-                <div className="sa-subpanel-title">دلایل مسدودی</div>
-                <ul className="sa-list">
-                  {stats.blockReasons.map((r) => (
-                    <li key={r.code}>
-                      {r.reasonFa} — {formatCountFa(r.count)} مورد
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          ) : null}
-
-          {detail ? (
-            <>
-              <div className="sa-drawer-backdrop" onClick={() => setDetail(null)} />
-              <aside className="sa-drawer" role="dialog" aria-label="جزئیات محاسبهٔ معاملهٔ کاغذی">
-                <div className="sa-drawer-head">
-                  <div className="sa-drawer-route">
-                    {detail.buySourceId} ← {detail.sellSourceId}
-                  </div>
-                  <button type="button" className="sa-btn sa-btn-ghost" onClick={() => setDetail(null)}>
-                    بستن
-                  </button>
-                </div>
-                <div className="sa-drawer-body">
-                  <div className="sa-drawer-section">
-                    <div className="sa-line">
-                      <span className="sa-line-label">حجم</span>
-                      <span className="sa-line-value">{usdtText(detail.sizeUsdt)}</span>
-                    </div>
-                    <div className="sa-line">
-                      <span className="sa-line-label">VWAP خرید</span>
-                      <span className="sa-line-value">{toman(detail.buyVwapToman)}</span>
-                    </div>
-                    <div className="sa-line">
-                      <span className="sa-line-label">VWAP فروش</span>
-                      <span className="sa-line-value">{toman(detail.sellVwapToman)}</span>
-                    </div>
-                    <div className="sa-line">
-                      <span className="sa-line-label">ارزش خرید</span>
-                      <span className="sa-line-value">{toman(detail.buyNotionalToman)}</span>
-                    </div>
-                    <div className="sa-line">
-                      <span className="sa-line-label">ارزش فروش</span>
-                      <span className="sa-line-value">{toman(detail.sellNotionalToman)}</span>
-                    </div>
-                    <div className="sa-line">
-                      <span className="sa-line-label">کارمزد خرید</span>
-                      <span className="sa-line-value">
-                        {toFaDigits((detail.buyFeeBps ?? 0) / 100)}٪ ·{" "}
-                        {ASSET_FA[detail.buyFeeAsset ?? "UNKNOWN"] ?? "نامشخص"} ·{" "}
-                        {MODE_FA_SHORT[detail.buyFeeDebitMode ?? "UNKNOWN"] ?? "نامشخص"}
-                      </span>
-                    </div>
-                    <div className="sa-line">
-                      <span className="sa-line-label">کارمزد فروش</span>
-                      <span className="sa-line-value">
-                        {toFaDigits((detail.sellFeeBps ?? 0) / 100)}٪ ·{" "}
-                        {ASSET_FA[detail.sellFeeAsset ?? "UNKNOWN"] ?? "نامشخص"} ·{" "}
-                        {MODE_FA_SHORT[detail.sellFeeDebitMode ?? "UNKNOWN"] ?? "نامشخص"}
-                      </span>
-                    </div>
-                    <div className="sa-line">
-                      <span className="sa-line-label">بافر لغزش (گزارشی)</span>
-                      <span className="sa-line-value">{toman(detail.slippageBufferToman)}</span>
-                    </div>
-                    <div className="sa-line">
-                      <span className="sa-line-label">قیمت مرجع تتر</span>
-                      <span className="sa-line-value">{toman(detail.markPriceToman)}</span>
-                    </div>
-                    <div className="sa-line">
-                      <span className="sa-line-label">سود نقدی تومانی</span>
-                      <span className="sa-line-value">{toman(detail.cashPnlIrtToman)}</span>
-                    </div>
-                    <div className="sa-line">
-                      <span className="sa-line-label">تغییر موجودی تتر</span>
-                      <span className="sa-line-value">
-                        {detail.inventoryDeltaUsdtMicros === null
-                          ? "—"
-                          : `${toFaDigits((detail.inventoryDeltaUsdtMicros / 1_000_000).toFixed(4))} تتر`}
-                      </span>
-                    </div>
-                    <div className="sa-line">
-                      <span className="sa-line-label">ارزش تومانی کارمزد تتری</span>
-                      <span className="sa-line-value">{toman(detail.sellFeeValueToman)}</span>
-                    </div>
-                    <div className="sa-line">
-                      <span className="sa-line-label">سود خالص اقتصادی</span>
-                      <span className="sa-line-value">{toman(detail.economicNetPnlToman)}</span>
-                    </div>
-                    <div className="sa-line">
-                      <span className="sa-line-label">سود تعدیل‌شده با بافر</span>
-                      <span className="sa-line-value">{toman(detail.riskAdjustedPnlToman)}</span>
-                    </div>
-                  </div>
-                  <div className="sa-footnote">
-                    سود نقدی تومانی فقط جابه‌جایی نقد است و کارمزد تتری سمت فروش را نمی‌بیند؛
-                    بنابراین هرگز به‌تنهایی مبنای اجرا نیست. کارمزد تتری به قیمت مرجعِ همان چرخه —
-                    یعنی VWAP خریدِ همین معامله، که هزینهٔ واقعی جایگزینی آن تتر است — تومانی می‌شود
-                    و از سود نقدی کم می‌گردد تا سود خالص اقتصادی به دست آید. بافر لغزش عددی گزارشی
-                    است و جابه‌جایی نقدی ایجاد نمی‌کند؛ فقط شرط اجرا را سخت‌گیرانه‌تر می‌کند. این
-                    معامله شبیه‌سازی است و هیچ سفارش واقعی ثبت نشده است.
-                  </div>
-                </div>
-              </aside>
-            </>
-          ) : null}
+          </section>
         </>
-      )}
-    </section>
+      ) : null}
+
+      {/* ── cycle summaries ────────────────────────────────────────────── */}
+      {view === "cycles" ? (
+        <section className="panel sa-panel" aria-label="خلاصهٔ چرخه‌ها">
+          <div className="panel-header sa-panel-header">
+            <h3 className="panel-title">خلاصهٔ چرخه‌ها</h3>
+            <div className="sa-panel-note">
+              {formatCountFa((data?.cycleSummaries ?? []).length)} چرخه
+            </div>
+          </div>
+          <div className="panel-body sa-table-wrap">
+            <table className="sa-table">
+              <thead>
+                <tr>
+                  <th scope="col">زمان</th>
+                  <th scope="col" className="num">بررسی‌شده</th>
+                  <th scope="col" className="num">انجام‌شده</th>
+                  <th scope="col" className="num">رد‌شده</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(data?.cycleSummaries ?? []).slice(0, 60).map((c) => (
+                  <tr key={c.occurredAt}>
+                    <td>{formatTehran(c.occurredAt)}</td>
+                    <td className="num">
+                      {c.evaluated === undefined ? "—" : <Bidi>{toFaDigits(c.evaluated)}</Bidi>}
+                    </td>
+                    <td className="num">
+                      {c.filled === undefined ? "—" : <Bidi>{toFaDigits(c.filled)}</Bidi>}
+                    </td>
+                    <td className="num">
+                      {c.skipped === undefined ? "—" : <Bidi>{toFaDigits(c.skipped)}</Bidi>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      {/* ── calculation drawer ─────────────────────────────────────────── */}
+      {detail ? (
+        <section className="panel sa-panel" role="dialog" aria-label="جزئیات محاسبه">
+          <div className="panel-header sa-panel-header">
+            <h3 className="panel-title">
+              محاسبهٔ <Bidi>{detail.routeKey}</Bidi>
+            </h3>
+            <button
+              type="button"
+              className="sa-btn-clear glass-control"
+              onClick={() => setDetail(null)}
+            >
+              بستن
+            </button>
+          </div>
+          <div className="panel-body">
+            <dl className="sa-cc-best-grid">
+              <div>
+                <dt>پای خرید</dt>
+                <dd>{detail.buySourceId}</dd>
+              </div>
+              <div>
+                <dt>پای فروش</dt>
+                <dd>{detail.sellSourceId}</dd>
+              </div>
+              <div>
+                <dt>حجم</dt>
+                <dd>
+                  <Bidi>{toFaDigits(detail.sizeUsdt.toFixed(4))}</Bidi> تتر
+                </dd>
+              </div>
+              <div>
+                <dt>VWAP خرید / فروش</dt>
+                <dd>
+                  {detail.buyVwapToman === null || detail.sellVwapToman === null ? (
+                    <Unknown why="این رکورد اجرا نشده است" />
+                  ) : (
+                    <Bidi>{`${toFaDigits(detail.buyVwapToman)} / ${toFaDigits(detail.sellVwapToman)}`}</Bidi>
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>کارمزد خرید</dt>
+                <dd>
+                  {detail.buyFeeBps === null ? (
+                    <Unknown why="کارمزد تأییدشده‌ای برای این سمت ثبت نشده است" />
+                  ) : (
+                    <Bidi>{`${toFaDigits(detail.buyFeeBps)} bps · ${detail.buyFeeAsset}`}</Bidi>
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>کارمزد فروش</dt>
+                <dd>
+                  {detail.sellFeeBps === null ? (
+                    <Unknown why="کارمزد تأییدشده‌ای برای این سمت ثبت نشده است" />
+                  ) : (
+                    <Bidi>{`${toFaDigits(detail.sellFeeBps)} bps · ${detail.sellFeeAsset}`}</Bidi>
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>قیمت مرجع</dt>
+                <dd>
+                  {detail.markPriceToman === null ? (
+                    <Unknown why="قیمت مرجع این چرخه در دسترس نبود" />
+                  ) : (
+                    <TomanAmount value={detail.markPriceToman} />
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>بافر ریسک</dt>
+                <dd>
+                  {detail.slippageBufferToman === null ? (
+                    <Unknown why="این رکورد اجرا نشده است" />
+                  ) : (
+                    <TomanAmount value={detail.slippageBufferToman} />
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>جریان نقدی تومانی</dt>
+                <dd>
+                  {detail.cashPnlIrtToman === null ? (
+                    "—"
+                  ) : (
+                    <TomanAmount value={detail.cashPnlIrtToman} />
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>تغییر موجودی تتری</dt>
+                <dd>
+                  {detail.inventoryDeltaUsdtMicros === null ? (
+                    "—"
+                  ) : (
+                    <Bidi>
+                      {toFaDigits((detail.inventoryDeltaUsdtMicros / 1_000_000).toFixed(6))}
+                    </Bidi>
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>ارزش تومانی کارمزد تتری</dt>
+                <dd>
+                  {detail.sellFeeValueToman === null ? (
+                    "—"
+                  ) : (
+                    <TomanAmount value={detail.sellFeeValueToman} />
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>سود خالص اقتصادی</dt>
+                <dd>
+                  {detail.economicNetPnlToman === null ? (
+                    "—"
+                  ) : (
+                    <TomanAmount value={detail.economicNetPnlToman} />
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>سود تعدیل‌شده</dt>
+                <dd>
+                  {detail.riskAdjustedPnlToman === null ? (
+                    "—"
+                  ) : (
+                    <TomanAmount value={detail.riskAdjustedPnlToman} />
+                  )}
+                </dd>
+              </div>
+            </dl>
+            {detail.rejectionReason ? (
+              <p className="sa-sub">دلیل رد: {detail.rejectionReason}</p>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+    </div>
   );
 }

@@ -36,6 +36,7 @@ export type PaperReasonCode =
   | "no_balance_record"
   | "lifecycle_already_processed"
   | "size_not_selected"
+  | "sizing_blocked"
   | "venue_not_executable";
 
 export const PAPER_REASON_FA: Record<PaperReasonCode, string> = {
@@ -60,6 +61,7 @@ export const PAPER_REASON_FA: Record<PaperReasonCode, string> = {
   no_balance_record: "برای این صرافی موجودی مجازی ثبت نشده است",
   lifecycle_already_processed: "این فرصت قبلاً در همین نشست پردازش شده است",
   size_not_selected: "حجم بهتری برای همین مسیر انتخاب شد",
+  sizing_blocked: "حجم پویا محاسبه نشد — سیاست ریسک یا شواهد لازم کامل نیست",
   venue_not_executable: "صرافی اجراپذیر نیست"
 };
 
@@ -116,6 +118,7 @@ const PRIORITY: PaperReasonCode[] = [
   "negative_balance_guard",
   "no_balance_record",
   "lifecycle_already_processed",
+  "sizing_blocked",
   "size_not_selected"
 ];
 

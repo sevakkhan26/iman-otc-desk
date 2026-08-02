@@ -43,10 +43,36 @@ export type ReadinessGateId =
 
 export type GateStatus = "PASSED" | "BLOCKED" | "UNKNOWN";
 
+/**
+ * Why a gate is not passing. These are not all the same thing, and presenting
+ * them identically makes a healthy system look broken:
+ *
+ *  SYSTEM_FAILURE    something is actually wrong right now (collector stopped,
+ *                    heartbeat stale, duplicate keys, reconciliation mismatch).
+ *  MISSING_POLICY    a required limit has never been chosen. Nothing is broken;
+ *                    a human has to decide a number.
+ *  MISSING_EVIDENCE  a fact nobody has attested or recorded yet.
+ *  GATE_NOT_MATURE   the evidence is accruing correctly and simply needs time.
+ */
+export type BlockerKind =
+  | "SYSTEM_FAILURE"
+  | "MISSING_POLICY"
+  | "MISSING_EVIDENCE"
+  | "GATE_NOT_MATURE";
+
+export const BLOCKER_KIND_FA: Record<BlockerKind, string> = {
+  SYSTEM_FAILURE: "خرابی سامانه",
+  MISSING_POLICY: "سیاست تعیین‌نشده",
+  MISSING_EVIDENCE: "شواهد ثبت‌نشده",
+  GATE_NOT_MATURE: "در حال تکمیل"
+};
+
 export type ReadinessGate = {
   id: ReadinessGateId;
   labelFa: string;
   status: GateStatus;
+  /** Why it is blocked — null when the gate passes. */
+  blockerKind: BlockerKind | null;
   /** What was actually checked, in the reviewer's language. */
   evidenceFa: string;
   /** When the evidence stops counting. Null when it does not expire. */
@@ -198,6 +224,7 @@ export function evaluateGates(input: ReadinessInput): ReadinessGate[] {
     }
     gates.push({
       id: "observation_window",
+      blockerKind: classifyBlockers(blockers, "GATE_NOT_MATURE"),
       labelFa: "دورهٔ مشاهدهٔ ۱۴ روزه با پوشش کافی",
       status: blockers.length ? "BLOCKED" : "PASSED",
       evidenceFa: o
@@ -215,17 +242,25 @@ export function evaluateGates(input: ReadinessInput): ReadinessGate[] {
     const c = input.collector;
     const blockers: string[] = [];
     if (!c) blockers.push("وضعیت جمع‌آورنده در دسترس نیست.");
-    if (c && !c.running) blockers.push("جمع‌آورنده در حال اجرا نیست.");
-    if (c && c.heartbeatStale) blockers.push("ضربان جمع‌آورنده کهنه است.");
+    /*
+     * Faults are tracked separately from policy gaps: a running, fresh,
+     * duplicate-free collector is healthy even while this gate is blocked
+     * because nobody has chosen the limits yet.
+     */
+    const faults: string[] = [];
+    if (c && !c.running) faults.push("جمع‌آورنده در حال اجرا نیست.");
+    if (c && c.heartbeatStale) faults.push("ضربان جمع‌آورنده کهنه است.");
+    blockers.push(...faults);
 
     const maxDuplicates = policyValueOrNull(input.policies, "max_duplicate_idempotency_keys");
     const minCycles = policyValueOrNull(input.policies, "min_successful_cycles");
     if (maxDuplicates === null) {
       blockers.push("سیاست «حداکثر کلید تکراری مجاز» تعیین نشده است؛ حتی صفر هم باید انتخاب صریح باشد.");
     } else if (c && c.duplicateIdempotencyKeys > maxDuplicates) {
-      blockers.push(
+      faults.push(
         `${c.duplicateIdempotencyKeys} چرخهٔ تکراری ثبت شده که از سقف ${maxDuplicates} بیشتر است.`
       );
+      blockers.push(faults[faults.length - 1]);
     }
     if (minCycles === null) {
       blockers.push("سیاست «حداقل چرخهٔ موفق» تعیین نشده است.");
@@ -234,6 +269,7 @@ export function evaluateGates(input: ReadinessInput): ReadinessGate[] {
     }
     gates.push({
       id: "collector_health",
+      blockerKind: classifyBlockers(blockers, "SYSTEM_FAILURE", faults),
       labelFa: "سلامت جمع‌آورنده و نبود چرخهٔ تکراری",
       status: blockers.length ? "BLOCKED" : "PASSED",
       evidenceFa: c
@@ -252,6 +288,8 @@ export function evaluateGates(input: ReadinessInput): ReadinessGate[] {
     const ok = r?.status === "APPROVED_SIMULATION_PLAN";
     gates.push({
       id: "capital_plan_approved",
+      // Not an error: the plan is provisional until an admin approves it.
+      blockerKind: ok ? null : "MISSING_EVIDENCE",
       labelFa: "طرح سرمایهٔ تأییدشدهٔ فاز ۵",
       status: ok ? "PASSED" : "BLOCKED",
       evidenceFa: r ? `وضعیت توصیه: ${r.status}` : "بدون شواهد",
@@ -286,6 +324,7 @@ export function evaluateGates(input: ReadinessInput): ReadinessGate[] {
     }
     gates.push({
       id: "paper_evidence",
+      blockerKind: classifyBlockers(blockers, "GATE_NOT_MATURE"),
       labelFa: "شواهد کافی از اجرای کاغذی",
       status: blockers.length ? "BLOCKED" : "PASSED",
       evidenceFa: p
@@ -309,6 +348,7 @@ export function evaluateGates(input: ReadinessInput): ReadinessGate[] {
     }
     gates.push({
       id: "account_fee_readiness",
+      blockerKind: classifyBlockers(blockers, "MISSING_EVIDENCE"),
       labelFa: "آمادگی حساب و کارمزد صرافی‌ها",
       status: blockers.length ? "BLOCKED" : "PASSED",
       evidenceFa: `${executable.length} صرافی اجراپذیر از ${input.venueStates.length}`,
@@ -332,6 +372,7 @@ export function evaluateGates(input: ReadinessInput): ReadinessGate[] {
     }
     gates.push({
       id: "fee_settlement",
+      blockerKind: classifyBlockers(blockers, "MISSING_EVIDENCE"),
       labelFa: "تأیید نحوهٔ تسویهٔ کارمزد در هر دو سمت",
       status: blockers.length ? "BLOCKED" : "PASSED",
       evidenceFa: `${executable.length - unconfirmed.length} از ${executable.length} صرافی تأییدشده`,
@@ -356,6 +397,7 @@ export function evaluateGates(input: ReadinessInput): ReadinessGate[] {
     if (record && !claims.ok) blockers.push(`موارد تأییدنشده: ${missingClaimsFa(claims.missing)}.`);
     gates.push({
       id: "api_capability",
+      blockerKind: classifyBlockers(blockers, "MISSING_EVIDENCE"),
       labelFa: "توان API و سیاست حداقل دسترسی",
       status: blockers.length ? "BLOCKED" : "PASSED",
       evidenceFa: record ? `تأیید ${record.confirmedBy} در ${record.confirmedAt.slice(0, 10)}` : "بدون شواهد",
@@ -380,6 +422,7 @@ export function evaluateGates(input: ReadinessInput): ReadinessGate[] {
     if (record && !claims.ok) blockers.push(`موارد تأییدنشده: ${missingClaimsFa(claims.missing)}.`);
     gates.push({
       id: "key_permissions",
+      blockerKind: classifyBlockers(blockers, "MISSING_EVIDENCE"),
       labelFa: "کلید فقط معاملاتی، برداشت غیرفعال و محدودسازی IP",
       status: blockers.length ? "BLOCKED" : "PASSED",
       evidenceFa: record ? `تأیید ${record.confirmedBy} در ${record.confirmedAt.slice(0, 10)}` : "بدون شواهد",
@@ -401,6 +444,7 @@ export function evaluateGates(input: ReadinessInput): ReadinessGate[] {
     if (record && !claims.ok) blockers.push(`موارد تأییدنشده: ${missingClaimsFa(claims.missing)}.`);
     gates.push({
       id: "transfer_costs",
+      blockerKind: classifyBlockers(blockers, "MISSING_EVIDENCE"),
       labelFa: "مشخص بودن هزینهٔ انتقال و بازتوازن",
       status: blockers.length ? "BLOCKED" : "PASSED",
       evidenceFa: record ? `تأیید ${record.confirmedBy} در ${record.confirmedAt.slice(0, 10)}` : "بدون شواهد",
@@ -416,6 +460,7 @@ export function evaluateGates(input: ReadinessInput): ReadinessGate[] {
     const missing = unsetPolicies(input.policies);
     gates.push({
       id: "risk_policies",
+      blockerKind: missing.length ? "MISSING_POLICY" : null,
       labelFa: "پیکربندی صریح همهٔ حدود ریسک",
       status: missing.length ? "BLOCKED" : "PASSED",
       evidenceFa: `${input.policies.length - missing.length} از ${input.policies.length} سیاست پیکربندی شده`,
@@ -443,6 +488,7 @@ export function evaluateGates(input: ReadinessInput): ReadinessGate[] {
     }
     gates.push({
       id: "reconciliation_integrity",
+      blockerKind: classifyBlockers(blockers, "SYSTEM_FAILURE"),
       labelFa: "یکپارچگی تطبیق دفاتر موجود",
       status: blockers.length ? "BLOCKED" : "PASSED",
       evidenceFa: observed === null ? "اندازه‌گیری نشده" : `${observed} مغایرت مشاهده‌شده`,
@@ -467,6 +513,7 @@ export function evaluateGates(input: ReadinessInput): ReadinessGate[] {
     if (record && !claims.ok) blockers.push(`موارد تأییدنشده: ${missingClaimsFa(claims.missing)}.`);
     gates.push({
       id: "reconciliation_runbook",
+      blockerKind: classifyBlockers(blockers, "MISSING_EVIDENCE"),
       labelFa: "تأیید رویهٔ تطبیق، دستورالعمل حادثه و بازگشت",
       status: blockers.length ? "BLOCKED" : "PASSED",
       evidenceFa: record ? `تأیید ${record.confirmedBy} در ${record.confirmedAt.slice(0, 10)}` : "بدون شواهد",
@@ -480,9 +527,30 @@ export function evaluateGates(input: ReadinessInput): ReadinessGate[] {
   return gates;
 }
 
+/**
+ * Is the machinery running right now?
+ *
+ * Deliberately separate from arming readiness: a collector can be perfectly
+ * healthy while the system stays DISARMED because a human has not chosen the
+ * risk limits yet. Conflating the two makes an operator chase a fault that does
+ * not exist.
+ */
+export type OperationalHealth = {
+  healthy: boolean;
+  running: boolean;
+  heartbeatStale: boolean;
+  duplicateIdempotencyKeys: number;
+  successfulCycles: number;
+  summaryFa: string;
+};
+
 export type ReadinessReport = {
   /** What the gates alone would say. */
   gateState: LiveArmingState;
+  /** Whether the system is running well, independent of arming readiness. */
+  operationalHealth: OperationalHealth;
+  /** Blocked gates grouped by cause, so the UI need not treat them alike. */
+  blockerCounts: Record<BlockerKind, number>;
   /** What the system actually is. Always DISARMED in this build. */
   effectiveState: "DISARMED";
   liveExecutionImplemented: false;
@@ -500,6 +568,32 @@ export type ReadinessReport = {
  * `gateState` reaches MANUAL_CANARY_ELIGIBLE only when every gate passes, and
  * even then `effectiveState` is DISARMED: there is no live broker to arm.
  */
+
+/**
+ * Classify a gate's blockers.
+ *
+ * A gate can collect several reasons at once; the most serious one wins, so a
+ * genuine fault is never hidden behind a missing policy. The policy blockers
+ * are recognised from the exact phrasing the gates emit, which keeps the
+ * classification next to the text a reviewer reads.
+ */
+function classifyBlockers(
+  blockers: string[],
+  fallback: BlockerKind,
+  faults: string[] = []
+): BlockerKind | null {
+  if (!blockers.length) return null;
+  if (faults.length) return "SYSTEM_FAILURE";
+  const policyOnly = blockers.every((b) => b.includes("سیاست") && b.includes("تعیین نشده"));
+  if (policyOnly) return "MISSING_POLICY";
+  if (blockers.some((b) => b.includes("سیاست") && b.includes("تعیین نشده"))) {
+    // Mixed: a policy is missing AND something else. Report the other cause.
+    const others = blockers.filter((b) => !(b.includes("سیاست") && b.includes("تعیین نشده")));
+    return others.length ? fallback : "MISSING_POLICY";
+  }
+  return fallback;
+}
+
 export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
   const gates = evaluateGates(input);
   const blocked = gates.filter((g) => g.status !== "PASSED");
@@ -509,8 +603,49 @@ export function evaluateReadiness(input: ReadinessInput): ReadinessReport {
   if (!blocked.length) gateState = "MANUAL_CANARY_ELIGIBLE";
   else if (blocked.length <= 2) gateState = "READY_FOR_REVIEW";
 
+  const blockerCounts: Record<BlockerKind, number> = {
+    SYSTEM_FAILURE: 0,
+    MISSING_POLICY: 0,
+    MISSING_EVIDENCE: 0,
+    GATE_NOT_MATURE: 0
+  };
+  for (const g of blocked) {
+    if (g.blockerKind) blockerCounts[g.blockerKind] += 1;
+  }
+
+  /*
+   * Operational health answers a different question from readiness: is the
+   * machinery running right now? It deliberately ignores unset policies, which
+   * are a decision waiting to be made rather than a fault.
+   */
+  const c = input.collector;
+  const running = Boolean(c?.running);
+  const heartbeatStale = Boolean(c?.heartbeatStale);
+  const duplicates = c?.duplicateIdempotencyKeys ?? 0;
+  const healthy = Boolean(c) && running && !heartbeatStale && duplicates === 0;
+  const operationalHealth: OperationalHealth = {
+    healthy,
+    running,
+    heartbeatStale,
+    duplicateIdempotencyKeys: duplicates,
+    successfulCycles: c?.successfulCycles ?? 0,
+    summaryFa: !c
+      ? "شواهدی از جمع‌آورنده ثبت نشده است."
+      : healthy
+        ? `جمع‌آورنده سالم است: در حال اجرا، ضربان تازه، بدون کلید تکراری، ${c.successfulCycles} چرخهٔ موفق.`
+        : [
+            running ? null : "جمع‌آورنده در حال اجرا نیست",
+            heartbeatStale ? "ضربان کهنه است" : null,
+            duplicates > 0 ? `${duplicates} کلید تکراری ثبت شده` : null
+          ]
+            .filter(Boolean)
+            .join(" · ")
+  };
+
   return {
     gateState,
+    operationalHealth,
+    blockerCounts,
     // Structural, not a policy outcome: this build has no live execution.
     effectiveState: "DISARMED",
     liveExecutionImplemented: LIVE_EXECUTION_IMPLEMENTED,

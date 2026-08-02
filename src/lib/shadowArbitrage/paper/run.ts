@@ -9,7 +9,7 @@
  * The whole entry point is wrapped so a paper failure can never take down the
  * collector — the observation must keep running no matter what happens here.
  */
-import { loadLatestFeeConfirmations } from "@/db/repositories/shadowArbitrage";
+import { loadLatestAccountConfirmations } from "@/db/repositories/shadowArbitrage";
 import {
   commitPaperCycle,
   getActivePaperSession,
@@ -19,10 +19,16 @@ import {
   type PaperSessionRow,
   type PaperSkipRecord
 } from "@/db/repositories/shadowPaper";
+import { loadRiskPolicyValues } from "@/db/repositories/shadowLive";
 import { buildAllReadiness } from "@/lib/shadowArbitrage/accounts";
 import { classifyAllVenues } from "@/lib/shadowArbitrage/capital";
+import { SLIPPAGE_BUFFER_BPS } from "@/lib/shadowArbitrage/config";
+import { loadEffectiveFees } from "@/lib/shadowArbitrage/effectiveFees";
+import { buildPolicyState } from "@/lib/shadowArbitrage/live/policy";
+import { mulPriceSizeToman } from "@/lib/shadowArbitrage/money";
 import { describeRebalance, evaluateCycle } from "@/lib/shadowArbitrage/paper/engine";
-import type { VenueBalance } from "@/lib/shadowArbitrage/paper/broker";
+import { microsToUsdt, type VenueBalance } from "@/lib/shadowArbitrage/paper/broker";
+import type { QuoteCapacityInput } from "@/lib/shadowArbitrage/paper/liquidity";
 import type { NormalizedSourceSnapshot, ShadowOpportunity, ShadowSourceId } from "@/lib/shadowArbitrage/types";
 
 export type PaperCycleOutcome = {
@@ -63,25 +69,98 @@ export async function runPaperExecutionForCycle(input: {
   if (!session) return { ran: false, reason: "no_session" };
   if (session.status !== "RUNNING") return { ran: false, reason: "not_running", sessionId: session.id };
 
-  const [latestFees, balanceRows, filledIds] = await Promise.all([
-    loadLatestFeeConfirmations(),
+  const [effectiveFees, accountEvidence, balanceRows, filledIds, policyValues] = await Promise.all([
+    loadEffectiveFees(Date.now()),
+    loadLatestAccountConfirmations(),
     loadPaperBalances(session.id),
-    loadFilledLifecycleIds(session.id)
+    loadFilledLifecycleIds(session.id),
+    loadRiskPolicyValues()
   ]);
 
-  const venueStates = classifyAllVenues(buildAllReadiness(Object.values(latestFees)));
+  /*
+   * Phase 8E-B — the paper engine prices and settles with the same effective
+   * fee the collector validated the opportunity with. A venue whose evidence
+   * did not match arrives as a block, so it carries no rate here either and
+   * never becomes executable on a fallback number.
+   */
+  const venueStates = classifyAllVenues(
+    buildAllReadiness(
+      effectiveFees.overrides,
+      Date.now(),
+      Object.values(accountEvidence),
+      effectiveFees.blocks
+    )
+  );
   const balances: VenueBalance[] = balanceRows.map((b) => ({
     sourceId: b.sourceId as ShadowSourceId,
     irtToman: b.irtToman,
     usdtMicros: b.usdtMicros
   }));
 
+  /*
+   * Phase 8C-3 — the risk context dynamic sizing needs.
+   *
+   * The session's own valuation price marks the portfolio and each venue's
+   * share, so exposure is measured the same way the session was opened. The
+   * capital plan comes from the session's opening allocations rather than the
+   * latest saved plan: a running session must be sized against the money it
+   * actually started with, not against a plan edited after it began.
+   */
+  const valuationPriceToman = session.valuationPriceToman;
+  const exposureTomanBySource = new Map<string, number>(
+    balances.map((b) => [
+      b.sourceId as string,
+      b.irtToman + mulPriceSizeToman(valuationPriceToman, microsToUsdt(b.usdtMicros))
+    ])
+  );
+  const allocationTomanBySource = new Map<string, number>(
+    session.openingAllocations.map((a) => [
+      a.sourceId as string,
+      Math.round(a.irtToman + mulPriceSizeToman(valuationPriceToman, a.usdtUnits))
+    ])
+  );
+  const portfolioValueToman = [...exposureTomanBySource.values()].reduce((s, v) => s + v, 0);
+
+  const maxQuoteAgePolicy = buildPolicyState(policyValues).find(
+    (p) => p.definition.key === "max_quote_age_ms"
+  );
+  const quoteBySource = new Map<string, QuoteCapacityInput>();
+  for (const snap of input.sources) {
+    if (snap.marketModel !== "OTC_QUOTE") continue;
+    quoteBySource.set(snap.sourceId as string, {
+      userBuyPriceToman: snap.userBuyPriceToman,
+      userSellPriceToman: snap.userSellPriceToman,
+      maxExecutableUsdt: snap.maxExecutableUsdt,
+      ageMs: snap.ageMs,
+      stale: snap.stale,
+      maxQuoteAgeMs: maxQuoteAgePolicy?.configured
+        ? ((maxQuoteAgePolicy.value as number) ?? null)
+        : null
+    });
+  }
+
   const evaluation = evaluateCycle({
     opportunities: input.opportunities,
     sources: input.sources,
     venueStates,
     executedLifecycleIds: filledIds,
-    balances
+    balances,
+    sizing: {
+      policies: buildPolicyState(policyValues),
+      allocationTomanBySource,
+      portfolioValueToman,
+      exposureTomanBySource,
+      slippageBufferBps: SLIPPAGE_BUFFER_BPS,
+      /*
+       * Dealer quotes for OTC venues, built from THIS cycle's snapshots.
+       *
+       * Without them the sizer has no ladder for a quote venue and refuses it,
+       * which meant an OTC dealer could be sized in the read-only preview and
+       * yet never fill in paper execution — the screen and the engine
+       * disagreeing about the same venue.
+       */
+      quoteBySource
+    }
   });
 
   const fills: PaperFillRecord[] = [];

@@ -95,6 +95,10 @@ function thinSnapshotFromDb(s: {
     userSellPriceToman: s.userSell,
     sizeExecutables:
       (payload.sizeExecutables as NormalizedSourceSnapshot["sizeExecutables"]) ?? [],
+    // Absent in rows written before Phase 8C-4: null blocks depth-aware sizing
+    // with an exact reason rather than letting it size against an empty book.
+    bookBids: (payload.bookBids as NormalizedSourceSnapshot["bookBids"]) ?? null,
+    bookAsks: (payload.bookAsks as NormalizedSourceSnapshot["bookAsks"]) ?? null,
     depthUsdtBid: (payload.depthUsdtBid as number | null) ?? null,
     depthUsdtAsk: (payload.depthUsdtAsk as number | null) ?? null,
     maxExecutableUsdt: s.maxExecutableUsdt,

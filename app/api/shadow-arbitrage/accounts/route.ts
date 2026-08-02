@@ -3,10 +3,12 @@ import { isSession } from "@/lib/requireApiAuth";
 import { requireAdminSession } from "@/lib/requireAdmin";
 import {
   loadFeeConfirmations,
-  loadLatestFeeConfirmations,
+  loadLatestAccountConfirmations,
   recordFeeConfirmation
 } from "@/db/repositories/shadowArbitrage";
+import { EXECUTABLE_MODES } from "@/db/repositories/shadowFeeTier";
 import { FEE_REVERIFY_DAYS, buildAllReadiness } from "@/lib/shadowArbitrage/accounts";
+import { loadEffectiveFees } from "@/lib/shadowArbitrage/effectiveFees";
 import { SHADOW_BANNER, SHADOW_SOURCES } from "@/lib/shadowArbitrage/config";
 import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
 import type { ShadowSourceId } from "@/lib/shadowArbitrage/types";
@@ -24,11 +26,17 @@ export async function GET() {
   const session = await requireAdminSession();
   if (!isSession(session)) return session;
 
-  const [latest, history] = await Promise.all([
-    loadLatestFeeConfirmations(),
-    loadFeeConfirmations()
+  const [effectiveFees, history, accountEvidence] = await Promise.all([
+    loadEffectiveFees(Date.now()),
+    loadFeeConfirmations(),
+    loadLatestAccountConfirmations()
   ]);
-  const readiness = buildAllReadiness(Object.values(latest));
+  const readiness = buildAllReadiness(
+    effectiveFees.overrides,
+    Date.now(),
+    Object.values(accountEvidence),
+    effectiveFees.blocks
+  );
 
   return new NextResponse(
     JSON.stringify({
@@ -37,6 +45,13 @@ export async function GET() {
       serverNow: new Date().toISOString(),
       feeReverifyDays: FEE_REVERIFY_DAYS,
       venues: readiness,
+      /*
+       * Phase 8E-B — the fee actually applied, per venue, with the tier and
+       * execution mode it was matched on and the exact blocker when it was not.
+       * The panel renders these server values; it never re-derives a match.
+       */
+      feeEvidence: effectiveFees.venues,
+      executableModes: EXECUTABLE_MODES,
       auditHistory: history
     }),
     { status: 200, headers: SHADOW_NO_STORE }
@@ -102,12 +117,24 @@ export async function POST(request: Request) {
       confirmedBy: session.u ?? "admin",
       note: typeof body.note === "string" ? body.note.slice(0, 500) : null
     });
-    const latest = await loadLatestFeeConfirmations();
+    /*
+     * Re-resolve after the append. This is where a tier change becomes visible
+     * immediately: confirming a different tier leaves the fee evidence matched
+     * to the old one, so the venue comes back blocked with `tier_mismatch`
+     * until fees for the new tier are confirmed.
+     */
+    const effective = await loadEffectiveFees(Date.now());
     return new NextResponse(
       JSON.stringify({
         banner: SHADOW_BANNER,
         saved,
-        venues: buildAllReadiness(Object.values(latest))
+        venues: buildAllReadiness(
+          effective.overrides,
+          Date.now(),
+          Object.values(await loadLatestAccountConfirmations()),
+          effective.blocks
+        ),
+        feeEvidence: effective.venues
       }),
       { status: 200, headers: SHADOW_NO_STORE }
     );

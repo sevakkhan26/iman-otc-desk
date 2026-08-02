@@ -121,6 +121,17 @@ export type NormalizedSourceSnapshot = {
   /** User sell USDT (receives this) — best bid side */
   userSellPriceToman: number | null;
   sizeExecutables: SizeExecutable[];
+  /**
+   * Phase 8C-4 — the cumulative order book this cycle actually observed.
+   *
+   * `sizeExecutables` answers only the four legacy probe sizes; sizing a real
+   * portfolio needs the levels themselves, so the walkable book is carried
+   * through to the sizer instead of being discarded at normalization. Null when
+   * the venue is not a walkable book (an OTC quote or a headline price) — that
+   * is a blocking condition for depth-aware sizing, never an empty book.
+   */
+  bookBids: BookLevel[] | null;
+  bookAsks: BookLevel[] | null;
   depthUsdtBid: number | null;
   depthUsdtAsk: number | null;
   maxExecutableUsdt: number | null;

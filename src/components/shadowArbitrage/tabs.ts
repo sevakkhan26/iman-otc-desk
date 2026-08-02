@@ -1,72 +1,83 @@
 /**
- * Phase 8A — the Shadow Arbitrage tab model.
+ * Phase 8C-1 — the Shadow Arbitrage section model.
  *
- * Tabs are URL-addressable through `?tab=`, so a reload, a bookmark and the
- * browser's back/forward buttons all land on the same view. The slug is a
- * stable ASCII key; the label a reader sees is Persian.
+ * Seven equal-weight tabs became four operator sections. The order is the order
+ * an operator works in: what is happening now, what money is behind it, what it
+ * traded, and finally the settings and safety material that is read rarely.
+ *
+ * Sections are URL-addressable through `?tab=`, so a reload, a bookmark and the
+ * browser's back/forward buttons all land on the same view. The query key keeps
+ * its old name on purpose — every link, screenshot script and bookmark that was
+ * written against the seven tabs still resolves, through `SHADOW_TAB_ALIASES`.
  */
-export type ShadowTabId =
-  | "overview"
-  | "opportunities"
-  | "sources"
-  | "capital"
-  | "paper"
-  | "live"
-  | "analytics";
+export type ShadowTabId = "command" | "capital" | "trades" | "settings";
 
 export type ShadowTab = {
   id: ShadowTabId;
   labelFa: string;
-  /** One line explaining what the tab is for, shown as its tooltip. */
+  /** One line explaining what the section is for, shown as its tooltip. */
   hintFa: string;
 };
 
-/** Render order. The first entry is the default. */
+/** Render order. The first entry is the default landing section. */
 export const SHADOW_TABS: ShadowTab[] = [
   {
-    id: "overview",
-    labelFa: "نمای کلی",
-    hintFa: "وضعیت کلی پایش، سلامت جمع‌آورنده و خلاصهٔ فرصت‌ها"
-  },
-  {
-    id: "opportunities",
-    labelFa: "فرصت‌ها",
-    hintFa: "فهرست کامل فرصت‌های مشاهده‌شده با جزئیات محاسبه"
-  },
-  {
-    id: "sources",
-    labelFa: "منابع و کارمزدها",
-    hintFa: "سلامت منابع، گواهی داده و آمادگی حساب و کارمزد"
+    id: "command",
+    labelFa: "مرکز فرماندهی",
+    hintFa: "وضعیت لحظه‌ای پرتفوی، بهترین فرصت و کنترل نشست کاغذی"
   },
   {
     id: "capital",
-    labelFa: "تخصیص سرمایه",
-    hintFa: "شبیه‌ساز تخصیص سرمایهٔ مجازی و توصیهٔ موقت"
+    labelFa: "سرمایه و تخصیص",
+    hintFa: "طرح سرمایهٔ مجازی و تقسیم آن بین صرافی‌ها"
   },
   {
-    id: "paper",
-    labelFa: "اجرای کاغذی",
-    hintFa: "نشست اجرای کاغذی، موجودی مجازی و دفتر معاملات"
+    id: "trades",
+    labelFa: "فرصت‌ها و معاملات",
+    hintFa: "فهرست فرصت‌های مشاهده‌شده و دفتر معاملات کاغذی"
   },
   {
-    id: "live",
-    labelFa: "آمادگی اجرای واقعی",
-    hintFa: "دروازه‌های آمادگی و حدود ریسک — اجرای واقعی پیاده‌سازی نشده است"
-  },
-  {
-    id: "analytics",
-    labelFa: "تحلیل و تاریخچه",
-    hintFa: "تحلیل بازهٔ پایش، مسیرها و هزینه‌ها"
+    id: "settings",
+    labelFa: "تنظیمات و ایمنی",
+    hintFa: "سلامت منابع، حساب و کارمزد، و مرزهای ایمنی اجرای واقعی"
   }
 ];
 
-export const DEFAULT_SHADOW_TAB: ShadowTabId = "overview";
+export const DEFAULT_SHADOW_TAB: ShadowTabId = "command";
+
+/**
+ * Where each of the seven old tabs went.
+ *
+ * This is the backward-compatibility contract, not a convenience: an old link
+ * must land on the section that now owns its content, never on the default.
+ */
+export const SHADOW_TAB_ALIASES: Record<string, ShadowTabId> = {
+  overview: "command",
+  paper: "command",
+  opportunities: "trades",
+  analytics: "trades",
+  sources: "settings",
+  live: "settings",
+  capital: "capital"
+};
 
 const TAB_IDS = new Set<string>(SHADOW_TABS.map((t) => t.id));
 
-/** Unknown or missing values fall back to the default rather than erroring. */
+/**
+ * Resolve a `?tab=` value.
+ *
+ * A current slug round-trips, one of the seven retired slugs is redirected to
+ * its new home, and anything else falls back to the default rather than erroring.
+ */
 export function parseShadowTab(value: string | null | undefined): ShadowTabId {
-  return value && TAB_IDS.has(value) ? (value as ShadowTabId) : DEFAULT_SHADOW_TAB;
+  if (!value) return DEFAULT_SHADOW_TAB;
+  if (TAB_IDS.has(value)) return value as ShadowTabId;
+  return SHADOW_TAB_ALIASES[value] ?? DEFAULT_SHADOW_TAB;
+}
+
+/** True when the value is a retired slug that resolves to a different section. */
+export function isLegacyShadowTab(value: string | null | undefined): boolean {
+  return Boolean(value) && !TAB_IDS.has(value as string);
 }
 
 export function shadowTabLabel(id: ShadowTabId): string {

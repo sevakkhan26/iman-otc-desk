@@ -80,23 +80,33 @@ const CONFIRMED_MIXED: VenueSettlement = {
 };
 
 /**
- * Settlement per venue. A venue without a verified account has no confirmed
- * settlement on either side and can never execute.
+ * Settlement per venue.
+ *
+ * The desk confirmed one settlement rule for every venue it holds a verified
+ * account on: buying USDT with toman settles the fee in TOMAN on top of the
+ * toman debit, and selling USDT for toman settles it in USDT on top of the
+ * quantity sold. All nine venues are now KYC-verified with confirmed taker
+ * fees, so all nine carry that admin-confirmed settlement.
+ *
+ * `UNKNOWN_VENUE` is kept deliberately: any venue added later starts unknown
+ * and is blocked until its settlement is confirmed too, rather than inheriting
+ * a rule nobody stated for it.
  */
 export const PAPER_FEE_SETTLEMENT: Record<ShadowSourceId, VenueSettlement> = {
   nobitex: CONFIRMED_MIXED,
   wallex: CONFIRMED_MIXED,
   tabdeal: CONFIRMED_MIXED,
-  bitpin: UNKNOWN_VENUE,
-  abantether: UNKNOWN_VENUE,
-  ramzinex: UNKNOWN_VENUE,
-  tetherland: UNKNOWN_VENUE,
-  bit24: UNKNOWN_VENUE,
-  arzinja: UNKNOWN_VENUE
+  bitpin: CONFIRMED_MIXED,
+  abantether: CONFIRMED_MIXED,
+  ramzinex: CONFIRMED_MIXED,
+  tetherland: CONFIRMED_MIXED,
+  bit24: CONFIRMED_MIXED,
+  arzinja: CONFIRMED_MIXED
 };
 
 /** Settlement for one side of one venue. UNKNOWN when never confirmed. */
 export function settlementFor(sourceId: ShadowSourceId, side: "buy" | "sell"): SideSettlement {
+  // An unlisted venue is unknown, never assumed to follow the confirmed rule.
   return (PAPER_FEE_SETTLEMENT[sourceId] ?? UNKNOWN_VENUE)[side];
 }
 

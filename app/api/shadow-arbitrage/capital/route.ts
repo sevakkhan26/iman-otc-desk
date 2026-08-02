@@ -5,7 +5,7 @@ import {
   loadCapitalPlans,
   loadLatestCapitalApproval,
   loadLatestCapitalPlan,
-  loadLatestFeeConfirmations,
+  loadLatestAccountConfirmations,
   loadLatestSourceSnapshots,
   getObservation,
   loadRouteMetrics,
@@ -29,6 +29,7 @@ import {
   type RouteEvidence
 } from "@/lib/shadowArbitrage/capital";
 import { SHADOW_BANNER, SHADOW_SOURCES } from "@/lib/shadowArbitrage/config";
+import { loadEffectiveFees } from "@/lib/shadowArbitrage/effectiveFees";
 import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
 import type { ShadowSourceId } from "@/lib/shadowArbitrage/types";
 
@@ -123,9 +124,9 @@ function parseAllocations(raw: unknown): { ok: true; value: CapitalAllocation[] 
 }
 
 async function buildContext() {
-  const [latestFees, snapshots, routeRows, observation, savedPlan, history, approvalRow] =
+  const [effectiveFees, snapshots, routeRows, observation, savedPlan, history, approvalRow] =
     await Promise.all([
-      loadLatestFeeConfirmations(),
+      loadEffectiveFees(Date.now()),
       loadLatestSourceSnapshots(),
       loadRouteMetrics(),
       getObservation(),
@@ -134,7 +135,13 @@ async function buildContext() {
       loadLatestCapitalApproval()
     ]);
 
-  const readiness = buildAllReadiness(Object.values(latestFees));
+  const accountEvidence = await loadLatestAccountConfirmations();
+  const readiness = buildAllReadiness(
+    effectiveFees.overrides,
+    Date.now(),
+    Object.values(accountEvidence),
+    effectiveFees.blocks
+  );
   const routes = toRouteEvidence(routeRows);
   const valuationPriceToman = deriveValuationPrice(snapshots);
   const observedWindowMs = observation?.elapsedMs ?? 0;

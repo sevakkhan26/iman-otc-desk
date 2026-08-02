@@ -29,9 +29,14 @@ const { sidebarNavItems } = await import("../src/lib/sidebarNav.ts");
 const { SHADOW_SHORTCUT_HREF, SHADOW_SHORTCUT_LABEL } = await import(
   "../src/components/ShadowArbitrageHeaderButton.tsx"
 );
-const { SHADOW_TABS, DEFAULT_SHADOW_TAB, parseShadowTab, shadowTabLabel } = await import(
-  "../src/components/shadowArbitrage/tabs.ts"
-);
+const {
+  SHADOW_TABS,
+  SHADOW_TAB_ALIASES,
+  DEFAULT_SHADOW_TAB,
+  isLegacyShadowTab,
+  parseShadowTab,
+  shadowTabLabel
+} = await import("../src/components/shadowArbitrage/tabs.ts");
 
 await test("Shadow Arbitrage is completely gone from the sidebar", () => {
   assert.equal(
@@ -213,45 +218,69 @@ await test("no page, layout, API, database or backend logic was touched", () => 
 });
 
 
-/* ── Phase 8A — tab shell and Overview presentation ──────────────────────── */
+/* ── Phase 8C-1 — four operator sections ─────────────────────────────────── */
 
-await test("8A the seven tabs exist in order with Persian labels", () => {
+await test("8C the four operator sections exist in order with Persian labels", () => {
   assert.deepEqual(
     SHADOW_TABS.map((t) => t.id),
-    ["overview", "opportunities", "sources", "capital", "paper", "live", "analytics"]
+    ["command", "capital", "trades", "settings"]
   );
   assert.deepEqual(
     SHADOW_TABS.map((t) => t.labelFa),
-    [
-      "نمای کلی",
-      "فرصت‌ها",
-      "منابع و کارمزدها",
-      "تخصیص سرمایه",
-      "اجرای کاغذی",
-      "آمادگی اجرای واقعی",
-      "تحلیل و تاریخچه"
-    ]
+    ["مرکز فرماندهی", "سرمایه و تخصیص", "فرصت‌ها و معاملات", "تنظیمات و ایمنی"]
   );
-  // Every tab carries a Persian one-line explanation for its tooltip.
+  // Every section carries a Persian one-line explanation for its tooltip.
   for (const t of SHADOW_TABS) {
     assert.ok(t.hintFa.length > 10, `${t.id} needs a hint`);
     assert.equal(/[a-zA-Z]{4,}/.test(t.labelFa), false, "labels are Persian, not codes");
   }
 });
 
-await test("8A the default tab is Overview and unknown values fall back to it", () => {
-  assert.equal(DEFAULT_SHADOW_TAB, "overview");
+await test("8C Command Center is the default and unknown values fall back to it", () => {
+  assert.equal(DEFAULT_SHADOW_TAB, "command");
   assert.equal(SHADOW_TABS[0].id, DEFAULT_SHADOW_TAB);
-  assert.equal(parseShadowTab(null), "overview");
-  assert.equal(parseShadowTab(undefined), "overview");
-  assert.equal(parseShadowTab(""), "overview");
-  assert.equal(parseShadowTab("nope"), "overview");
-  assert.equal(parseShadowTab("../etc"), "overview");
+  assert.equal(parseShadowTab(null), "command");
+  assert.equal(parseShadowTab(undefined), "command");
+  assert.equal(parseShadowTab(""), "command");
+  assert.equal(parseShadowTab("nope"), "command");
+  assert.equal(parseShadowTab("../etc"), "command");
   // A known slug round-trips exactly.
   for (const t of SHADOW_TABS) {
     assert.equal(parseShadowTab(t.id), t.id);
     assert.equal(shadowTabLabel(t.id), t.labelFa);
   }
+});
+
+await test("8C every retired tab URL still resolves, to the section that owns it", () => {
+  // The seven Phase 8A slugs, each landing where its content actually went.
+  const expected: Record<string, string> = {
+    overview: "command",
+    paper: "command",
+    opportunities: "trades",
+    analytics: "trades",
+    capital: "capital",
+    sources: "settings",
+    live: "settings"
+  };
+  assert.deepEqual({ ...SHADOW_TAB_ALIASES }, expected);
+  for (const [legacy, section] of Object.entries(expected)) {
+    assert.equal(parseShadowTab(legacy), section, `?tab=${legacy} must land on ${section}`);
+    // No retired slug may silently fall through to the default instead.
+    if (section !== DEFAULT_SHADOW_TAB) {
+      assert.notEqual(parseShadowTab(legacy), DEFAULT_SHADOW_TAB);
+    }
+  }
+  // A retired slug is recognised as such; a current one and junk are not.
+  assert.equal(isLegacyShadowTab("overview"), true);
+  assert.equal(isLegacyShadowTab("command"), false);
+  assert.equal(isLegacyShadowTab(null), false);
+  assert.equal(isLegacyShadowTab(""), false);
+
+  // The page rewrites a retired address to the new one, without a history entry.
+  const view = read("src/components/ShadowArbitrageView.tsx");
+  assert.ok(view.includes("if (!isLegacyShadowTab(rawTab)) return;"));
+  assert.ok(view.includes('params.set("tab", tab);'));
+  assert.ok(view.includes("router.replace("));
 });
 
 await test("8A the tab lives in the URL so back, forward and refresh restore it", () => {
@@ -269,17 +298,18 @@ await test("8A the tab lives in the URL so back, forward and refresh restore it"
   assert.ok(page.includes("<Suspense"));
 });
 
-await test("8A every existing section survives, in its correct tab", () => {
+await test("8C every existing panel survives, in the section that now owns it", () => {
   const view = read("src/components/ShadowArbitrageView.tsx");
   const sectionTab: Array<[string, string]> = [
-    ["OverviewPanel", "overview"],
-    ["OpportunitiesPanel", "opportunities"],
-    ["SourcesPanel", "sources"],
+    ["CommandCenter", "command"],
+    ["OverviewPanel", "command"],
+    ["ObservationHeader", "command"],
+    ["PaperExecution", "command"],
     ["CapitalSimulator", "capital"],
-    ["PaperExecution", "paper"],
-    ["LiveReadiness", "live"],
-    ["ObservationHeader", "analytics"],
-    ["AnalyticsPanels", "analytics"]
+    ["OpportunitiesPanel", "trades"],
+    ["AnalyticsPanels", "trades"],
+    ["SourcesPanel", "settings"],
+    ["LiveReadiness", "settings"]
   ];
   for (const [component, tab] of sectionTab) {
     assert.ok(view.includes(`<${component}`), `${component} must still be rendered`);
@@ -307,7 +337,7 @@ await test("8A the Shadow warning is permanent and the red Live warning is not",
     1,
     "LiveReadiness is mounted exactly once"
   );
-  const liveGuard = view.lastIndexOf('tab === "live"', view.indexOf("<LiveReadiness"));
+  const liveGuard = view.lastIndexOf('tab === "settings"', view.indexOf("<LiveReadiness"));
   assert.ok(liveGuard > 0);
   const ui = read("src/components/shadowArbitrage/LiveReadiness.tsx");
   assert.ok(ui.includes("LIVE EXECUTION IS NOT IMPLEMENTED — NO REAL ORDERS"));
@@ -448,10 +478,20 @@ await test("8A no API, database, calculation or safety logic changed", () => {
     [...new Set(endpoints)].sort(),
     ["accounts", "analytics", "history", "live-readiness", "matrix", "observation", "paper"]
   );
-  // The only mutating call is the pre-existing pause/resume control.
+  /*
+   * Mutating calls, all simulation-only: the pre-existing pause/resume control,
+   * and the two Phase 8C-5 allocation actions. Proposing only computes and
+   * stores; applying rewrites VIRTUAL balances behind an explicit admin press.
+   * None of them can reach an exchange.
+   */
   const posts = view.match(/method: "POST"/g) ?? [];
-  assert.equal(posts.length, 1);
+  assert.equal(posts.length, 3);
   assert.ok(view.includes('JSON.stringify({ action })'));
+  assert.ok(view.includes('action: "propose_allocation"'));
+  assert.ok(view.includes('action: "apply_allocation"'));
+  // Applying is idempotent by construction: the key is derived, not random.
+  assert.ok(view.includes("idempotencyKey: `apply:${proposal.id}`"));
+  assert.equal(/Math\.random\(\)/.test(view), false, "an idempotency key must be deterministic");
   // Every shadow API route is still admin-only.
   for (const r of ["matrix", "observation", "paper", "live-readiness", "capital", "accounts"]) {
     assert.ok(read(`app/api/shadow-arbitrage/${r}/route.ts`).includes("requireAdminSession"));
@@ -498,7 +538,15 @@ function phase8aCss(): string {
 /** Only the Phase 8B section — the two redesigned tabs. */
 function phase8bCss(): string {
   const css = read("app/globals.css");
-  return css.slice(css.indexOf("Phase 8B opportunities and sources"));
+  const start = css.indexOf("Phase 8B opportunities and sources");
+  const end = css.indexOf("Phase 8C command center");
+  return css.slice(start, end > start ? end : undefined);
+}
+
+/** Only the Phase 8C section — the Command Center. */
+function phase8cCss(): string {
+  const css = read("app/globals.css");
+  return css.slice(css.indexOf("Phase 8C command center"));
 }
 
 await test("8A polish: the desktop tab strip uses the full content width", () => {
@@ -750,7 +798,7 @@ await test("preview harness renders the production shell, not a rebuilt one", ()
   assert.ok(preview.includes("standalone"), "it boots the production bundle");
   // It navigates the real route; the tab is a parameter, defaulting to Overview.
   assert.ok(preview.includes("/shadow-arbitrage?tab=${shot.tab}"), "it navigates the real route");
-  assert.ok(preview.includes('process.env.PREVIEW_TABS ?? "overview"'));
+  assert.ok(preview.includes('process.env.PREVIEW_TABS ?? "command"'));
   assert.ok(preview.includes("Page.captureScreenshot"), "a real browser takes the picture");
 
   // No substitute shell, sidebar, header or icon list may exist here.
@@ -1267,9 +1315,12 @@ await test("8B the sources tab keeps health and readiness apart, with per-side s
   assert.equal(nobitex.buySettlement.feeAsset, "IRT");
   assert.equal(nobitex.sellSettlement.feeAsset, "USDT");
   assert.equal(nobitex.buySettlement.provenance, "ADMIN_CONFIRMED");
-  assert.equal(arzinja.buySettlement.feeAsset, "UNKNOWN");
-  assert.equal(arzinja.sellSettlement.provenance, "UNKNOWN");
-  assert.deepEqual(settlementFor("bit24", "sell"), {
+  // Arzinja is a confirmed venue now, like the rest.
+  assert.equal(arzinja.buySettlement.feeAsset, "IRT");
+  assert.equal(arzinja.sellSettlement.feeAsset, "USDT");
+  assert.equal(arzinja.sellSettlement.provenance, "ADMIN_CONFIRMED");
+  // A venue nobody confirmed still reads as unknown.
+  assert.deepEqual(settlementFor("unlisted-venue", "sell"), {
     feeAsset: "UNKNOWN",
     debitMode: "UNKNOWN",
     provenance: "UNKNOWN"
@@ -1663,7 +1714,7 @@ await test("8B typography reuses the project's IRANYekan configuration", () => {
   assert.ok(globals.includes('src: url("/fonts/iranyekanweb'), "self-hosted, not a CDN");
 
   // Shadow declares no font of its own: its controls inherit, nothing else.
-  const shadowCss = stripComments(phase8aCss() + phase8bCss());
+  const shadowCss = stripComments(phase8aCss() + phase8bCss() + phase8cCss());
   const families = [...shadowCss.matchAll(/font-family:\s*([^;]+);/g)].map((m) => m[1].trim());
   assert.deepEqual([...new Set(families)], ["inherit"], "no Shadow-specific font stack");
   assert.equal(/@font-face/.test(shadowCss), false, "no duplicated face");
@@ -1673,7 +1724,8 @@ await test("8B typography reuses the project's IRANYekan configuration", () => {
     "src/components/shadowArbitrage/OpportunitiesPanel.tsx",
     "src/components/shadowArbitrage/SourcesPanel.tsx",
     "src/components/shadowArbitrage/panelKit.tsx",
-    "src/components/shadowArbitrage/OpportunityDrawer.tsx"
+    "src/components/shadowArbitrage/OpportunityDrawer.tsx",
+    "src/components/shadowArbitrage/CommandCenter.tsx"
   ]) {
     assert.equal(/font-family|fontFamily/.test(read(file)), false, `${file} must not set a font`);
   }
@@ -1758,7 +1810,208 @@ await test("8B every new selector is scoped under .sa-*", () => {
   }
 });
 
-await test("8B the redesign touches presentation only — backend files are untouched", async () => {
+/* ── 8E-B: the Paper acceptance contract ─────────────────────────────────── */
+
+await test("8E-B the acceptance verdict rejects every way a run can look quiet", async () => {
+  const { acceptanceProblems, SKIPPABLE_CHECKS, FIXTURE_MIN_PASS } = await import(
+    "./paperAcceptanceVerdict.mts"
+  );
+
+  const REASON =
+    "the RC ledger holds no filled trade and all 78 current routes are blocked solely by non_positive_net";
+  const drawerSkips = [...SKIPPABLE_CHECKS].map((name) => ({ name, reason: REASON }));
+  const goodLive = {
+    mode: "live-rc",
+    pass: 50,
+    notApplicable: drawerSkips.length,
+    fail: 0,
+    skipped: drawerSkips
+  };
+  const goodFixture = {
+    mode: "fixture",
+    pass: FIXTURE_MIN_PASS,
+    notApplicable: 0,
+    fail: 0,
+    skipped: []
+  };
+  const ok = { live: goodLive, liveExitCode: 0, fixture: goodFixture, fixtureExitCode: 0 };
+
+  // The shape this phase actually produces is the only one that passes.
+  assert.deepEqual(acceptanceProblems(ok), [], "a clean run passes");
+  assert.equal(SKIPPABLE_CHECKS.size, 14, "exactly the fourteen drawer checks may be skipped");
+
+  /*
+   * Each case below is a way a regression could hide. Every one must be
+   * rejected — if any of them passed, the gate would be decorative.
+   */
+  const mustFail: Array<[string, Parameters<typeof acceptanceProblems>[0]]> = [
+    ["a genuine live failure", { ...ok, live: { ...goodLive, fail: 1 } }],
+    [
+      "a check that is not allowed to skip",
+      {
+        ...ok,
+        live: {
+          ...goodLive,
+          notApplicable: 1,
+          skipped: [{ name: "load and hard refresh issue no POST", reason: REASON }]
+        }
+      }
+    ],
+    [
+      "a skip with no reason",
+      {
+        ...ok,
+        live: {
+          ...goodLive,
+          notApplicable: 1,
+          skipped: [{ name: "drawer shows حجم", reason: "" }]
+        }
+      }
+    ],
+    [
+      "a skip with a hand-waving reason",
+      {
+        ...ok,
+        live: {
+          ...goodLive,
+          notApplicable: 1,
+          skipped: [{ name: "drawer shows حجم", reason: "no fill" }]
+        }
+      }
+    ],
+    [
+      "a skip count that disagrees with the list",
+      { ...ok, live: { ...goodLive, notApplicable: 99 } }
+    ],
+    ["a live gate that crashed", { ...ok, live: null }],
+    ["a live gate that died without recording a failure", { ...ok, liveExitCode: 1 }],
+    ["a fixture failure", { ...ok, fixture: { ...goodFixture, fail: 1 } }],
+    [
+      "a fixture that skipped anything at all",
+      {
+        ...ok,
+        fixture: {
+          ...goodFixture,
+          notApplicable: 1,
+          skipped: [{ name: "drawer shows حجم", reason: REASON }]
+        }
+      }
+    ],
+    [
+      "a fixture that ran fewer checks than required",
+      { ...ok, fixture: { ...goodFixture, pass: FIXTURE_MIN_PASS - 1 } }
+    ],
+    ["a fixture gate that crashed", { ...ok, fixture: null }],
+    ["a fixture gate that died silently", { ...ok, fixtureExitCode: 1 }]
+  ];
+  for (const [label, input] of mustFail) {
+    assert.ok(acceptanceProblems(input).length > 0, `${label} must be rejected`);
+  }
+});
+
+await test("8E-B neither browser gate can pass by swallowing a result", async () => {
+  const gates = [
+    "scripts/test-paper-browser.mts",
+    "scripts/test-paper-drawer-browser.mts",
+    "scripts/test-paper-acceptance.mts",
+    "scripts/paperAcceptanceVerdict.mts"
+  ];
+  /**
+   * The bodies of every `try` block in a file, found by matching braces.
+   *
+   * The rule that matters is not "no catch anywhere" — waiting for Chrome to
+   * boot and killing an already-dead process are legitimate — it is that no
+   * ASSERTION may sit inside one, because a swallowed exception there turns a
+   * broken check into silence.
+   */
+  function caughtBodies(src: string): string[] {
+    const out: string[] = [];
+    let i = src.indexOf("try {");
+    while (i !== -1) {
+      let depth = 0;
+      let j = i + 4;
+      for (; j < src.length; j += 1) {
+        if (src[j] === "{") depth += 1;
+        else if (src[j] === "}") {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+      // `try { … } finally { … }` swallows nothing: the exception still
+      // propagates and the process still exits non-zero. Only a catch hides.
+      if (/^\s*catch\b/.test(src.slice(j + 1))) out.push(src.slice(i, j + 1));
+      i = src.indexOf("try {", j + 1);
+    }
+    return out;
+  }
+
+  for (const file of gates) {
+    const raw = read(file);
+    const src = stripComments(raw);
+    assert.equal(/\|\|\s*true/.test(src), false, `${file} has no "|| true"`);
+    assert.equal(/process\.exit\(0\)/.test(src), false, `${file} never forces a zero exit`);
+    // A catch with nothing in it, not even a note, is a swallowed result.
+    assert.equal(
+      /catch\s*(\([^)]*\))?\s*\{\s*\}/.test(raw),
+      false,
+      `${file} has no silent, unannotated catch`
+    );
+    for (const body of caughtBodies(src)) {
+      assert.equal(
+        /\bcheck\s*\(|\bnotApplicable\s*\(/.test(body),
+        false,
+        `${file} keeps assertions out of try/catch blocks`
+      );
+    }
+  }
+
+  /*
+   * The live gate may only skip after proving WHY: the precondition is an
+   * ordinary check, so an unexplained empty ledger is red before any skip.
+   */
+  const live = read("scripts/test-paper-browser.mts");
+  assert.ok(
+    live.includes("an empty ledger is fully explained by market conditions alone"),
+    "the no-fill precondition is asserted, not assumed"
+  );
+  assert.ok(
+    live.includes("if (drawerRunnable) {"),
+    "and the drawer checks run for real whenever a fill exists"
+  );
+  assert.ok(
+    live.includes("ACCEPTANCE_SUMMARY"),
+    "the live gate reports a machine-readable verdict"
+  );
+
+  // The fixture gate must never gain a skip path at all.
+  const fixture = read("scripts/test-paper-drawer-browser.mts");
+  assert.equal(/notApplicable\s*\(/.test(fixture), false, "the fixture gate cannot skip a check");
+});
+
+await test("8E-B the fill fixture is isolated, and never called a live trade", async () => {
+  const fixture = read("scripts/seed-paper-fill-fixture.mts");
+  // It refuses anything but a throwaway database.
+  assert.ok(fixture.includes('startsWith("pglite:")'), "it only writes PGlite");
+  assert.ok(fixture.includes("refusing to write a project database"), "and never a project database");
+  // The fill comes from the real engine, not from hand-written arithmetic.
+  assert.ok(fixture.includes("runPaperExecutionForCycle"), "the real engine produces the fill");
+  assert.equal(
+    /cashPnlIrtToman\s*[:=]\s*-?\d/.test(fixture),
+    false,
+    "no PnL figure is written by hand"
+  );
+  assert.ok(
+    fixture.includes("the fixture produced no fill"),
+    "and a fixture that fails to fill throws instead of passing vacuously"
+  );
+  const drawer = read("scripts/test-paper-drawer-browser.mts");
+  assert.ok(
+    drawer.includes("not a market observation and not a live trade"),
+    "the fixture fill is never presented as a live trade"
+  );
+});
+
+await test("8B the UI redesign added no backend logic of its own", async () => {
   const uiFiles = [
     "src/components/shadowArbitrage/OpportunitiesPanel.tsx",
     "src/components/shadowArbitrage/SourcesPanel.tsx",
@@ -1793,10 +2046,90 @@ await test("8B the redesign touches presentation only — backend files are unto
     baseline = "";
   }
   if (baseline) {
+    /*
+     * Phase 8B itself changed no backend file. The admin-evidence import that
+     * followed it deliberately did — an append-only confirmation model needs a
+     * table, a writer and the routes that read it — so those files are listed
+     * explicitly here. Anything else appearing in this diff is unintended drift.
+     */
+    const evidenceSurface = new Set([
+      // append-only admin evidence
+      "app/api/shadow-arbitrage/accounts/route.ts",
+      "app/api/shadow-arbitrage/capital/route.ts",
+      "app/api/shadow-arbitrage/live-readiness/route.ts",
+      "app/api/shadow-arbitrage/paper/route.ts",
+      "src/db/repositories/shadowArbitrage.ts",
+      "src/db/schema.ts",
+      "drizzle/0010_shadow_admin_evidence.sql",
+      "src/lib/shadowArbitrage/accounts.ts",
+      "src/lib/shadowArbitrage/paper/run.ts",
+      "src/lib/shadowArbitrage/paper/broker.ts",
+      // the simple paper flow: portfolio maths, pure and dependency-free
+      "src/lib/shadowArbitrage/paper/portfolio.ts",
+      // Phase 8C-3 dynamic sizing: the pure sizer, its wiring into the engine,
+      // the orchestration that feeds it the risk context, and its reason code
+      "src/lib/shadowArbitrage/paper/sizing.ts",
+      "src/lib/shadowArbitrage/paper/engine.ts",
+      "src/lib/shadowArbitrage/paper/reasons.ts",
+      // Phase 8C-4 liquidity-aware sizing: the book walker, the role-based
+      // allocator, and carrying the observed book through to the sizer
+      "src/lib/shadowArbitrage/paper/liquidity.ts",
+      "src/lib/shadowArbitrage/paper/allocation.ts",
+      "src/lib/shadowArbitrage/adapters/base.ts",
+      "src/lib/shadowArbitrage/store.ts",
+      "src/lib/shadowArbitrage/types.ts",
+      // Phase 8C-5 append-only allocation proposals: additive migration and
+      // its repository. Simulation only — it moves virtual balances, never funds.
+      "drizzle/0011_shadow_allocation_proposals.sql",
+      "src/db/repositories/shadowAllocation.ts",
+      "src/lib/shadowArbitrage/live/readiness.ts",
+      // certifying Tetherland and Arzinja: direction proof, units, freshness,
+      // depth, and routing the confirmed fees into the economics
+      "src/lib/shadowArbitrage/adapters/base.ts",
+      "src/lib/shadowArbitrage/adapters/index.ts",
+      "src/lib/shadowArbitrage/adapters/arzinja.ts",
+      "src/lib/shadowArbitrage/adapters/tetherland.ts",
+      "src/lib/shadowArbitrage/certification.ts",
+      "src/lib/shadowArbitrage/collector.ts",
+      "src/lib/shadowArbitrage/config.ts",
+      "src/lib/shadowArbitrage/calculate.ts",
+      "src/lib/shadowArbitrage/fees.ts",
+      // Phase 8E-B fee-tier and execution-mode evidence: the additive
+      // migration, its append-only repository, and the resolver that makes the
+      // evidence authoritative for every consumer. Evidence and matching only —
+      // no order, no credential, no exchange call.
+      "drizzle/0012_shadow_fee_tier_evidence.sql",
+      // Append order for the same evidence — the only monotonic tie-break an
+      // append-only table has. Additive column, no row is rewritten.
+      "drizzle/0013_shadow_fee_tier_seq.sql",
+      "src/db/repositories/shadowFeeTier.ts",
+      "src/lib/shadowArbitrage/effectiveFees.ts"
+    ]);
     const changed = execFileSync("git", ["diff", "--name-only", baseline, "--", ...paths], {
       encoding: "utf8"
-    }).trim();
-    assert.equal(changed, "", `backend files changed since v4.12.0: ${changed}`);
+    })
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .filter((f) => !evidenceSurface.has(f));
+    assert.deepEqual(changed, [], `unexpected backend change since v4.12.0: ${changed.join(", ")}`);
+
+    // Whatever those files gained, the safety boundary did not move.
+    const capability = read("src/lib/shadowArbitrage/live/capability.ts");
+    assert.ok(capability.includes("export const LIVE_EXECUTION_IMPLEMENTED = false as const"));
+    for (const file of [...evidenceSurface]) {
+      const src = stripComments(read(file));
+      for (const banned of [/placeOrder/i, /cancelOrder/i, /\bwithdraw\(/i, /transferFunds/i]) {
+        assert.equal(banned.test(src), false, `${file} must not contain ${banned}`);
+      }
+      // Credential names appear in these routes only as refusal lists.
+      if (/privateKey|apiSecret/.test(src)) {
+        assert.ok(
+          /forbidden|reject|refus/i.test(src),
+          `${file} names a credential field outside a refusal list`
+        );
+      }
+    }
 
     /*
      * next.config.ts is allowed exactly one change: the release version now
@@ -1822,6 +2155,772 @@ await test("8B the redesign touches presentation only — backend files are unto
   } else {
     console.log("        (note: tag v4.12.0 unavailable — import boundary checked only)");
   }
+});
+
+/* ══ Phase 8C-2 — the Command Center ═════════════════════════════════════════ */
+
+await test("8C the Command Center answers the standing questions on one screen", () => {
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  // Every required figure has its own labelled card — no drawer, no fold.
+  const labels = [...cc.matchAll(/^\s+label="([^"]+)"$/gm)].map((m) => m[1]);
+  assert.deepEqual(labels, [
+    "سرمایهٔ کل مجازی",
+    "سرمایهٔ تخصیص‌یافته",
+    "سرمایهٔ آزاد",
+    "سود و زیان امروز",
+    "سود و زیان کل",
+    "بیشترین افت",
+    "معاملات انجام‌شده و رد‌شده",
+    "فرصت‌های معتبر"
+  ]);
+
+  // The best route is disclosed in full, not summarised into one number.
+  for (const dt of [
+    "صرافی خرید",
+    "صرافی فروش",
+    "حجم محاسبه‌شده",
+    "سرمایهٔ درگیر",
+    "سود خالص تعدیل‌شده",
+    "حاشیهٔ تعدیل‌شده"
+  ]) {
+    assert.ok(cc.includes(`<dt>${dt}</dt>`), `the best-opportunity card must state ${dt}`);
+  }
+
+  // Status, collector health and last cycle are in the strip above it.
+  for (const needle of ["فقط پایش آزمایشی", "COLLECTOR_STATE_FA[collectorState]", "آخرین چرخهٔ موفق"]) {
+    assert.ok(cc.includes(needle), `the status strip must show ${needle}`);
+  }
+});
+
+await test("8C session create, start, pause and stop live in the Command Center", () => {
+  const view = read("src/components/ShadowArbitrageView.tsx");
+  // The lifecycle controls are passed into the Command Center, not another tab.
+  assert.ok(
+    view.includes(
+      "sessionControls={<PaperSimple parts={{ session: true, summary: false, ledger: false }} />}"
+    ),
+    "the session panel is the Command Center's control slot"
+  );
+
+  const paper = read("src/components/shadowArbitrage/PaperSimple.tsx");
+  // Plain Persian for every step of the lifecycle.
+  for (const label of [
+    "ساخت نشست جدید از طرح فعلی",
+    "شروع ارزیابی",
+    "توقف موقت",
+    "ادامهٔ ارزیابی",
+    "پایان‌دادن نشست (حفظ سابقه)"
+  ]) {
+    assert.ok(paper.includes(label), `missing control label: ${label}`);
+  }
+  // Each control posts the action the existing API already accepts.
+  for (const action of ["create", "start", "pause", "resume", "stop"]) {
+    assert.ok(paper.includes(`action: "${action}"`), `missing ${action} action`);
+  }
+  const route = read("app/api/shadow-arbitrage/paper/route.ts");
+  // Phase 8C-5 added exactly two actions, both simulation-only.
+  assert.ok(
+    route.includes('["create", "start", "pause", "resume", "stop", "propose_allocation", "apply_allocation"]')
+  );
+  for (const banned of ["place_order", "arm", "go_live", "withdraw", "deposit", "transfer"]) {
+    assert.equal(route.includes(`"${banned}"`), false, `no ${banned} action may exist`);
+  }
+
+  // The ledger moved to Opportunities & Trades; the same component renders it.
+  assert.ok(
+    view.includes("<PaperSimple parts={{ session: false, summary: false, ledger: true }} />")
+  );
+  assert.ok(paper.includes("export type PaperParts"), "the split is a declared contract");
+});
+
+await test("8C diagnostics, gates, policies and evidence sit behind one fold", () => {
+  const view = read("src/components/ShadowArbitrageView.tsx");
+  // LiveReadiness — gates, policies and evidence — is inside a <details>.
+  const live = view.indexOf("<LiveReadiness");
+  const fold = view.lastIndexOf("sa-advanced-details", live);
+  assert.ok(fold > 0 && fold < live, "readiness gates must be inside the advanced disclosure");
+
+  // So are the collector diagnostics and the raw paper-execution panel.
+  const advancedSlot = view.slice(view.indexOf("advanced={"), view.indexOf("/>\n        ) : null}\n\n        {/* ── 2."));
+  for (const panel of ["ObservationHeader", "OverviewPanel", "PaperExecution"]) {
+    assert.ok(advancedSlot.includes(`<${panel}`), `${panel} belongs behind the fold`);
+  }
+  assert.ok(view.includes("تشخیص‌های پیشرفته"), "the fold is labelled in Persian");
+
+  // Nothing on the primary surface can arm or execute anything.
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  for (const term of ["arm", "enable_live", "execute", "go_live", "placeOrder"]) {
+    assert.equal(cc.includes(`"${term}"`), false, `the Command Center must not offer ${term}`);
+  }
+  // And it states the boundary in Persian on the landing screen itself.
+  assert.ok(cc.includes("غیرمسلح"));
+  assert.ok(cc.includes("اجرای واقعی پیاده‌سازی نشده است"));
+});
+
+await test("8C-3 the recommendation is the calculated size, not the fixed probe", () => {
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  // The probe size is no longer what the card recommends.
+  assert.equal(cc.includes("toFaDigits(best.sizeUsdt)"), false, "the probe size is not the answer");
+  assert.ok(cc.includes("bestSizing.sizing.sizeUsdt"), "the calculated size is");
+  assert.ok(cc.includes("<dt>حجم محاسبه‌شده</dt>"));
+
+  // The primary reason sits next to it, on the first screen.
+  assert.ok(cc.includes("محدودکنندهٔ اصلی حجم"), "the binding constraint is stated");
+  assert.ok(cc.includes("حجمی انتخاب نشد"), "and so is the reason when there is none");
+
+  // Headline figures stay on the card: the size, what it ties up, the result.
+  const headline = cc.slice(cc.indexOf("<dt>حجم محاسبه‌شده</dt>"), cc.indexOf("sa-cc-calc"));
+  for (const figure of ["capitalInvolvedToman", "riskAdjustedPnlToman", "riskAdjustedEdgePercent"]) {
+    assert.ok(headline.includes(figure), `the card must state ${figure}`);
+  }
+
+  // The full calculation is one expandable step away, not on the first screen.
+  assert.ok(cc.includes("محاسبهٔ کامل حجم و سقف‌های محدودکننده"));
+  const detail = cc.slice(cc.indexOf("sa-cc-calc"));
+  for (const figure of [
+    "liquidityMaxUsdtMicros",
+    "policyMaxUsdtMicros",
+    "cashPnlIrtToman",
+    "sellFeeValueToman",
+    "economicNetPnlToman",
+    "slippageBufferToman"
+  ]) {
+    assert.ok(detail.includes(figure), `the detail view must report ${figure}`);
+  }
+  // Every limiting constraint is listed, with the binding one marked.
+  assert.ok(detail.includes("bestSizing.sizing.constraints.map"));
+  assert.ok(detail.includes("محدودکننده"));
+
+  // The fixed ladder survives only as a diagnostic probe, unchanged.
+  const config = read("src/lib/shadowArbitrage/config.ts");
+  assert.ok(config.includes("export const SHADOW_TRADE_SIZES: ShadowTradeSizeUsdt[] = [5, 10, 20, 25];"));
+});
+
+await test("8C-3 sizing never invents a risk limit and blocks visibly instead", () => {
+  const sizing = read("src/lib/shadowArbitrage/paper/sizing.ts");
+  // Every required policy is read through the null-returning accessor.
+  assert.ok(sizing.includes("policyValueOrNull("));
+  assert.equal(
+    /policyValueOrNull\([^)]*\)\s*\?\?\s*\d/.test(sizing),
+    false,
+    "no numeric fallback may follow a policy lookup"
+  );
+  for (const key of [
+    "max_order_size_usdt",
+    "max_venue_exposure_percent",
+    "min_risk_adjusted_edge_percent",
+    "max_quote_age_ms",
+    "max_slippage_bps"
+  ]) {
+    assert.ok(sizing.includes(`"${key}"`), `${key} must be required`);
+    assert.equal(
+      new RegExp(`${key}\\s*[:=]\\s*\\d`).test(sizing),
+      false,
+      `${key} must never be assigned a literal`
+    );
+  }
+  // A blocked size is null, with reasons — never a silent zero or a guess.
+  assert.ok(sizing.includes("sizeUsdtMicros: null"));
+  assert.ok(sizing.includes('status: "BLOCKED"'));
+
+  // The engine refuses to trade a probe size when sizing did not produce one.
+  const engine = read("src/lib/shadowArbitrage/paper/engine.ts");
+  assert.ok(engine.includes('skip(c, ["sizing_blocked"]);'));
+  assert.ok(engine.includes("sizeUsdt: microsToUsdt(sizing.sizeUsdtMicros)"));
+
+  // And the operator is told, on the landing screen, which policy is missing.
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  assert.ok(cc.includes("sizing.missingPolicies"));
+  assert.ok(cc.includes("هیچ مقدار پیش‌فرضی جایگزین نمی‌شود"));
+});
+
+await test("8C-3 sizing stays pure: no database, network, clock or order path", () => {
+  const sizing = read("src/lib/shadowArbitrage/paper/sizing.ts");
+  for (const banned of ["@/db/", "next/server", "fetch(", "apiKey", "placeOrder", "withdraw"]) {
+    assert.equal(sizing.includes(banned), false, `sizing must not contain ${banned}`);
+  }
+  assert.equal(/Date\.now\(\)|new Date\(\)/.test(sizing), false, "a clock would break replay");
+  const capability = read("src/lib/shadowArbitrage/live/capability.ts");
+  assert.ok(capability.includes("export const LIVE_EXECUTION_IMPLEMENTED = false as const"));
+});
+
+await test("8C unknown figures are em dashes, never invented numbers", () => {
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  assert.ok(cc.includes('const DASH = <span className="sa-unknown">—</span>'));
+  // Every portfolio card falls back to the dash when there is no session.
+  assert.ok(cc.includes("session ? <TomanAmount value={session.totalCapitalToman} /> : DASH"));
+  assert.ok(cc.includes("summary ? <TomanAmount value={summary.todayPnlToman} /> : DASH"));
+  assert.ok(cc.includes("summary ? <TomanAmount value={summary.economicPnlToman} /> : DASH"));
+  assert.ok(cc.includes("summary ? <TomanAmount value={summary.drawdownToman} /> : DASH"));
+  // Marked value without a mark price stays unknown rather than being guessed.
+  assert.ok(cc.includes("بدون قیمت مبنا محاسبه نمی‌شود"));
+  /*
+   * No fabricated DATA. The bare word "placeholder" is excluded because it is
+   * also a legitimate HTML input attribute — the scenario controls use it to
+   * label an UNSET cap — so the check targets fake-data identifiers instead.
+   */
+  for (const fake of ["lorem", "placeholderData", "sampleData", "MOCK", "dummy", "fakeData"]) {
+    assert.equal(cc.toLowerCase().includes(fake.toLowerCase()), false, `no ${fake}`);
+  }
+  // Every `placeholder=` occurrence must be an input attribute, nothing else.
+  for (const m of cc.match(/placeholder[^=]*=/g) ?? []) {
+    assert.equal(m, "placeholder=", `unexpected placeholder usage: ${m}`);
+  }
+});
+
+await test("8C ratios are bidi-isolated so RTL cannot reverse them", () => {
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  assert.ok(cc.includes("function Ratio("));
+  assert.ok(cc.includes('className="sa-ratio" dir="ltr"'));
+  for (const use of [
+    "<Ratio part={summary.filled}",
+    "<Ratio part={healthySources}",
+    "<Ratio part={accounts.executable}",
+    "<Ratio part={readiness.passed}"
+  ]) {
+    assert.ok(cc.includes(use), `missing ${use}`);
+  }
+});
+
+await test("8C the Command Center reuses the shared glass primitives only", () => {
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  for (const [name, needle] of [
+    ["KPI card", "panel sa-panel sa-cc-kpi"],
+    ["status strip", 'className="panel sa-panel sa-cc-status"'],
+    ["best opportunity", 'className="panel sa-panel sa-cc-best"'],
+    ["health card", 'className="panel sa-panel sa-cc-mini"'],
+    ["refresh action", 'className="sa-cc-action glass-control"'],
+    ["advanced fold", 'className="panel sa-panel sa-advanced-details"']
+  ] as Array<[string, string]>) {
+    assert.ok(cc.includes(needle), `${name} must reuse a shared primitive (${needle})`);
+  }
+  // The only inline style is the progress bar's own width, which is a value.
+  assert.equal((cc.match(/style=\{\{/g) ?? []).length, 1);
+  assert.ok(cc.includes('className="sa-progress-fill"'));
+});
+
+await test("8C Phase 8C CSS declares layout only — no forked material", () => {
+  const css = stripComments(phase8cCss());
+
+  assert.equal(/backdrop-filter\s*:/.test(css), false, "blur must come from the primitives");
+  assert.equal(/box-shadow\s*:/.test(css), false, "shadows must come from the primitives");
+  assert.deepEqual([...new Set([...css.matchAll(/#[0-9a-fA-F]{3,8}/g)].map((m) => m[0]))], []);
+  assert.equal(/rgba?\(\s*\d/.test(css), false, "no raw rgb()/rgba() values");
+  assert.equal(/background\s*:/.test(css), false, "no card surface of its own");
+
+  const borders = [...css.matchAll(/border[a-z-]*\s*:\s*([^;]+);/g)].map((m) => m[1].trim());
+  for (const b of borders) {
+    assert.ok(
+      b === "0" || b.includes("999px") || b.includes("var(--radius") || b.includes("var(--line-soft)"),
+      `unexpected border declaration: ${b}`
+    );
+  }
+
+  // Every selector stays inside the Shadow scope.
+  const selectors = [...css.matchAll(/^(\.[a-z][^{\n,]*|:root\[[^\]]+\][^{\n,]*)\s*[,{]/gm)].map((m) =>
+    m[1].trim()
+  );
+  assert.ok(selectors.length > 15, "the phase adds real rules");
+  for (const sel of selectors) {
+    assert.ok(/\.sa-/.test(sel), `selector escapes the Shadow scope: ${sel}`);
+  }
+  assert.equal(/^\s*(body|html|main|\*)\s*[,{]/m.test(css), false);
+
+  // The dashboard type scale, and nothing below 12px.
+  const sizes = [...css.matchAll(/font-size:\s*([\d.]+)px/g)].map((m) => Number(m[1]));
+  assert.ok(sizes.length > 10);
+  assert.equal(sizes.filter((n) => n < 12).length, 0, "text must not shrink below 12px");
+  assert.ok(css.includes(".sa-cc-kpi-value {\n  font-size: 22px"), "22px headline numbers");
+  assert.ok(css.includes(".sa-cc-kpi-label {\n  font-size: 12px"), "12px labels");
+});
+
+await test("8C the Command Center never scrolls the page sideways", () => {
+  const css = stripComments(phase8cCss());
+  const tracks = [...css.matchAll(/grid-template-columns\s*:\s*([^;]+);/g)].map((m) => m[1].trim());
+  assert.ok(tracks.length > 4);
+  for (const track of tracks) {
+    assert.ok(track.includes("minmax(0,"), `grid track must be able to shrink: ${track}`);
+  }
+
+  // 4 → 2 → 2: eight cards become a 2×4 block on a phone, not one long column.
+  const kpis = css.slice(css.indexOf(".sa-cc-kpis {"), css.indexOf(".sa-cc-kpi {"));
+  assert.ok(kpis.includes("repeat(4, minmax(0, 1fr))"));
+  const tablet = css.slice(css.indexOf("@media (max-width: 1024px)"));
+  assert.ok(tablet.slice(0, 400).includes(".sa-cc-kpis"));
+  assert.ok(tablet.slice(0, 400).includes("repeat(2, minmax(0, 1fr))"));
+  const phone = css.slice(css.indexOf("@media (max-width: 560px)"));
+  assert.equal(phone.includes(".sa-cc-kpis {"), false, "the 2-column block carries over");
+  assert.ok(phone.includes("min-height: 36px"), "tap targets grow on touch");
+
+  // Long figures wrap instead of widening the track.
+  assert.ok(css.includes(".sa-cc-kpi-value") && css.includes("overflow-wrap: anywhere"));
+  // And the page-level guard covers the new containers.
+  const globals = read("app/globals.css");
+  const guard = globals.slice(globals.indexOf(".sa-tabs-wrap,"), globals.indexOf(".sa-tabs-wrap,") + 260);
+  for (const sel of [".sa-cc", ".sa-cc-kpis", ".sa-cc-health"]) {
+    assert.ok(guard.includes(sel), `${sel} must carry the min-width guard`);
+  }
+});
+
+/* ══ Phase 8C close-out — capacity column and lifecycle labels ═══════════════ */
+
+await test("8C the allocation table shows capacity and limiter from venueCapacity()", () => {
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  assert.ok(cc.includes("<th scope=\"col\">ظرفیت و محدودکننده</th>"));
+
+  // Buy and sell are reported independently, each with its own limiter.
+  for (const field of [
+    "r.buyCapacityUsdtMicros",
+    "r.sellCapacityUsdtMicros",
+    "r.buyLimiter",
+    "r.sellLimiter",
+    "r.buyReason",
+    "r.sellReason"
+  ]) {
+    assert.ok(cc.includes(field), `the column must read ${field} from the stored row`);
+  }
+
+  /*
+   * Single source: the UI NAMES a limiter, it never decides one. No capacity
+   * arithmetic may appear in the component — fee division, depth summation or
+   * a min() across caps would mean two implementations that can disagree.
+   */
+  const table = cc.slice(cc.indexOf("ظرفیت و محدودکننده"));
+  for (const banned of ["totalDepthMicros", "validateBook", "orderedLevels", "/ (1 +", "Math.min("]) {
+    assert.equal(table.includes(banned), false, `capacity must not be recomputed in the UI: ${banned}`);
+  }
+  // Labels come from the engine's own maps, not from strings retyped here.
+  assert.ok(cc.includes("CAP_LABEL_FA["));
+  assert.ok(cc.includes("VENUE_CAPACITY_REASON_FA["));
+  assert.ok(cc.includes('from "@/lib/shadowArbitrage/paper/liquidity"'));
+});
+
+await test("8C an unavailable side shows its exact reason, never a zero", () => {
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  // Null capacity renders the reason; it must not fall through to a number.
+  assert.ok(cc.includes("r.buyCapacityUsdtMicros === null ? ("));
+  assert.ok(cc.includes("r.sellCapacityUsdtMicros === null ? ("));
+
+  // AbanTether's structural case is a first-class reason with its own label.
+  const liq = read("src/lib/shadowArbitrage/paper/liquidity.ts");
+  assert.ok(liq.includes("quote_only_no_order_book:"));
+  assert.ok(
+    liq.includes("نقل‌قول تک‌قیمتی — بدون دفتر سفارش (محدودیت ساختاری، نه خرابی)"),
+    "it is stated as structural, not as missing or broken"
+  );
+  // And it is never collapsed into the missing-book reason.
+  assert.notEqual(
+    liq.match(/quote_only_no_order_book: "([^"]+)"/)?.[1],
+    liq.match(/\n  book_missing: "([^"]+)"/)?.[1]
+  );
+});
+
+await test("8C record type and latest decision are labelled so they cannot contradict", () => {
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  // The row's own nature.
+  assert.ok(cc.includes("نوع رکورد:"));
+  assert.ok(cc.includes("پیشنهاد ثبت‌شده — آمادهٔ اعمال"));
+  assert.ok(cc.includes("پیش‌نمایش (قابل اعمال نیست)"));
+  // What later happened to it.
+  assert.ok(cc.includes("آخرین تصمیم ماندگار روی این رکورد:"));
+  assert.ok(cc.includes("اعمال شد"));
+  assert.ok(cc.includes("رد شد — کهنه"));
+  // And an explicit note that the two are different axes.
+  assert.ok(cc.includes("هرگز یکدیگر را نقض نمی‌کنند"));
+  // Raw enum values are not shown as the primary label.
+  assert.equal(cc.includes(">{proposalDecision.decision}<"), false);
+});
+
+await test("8C scenario inputs and the proposal survive a hard reload", () => {
+  const view = read("src/components/ShadowArbitrageView.tsx");
+  // Hydrated from the server payload, not from component memory.
+  assert.ok(view.includes("payload.allocation?.proposal"));
+  assert.ok(view.includes("setProposal(payload.allocation.proposal)"));
+  assert.ok(view.includes("payload.allocation.proposal.scenarioCaps"));
+  assert.ok(view.includes("setScenarioCaps(caps)"));
+
+  // The server recovers them from the stored note, so they are durable.
+  const route = read("app/api/shadow-arbitrage/paper/route.ts");
+  assert.ok(route.includes("SCENARIO ("));
+  assert.ok(route.includes("scenarioCaps"));
+  assert.ok(route.includes("listProposals(1)"), "the latest proposal is loaded on GET");
+  assert.ok(route.includes("listDecisions"), "and its latest decision");
+});
+
+await test("8C the capacity column stays inside the page at every width", () => {
+  const css = read("app/globals.css");
+  // The table lives in the shared scrolling wrapper, so a wide row scrolls
+  // inside its own container rather than widening the page.
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  const table = cc.slice(cc.indexOf("تخصیص فعلی در برابر پیشنهادی") - 800);
+  assert.ok(table.includes("sa-table-wrap"), "the allocation table is wrapped");
+  const wrap = css.slice(css.indexOf(".sa-table-wrap {"));
+  assert.ok(wrap.slice(0, 200).includes("overflow-x: auto"));
+  // And the page-level guard still covers the Command Center containers.
+  const guard = css.slice(css.indexOf(".sa-tabs-wrap,"), css.indexOf(".sa-tabs-wrap,") + 260);
+  for (const sel of [".sa-cc", ".sa-cc-kpis", ".sa-cc-health"]) {
+    assert.ok(guard.includes(sel), `${sel} must carry the min-width guard`);
+  }
+});
+
+await test("8C the four venue facts are counted and shown separately", () => {
+  const route = read("app/api/shadow-arbitrage/paper/route.ts");
+  /*
+   * Capacity and usability are counted PER LEG. Arbitrage needs one venue to
+   * buy on and another to sell on, so a venue with one valid leg is a full
+   * participant — requiring both directions of the same venue is what wrongly
+   * excluded an OTC dealer whose buy leg was perfectly usable.
+   */
+  for (const key of [
+    "kycConfirmed",
+    "accountEligible",
+    "buyCapacityMeasurable",
+    "sellCapacityMeasurable",
+    "buyLegUsable",
+    "sellLegUsable",
+    "participating"
+  ]) {
+    assert.ok(route.includes(`${key}:`), `the API must count ${key} on its own`);
+  }
+  assert.ok(route.includes("participates: buyOk || sellOk"), "one valid leg is enough");
+  assert.ok(route.includes("quoteOnly:"));
+  assert.ok(route.includes("unverified:"));
+  assert.ok(route.includes("matrix"), "a per-venue matrix is returned");
+
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  for (const label of [
+    "احراز هویت تأییدشده",
+    "حساب اجراپذیر",
+    "ظرفیت خرید قابل اندازه‌گیری",
+    "ظرفیت فروش قابل اندازه‌گیری",
+    "پای خرید قابل استفاده",
+    "پای فروش قابل استفاده",
+    "واجد شرکت در حداقل یک مسیر",
+    "نقل‌قولی / تأییدنشده"
+  ]) {
+    assert.ok(cc.includes(label), `missing label: ${label}`);
+  }
+  // The conflated summary is gone: no single ratio stands for all of them.
+  assert.equal(cc.includes("آمادگی حساب و کارمزد"), false, "the merged label is retired");
+  // And the matrix shows every fact per venue, including the exact blocker.
+  assert.ok(cc.includes("ماتریس صرافی‌ها"));
+  for (const col of ["نوع داده", "پای خرید", "پای فروش", "شرکت‌کننده", "مانع دقیق"]) {
+    assert.ok(cc.includes(col), `matrix column missing: ${col}`);
+  }
+});
+
+await test("8C a funded venue is EXPLORATION and AbanTether keeps null book fields", () => {
+  // Stripped of comments: the prose explains the rename, the CODE must not use it.
+  const alloc = stripComments(read("src/lib/shadowArbitrage/paper/allocation.ts"));
+  assert.ok(alloc.includes('"EXPLORATION"'));
+  assert.equal(/\bUNUSED\b/.test(alloc), false, "the contradictory label is gone from the code");
+  assert.ok(alloc.includes("EXPLORATION: \"اکتشافی"));
+
+  // Quote venues are measured from the quote; no book is ever synthesised.
+  const liq = read("src/lib/shadowArbitrage/paper/liquidity.ts");
+  assert.ok(liq.includes("function quoteVenueCapacity("));
+  assert.ok(liq.includes("export function checkQuote("));
+  for (const reason of [
+    "quote_capacity_unverified",
+    "quote_missing",
+    "quote_stale",
+    "quote_direction_unverified"
+  ]) {
+    assert.ok(liq.includes(`${reason}:`), `missing reason: ${reason}`);
+  }
+  // The adapter still publishes no ladder for a dealer.
+  const aban = read("src/lib/shadowArbitrage/adapters/abantether.ts");
+  assert.ok(aban.includes('kind: "OTC_QUOTE"'));
+  assert.ok(aban.includes("bids: []") && aban.includes("asks: []"));
+  assert.ok(aban.includes("depthAvailable: false"));
+  // And normalization stores null rather than an empty array.
+  const base = read("src/lib/shadowArbitrage/adapters/base.ts");
+  assert.ok(base.includes('bookBids: walkable ? cappedLevels(result.bids, "sell") : null'));
+});
+
+await test("8C capacity is computed once: no duplicate implementation exists", () => {
+  // Stripped of comments: a doc comment may NAME the engine function; the
+  // component must never CALL it.
+  const cc = stripComments(read("src/components/shadowArbitrage/CommandCenter.tsx"));
+  for (const banned of ["checkQuote(", "venueCapacity(", "totalDepthMicros(", "walkBook("]) {
+    assert.equal(cc.includes(banned), false, `the UI must not call ${banned}`);
+  }
+  // Exactly one module owns the calculation.
+  const liq = read("src/lib/shadowArbitrage/paper/liquidity.ts");
+  assert.equal((liq.match(/export function venueCapacity\(/g) ?? []).length, 1);
+  assert.equal((liq.match(/function quoteVenueCapacity\(/g) ?? []).length, 1);
+  // And the API calls it rather than reimplementing it.
+  const route = read("app/api/shadow-arbitrage/paper/route.ts");
+  assert.ok(route.includes("venueCapacity({"));
+  assert.equal(/1 \+ [a-zA-Z]*[Ff]eeBps \/ 10_?000/.test(route), false, "no fee maths in the route");
+});
+
+/* ══ Phase 8D-B — the Paper Execution tab ════════════════════════════════════ */
+
+await test("8D-B the paper tab is one panel with the permanent banner", () => {
+  const pe = read("src/components/shadowArbitrage/PaperExecution.tsx");
+  assert.ok(pe.includes('PAPER_BANNER_EN = "PAPER EXECUTION — NO REAL ORDERS OR TRANSFERS"'));
+  // Rendered unconditionally — not inside any status branch.
+  const banner = pe.slice(pe.indexOf("{PAPER_BANNER_EN}") - 400, pe.indexOf("{PAPER_BANNER_EN}"));
+  assert.equal(/\?\s*\($/.test(banner.trim()), false, "the banner is never conditional");
+
+  // One panel, not a competing second one: the view still mounts it once.
+  const view = read("src/components/ShadowArbitrageView.tsx");
+  assert.equal((view.match(/<PaperExecution/g) ?? []).length, 1);
+});
+
+await test("8D-B the session section shows identity, cycles and guarded controls", () => {
+  const pe = read("src/components/shadowArbitrage/PaperExecution.tsx");
+  for (const label of [
+    "<dt>وضعیت</dt>",
+    "<dt>حالت</dt>",
+    "<dt>شناسهٔ نشست</dt>",
+    "<dt>شناسهٔ مشاهده</dt>",
+    "<dt>آخرین چرخهٔ ارزیابی‌شده</dt>",
+    "<dt>آخرین معاملهٔ انجام‌شده</dt>"
+  ]) {
+    assert.ok(pe.includes(label), `session section needs ${label}`);
+  }
+  // Pause/resume are two-step, and they are the ONLY mutations.
+  assert.ok(pe.includes('setConfirming("pause")'));
+  assert.ok(pe.includes('setConfirming("resume")'));
+  assert.ok(pe.includes("بله، انجام بده"));
+  const actions = [...pe.matchAll(/action,\s*sessionId|JSON\.stringify\(\{ action/g)];
+  assert.ok(actions.length >= 1);
+  for (const banned of ['"create"', '"start"', '"stop"', '"apply_allocation"']) {
+    assert.equal(pe.includes(banned), false, `the paper tab must not offer ${banned}`);
+  }
+  // Nothing starts a session on mount: the effect only reads.
+  const effect = pe.slice(pe.indexOf("useEffect(() => {"), pe.indexOf("}, [load]);"));
+  assert.ok(effect.includes("void load()"));
+  assert.equal(/method: "POST"/.test(effect), false, "mounting must never mutate");
+  assert.ok(pe.includes("استقرار یا بازکردن این صفحه هرگز نشستی نمی‌سازد"));
+});
+
+await test("8D-B the five financial metrics are separate cards, never merged", () => {
+  const pe = read("src/components/shadowArbitrage/PaperExecution.tsx");
+  for (const [label, field] of [
+    ["جریان نقدی تومانی", "stats.cashPnlIrtToman"],
+    ["تغییر موجودی تتری", "stats.inventoryDeltaUsdtMicros"],
+    ["ارزش تومانی کارمزد تتری", "stats.sellFeeValueToman"],
+    ["سود خالص اقتصادی", "stats.economicNetPnlToman"],
+    ["سود تعدیل‌شده با ریسک", "stats.riskAdjustedPnlToman"]
+  ] as Array<[string, string]>) {
+    assert.ok(pe.includes(`label="${label}"`), `missing metric card: ${label}`);
+    assert.ok(pe.includes(field), `card must read ${field} from the server`);
+  }
+  // Cash and economic PnL are never added together anywhere.
+  assert.equal(
+    /cashPnlIrtToman\s*\+\s*economicNetPnlToman/.test(pe),
+    false,
+    "cash and economic PnL must never be merged"
+  );
+  // Secondary metrics exist too.
+  for (const label of ["معاملات", "نرخ تبدیل فرصت", "کارمزد پرداخت‌شده"]) {
+    assert.ok(pe.includes(`label="${label}"`), `missing secondary metric: ${label}`);
+  }
+});
+
+await test("8D-B filters, pagination and URL state behave deterministically", () => {
+  const pe = read("src/components/shadowArbitrage/PaperExecution.tsx");
+  // Every piece of view state lives in the URL, so a reload restores it.
+  for (const key of ["pv", "pq", "pout", "preason", "pper", "ppage"]) {
+    assert.ok(pe.includes(`"${key}"`), `${key} must be URL state`);
+  }
+  assert.ok(pe.includes("useShadowViewState()"));
+  // Changing a filter returns to page 1; paging never resets a filter.
+  assert.ok(pe.includes('write({ ...patch, ppage: "1" })'));
+  for (const f of ["pq:", "pout:", "preason:"]) {
+    assert.ok(pe.includes(`setFilter({ ${f}`), `${f} must go through setFilter`);
+  }
+  // An out-of-range page self-corrects inside paginate(), not by clamping here.
+  assert.ok(pe.includes("paginate(ledger, rawPage, perPage)"));
+  assert.ok(pe.includes("pageSizes={OPPORTUNITY_PAGE_SIZES}"), "10 / 20 / 50");
+  assert.ok(pe.includes("<Pager"));
+});
+
+await test("8D-B nine venue rows, quote semantics and a details drawer", () => {
+  const pe = read("src/components/shadowArbitrage/PaperExecution.tsx");
+  // The matrix is the server's, rendered row by row.
+  assert.ok(pe.includes("venueSemantics?.matrix"));
+  assert.ok(pe.includes("matrix.map((m)"));
+  for (const col of ["مدل داده", "نقش", "تومان مجازی", "تتر مجازی", "ظرفیت خرید", "ظرفیت فروش"]) {
+    assert.ok(pe.includes(col), `balance view needs ${col}`);
+  }
+  // A dealer is labelled as an executable quote, never as a book.
+  assert.ok(pe.includes('m.dataType === "EXECUTABLE_QUOTE" ? "نقل‌قول اجراپذیر" : "دفتر سفارش"'));
+  assert.equal(pe.includes("bookBids"), false, "the tab never touches book fields");
+
+  // The drawer shows both legs and all five figures.
+  for (const dt of [
+    "<dt>پای خرید</dt>",
+    "<dt>پای فروش</dt>",
+    "<dt>VWAP خرید / فروش</dt>",
+    "<dt>قیمت مرجع</dt>",
+    "<dt>بافر ریسک</dt>",
+    "<dt>جریان نقدی تومانی</dt>",
+    "<dt>تغییر موجودی تتری</dt>",
+    "<dt>ارزش تومانی کارمزد تتری</dt>",
+    "<dt>سود خالص اقتصادی</dt>",
+    "<dt>سود تعدیل‌شده</dt>"
+  ]) {
+    assert.ok(pe.includes(dt), `drawer needs ${dt}`);
+  }
+});
+
+await test("8D-B the paper tab recomputes no financial or capacity figure", () => {
+  const pe = stripComments(read("src/components/shadowArbitrage/PaperExecution.tsx"));
+  // It may not call the engine, and it may not re-derive its arithmetic.
+  for (const banned of [
+    "venueCapacity(",
+    "checkQuote(",
+    "walkBook(",
+    "totalDepthMicros(",
+    "computeRouteSize(",
+    "planFill(",
+    "buyIrtCapacityMicros(",
+    "sellUsdtCapacityMicros("
+  ]) {
+    assert.equal(pe.includes(banned), false, `the UI must not call ${banned}`);
+  }
+  // No fee maths, no VWAP maths, no PnL composition in the component.
+  assert.equal(/\/ 10_?000/.test(pe), false, "no bps arithmetic in the UI");
+  assert.equal(/1 \+ [a-zA-Z]*[Ff]ee/.test(pe), false, "no fee-inclusive division in the UI");
+  assert.equal(
+    /economicNetPnlToman\s*-\s*[a-zA-Z]/.test(pe),
+    false,
+    "risk-adjusted PnL is the server's number, not a subtraction here"
+  );
+  // Dividing by 1e6 to DISPLAY micros is formatting, not computation, and is
+  // the only arithmetic allowed; it never feeds another figure.
+  assert.ok(pe.includes("/ 1_000_000"), "micros are formatted for display");
+});
+
+await test("8D-B unknown values are em dashes carrying their own reason", () => {
+  const pe = read("src/components/shadowArbitrage/PaperExecution.tsx");
+  assert.ok(pe.includes("function Unknown({ why }"));
+  assert.ok(pe.includes('<span className="sa-unknown" title={why}>'));
+  // Used for every figure that can genuinely be absent.
+  for (const why of [
+    "این رکورد اجرا نشده است",
+    "کارمزد تأییدشده‌ای برای این سمت ثبت نشده است",
+    "قیمت مرجع این چرخه در دسترس نبود",
+    "موجودی مجازی برای این صرافی ثبت نشده است"
+  ]) {
+    assert.ok(pe.includes(why), `missing reason: ${why}`);
+  }
+  // Loading, error and empty states are explicit.
+  assert.ok(pe.includes("در حال بارگذاری وضعیت اجرای کاغذی"));
+  assert.ok(pe.includes("sa-callout-danger"));
+  assert.ok(pe.includes("با این فیلترها هیچ رکوردی وجود ندارد"));
+});
+
+await test("8D-B desktop tables, real mobile cards, and shared primitives only", () => {
+  const pe = read("src/components/shadowArbitrage/PaperExecution.tsx");
+  assert.ok(pe.includes("sa-paper-desktop"));
+  assert.ok(pe.includes("sa-paper-cards"));
+  // Cards are real markup, not a restyled table.
+  assert.ok(pe.includes('className="panel sa-panel sa-paper-card"'));
+
+  const css = read("app/globals.css");
+  const sec = css.slice(css.indexOf("Phase 8D paper execution"));
+  assert.ok(sec.includes(".sa-paper-cards {\n  display: none;\n}"), "cards are desktop-hidden");
+  const mobile = sec.slice(sec.indexOf("@media (max-width: 768px)"));
+  assert.ok(mobile.includes(".sa-paper-desktop"), "tables hide on a phone");
+  assert.ok(mobile.includes("min-height: 36px"), "touch targets are 36px");
+  // Layout only: no forked material, nothing below 12px.
+  assert.equal(/backdrop-filter\s*:/.test(sec), false);
+  assert.equal(/box-shadow\s*:/.test(sec), false);
+  assert.equal(/background\s*:/.test(sec), false);
+  const sizes = [...sec.matchAll(/font-size:\s*([\d.]+)px/g)].map((m) => Number(m[1]));
+  assert.equal(sizes.filter((n) => n < 12).length, 0, "no text below 12px");
+  // Every selector stays inside the Shadow scope.
+  const selectors = [...sec.matchAll(/^(\.[a-z][^{\n,]*)\s*[,{]/gm)].map((m) => m[1].trim());
+  assert.ok(selectors.length > 3);
+  for (const sel of selectors) assert.ok(/\.sa-/.test(sel), `selector escapes scope: ${sel}`);
+
+  // Material comes from the shared primitives.
+  for (const needle of ["glass-control", "glass-tabbar", "panel sa-panel"]) {
+    assert.ok(pe.includes(needle), `must reuse ${needle}`);
+  }
+  // No font, no inline style.
+  assert.equal(/font-family|fontFamily/.test(pe), false);
+  assert.equal(/style=\{\{/.test(pe), false);
+});
+
+/* ══ Phase 8E — the Admin Decision Desk ══════════════════════════════════════ */
+
+await test("8E blocked gates are grouped by what they are waiting for", () => {
+  const lr = read("src/components/shadowArbitrage/LiveReadiness.tsx");
+  for (const [kind, titleFa] of [
+    ["GATE_NOT_MATURE", "منتظر زمان"],
+    ["MISSING_POLICY", "منتظر تصمیم مدیر"],
+    ["MISSING_EVIDENCE", "منتظر ثبت شواهد"],
+    ["SYSTEM_FAILURE", "خرابی سامانه"]
+  ] as Array<[string, string]>) {
+    assert.ok(lr.includes(`"${kind}"`), `missing group ${kind}`);
+    assert.ok(lr.includes(titleFa), `missing label ${titleFa}`);
+  }
+  // Grouping reads the engine's own classification; it does not re-derive one.
+  assert.ok(lr.includes("g.blockerKind === kind"));
+  assert.ok(lr.includes('g.status !== "PASSED"'));
+});
+
+await test("8E the four evidence groups have real attestation forms", () => {
+  const lr = read("src/components/shadowArbitrage/LiveReadiness.tsx");
+  assert.ok(lr.includes("const ATTESTATION_FORMS"));
+  for (const kind of [
+    "api_capability",
+    "key_permissions",
+    "transfer_costs",
+    "reconciliation_runbook"
+  ]) {
+    assert.ok(lr.includes(`kind: "${kind}"`), `missing evidence form: ${kind}`);
+  }
+  // Every claim must be ticked before an attestation can be recorded.
+  assert.ok(lr.includes("form.claims.every((c) => claims[form.kind]?.[c.key])"));
+  // Recording states a fact; it never arms anything, and says so.
+  assert.ok(lr.includes("هیچ دروازه‌ای را مسلح نمی‌کند"));
+  assert.ok(lr.includes('action: "attest"'));
+  // No credential, endpoint or secret is ever collected.
+  for (const banned of ["apiKey", "apiSecret", "privateKey", "passphrase", "endpoint:"]) {
+    assert.equal(lr.includes(banned), false, `the desk must not collect ${banned}`);
+  }
+  const claimText = lr.slice(lr.indexOf("const ATTESTATION_FORMS"), lr.indexOf("export function LiveReadiness"));
+  assert.ok(claimText.includes("هیچ کلید یا رمزی در این سامانه ذخیره نشده است"));
+});
+
+await test("8E the desk offers no default, auto-approval or gate activation", () => {
+  const lr = stripComments(read("src/components/shadowArbitrage/LiveReadiness.tsx"));
+  // Only the three append-only actions the API already accepts.
+  const actions = [...lr.matchAll(/action: "([a-z_]+)"/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(actions)].sort(), ["attest", "review", "set_policy"]);
+  for (const banned of ["arm", "enable_live", "go_live", "activate", "placeOrder"]) {
+    assert.equal(lr.includes(`"${banned}"`), false, `the desk must not offer ${banned}`);
+  }
+  // No policy value is pre-filled anywhere in the component.
+  const policy = read("src/lib/shadowArbitrage/live/policy.ts");
+  assert.equal(/default\s*:/.test(policy), false, "no policy definition carries a default");
+  assert.ok(policy.includes("that is deliberate and load-bearing"));
+  // Safety is unchanged.
+  const capability = read("src/lib/shadowArbitrage/live/capability.ts");
+  assert.ok(capability.includes("export const LIVE_EXECUTION_IMPLEMENTED = false as const"));
+});
+
+await test("8E the decision-desk CSS is layout only and responsive", () => {
+  const css = read("app/globals.css");
+  const sec = css.slice(css.indexOf("Phase 8E admin decision desk"));
+  assert.equal(/backdrop-filter\s*:/.test(sec), false);
+  assert.equal(/box-shadow\s*:/.test(sec), false);
+  assert.equal(/background\s*:/.test(sec), false);
+  const tracks = [...sec.matchAll(/grid-template-columns\s*:\s*([^;]+);/g)].map((m) => m[1]);
+  for (const t of tracks) assert.ok(t.includes("minmax(0,"), `track must shrink: ${t}`);
+  assert.ok(sec.includes("@media (max-width: 900px)"), "it collapses to one column");
+  assert.ok(sec.includes("min-height: 36px"), "claim rows stay tappable");
+  const sizes = [...sec.matchAll(/font-size:\s*([\d.]+)px/g)].map((m) => Number(m[1]));
+  assert.equal(sizes.filter((n) => n < 12).length, 0);
+  const selectors = [...sec.matchAll(/^(\.[a-z][^{\n,]*)\s*[,{]/gm)].map((m) => m[1].trim());
+  for (const sel of selectors) assert.ok(/\.sa-/.test(sel), `selector escapes scope: ${sel}`);
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

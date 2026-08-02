@@ -19,12 +19,15 @@ import {
   ACCOUNT_STATE_FA,
   API_CAPABILITY_FA,
   DEBIT_MODE_FA,
+  EXECUTION_MODE_LABEL_FA,
   FEE_ASSET_FA,
+  FEE_MISS_FA,
   FEE_PROVENANCE_FA,
   SETTLEMENT_PROVENANCE_FA,
   buildVenueRows,
   summarizeVenues,
   type FeeConfirmationAudit,
+  type VenueFeeEvidence,
   type VenueReadiness,
   type VenueRow,
 } from "@/components/shadowArbitrage/sourcesModel";
@@ -41,6 +44,8 @@ type Props = {
   health: SourceHealthRow[];
   snapshots: NormalizedSourceSnapshot[];
   venues: VenueReadiness[];
+  /** Phase 8E-B — the applied fee per venue, as the server resolved it. */
+  feeEvidence: VenueFeeEvidence[];
   auditHistory: FeeConfirmationAudit[];
   feeReverifyDays: number | null;
   pollIntervalMs: number;
@@ -49,7 +54,7 @@ type Props = {
   onReload: () => void;
 };
 
-type SourcesView = "health" | "accounts";
+type SourcesView = "health" | "accounts" | "fees";
 
 const VIEWS: Array<{ id: SourcesView; labelFa: string; descriptionFa: string }> = [
   {
@@ -62,13 +67,37 @@ const VIEWS: Array<{ id: SourcesView; labelFa: string; descriptionFa: string }> 
     labelFa: "حساب‌ها و کارمزدها",
     descriptionFa: "آیا اصلاً می‌توان روی این صرافی معامله کرد و کارمزد آن معتبر است",
   },
+  {
+    id: "fees",
+    labelFa: "کارمزد اعمال‌شده",
+    descriptionFa: "کدام نرخ همین حالا اعمال می‌شود، بر چه پله و چه حالت اجرایی — و اگر نمی‌شود، دقیقاً چرا",
+  },
 ];
 
 /** Six cards a page keeps the grid one screen tall at every width. */
 const VENUES_PER_PAGE = 6;
 
 function parseView(value: string): SourcesView {
-  return value === "accounts" ? "accounts" : "health";
+  if (value === "accounts") return "accounts";
+  if (value === "fees") return "fees";
+  return "health";
+}
+
+/** Basis points as a Persian percentage; «—» when there is no rate at all. */
+function bpsFa(bps: number | null): React.ReactNode {
+  if (bps === null) return <span className="sa-unknown">—</span>;
+  return <Bidi>{formatPercentFa(bps / 100, 3)}</Bidi>;
+}
+
+/**
+ * A maker/taker pair. A missing rate is an em dash, never a zero — zero is a
+ * real fee that one of these venues actually charges, so printing it for
+ * "unknown" would make an unevidenced rate indistinguishable from a free one.
+ */
+function pairFa(maker: number | null, taker: number | null): React.ReactNode {
+  if (maker === null && taker === null) return <span className="sa-unknown">—</span>;
+  const part = (v: number | null) => (v === null ? "—" : toFaDigits(v));
+  return <Bidi>{`${part(maker)} / ${part(taker)}`}</Bidi>;
 }
 
 /**
@@ -87,6 +116,7 @@ export function SourcesPanel({
   health,
   snapshots,
   venues,
+  feeEvidence,
   auditHistory,
   feeReverifyDays,
   pollIntervalMs,
@@ -99,8 +129,8 @@ export function SourcesPanel({
   const requestedPage = readInt(read("spage", "1"), 1, 1, 999);
 
   const rows = useMemo(
-    () => buildVenueRows({ certifications, health, snapshots, venues, feeReverifyDays }),
-    [certifications, health, snapshots, venues, feeReverifyDays],
+    () => buildVenueRows({ certifications, health, snapshots, venues, feeEvidence, feeReverifyDays }),
+    [certifications, health, snapshots, venues, feeEvidence, feeReverifyDays],
   );
   const summary = useMemo(() => summarizeVenues(rows), [rows]);
   const page = useMemo(() => paginate(rows, requestedPage, VENUES_PER_PAGE), [rows, requestedPage]);
@@ -185,18 +215,20 @@ export function SourcesPanel({
           tone={summary.healthy >= 7 ? "good" : summary.healthy >= 4 ? "warn" : "danger"}
         />
         <Kpi
-          label="حساب‌های آماده"
+          label="احراز هویت تأییدشده"
           value={
-            <Bidi>{`${toFaDigits(summary.accountsReady)} / ${toFaDigits(summary.total)}`}</Bidi>
+            <Bidi>{`${toFaDigits(summary.kycConfirmed)} / ${toFaDigits(summary.total)}`}</Bidi>
           }
-          hint="حساب احرازشده و قابل استفاده"
-          tone={summary.accountsReady ? "good" : "muted"}
+          hint={`حساب قابل استفاده: ${toFaDigits(summary.accountsReady)} — احراز هویت به‌تنهایی مجوز اجرا نیست`}
+          tone={summary.kycConfirmed === summary.total ? "good" : "warn"}
         />
         <Kpi
-          label="کارمزد معتبر"
-          value={<Bidi>{`${toFaDigits(summary.feesCurrent)} / ${toFaDigits(summary.total)}`}</Bidi>}
-          hint={`نیازمند بازبینی: ${toFaDigits(summary.feesStale)} · نامشخص: ${toFaDigits(summary.feesUnknown)}`}
-          tone={summary.feesCurrent ? "good" : "warn"}
+          label="کارمزد اعمال‌شده"
+          value={
+            <Bidi>{`${toFaDigits(summary.feeEvidenceMatched)} / ${toFaDigits(summary.total)}`}</Bidi>
+          }
+          hint={`منطبق بر صرافی، حالت اجرا و پلهٔ جاری · مسدود: ${toFaDigits(summary.feeEvidenceBlocked)}`}
+          tone={summary.feeEvidenceMatched === summary.total ? "good" : "warn"}
         />
         <Kpi
           label="منابع دارای اختلال"
@@ -245,6 +277,8 @@ export function SourcesPanel({
           {page.rows.map((r) =>
             view === "health" ? (
               <HealthCard key={r.sourceId} row={r} pollIntervalMs={pollIntervalMs} />
+            ) : view === "fees" ? (
+              <FeeEvidenceCard key={r.sourceId} row={r} />
             ) : (
               <AccountCard
                 key={r.sourceId}
@@ -273,11 +307,18 @@ export function SourcesPanel({
             {rows[0]?.lastProbeAt ? formatTehran(rows[0].lastProbeAt) : "—"} (
             {formatAgoFa(rows[0]?.lastProbeAt ?? null)}).
           </div>
+        ) : view === "fees" ? (
+          <div className="panel-body sa-footnote">
+            نرخ اعمال‌شده تنها زمانی انتخاب می‌شود که شواهد هم‌زمان با «صرافی»، «حالت اجرا» و «پلهٔ
+            جاری حساب» بخواند و منقضی نشده باشد. در غیر این صورت هیچ نرخی اعمال نمی‌شود — نه از پلهٔ
+            دیگر، نه از حالت اجرای دیگر و نه از مقدار پیش‌فرض صرافی. تغییر پله، شواهد کارمزد را تا
+            تأیید مجدد بی‌اعتبار می‌کند. سابقهٔ شواهد افزودنی است و هیچ‌گاه بازنویسی یا حذف نمی‌شود.
+          </div>
         ) : (
           <div className="panel-body sa-footnote">
             کارمزد taker هر صرافی روی هر دو طرف همان صرافی اعمال می‌شود؛ آنچه بین دو طرف تفاوت دارد
-            دارایی تسویه و نحوهٔ کسر آن است. «آرزینجا» فقط مرجع است و هیچ‌گاه مبنای اجرا قرار
-            نمی‌گیرد.
+            دارایی تسویه و نحوهٔ کسر آن است. کارمزد خرید در تومان و کارمزد فروش در تتر، هر دو به بدهی
+            همان طرف افزوده می‌شوند.
             {feeReverifyDays ? ` بازبینی کارمزد هر ${toFaDigits(feeReverifyDays)} روز.` : ""} هیچ
             کلید API یا اطلاعات محرمانه‌ای در این صفحه دریافت یا ذخیره نمی‌شود.
           </div>
@@ -540,7 +581,21 @@ function AccountCard({
         />
         <div className="sa-venue-metrics">
           <Metric
-            label="کارمزد taker"
+            label="احراز هویت"
+            value={
+              row.kycComplete === null ? (
+                <span className="sa-unknown" title="شواهد احراز هویت ثبت نشده است">
+                  —
+                </span>
+              ) : (
+                <span className={`sa-chip sa-chip-sm sa-chip-${row.kycComplete ? "good" : "warn"}`}>
+                  {row.kycComplete ? "تکمیل‌شده" : "ناتمام"}
+                </span>
+              )
+            }
+          />
+          <Metric
+            label="کارمزد taker (اعمال‌شده)"
             value={
               row.takerFeeBps !== null ? (
                 <Bidi>{formatPercentFa(row.takerFeeBps / 100, 3)}</Bidi>
@@ -551,6 +606,18 @@ function AccountCard({
               )
             }
           />
+          <Metric label="تسویهٔ کارمزد خرید" value={<Settlement side={row.buySettlement} />} />
+          <Metric label="تسویهٔ کارمزد فروش" value={<Settlement side={row.sellSettlement} />} />
+        </div>
+        {row.executionEligible === false ? (
+          <div className="sa-venue-bar">
+            <span className="sa-chip sa-chip-sm sa-chip-warn">اجرا مجاز نیست</span>
+            <span className="sa-sub">
+              {row.ineligibleReason ?? "این صرافی مبنای اجرا قرار نمی‌گیرد."}
+            </span>
+          </div>
+        ) : null}
+        <VenueDetails>
           <Metric
             label="اعتبار کارمزد"
             value={
@@ -560,10 +627,6 @@ function AccountCard({
               </span>
             }
           />
-          <Metric label="تسویهٔ کارمزد خرید" value={<Settlement side={row.buySettlement} />} />
-          <Metric label="تسویهٔ کارمزد فروش" value={<Settlement side={row.sellSettlement} />} />
-        </div>
-        <VenueDetails>
           <Metric
             label="تاریخ تأیید"
             value={row.feeVerifiedAt ? formatTehran(row.feeVerifiedAt) : "—"}
@@ -573,6 +636,19 @@ function AccountCard({
             value={row.feeExpiresAt ? formatTehran(row.feeExpiresAt) : "—"}
           />
           <Metric label="پلهٔ کارمزد" value={row.feeTier ?? "—"} />
+          <Metric
+            label="کارمزد maker (فقط مرجع)"
+            value={
+              row.makerFeeBps !== null ? (
+                <span>
+                  <Bidi>{formatPercentFa(row.makerFeeBps / 100, 3)}</Bidi>
+                  <span className="sa-sub"> — تا نبودِ شبیه‌سازی سفارش maker اعمال نمی‌شود</span>
+                </span>
+              ) : (
+                "—"
+              )
+            }
+          />
           <Metric
             label="توان API"
             value={
@@ -605,6 +681,176 @@ function AccountCard({
               ثبت کارمزد
             </button>
           )}
+        </VenueDetails>
+      </div>
+    </article>
+  );
+}
+
+/**
+ * Phase 8E-B — the fee that actually applies to this venue right now.
+ *
+ * Everything shown is transported from the server's resolution: the tier it
+ * matched on, the execution mode, the rates, the provenance, the confirmation
+ * and expiry, and the exact miss when nothing matched. This component decides
+ * no match and computes no rate — if it did, the screen could disagree with the
+ * engine, which is the failure this whole phase exists to prevent.
+ */
+function FeeEvidenceCard({ row }: { row: VenueRow }) {
+  const f = row.feeEvidence;
+
+  if (!f) {
+    return (
+      <article className="panel sa-panel sa-venue-card">
+        <div className="panel-body">
+          <VenueHead
+            row={row}
+            chip={<span className="sa-chip sa-chip-sm sa-chip-muted">توصیف نشده</span>}
+          />
+          <div className="sa-venue-bar">
+            <span className="sa-sub">
+              نقطهٔ پایانی حساب‌ها برای این صرافی هیچ نتیجهٔ کارمزدی برنگرداند؛ مقداری حدس زده
+              نمی‌شود.
+            </span>
+          </div>
+        </div>
+      </article>
+    );
+  }
+
+  return (
+    <article className="panel sa-panel sa-venue-card">
+      <div className="panel-body">
+        <VenueHead
+          row={row}
+          chip={
+            <span className={`sa-chip sa-chip-sm sa-chip-${f.ok ? "good" : "warn"}`}>
+              {f.ok ? "منطبق" : (FEE_MISS_FA[f.miss ?? ""] ?? "مسدود")}
+            </span>
+          }
+        />
+        <div className="sa-venue-metrics">
+          <Metric
+            label="حالت اجرا"
+            value={
+              f.executionMode ? (
+                <span className={`sa-chip sa-chip-sm sa-chip-${f.executable ? "muted" : "warn"}`}>
+                  {f.executionModeFa}
+                </span>
+              ) : (
+                <span className="sa-unknown">—</span>
+              )
+            }
+          />
+          <Metric
+            label="پلکان اعمال‌شده"
+            value={
+              f.ok ? (
+                (f.evidenceTierLabel ?? <span className="sa-unknown">پلکان اعلام نشده</span>)
+              ) : (
+                <span className="sa-unknown">—</span>
+              )
+            }
+          />
+          <Metric label="کارمزد taker (اعمال‌شده)" value={bpsFa(f.takerFeeBps)} />
+          <Metric label="کارمزد maker (فقط مرجع)" value={bpsFa(f.makerFeeBps)} />
+        </div>
+
+        {f.noticesFa.map((n) => (
+          <div key={n} className="sa-venue-bar">
+            <span className="sa-chip sa-chip-sm sa-chip-muted">{n}</span>
+          </div>
+        ))}
+
+        {f.ok ? null : (
+          <div className="sa-venue-bar">
+            <span className="sa-chip sa-chip-sm sa-chip-warn">نرخی اعمال نمی‌شود</span>
+            <span className="sa-sub">{f.blockerFa ?? "دلیل ثبت نشده است."}</span>
+          </div>
+        )}
+
+        <VenueDetails>
+          <Metric label="منشأ شواهد" value={f.provenance ?? "—"} />
+          <Metric label="تأییدکننده" value={f.confirmedBy ?? "—"} />
+          <Metric
+            label="زمان تأیید"
+            value={f.confirmedAt ? formatTehran(f.confirmedAt) : "—"}
+          />
+          <Metric label="انقضا" value={f.expiresAt ? formatTehran(f.expiresAt) : "بدون انقضا"} />
+          <Metric
+            label="پلهٔ جاری حساب"
+            value={f.currentTierLabel ?? <span className="sa-unknown">پلکان اعلام نشده</span>}
+          />
+          <Metric
+            label="پلهٔ ثبت‌شده در شواهد"
+            value={f.evidenceTierLabel ?? <span className="sa-unknown">پلکان اعلام نشده</span>}
+          />
+          <Metric label="کلید شواهد" value={<Bidi>{f.evidenceKey ?? "—"}</Bidi>} />
+          <Metric label="یادداشت" value={f.note ?? "—"} />
+
+          <div className="sa-table-wrap">
+            <table className="sa-table">
+              <caption className="sa-footnote">حالت‌های غیراجرایی این صرافی</caption>
+              <thead>
+                <tr>
+                  <th scope="col">حالت</th>
+                  <th scope="col" className="num">
+                    maker / taker
+                  </th>
+                  <th scope="col">وضعیت</th>
+                </tr>
+              </thead>
+              <tbody>
+                {f.referenceModes.map((m) => (
+                  <tr key={m.mode}>
+                    <td>{m.modeFa}</td>
+                    <td className="num">{pairFa(m.makerFeeBps, m.takerFeeBps)}</td>
+                    <td className="sa-wrap-cell">{m.labelFa}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="sa-table-wrap">
+            <table className="sa-table">
+              <caption className="sa-footnote">
+                سابقهٔ شواهد کارمزد — افزودنی، {formatCountFa(f.history.length)} رکورد
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">حالت اجرا</th>
+                  <th scope="col">پله</th>
+                  <th scope="col" className="num">
+                    maker / taker
+                  </th>
+                  <th scope="col">تأیید</th>
+                  <th scope="col">انقضا</th>
+                  <th scope="col">کلید</th>
+                </tr>
+              </thead>
+              <tbody>
+                {f.history.length ? (
+                  f.history.map((h) => (
+                    <tr key={h.id}>
+                      <td>{EXECUTION_MODE_LABEL_FA[h.executionMode] ?? h.executionMode}</td>
+                      <td>{h.tierLabel ?? "پلکان اعلام نشده"}</td>
+                      <td className="num">{pairFa(h.makerFeeBps, h.takerFeeBps)}</td>
+                      <td>{formatTehran(h.confirmedAt)}</td>
+                      <td>{h.expiresAt ? formatTehran(h.expiresAt) : "—"}</td>
+                      <td className="sa-wrap-cell">
+                        <Bidi>{h.evidenceKey}</Bidi>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={6}>هنوز شواهدی برای این صرافی ثبت نشده است.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </VenueDetails>
       </div>
     </article>

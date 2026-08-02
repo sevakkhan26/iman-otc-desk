@@ -24,11 +24,13 @@ import {
   SHADOW_COST_RECORDS,
   clampPollInterval,
   SHADOW_POLL_MIN_MS,
-  SHADOW_POLL_MAX_MS
+  SHADOW_POLL_MAX_MS,
+  getSourceConfig
 } from "../src/lib/shadowArbitrage/config.ts";
 import {
   certifyFromSnapshot,
   CERTIFICATION_BASE,
+  isCertifiedExecutable,
   resetCertifications,
   getCertification
 } from "../src/lib/shadowArbitrage/certification.ts";
@@ -193,6 +195,14 @@ function mockSource(
       buyFilledUsdt: sizeUsdt,
       sellFilledUsdt: sizeUsdt
     })),
+    /*
+     * Phase 8C-4 — a flat 100 USDT at the quoted price on each side, so these
+     * fixtures keep their existing VWAPs while giving the depth-aware sizer a
+     * real book to walk. One level means VWAP does not move with size, which is
+     * exactly what the Phase 6 selection tests assume.
+     */
+    bookBids: opts?.bookBids !== undefined ? opts.bookBids : [{ priceToman: sell, amountUsdt: 100 }],
+    bookAsks: opts?.bookAsks !== undefined ? opts.bookAsks : [{ priceToman: buy, amountUsdt: 100 }],
     depthUsdtBid: 100,
     depthUsdtAsk: 100,
     maxExecutableUsdt: 100,
@@ -545,15 +555,156 @@ await test("certification: unreachable source is UNSUPPORTED until it ever worke
   assert.equal(afterOutage.status, "LIVE_DEGRADED");
 });
 
-await test("Arzinja and Tetherland are capped below LIVE_VERIFIED", () => {
+await test("Arzinja and Tetherland certify to LIVE_VERIFIED once their checks pass", () => {
   resetCertifications();
-  assert.equal(CERTIFICATION_BASE.arzinja.maxStatus, "REFERENCE_ONLY");
-  assert.equal(CERTIFICATION_BASE.tetherland.maxStatus, "LIVE_DEGRADED");
+  // Both ceilings were lifted only after the reasons behind them were settled:
+  // a documented public endpoint for Arzinja, a per-cycle direction proof for
+  // Tetherland. The ceiling no longer caps a clean response.
+  assert.equal(CERTIFICATION_BASE.arzinja.maxStatus, "LIVE_VERIFIED");
+  assert.equal(CERTIFICATION_BASE.tetherland.maxStatus, "LIVE_VERIFIED");
   const arz = certifyFromSnapshot(mockSource("arzinja", "a", 194_750, 193_000));
-  assert.equal(arz.status, "REFERENCE_ONLY");
+  assert.equal(arz.status, "LIVE_VERIFIED");
   const tl = certifyFromSnapshot(mockSource("tetherland", "t", 193_290, 190_010));
-  assert.equal(tl.status, "LIVE_DEGRADED");
-  assert.equal(getCertification("arzinja").status, "REFERENCE_ONLY");
+  assert.equal(tl.status, "LIVE_VERIFIED");
+  // The shared registry still starts un-probed: a raised ceiling grants nothing
+  // until an actual cycle certifies the venue.
+  assert.equal(getCertification("arzinja").status, "PENDING_PROBE");
+
+  // But an unproved direction still degrades them — the cap moved, the gate did not.
+  const unproved = mockSource("arzinja", "a", 194_750, 193_000);
+  unproved.meta.directionVerified = false;
+  unproved.sourceBlockedReasons = ["quote_direction_unverified"];
+  assert.notEqual(certifyFromSnapshot(unproved).status, "LIVE_VERIFIED");
+});
+
+await test("Arzinja is certified as an order book, so the depth gate applies to it", () => {
+  resetCertifications();
+  /*
+   * The base entry used to read REFERENCE. That did not make certification
+   * stricter — it made it INCOMPLETE: the executable-depth gate is keyed on the
+   * model, so a cycle returning only a header price would still have been
+   * called LIVE_VERIFIED. Naming the model correctly subjects Arzinja to the
+   * same proof as the other seven books.
+   */
+  assert.equal(CERTIFICATION_BASE.arzinja.marketModel, "ORDER_BOOK");
+  assert.equal(
+    CERTIFICATION_BASE.arzinja.marketModel,
+    getSourceConfig("arzinja").marketModel,
+    "certification and config describe the same market"
+  );
+
+  const noDepth = mockSource("arzinja", "a", 194_750, 193_000);
+  noDepth.meta.depthAvailable = false;
+  const degraded = certifyFromSnapshot(noDepth);
+  assert.equal(degraded.status, "LIVE_DEGRADED", "no depth, no verification");
+  assert.ok(degraded.statusReason);
+  assert.equal(degraded.verifiedAt, null);
+
+  // With real depth on both sides it passes on its own evidence, not by name.
+  const full = certifyFromSnapshot(mockSource("arzinja", "a", 194_750, 193_000));
+  assert.equal(full.status, "LIVE_VERIFIED");
+});
+
+await test("no venue is promoted to executable by name — every gate still bites", () => {
+  resetCertifications();
+  /*
+   * Each failure is applied to Arzinja specifically, because it is the venue a
+   * name-based exception would most plausibly have been written for.
+   */
+  const cases: Array<[string, (s: NormalizedSourceSnapshot) => void]> = [
+    ["direction unproved", (s) => { s.meta.directionVerified = false; }],
+    ["price unit ambiguous", (s) => { s.meta.priceUnit = "ambiguous"; }],
+    ["no executable depth", (s) => { s.meta.depthAvailable = false; }],
+    ["rate limited", (s) => { s.meta.rateLimited = true; }],
+    ["stale beyond budget", (s) => { s.stale = true; }],
+    ["source unreachable", (s) => { s.health = "unavailable"; s.errorReason = "HTTP 500"; }]
+  ];
+  for (const [label, break_] of cases) {
+    resetCertifications();
+    const s = mockSource("arzinja", "a", 194_750, 193_000);
+    break_(s);
+    const cert = certifyFromSnapshot(s);
+    assert.notEqual(cert.status, "LIVE_VERIFIED", `${label} must not certify`);
+    assert.equal(isCertifiedExecutable(cert.status), false, `${label} is not executable`);
+  }
+
+  // And a venue whose config still declares REFERENCE_ONLY stays out entirely,
+  // regardless of how clean its response is.
+  const referenceOnly = mockSource("arzinja", "a", 194_750, 193_000, {
+    eligibilityBase: "REFERENCE_ONLY"
+  });
+  const built = buildOpportunitiesDetailed([
+    referenceOnly,
+    mockSource("nobitex", "n", 190_000, 189_000)
+  ], [], new Date().toISOString());
+  for (const o of built.drafts.filter((d) => d.buySourceId === "arzinja" || d.sellSourceId === "arzinja")) {
+    assert.notEqual(o.eligibility, "EXECUTABLE_NOW");
+    assert.ok(o.blockedReasons.includes("reference_only"));
+  }
+});
+
+await test("persisted account evidence outranks the compiled-in account status", () => {
+  /*
+   * Bitpin, AbanTether, Ramzinex and Bit24 still carry `accountStatus:
+   * "unverified"` in config while the admin's own KYC evidence says otherwise.
+   * While config decided this, every route touching them was blocked as
+   * `account_required` — the evidence was recorded, displayed, and ignored.
+   */
+  const stale = ["bitpin", "abantether", "ramzinex", "bit24"] as const;
+  for (const id of stale) {
+    assert.equal(
+      getSourceConfig(id).accountStatus,
+      "unverified",
+      `${id} still carries the legacy default, so this test is still meaningful`
+    );
+  }
+
+  const sources = [
+    mockSource("nobitex", "n", 190_000, 189_500),
+    mockSource("bitpin", "b", 189_000, 191_000, { accountStatus: "unverified" })
+  ];
+  const now = new Date().toISOString();
+
+  // Without evidence the legacy default still applies — absence never approves.
+  const legacy = buildOpportunitiesDetailed(sources, [], now);
+  const legacyRoutes = legacy.drafts.filter((d) => d.sellSourceId === "bitpin");
+  assert.ok(legacyRoutes.length, "the route exists");
+  assert.ok(
+    legacyRoutes.every((o) => o.blockedReasons.includes("account_required")),
+    "an unconfirmed venue keeps the conservative default"
+  );
+
+  // With evidence, the confirmation decides — and nothing else changes.
+  const confirmed = buildOpportunitiesDetailed(sources, [], now, {
+    accountEvidence: {
+      nobitex: { executionEligible: true, kycComplete: true },
+      bitpin: { executionEligible: true, kycComplete: true }
+    }
+  });
+  const confirmedRoutes = confirmed.drafts.filter((d) => d.sellSourceId === "bitpin");
+  assert.ok(
+    confirmedRoutes.every((o) => !o.blockedReasons.includes("account_required")),
+    "confirmed evidence clears the account block"
+  );
+  assert.ok(
+    confirmedRoutes.every((o) => o.eligibility !== "ACCOUNT_REQUIRED"),
+    "and the route is no longer labelled account-required"
+  );
+
+  // Evidence that BARS a venue is obeyed just as strictly, even where config
+  // would have allowed it. The rule is "evidence decides", not "evidence opens".
+  const barred = buildOpportunitiesDetailed(sources, [], now, {
+    accountEvidence: {
+      nobitex: { executionEligible: false, kycComplete: true },
+      bitpin: { executionEligible: true, kycComplete: true }
+    }
+  });
+  assert.ok(
+    barred.drafts
+      .filter((d) => d.buySourceId === "nobitex" || d.sellSourceId === "nobitex")
+      .every((o) => o.blockedReasons.includes("account_required")),
+    "a barred venue is blocked even though config calls it verified"
+  );
 });
 
 /* ── economics ────────────────────────────────────────────────────────────── */
@@ -1042,11 +1193,11 @@ await test("14-day storage estimate stays in the designed budget", () => {
 await test("account gating: only verified accounts with known fees are usable", () => {
   const all = buildAllReadiness([]);
   assert.equal(all.length, 9);
+  // All nine venues now hold verified accounts, Arzinja and Tetherland included.
   const verified = all.filter((v) => v.accountState === "VERIFIED").map((v) => v.sourceId).sort();
-  assert.deepEqual(verified, ["nobitex", "tabdeal", "wallex"]);
-  const needs = all.filter((v) => v.accountState === "NEEDS_ACCOUNT").map((v) => v.sourceId).sort();
-  assert.deepEqual(needs, ["abantether", "bit24", "bitpin", "ramzinex", "tetherland"]);
-  assert.equal(all.find((v) => v.sourceId === "arzinja")!.accountState, "REFERENCE_ONLY");
+  assert.equal(verified.length, 9, `expected nine verified accounts, got ${verified.join(",")}`);
+  assert.equal(all.filter((v) => v.accountState === "NEEDS_ACCOUNT").length, 0);
+  assert.equal(all.filter((v) => v.accountState === "REFERENCE_ONLY").length, 0);
 
   // Reference-only and account-less venues can never back net profit.
   for (const v of all) {
@@ -1211,12 +1362,18 @@ const simulateCap = (plan: CapitalPlanInput, over: Partial<Parameters<typeof sim
     ...over
   });
 
-await test("Phase 5 executable set is exactly the three verified venues", () => {
+await test("Phase 5 executable set follows the fee evidence, not a venue allow-list", () => {
   const states = classifyAllVenues(capReadiness());
+  /*
+   * Every venue now holds a verified account, so what limits the executable set
+   * is fee evidence alone: only the three venues carrying a configured fee
+   * qualify in this fixture, and the rest are disabled for an unknown fee rather
+   * than for being reference-only.
+   */
   const executable = states.filter((s) => s.executable).map((s) => s.sourceId).sort();
   assert.deepEqual(executable, ["nobitex", "tabdeal", "wallex"]);
-  assert.equal(states.find((s) => s.sourceId === "arzinja")!.capitalClass, "REFERENCE_ONLY");
-  for (const id of ["bitpin", "abantether", "ramzinex", "tetherland", "bit24"]) {
+  assert.equal(states.filter((s) => s.capitalClass === "REFERENCE_ONLY").length, 0);
+  for (const id of ["bitpin", "abantether", "ramzinex", "tetherland", "bit24", "arzinja"]) {
     const s = states.find((x) => x.sourceId === id)!;
     assert.equal(s.capitalClass, "WHATIF_DISABLED");
     assert.ok(s.blockingReason, `${id} must state why it is disabled`);
@@ -1768,6 +1925,43 @@ function paperBalances(over: Partial<Record<string, [number, number]>> = {}): Ve
   }));
 }
 
+/**
+ * Phase 8C-3 — the risk context `evaluateCycle` now requires.
+ *
+ * Every policy value below is the TEST'S choice. Production code contains no
+ * default for any of them, which `test-shadow-sizing.mts` proves separately;
+ * these values are deliberately permissive so the Phase 6 selection tests keep
+ * exercising ranking and balance contention rather than the risk caps.
+ */
+function paperSizing() {
+  const values = {
+    max_order_size_usdt: 1_000,
+    max_venue_exposure_percent: 100,
+    min_risk_adjusted_edge_percent: 0,
+    max_quote_age_ms: 90_000,
+    max_slippage_bps: 100
+  };
+  return {
+    policies: buildPolicyState(
+      Object.entries(values).map(([key, value]) => ({
+        key: key as never,
+        value,
+        provenance: "ADMIN_APPROVED" as const,
+        setBy: "test",
+        setAt: new Date(CAP_NOW).toISOString(),
+        validForDays: null,
+        note: null
+      })),
+      CAP_NOW
+    ),
+    allocationTomanBySource: new Map<string, number>(),
+    portfolioValueToman: null,
+    exposureTomanBySource: new Map<string, number>(),
+    slippageBufferBps: 5,
+    probeSizesUsdt: [5, 10, 20, 25] as const
+  };
+}
+
 function paperOpportunity(over: Partial<ShadowOpportunity> = {}): ShadowOpportunity {
   const now = new Date(CAP_NOW).toISOString();
   const size = (over.sizeUsdt ?? 25) as 5 | 10 | 20 | 25;
@@ -1986,16 +2180,20 @@ await test("Phase 6 stores settlement per venue and per side, never as one fee c
   assert.equal(buy.provenance, "ADMIN_CONFIRMED");
   assert.equal(sell.provenance, "ADMIN_CONFIRMED");
 
-  for (const id of ["nobitex", "wallex", "tabdeal"] as const) {
-    assert.equal(settlementUsable(settlementFor(id, "buy")), true);
-    assert.equal(settlementUsable(settlementFor(id, "sell")), true);
+  /*
+   * The confirmed rule now covers every venue the desk holds an account on —
+   * all nine — but it is still stored per venue AND per side, never collapsed
+   * into a single fee currency.
+   */
+  for (const id of Object.keys(PAPER_FEE_SETTLEMENT) as Array<keyof typeof PAPER_FEE_SETTLEMENT>) {
+    assert.equal(settlementUsable(settlementFor(id, "buy")), true, `${id} buy`);
+    assert.equal(settlementUsable(settlementFor(id, "sell")), true, `${id} sell`);
+    assert.equal(settlementFor(id, "buy").feeAsset, "IRT", `${id} buy asset`);
+    assert.equal(settlementFor(id, "sell").feeAsset, "USDT", `${id} sell asset`);
   }
-  // Unknown venues remain blocked on both sides.
-  for (const id of ["bitpin", "abantether", "ramzinex", "tetherland", "bit24", "arzinja"] as const) {
-    assert.equal(PAPER_FEE_SETTLEMENT[id].buy.provenance, "UNKNOWN");
-    assert.equal(settlementUsable(settlementFor(id, "buy")), false);
-    assert.equal(settlementUsable(settlementFor(id, "sell")), false);
-  }
+  // A venue nobody confirmed is still blocked on both sides.
+  assert.equal(settlementUsable(settlementFor("unlisted-venue" as never, "buy")), false);
+  assert.equal(settlementUsable(settlementFor("unlisted-venue" as never, "sell")), false);
 
   // A fee can only be added to the debit in the asset that side actually pays.
   assert.equal(settlementCoherent(BUY_SETTLEMENT, "buy"), true);
@@ -2258,7 +2456,7 @@ await test("Phase 6 applies the best-ranked candidate first when balances are sc
   });
 
   const run = (opportunities: ShadowOpportunity[]) =>
-    evaluateCycle({
+    evaluateCycle({ sizing: paperSizing(),
       opportunities,
       sources: paperSources(),
       venueStates: paperReadiness(),
@@ -2285,7 +2483,7 @@ await test("Phase 6 applies the best-ranked candidate first when balances are sc
 
 await test("Phase 6 executes a lifecycle at most once, however long it stays open", () => {
   const o = paperOpportunity();
-  const first = evaluateCycle({
+  const first = evaluateCycle({ sizing: paperSizing(),
     opportunities: [o],
     sources: paperSources(),
     venueStates: paperReadiness(),
@@ -2295,7 +2493,7 @@ await test("Phase 6 executes a lifecycle at most once, however long it stays ope
   assert.equal(first.executedCount, 1);
 
   // The same unchanged opportunity in the next cycle must not refill.
-  const second = evaluateCycle({
+  const second = evaluateCycle({ sizing: paperSizing(),
     opportunities: [o],
     sources: paperSources(),
     venueStates: paperReadiness(),
@@ -2314,7 +2512,7 @@ await test("Phase 6 skips stale data, thin depth and ineligible venues with a re
   const states = paperReadiness();
   const book = paperBalances();
 
-  const staleCycle = evaluateCycle({
+  const staleCycle = evaluateCycle({ sizing: paperSizing(),
     opportunities: [paperOpportunity()],
     sources: paperSources({ wallex: { stale: true } }),
     venueStates: states,
@@ -2340,7 +2538,7 @@ await test("Phase 6 skips stale data, thin depth and ineligible venues with a re
         }
       : src
   );
-  const thin = evaluateCycle({
+  const thin = evaluateCycle({ sizing: paperSizing(),
     opportunities: [paperOpportunity()],
     sources: thinSources,
     venueStates: states,
@@ -2351,7 +2549,7 @@ await test("Phase 6 skips stale data, thin depth and ineligible venues with a re
   assert.ok(thin.decisions.some((d) => d.kind === "SKIP" && d.code === "insufficient_depth"));
 
   // A venue with no usable account can never be traded, even with a live book.
-  const ineligible = evaluateCycle({
+  const ineligible = evaluateCycle({ sizing: paperSizing(),
     opportunities: [paperOpportunity({ sellSourceId: "bitpin", routeKey: "nobitex->bitpin@25" })],
     sources: [...paperSources(), mockSource("bitpin", "بیت‌پین", 103_000, 102_000)],
     venueStates: states,
@@ -2364,7 +2562,7 @@ await test("Phase 6 skips stale data, thin depth and ineligible venues with a re
   assert.ok(ineligible.decisions.some((d) => d.kind === "SKIP" && d.code === "fee_unknown"));
 
   // A blocked opportunity is never executed regardless of the book.
-  const blockedOpp = evaluateCycle({
+  const blockedOpp = evaluateCycle({ sizing: paperSizing(),
     opportunities: [paperOpportunity({ blockedReasons: ["fee_unknown"] as BlockedReasonCode[] })],
     sources: paperSources(),
     venueStates: states,
@@ -2376,24 +2574,40 @@ await test("Phase 6 skips stale data, thin depth and ineligible venues with a re
   assert.ok(blockedOpp.decisions.some((d) => d.kind === "SKIP" && d.code === "fee_unknown"));
 });
 
-await test("Phase 6 blocks on thin inventory and reports the required rebalance", () => {
+await test("Phase 6 blocks on thin inventory, now at sizing rather than at the fill", () => {
+  /*
+   * Phase 8C-3 moved this check earlier. The engine used to propose a fixed
+   * 25 USDT fill and let the broker reject it for insufficient USDT; the sizer
+   * now caps the size at what the sell venue can actually deliver — 1 USDT
+   * cannot cover 1 USDT plus a 35bps fee — so the trade is never proposed. The
+   * guarantee under test is unchanged and stronger: nothing executes, the book
+   * is untouched, and the exact limiting constraint is named.
+   */
+  const thin = paperBalances({ wallex: [20_000_000, 1] });
   const result = evaluateCycle({
+    sizing: paperSizing(),
     opportunities: [paperOpportunity()],
     sources: paperSources(),
     venueStates: paperReadiness(),
     executedLifecycleIds: new Set(),
-    balances: paperBalances({ wallex: [20_000_000, 1] })
+    balances: thin
   });
   assert.equal(result.executedCount, 0);
   const skip = result.decisions.find((d) => d.kind === "SKIP");
   assert.ok(skip && skip.kind === "SKIP");
-  if (skip && skip.kind === "SKIP") {
-    assert.equal(skip.code, "insufficient_usdt");
-    assert.equal(skip.requiredRebalance?.sourceId, "wallex");
-    assert.ok((skip.requiredRebalance?.usdtMicrosShort ?? 0) > 0);
-  }
+  if (skip && skip.kind === "SKIP") assert.equal(skip.code, "sizing_blocked");
+
+  // The sizing evidence says exactly which venue and which cap stopped it.
+  const route = result.sizing.find((s) => s.routeKey === "nobitex->wallex");
+  assert.ok(route, "the route's sizing is reported even though it did not trade");
+  assert.equal(route?.result.status, "BLOCKED");
+  assert.equal(route?.result.sizeUsdtMicros, null);
+  assert.equal(route?.result.blockers[0]?.code, "size_floor");
+  const sellCap = route?.result.constraints.find((c) => c.key === "sell_usdt_balance");
+  assert.ok((sellCap?.capUsdtMicros ?? 0) < 1_000_000, "the fee-inclusive cap is below one USDT");
+
   // Rebalancing stays simulated: the engine never moves inventory itself.
-  assert.deepEqual(result.balancesAfter, paperBalances({ wallex: [20_000_000, 1] }));
+  assert.deepEqual(result.balancesAfter, thin);
 });
 
 await test("Phase 6 opening book comes from the plan with integer micros", () => {
@@ -2469,7 +2683,7 @@ await test("Phase 6 modules are structurally incapable of trading", () => {
 });
 
 await test("Phase 6 never runs on a venue outside the nine Shadow sources", () => {
-  const result = evaluateCycle({
+  const result = evaluateCycle({ sizing: paperSizing(),
     opportunities: [
       paperOpportunity({
         buySourceId: "ompfinex" as ShadowSourceId,
@@ -2551,7 +2765,7 @@ await test("v4.9.1 multi-cause candidates get a deterministic primary reason", (
 });
 
 await test("v4.9.1 the engine reports the exact upstream cause on every skip", () => {
-  const blocked = evaluateCycle({
+  const blocked = evaluateCycle({ sizing: paperSizing(),
     opportunities: [
       paperOpportunity({
         id: "lc-blocked",
@@ -2574,12 +2788,22 @@ await test("v4.9.1 the engine reports the exact upstream cause on every skip", (
   }
 
   // A venue that is unusable says WHY, not merely that it is unusable.
-  const refOnly = evaluateCycle({
+  /*
+   * Arzinja is a certified venue now, so this exercises the vocabulary with an
+   * explicitly reference-only state instead: the code path must still name the
+   * cause exactly when a venue really is reference-only.
+   */
+  const referenceStates = paperReadiness().map((s) =>
+    s.sourceId === "arzinja"
+      ? { ...s, executable: false, capitalClass: "REFERENCE_ONLY" as const, blockingReason: "منبع فقط مرجع است" }
+      : s
+  );
+  const refOnly = evaluateCycle({ sizing: paperSizing(),
     opportunities: [
       paperOpportunity({ id: "lc-ref", sellSourceId: "arzinja", routeKey: "nobitex->arzinja@25" })
     ],
     sources: [...paperSources(), mockSource("arzinja", "ارزینجا", 103_000, 102_000)],
-    venueStates: paperReadiness(),
+    venueStates: referenceStates,
     executedLifecycleIds: new Set(),
     balances: [...paperBalances(), { sourceId: "arzinja" as ShadowSourceId, irtToman: 0, usdtMicros: 0 }]
   });
@@ -2589,7 +2813,7 @@ await test("v4.9.1 the engine reports the exact upstream cause on every skip", (
   );
 
   // Already-processed uses its own precise code.
-  const done = evaluateCycle({
+  const done = evaluateCycle({ sizing: paperSizing(),
     opportunities: [paperOpportunity({ id: "lc-done" })],
     sources: paperSources(),
     venueStates: paperReadiness(),
@@ -3139,11 +3363,12 @@ await test("7A the paper surface is the only executable implementation", async (
   });
   assert.equal(again.duplicateOfPriorRequest, true, "the paper surface is idempotent too");
 
-  // A venue with unconfirmed settlement is refused rather than simulated.
+  // A venue with unconfirmed settlement is refused rather than simulated. Every
+  // configured venue is confirmed now, so this uses one that is not.
   const refused = await paper.simulateLeg({
     clientOrderId: clientOrderId("plan-p", "SELL", 1),
     side: "SELL",
-    sourceId: "bitpin",
+    sourceId: "unlisted-venue" as never,
     sizeUsdt: 25,
     limitPriceToman: 100_000
   });

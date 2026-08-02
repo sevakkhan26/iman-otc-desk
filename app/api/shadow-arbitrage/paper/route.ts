@@ -45,7 +45,7 @@ import {
   computeAllRouteSizes,
   SIZING_REQUIRED_POLICIES
 } from "@/lib/shadowArbitrage/paper/sizing";
-import { venueCapacity } from "@/lib/shadowArbitrage/paper/liquidity";
+import { venueCapacity, type QuoteCapacityInput } from "@/lib/shadowArbitrage/paper/liquidity";
 import {
   applyProposal,
   fingerprint,
@@ -427,6 +427,10 @@ export async function GET(request: Request) {
    * publishes no ladder and a book venue that missed a cycle are different
    * facts with different operator actions.
    */
+  const maxQuoteAgePolicy = policies.find((p) => p.definition.key === "max_quote_age_ms");
+  const maxQuoteAgeMsPolicy = maxQuoteAgePolicy?.configured
+    ? ((maxQuoteAgePolicy.value as number) ?? null)
+    : null;
   const policyOrderSizeUsdt = policies.find((p) => p.definition.key === "max_order_size_usdt");
   const policyOrderSizeMicros = policyOrderSizeUsdt?.configured
     ? usdtToMicros(policyOrderSizeUsdt.value as number)
@@ -460,17 +464,31 @@ export async function GET(request: Request) {
                 maxExecutableUsdt: snapshot.maxExecutableUsdt,
                 ageMs: snapshot.ageMs,
                 stale: snapshot.stale,
-                maxQuoteAgeMs: policies.find((p) => p.definition.key === "max_quote_age_ms")
-                  ?.configured
-                  ? ((policies.find((p) => p.definition.key === "max_quote_age_ms")
-                      ?.value as number) ?? null)
-                  : null
+                maxQuoteAgeMs: maxQuoteAgeMsPolicy
               }
             : undefined
       }),
       nameFa: v.nameFa
     };
   });
+
+  const latestProposalRows =
+    ((await listProposals(1))[0]?.rows as Array<{ sourceId: string; role: string }> | undefined) ?? [];
+
+  /** Dealer quotes, built once and shared by capacity and route sizing. */
+  const quoteBySource = new Map<string, QuoteCapacityInput>();
+  for (const v of wizard.eligibleVenues) {
+    const sn = snapshotById.get(v.sourceId);
+    if (sn?.marketModel !== "OTC_QUOTE") continue;
+    quoteBySource.set(v.sourceId, {
+      userBuyPriceToman: sn.userBuyPriceToman,
+      userSellPriceToman: sn.userSellPriceToman,
+      maxExecutableUsdt: sn.maxExecutableUsdt,
+      ageMs: sn.ageMs,
+      stale: sn.stale,
+      maxQuoteAgeMs: maxQuoteAgeMsPolicy
+    });
+  }
 
   const sizingRoutes = computeAllRouteSizes({
     venueIds: wizard.eligibleVenues.map((v) => v.sourceId),
@@ -482,7 +500,8 @@ export async function GET(request: Request) {
     portfolioValueToman,
     exposureTomanBySource,
     policies,
-    slippageBufferBps: SLIPPAGE_BUFFER_BPS
+    slippageBufferBps: SLIPPAGE_BUFFER_BPS,
+    quoteBySource
   });
 
   /*
@@ -494,27 +513,73 @@ export async function GET(request: Request) {
    * and route-usable says whether it can actually take a trade this cycle. A
    * venue can be first without being last.
    */
-  const venueSemantics = {
-    kycConfirmed: wizardReadiness.filter((r) => r.kycComplete).length,
-    accountEligible: wizardReadiness.filter((r) => r.executionEligible).length,
-    total: wizardReadiness.length,
-    capacityMeasurable: venueCapacities.filter(
-      (v) => v.buy.capacityUsdtMicros !== null || v.sell.capacityUsdtMicros !== null
-    ).length,
-    routeUsable: wizard.eligibleVenues.filter((v) =>
-      sizingRoutes.some(
-        (r) =>
-          (r.buySourceId === v.sourceId || r.sellSourceId === v.sourceId) &&
-          r.sizing.candidates.length > 0
-      )
-    ).length,
-    quoteOnly: venueCapacities
-      .filter((v) => v.marketModel === "OTC_QUOTE")
-      .map((v) => ({ sourceId: v.sourceId, buyReason: v.buy.reason, sellReason: v.sell.reason })),
-    unverified: venueCapacities
-      .filter((v) => v.buy.capacityUsdtMicros === null && v.sell.capacityUsdtMicros === null)
-      .map((v) => ({ sourceId: v.sourceId, reason: v.buy.reason, reasonFa: v.buy.reasonFa }))
-  };
+  const venueSemantics = (() => {
+    /*
+     * Usability is PER LEG. Arbitrage needs one venue to buy on and another to
+     * sell on; a venue that can only buy is still a full participant. Requiring
+     * both directions of the same venue was the mistake that excluded a dealer
+     * whose buy leg was perfectly usable.
+     *
+     * Usability is also NOT profitability: a leg is usable when the cycle can
+     * size it, whether or not the resulting trade happens to be worth taking.
+     */
+    const buyUsable = new Set<string>();
+    const sellUsable = new Set<string>();
+    for (const r of sizingRoutes) {
+      if (!r.sizing.candidates.length) continue;
+      buyUsable.add(r.buySourceId);
+      sellUsable.add(r.sellSourceId);
+    }
+
+    const matrix = wizardReadiness.map((r) => {
+      const cap = venueCapacities.find((v) => v.sourceId === r.sourceId);
+      const role =
+        latestProposalRows.find((x) => x.sourceId === r.sourceId)?.role ?? null;
+      const buyOk = buyUsable.has(r.sourceId);
+      const sellOk = sellUsable.has(r.sourceId);
+      return {
+        sourceId: r.sourceId,
+        nameFa: r.nameFa,
+        dataType: cap?.marketModel === "OTC_QUOTE" ? "EXECUTABLE_QUOTE" : "ORDER_BOOK",
+        kycComplete: r.kycComplete,
+        accountEligible: r.executionEligible,
+        feeConfirmed: r.takerFeeBps !== null,
+        buyCapacityUsdtMicros: cap?.buy.capacityUsdtMicros ?? null,
+        sellCapacityUsdtMicros: cap?.sell.capacityUsdtMicros ?? null,
+        buyLimiter: cap?.buy.limitingCap ?? null,
+        sellLimiter: cap?.sell.limitingCap ?? null,
+        buyReason: cap?.buy.reason ?? "no_balance_record",
+        sellReason: cap?.sell.reason ?? "no_balance_record",
+        buyLegUsable: buyOk,
+        sellLegUsable: sellOk,
+        // One valid leg is enough to participate in arbitrage.
+        participates: buyOk || sellOk,
+        allocationRole: role,
+        blockerFa:
+          buyOk || sellOk
+            ? null
+            : (cap?.buy.reasonFa ?? "هیچ مسیری با این صرافی در این چرخه قابل اندازه‌گیری نبود")
+      };
+    });
+
+    return {
+      total: wizardReadiness.length,
+      kycConfirmed: wizardReadiness.filter((r) => r.kycComplete).length,
+      accountEligible: wizardReadiness.filter((r) => r.executionEligible).length,
+      buyCapacityMeasurable: matrix.filter((m) => m.buyCapacityUsdtMicros !== null).length,
+      sellCapacityMeasurable: matrix.filter((m) => m.sellCapacityUsdtMicros !== null).length,
+      buyLegUsable: matrix.filter((m) => m.buyLegUsable).length,
+      sellLegUsable: matrix.filter((m) => m.sellLegUsable).length,
+      participating: matrix.filter((m) => m.participates).length,
+      quoteOnly: matrix
+        .filter((m) => m.dataType === "EXECUTABLE_QUOTE")
+        .map((m) => ({ sourceId: m.sourceId, buyReason: m.buyReason, sellReason: m.sellReason })),
+      unverified: matrix
+        .filter((m) => m.buyCapacityUsdtMicros === null && m.sellCapacityUsdtMicros === null)
+        .map((m) => ({ sourceId: m.sourceId, reason: m.buyReason, reasonFa: m.blockerFa ?? "" })),
+      matrix
+    };
+  })();
 
   const sizing = {
     requiredPolicies: SIZING_REQUIRED_POLICIES,

@@ -46,12 +46,13 @@ import {
 import { policyValueOrNull, type RiskPolicyKey, type RiskPolicyState } from "@/lib/shadowArbitrage/live/policy";
 import {
   candidateQuantities,
+  executableLadder,
   orderedLevels,
   totalDepthMicros,
-  validateBook,
   walkBook,
   type BookSide,
-  type BookWalk
+  type BookWalk,
+  type QuoteCapacityInput
 } from "@/lib/shadowArbitrage/paper/liquidity";
 import type { BookLevel, NormalizedSourceSnapshot } from "@/lib/shadowArbitrage/types";
 
@@ -247,6 +248,9 @@ export type SizingInput = {
    * book cannot show — the delay between observing it and acting on it.
    */
   slippageBufferBps: number;
+  /** Present only when the corresponding venue is an OTC dealer. */
+  buyQuote?: QuoteCapacityInput;
+  sellQuote?: QuoteCapacityInput;
 };
 
 function blocker(code: SizingBlockerCode, subject: string, extraFa?: string): SizingBlocker {
@@ -477,24 +481,43 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     );
   }
 
-  /* ── 5. the books themselves must be usable ──────────────────────────── */
-  const buyCheck = validateBook(buy.bookBids, buy.bookAsks, buy.marketModel);
-  if (!buyCheck.ok) {
+  /* ── 5. each leg needs an executable ladder ──────────────────────────────
+   *
+   * An order book supplies one directly; a dealer quote supplies a single
+   * level at its published price and maximum. Requiring a real ladder used to
+   * exclude every OTC dealer from every route even when its capacity was
+   * measurable and published — that was an engine limitation, not a fact about
+   * the venue.
+   */
+  const buyLadder = executableLadder({
+    marketModel: buy.marketModel,
+    bookBids: buy.bookBids,
+    bookAsks: buy.bookAsks,
+    side: "buy",
+    quote: input.buyQuote
+  });
+  if (!buyLadder.ok) {
     blockers.push(
       blocker(
-        buyCheck.problem === "quote_only_no_order_book" ? "quote_only_no_order_book" : "book_invalid",
+        buyLadder.reason === "quote_only_no_order_book" ? "quote_only_no_order_book" : "book_invalid",
         input.buySourceId,
-        buyCheck.detailFa
+        buyLadder.detailFa
       )
     );
   }
-  const sellCheck = validateBook(sell.bookBids, sell.bookAsks, sell.marketModel);
-  if (!sellCheck.ok) {
+  const sellLadder = executableLadder({
+    marketModel: sell.marketModel,
+    bookBids: sell.bookBids,
+    bookAsks: sell.bookAsks,
+    side: "sell",
+    quote: input.sellQuote
+  });
+  if (!sellLadder.ok) {
     blockers.push(
       blocker(
-        sellCheck.problem === "quote_only_no_order_book" ? "quote_only_no_order_book" : "book_invalid",
+        sellLadder.reason === "quote_only_no_order_book" ? "quote_only_no_order_book" : "book_invalid",
         input.sellSourceId,
-        sellCheck.detailFa
+        sellLadder.detailFa
       )
     );
   }
@@ -513,14 +536,14 @@ export function computeRouteSize(input: SizingInput): SizingResult {
   );
   const fatal = blockers.filter((b) => !policyBlockers.includes(b));
 
-  if (fatal.length || !buyBalance || !sellBalance || !buy.bookAsks || !sell.bookBids) {
+  if (fatal.length || !buyBalance || !sellBalance || !buyLadder.ok || !sellLadder.ok) {
     return blocked(blockers);
   }
 
   const buyFeeBps = input.buyFeeBps as number;
   const sellFeeBps = input.sellFeeBps as number;
-  const buyAsks = buy.bookAsks;
-  const sellBids = sell.bookBids;
+  const buyAsks = buyLadder.levels;
+  const sellBids = sellLadder.levels;
 
   /* ── 6. the caps ─────────────────────────────────────────────────────────
    *
@@ -855,6 +878,8 @@ export function computeAllRouteSizes(input: {
   exposureTomanBySource: Map<string, number>;
   policies: RiskPolicyState[];
   slippageBufferBps: number;
+  /** Per-venue dealer quotes. Absent for order-book venues. */
+  quoteBySource?: Map<string, QuoteCapacityInput>;
 }): RouteSizing[] {
   const out: RouteSizing[] = [];
   for (const buySourceId of input.venueIds) {
@@ -878,7 +903,9 @@ export function computeAllRouteSizes(input: {
           portfolioValueToman: input.portfolioValueToman,
           buyVenueExposureToman: input.exposureTomanBySource.get(buySourceId) ?? null,
           policies: input.policies,
-          slippageBufferBps: input.slippageBufferBps
+          slippageBufferBps: input.slippageBufferBps,
+          buyQuote: input.quoteBySource?.get(buySourceId),
+          sellQuote: input.quoteBySource?.get(sellSourceId)
         })
       });
     }

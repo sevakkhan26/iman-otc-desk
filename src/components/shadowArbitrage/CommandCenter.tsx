@@ -179,14 +179,38 @@ export type ProposalView = {
   }>;
 };
 
+export type VenueMatrixRow = {
+  sourceId: string;
+  nameFa: string;
+  dataType: string;
+  kycComplete: boolean;
+  accountEligible: boolean;
+  feeConfirmed: boolean;
+  buyCapacityUsdtMicros: number | null;
+  sellCapacityUsdtMicros: number | null;
+  buyLimiter: string | null;
+  sellLimiter: string | null;
+  buyReason: string;
+  sellReason: string;
+  buyLegUsable: boolean;
+  sellLegUsable: boolean;
+  participates: boolean;
+  allocationRole: string | null;
+  blockerFa: string | null;
+};
+
 export type VenueSemanticsView = {
+  total: number;
   kycConfirmed: number;
   accountEligible: number;
-  total: number;
-  capacityMeasurable: number;
-  routeUsable: number;
+  buyCapacityMeasurable: number;
+  sellCapacityMeasurable: number;
+  buyLegUsable: number;
+  sellLegUsable: number;
+  participating: number;
   quoteOnly: Array<{ sourceId: string; buyReason: string; sellReason: string }>;
   unverified: Array<{ sourceId: string; reason: string; reasonFa: string }>;
+  matrix: VenueMatrixRow[];
 };
 
 export type SizingView = {
@@ -1116,6 +1140,97 @@ export function CommandCenter({
         </div>
       </section>
 
+      {/* ── the 9-venue matrix: every fact, per venue, side by side ───── */}
+      {sem?.matrix?.length ? (
+        <section className="panel sa-panel" aria-label="ماتریس صرافی‌ها">
+          <div className="panel-header sa-panel-header">
+            <h3 className="panel-title">ماتریس صرافی‌ها</h3>
+            <div className="sa-panel-note">
+              ظرفیت و قابلیت استفادهٔ هر پا جداگانه — یک پای معتبر برای شرکت در آربیتراژ کافی است
+            </div>
+          </div>
+          <div className="panel-body sa-table-wrap">
+            <table className="sa-table">
+              <thead>
+                <tr>
+                  <th scope="col">صرافی</th>
+                  <th scope="col">نوع داده</th>
+                  <th scope="col">حساب/کارمزد</th>
+                  <th scope="col">نقش</th>
+                  <th scope="col" className="num">ظرفیت خرید</th>
+                  <th scope="col">پای خرید</th>
+                  <th scope="col" className="num">ظرفیت فروش</th>
+                  <th scope="col">پای فروش</th>
+                  <th scope="col">شرکت‌کننده</th>
+                  <th scope="col">مانع دقیق</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sem.matrix.map((m) => (
+                  <tr key={m.sourceId}>
+                    <td>{m.nameFa}</td>
+                    <td className="sa-sub">
+                      {m.dataType === "EXECUTABLE_QUOTE" ? "نقل‌قول اجراپذیر" : "دفتر سفارش"}
+                    </td>
+                    <td className="sa-sub">
+                      {m.kycComplete ? "KYC ✓" : "KYC ✗"} ·{" "}
+                      {m.accountEligible ? "حساب ✓" : "حساب ✗"} ·{" "}
+                      {m.feeConfirmed ? "کارمزد ✓" : "کارمزد ✗"}
+                    </td>
+                    <td className="sa-sub">{m.allocationRole ?? "—"}</td>
+                    <td className="num">
+                      {m.buyCapacityUsdtMicros === null ? (
+                        DASH
+                      ) : (
+                        <Bidi>{toFaDigits((m.buyCapacityUsdtMicros / 1_000_000).toFixed(2))}</Bidi>
+                      )}
+                    </td>
+                    <td>
+                      <span className={`sa-chip sa-chip-sm sa-chip-${m.buyLegUsable ? "good" : "muted"}`}>
+                        {m.buyLegUsable ? "قابل استفاده" : "خیر"}
+                      </span>
+                    </td>
+                    <td className="num">
+                      {m.sellCapacityUsdtMicros === null ? (
+                        DASH
+                      ) : (
+                        <Bidi>{toFaDigits((m.sellCapacityUsdtMicros / 1_000_000).toFixed(2))}</Bidi>
+                      )}
+                    </td>
+                    <td>
+                      <span className={`sa-chip sa-chip-sm sa-chip-${m.sellLegUsable ? "good" : "muted"}`}>
+                        {m.sellLegUsable ? "قابل استفاده" : "خیر"}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={`sa-chip sa-chip-sm sa-chip-${m.participates ? "good" : "warn"}`}>
+                        {m.participates ? "بله" : "خیر"}
+                      </span>
+                    </td>
+                    <td className="sa-sub">
+                      {m.blockerFa ??
+                        `خرید: ${
+                          CAP_LABEL_FA[m.buyLimiter as keyof typeof CAP_LABEL_FA] ??
+                          VENUE_CAPACITY_REASON_FA[
+                            m.buyReason as keyof typeof VENUE_CAPACITY_REASON_FA
+                          ] ??
+                          "—"
+                        } · فروش: ${
+                          CAP_LABEL_FA[m.sellLimiter as keyof typeof CAP_LABEL_FA] ??
+                          VENUE_CAPACITY_REASON_FA[
+                            m.sellReason as keyof typeof VENUE_CAPACITY_REASON_FA
+                          ] ??
+                          "—"
+                        }`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
       {/* ── per-venue capacity, each with its own exact reason ───────── */}
       {sizing?.venueCapacities?.length ? (
         <section className="panel sa-panel" aria-label="ظرفیت هر صرافی">
@@ -1472,12 +1587,30 @@ export function CommandCenter({
               </dd>
             </div>
             <div>
-              <dt>ظرفیت قابل اندازه‌گیری</dt>
-              <dd>{sem ? <Ratio part={sem.capacityMeasurable} whole={sem.total} /> : DASH}</dd>
+              <dt>ظرفیت خرید قابل اندازه‌گیری</dt>
+              <dd>{sem ? <Ratio part={sem.buyCapacityMeasurable} whole={sem.total} /> : DASH}</dd>
             </div>
             <div>
-              <dt>قابل استفاده در مسیر (این چرخه)</dt>
-              <dd>{sem ? <Ratio part={sem.routeUsable} whole={sem.total} /> : DASH}</dd>
+              <dt>ظرفیت فروش قابل اندازه‌گیری</dt>
+              <dd>{sem ? <Ratio part={sem.sellCapacityMeasurable} whole={sem.total} /> : DASH}</dd>
+            </div>
+            <div>
+              <dt>پای خرید قابل استفاده</dt>
+              <dd>{sem ? <Ratio part={sem.buyLegUsable} whole={sem.total} /> : DASH}</dd>
+            </div>
+            <div>
+              <dt>پای فروش قابل استفاده</dt>
+              <dd>{sem ? <Ratio part={sem.sellLegUsable} whole={sem.total} /> : DASH}</dd>
+            </div>
+            <div className="sa-cc-wide">
+              <dt>واجد شرکت در حداقل یک مسیر</dt>
+              <dd>
+                {sem ? <Ratio part={sem.participating} whole={sem.total} /> : DASH}
+                <span className="sa-sub">
+                  {" "}
+                  — یک پای معتبر کافی است؛ صرافی لازم نیست هر دو جهت را داشته باشد.
+                </span>
+              </dd>
             </div>
             <div className="sa-cc-wide">
               <dt>نقل‌قولی / تأییدنشده</dt>

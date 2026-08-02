@@ -2354,25 +2354,48 @@ await test("8C the capacity column stays inside the page at every width", () => 
 
 await test("8C the four venue facts are counted and shown separately", () => {
   const route = read("app/api/shadow-arbitrage/paper/route.ts");
-  // Four independent counts, derived from four different sources.
-  for (const key of ["kycConfirmed", "accountEligible", "capacityMeasurable", "routeUsable"]) {
+  /*
+   * Capacity and usability are counted PER LEG. Arbitrage needs one venue to
+   * buy on and another to sell on, so a venue with one valid leg is a full
+   * participant — requiring both directions of the same venue is what wrongly
+   * excluded an OTC dealer whose buy leg was perfectly usable.
+   */
+  for (const key of [
+    "kycConfirmed",
+    "accountEligible",
+    "buyCapacityMeasurable",
+    "sellCapacityMeasurable",
+    "buyLegUsable",
+    "sellLegUsable",
+    "participating"
+  ]) {
     assert.ok(route.includes(`${key}:`), `the API must count ${key} on its own`);
   }
+  assert.ok(route.includes("participates: buyOk || sellOk"), "one valid leg is enough");
   assert.ok(route.includes("quoteOnly:"));
   assert.ok(route.includes("unverified:"));
+  assert.ok(route.includes("matrix"), "a per-venue matrix is returned");
 
   const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
   for (const label of [
     "احراز هویت تأییدشده",
     "حساب اجراپذیر",
-    "ظرفیت قابل اندازه‌گیری",
-    "قابل استفاده در مسیر (این چرخه)",
+    "ظرفیت خرید قابل اندازه‌گیری",
+    "ظرفیت فروش قابل اندازه‌گیری",
+    "پای خرید قابل استفاده",
+    "پای فروش قابل استفاده",
+    "واجد شرکت در حداقل یک مسیر",
     "نقل‌قولی / تأییدنشده"
   ]) {
     assert.ok(cc.includes(label), `missing label: ${label}`);
   }
-  // The conflated summary is gone: no single ratio stands for all four.
+  // The conflated summary is gone: no single ratio stands for all of them.
   assert.equal(cc.includes("آمادگی حساب و کارمزد"), false, "the merged label is retired");
+  // And the matrix shows every fact per venue, including the exact blocker.
+  assert.ok(cc.includes("ماتریس صرافی‌ها"));
+  for (const col of ["نوع داده", "پای خرید", "پای فروش", "شرکت‌کننده", "مانع دقیق"]) {
+    assert.ok(cc.includes(col), `matrix column missing: ${col}`);
+  }
 });
 
 await test("8C a funded venue is EXPLORATION and AbanTether keeps null book fields", () => {

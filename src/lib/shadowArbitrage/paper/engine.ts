@@ -13,6 +13,7 @@
 import { SHADOW_STALE_MS, SHADOW_TRADE_SIZES } from "@/lib/shadowArbitrage/config";
 import type { RiskPolicyState } from "@/lib/shadowArbitrage/live/policy";
 import { computeRouteSize, type SizingResult } from "@/lib/shadowArbitrage/paper/sizing";
+import type { QuoteCapacityInput } from "@/lib/shadowArbitrage/paper/liquidity";
 import type { VenueCapitalState } from "@/lib/shadowArbitrage/capital";
 import {
   applyFill,
@@ -221,6 +222,8 @@ export type SizingContext = {
   /** Marked value each venue currently holds. */
   exposureTomanBySource: Map<string, number>;
   slippageBufferBps: number;
+  /** Per-venue dealer quotes, for OTC sources. */
+  quoteBySource?: Map<string, QuoteCapacityInput>;
 };
 
 export type EvaluateInput = {
@@ -384,7 +387,9 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
         portfolioValueToman: input.sizing.portfolioValueToman,
         buyVenueExposureToman: input.sizing.exposureTomanBySource.get(c.buySourceId) ?? null,
         policies: input.sizing.policies,
-        slippageBufferBps: input.sizing.slippageBufferBps
+        slippageBufferBps: input.sizing.slippageBufferBps,
+        buyQuote: input.sizing.quoteBySource?.get(c.buySourceId),
+        sellQuote: input.sizing.quoteBySource?.get(c.sellSourceId)
       });
       sizingByRoute.set(routeKey, sizing);
     }

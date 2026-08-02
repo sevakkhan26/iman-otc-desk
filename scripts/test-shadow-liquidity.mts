@@ -34,7 +34,8 @@ const {
   microsToUsdt,
   CAP_LABEL_FA,
   VENUE_CAPACITY_REASON_FA,
-  checkQuote
+  checkQuote,
+  executableLadder
 } = await import("../src/lib/shadowArbitrage/paper/liquidity.ts");
 const { computeRouteSize, SIZING_REQUIRED_POLICIES } = await import(
   "../src/lib/shadowArbitrage/paper/sizing.ts"
@@ -752,11 +753,25 @@ await test("8C-5 regression: quote-only is never grouped with a missing book", (
   assert.notEqual(outage.buy.reason, quoteOnly.buy.reason, "the two causes never collapse");
   assert.notEqual(outage.buy.reasonFa, quoteOnly.buy.reasonFa);
 
-  // And the same distinction reaches the sizer's blockers.
+  /*
+   * The distinction reaches the sizer too, and is now sharper: a dealer with no
+   * quote this cycle blocks for `quote_missing`, a book venue with no ladder
+   * blocks for a book fault. The exact cause is in the detail; the codes stay
+   * coarse on purpose so callers switch on a small enum.
+   */
   const q = size({ buySnapshot: snap("nobitex", null as never, null as never, { marketModel: "OTC_QUOTE" }) });
-  assert.ok(q.blockers.some((b) => b.code === "quote_only_no_order_book"));
+  assert.ok(q.blockers.length > 0);
+  assert.ok(
+    q.blockers.some((b) => b.detailFa.includes(VENUE_CAPACITY_REASON_FA.quote_missing)),
+    "a dealer with no quote says so"
+  );
   const m = size({ buySnapshot: snap("nobitex", null as never, null as never, { marketModel: "ORDER_BOOK" }) });
   assert.ok(m.blockers.some((b) => b.code === "book_invalid"));
+  assert.equal(
+    m.blockers.some((b) => b.detailFa.includes(VENUE_CAPACITY_REASON_FA.quote_missing)),
+    false,
+    "a book venue never reports a quote problem"
+  );
 });
 
 await test("8C-5 a venue with a real book reports capacity on both sides", () => {
@@ -960,6 +975,77 @@ await test("a funded venue with no observed route is EXPLORATION, never UNUSED",
   );
   assert.equal(plan.allocatedToman, TEN_B, "still conserved exactly");
   assert.equal(plan.residualToman, 0);
+});
+
+await test("audit: a dealer quote is a usable route leg, not an exclusion", () => {
+  // The ladder a quote supplies: one level, at its price, up to its published max.
+  const buy = executableLadder({
+    marketModel: "OTC_QUOTE",
+    bookBids: null,
+    bookAsks: null,
+    side: "buy",
+    quote: FRESH_QUOTE
+  });
+  assert.equal(buy.ok, true);
+  assert.equal((buy as Any).source, "EXECUTABLE_QUOTE");
+  assert.deepEqual((buy as Any).levels, [{ priceToman: 192_287, amountUsdt: 50_000 }]);
+
+  const sell = executableLadder({
+    marketModel: "OTC_QUOTE", bookBids: null, bookAsks: null, side: "sell", quote: FRESH_QUOTE
+  });
+  assert.equal((sell as Any).levels[0].priceToman, 190_230, "selling walks the dealer's bid");
+
+  // And the sizer accepts it: a quote venue can now BE a route leg.
+  const r = computeRouteSize({
+    ...routeInput(),
+    buySourceId: "abantether",
+    buySnapshot: {
+      sourceId: "abantether", sourceName: "abantether", ageMs: 461, stale: false,
+      health: "healthy", sizeExecutables: [], bookBids: null, bookAsks: null,
+      marketModel: "OTC_QUOTE"
+    },
+    buyQuote: { ...FRESH_QUOTE, userBuyPriceToman: 100_000, userSellPriceToman: 99_900 },
+    balances: [
+      { sourceId: "abantether", irtToman: 10_000_000_000, usdtMicros: usdtToMicros(100_000) },
+      { sourceId: "wallex", irtToman: 10_000_000_000, usdtMicros: usdtToMicros(100_000) }
+    ]
+  } as never);
+  assert.equal(r.status, "SIZED", "a quote leg sizes like any other");
+  assert.ok((r.sizeUsdtMicros as number) > 0);
+  assert.equal(r.quote?.buyWalk.fills.length, 1, "a flat quote fills at one price");
+
+  // Fail closed: no quote, no leg.
+  const missing = executableLadder({
+    marketModel: "OTC_QUOTE", bookBids: null, bookAsks: null, side: "buy"
+  });
+  assert.equal(missing.ok, false);
+  assert.equal((missing as Any).reason, "quote_missing");
+  const stale = executableLadder({
+    marketModel: "OTC_QUOTE", bookBids: null, bookAsks: null, side: "buy",
+    quote: { ...FRESH_QUOTE, stale: true }
+  });
+  assert.equal((stale as Any).reason, "quote_stale");
+  const noCap = executableLadder({
+    marketModel: "OTC_QUOTE", bookBids: null, bookAsks: null, side: "buy",
+    quote: { ...FRESH_QUOTE, maxExecutableUsdt: null }
+  });
+  assert.equal((noCap as Any).reason, "quote_capacity_unverified");
+});
+
+await test("audit: one valid leg is enough to participate in arbitrage", () => {
+  // A venue whose sell side is empty can still buy — and that is participation.
+  const v = venueCapacity({
+    ...QUOTE_VENUE,
+    usdtMicros: 0,
+    quote: FRESH_QUOTE
+  } as never);
+  assert.ok((v.buy.capacityUsdtMicros as number) > 0, "the buy leg is real");
+  assert.equal(v.sell.capacityUsdtMicros, 0, "the sell leg has nothing to sell");
+  assert.equal(v.sell.reason, "zero_balance", "which is a balance fact, not a data fault");
+  // Requiring BOTH legs would exclude this venue; requiring one does not.
+  const participates =
+    (v.buy.capacityUsdtMicros ?? 0) > 0 || (v.sell.capacityUsdtMicros ?? 0) > 0;
+  assert.equal(participates, true);
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

@@ -693,3 +693,60 @@ function quoteVenueCapacity(
 
   return { ...base, buy: resolveSide(buyCaps), sell: resolveSide(sellCaps) };
 }
+
+/* ── Phase 8C audit — one executable ladder, whatever the market model ───── */
+
+export type LadderResult =
+  | { ok: true; levels: BookLevel[]; source: "ORDER_BOOK" | "EXECUTABLE_QUOTE" }
+  | { ok: false; reason: VenueCapacityReason; detailFa: string };
+
+/**
+ * The levels a leg can actually be walked against.
+ *
+ * A dealer quote is ONE price good up to a published maximum. Representing it
+ * as a single level is not inventing a book — it is the exact, faithful model
+ * of that market: walking it yields the quoted price for any size up to the
+ * cap, and nothing beyond it, which is precisely the dealer's own offer. The
+ * synthetic level exists only inside the walk; the snapshot's `bookBids` and
+ * `bookAsks` stay null, and no synthetic level is ever persisted or displayed
+ * as depth.
+ *
+ * Requiring a real ladder here is what previously excluded an OTC dealer from
+ * every route even when its capacity was measurable and published.
+ */
+export function executableLadder(input: {
+  marketModel: string;
+  bookBids: BookLevel[] | null;
+  bookAsks: BookLevel[] | null;
+  side: BookSide;
+  quote?: QuoteCapacityInput;
+}): LadderResult {
+  if (input.marketModel === "OTC_QUOTE") {
+    if (!input.quote) {
+      return {
+        ok: false,
+        reason: "quote_missing",
+        detailFa: VENUE_CAPACITY_REASON_FA.quote_missing
+      };
+    }
+    const q = checkQuote(input.quote);
+    if (!q.ok) return { ok: false, reason: q.reason, detailFa: q.detailFa };
+    // Buying walks the dealer's ask; selling walks its bid.
+    const priceToman = input.side === "buy" ? q.buyPriceToman : q.sellPriceToman;
+    return {
+      ok: true,
+      source: "EXECUTABLE_QUOTE",
+      levels: [{ priceToman, amountUsdt: microsToUsdt(q.maxMicros) }]
+    };
+  }
+
+  const check = validateBook(input.bookBids, input.bookAsks, input.marketModel);
+  if (!check.ok) {
+    return { ok: false, reason: check.problem as VenueCapacityReason, detailFa: check.detailFa };
+  }
+  const levels = input.side === "buy" ? input.bookAsks : input.bookBids;
+  if (!levels?.length) {
+    return { ok: false, reason: "book_empty", detailFa: VENUE_CAPACITY_REASON_FA.book_empty };
+  }
+  return { ok: true, source: "ORDER_BOOK", levels };
+}

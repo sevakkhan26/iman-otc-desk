@@ -1747,12 +1747,12 @@ await test("release version: one authoritative public field, valid package metad
   const pkg = JSON.parse(read("package.json")) as { version: string; private?: boolean };
 
   // The product's version is exactly what this release is called.
-  assert.equal(version.appVersion, "4.1.3.0");
+  assert.equal(version.appVersion, "4.1.4.0");
 
   // Four-part numbers are not SemVer, which is why they cannot live in
   // package.json: the production image validates it during `pnpm install`.
   const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?$/;
-  assert.equal(semver.test(version.appVersion), false, "4.1.3.0 is deliberately not SemVer");
+  assert.equal(semver.test(version.appVersion), false, "4.1.4.0 is deliberately not SemVer");
   assert.ok(semver.test(pkg.version), `package.json keeps valid SemVer, found ${pkg.version}`);
   assert.equal(pkg.version, version.packageMetadataVersion, "and the two stay in step");
   assert.equal(pkg.private, true, "the package is never published, so its version is metadata only");
@@ -1771,9 +1771,16 @@ await test("release version: one authoritative public field, valid package metad
   assert.ok(read("src/components/Shell.tsx").includes("formatAppVersionLabel()"));
   assert.ok(read("app/login/page.tsx").includes("{APP_VERSION}"));
 
-  // The number appears nowhere else, and the superseded one appears nowhere.
-  for (const file of ["next.config.ts", "src/lib/version.ts", "Dockerfile", "package.json"]) {
-    assert.equal(read(file).includes("4.13.0"), false, `${file} must not mention 4.13.0`);
+  /*
+   * The number appears nowhere else, and neither three-part collapse of a
+   * four-part release may appear anywhere: 4.1.3.0 → "4.13.0" and
+   * 4.1.4.0 → "4.14.0" are the two ways this version has been mis-written, and
+   * either one displayed would be a different release entirely.
+   */
+  for (const file of ["next.config.ts", "src/lib/version.ts", "Dockerfile", "package.json", "version.json"]) {
+    for (const forbidden of ["4.13.0", "4.14.0"]) {
+      assert.equal(read(file).includes(forbidden), false, `${file} must not mention ${forbidden}`);
+    }
   }
 
   // The build context carries the file (it is not ignored by Docker).

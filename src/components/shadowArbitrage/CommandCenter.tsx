@@ -105,9 +105,37 @@ export type RouteSizingView = {
   };
 };
 
+export type CapView = {
+  key: string;
+  labelFa: string;
+  capUsdtMicros: number | null;
+  detailFa: string;
+};
+
+export type VenueCapacityView = {
+  sourceId: string;
+  nameFa: string;
+  marketModel: string;
+  buy: {
+    capacityUsdtMicros: number | null;
+    reason: string;
+    reasonFa: string;
+    limitingCap: string | null;
+    caps: CapView[];
+  };
+  sell: {
+    capacityUsdtMicros: number | null;
+    reason: string;
+    reasonFa: string;
+    limitingCap: string | null;
+    caps: CapView[];
+  };
+};
+
 export type SizingView = {
   requiredPolicies: string[];
   missingPolicies: string[];
+  venueCapacities?: VenueCapacityView[];
   routes: RouteSizingView[];
 };
 
@@ -1008,6 +1036,76 @@ export function CommandCenter({
           )}
         </div>
       </section>
+
+      {/* ── per-venue capacity, each with its own exact reason ───────── */}
+      {sizing?.venueCapacities?.length ? (
+        <section className="panel sa-panel" aria-label="ظرفیت هر صرافی">
+          <div className="panel-header sa-panel-header">
+            <h3 className="panel-title">ظرفیت هر صرافی</h3>
+            <div className="sa-panel-note">
+              حداکثر حجم قابل خرید و فروش روی هر صرافی، با محدودکنندهٔ دقیق هر سمت
+            </div>
+          </div>
+          <div className="panel-body sa-table-wrap">
+            <table className="sa-table">
+              <thead>
+                <tr>
+                  <th scope="col">صرافی</th>
+                  <th scope="col" className="num">تومان</th>
+                  <th scope="col" className="num">تتر</th>
+                  <th scope="col" className="num">ظرفیت خرید</th>
+                  <th scope="col">محدودکنندهٔ خرید</th>
+                  <th scope="col" className="num">ظرفیت فروش</th>
+                  <th scope="col">محدودکنندهٔ فروش</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sizing.venueCapacities.map((v) => {
+                  const bal = portfolio?.balances.find((b) => b.sourceId === v.sourceId);
+                  const capOf = (side: VenueCapacityView["buy"]) =>
+                    side.capacityUsdtMicros === null ? null : side.capacityUsdtMicros / 1_000_000;
+                  const limitOf = (side: VenueCapacityView["buy"]) =>
+                    side.capacityUsdtMicros === null
+                      ? side.reasonFa
+                      : (side.caps.find((c) => c.key === side.limitingCap)?.labelFa ?? "—");
+                  return (
+                    <tr key={v.sourceId}>
+                      <td>{v.nameFa}</td>
+                      <td className="num">
+                        {bal ? <TomanAmount value={bal.irtToman} /> : DASH}
+                      </td>
+                      <td className="num">
+                        {bal ? <Bidi>{toFaDigits(bal.usdt.toFixed(2))}</Bidi> : DASH}
+                      </td>
+                      <td className="num">
+                        {capOf(v.buy) === null ? (
+                          DASH
+                        ) : (
+                          <Bidi>{toFaDigits((capOf(v.buy) as number).toFixed(2))}</Bidi>
+                        )}
+                      </td>
+                      <td className="sa-sub">{limitOf(v.buy)}</td>
+                      <td className="num">
+                        {capOf(v.sell) === null ? (
+                          DASH
+                        ) : (
+                          <Bidi>{toFaDigits((capOf(v.sell) as number).toFixed(2))}</Bidi>
+                        )}
+                      </td>
+                      <td className="sa-sub">{limitOf(v.sell)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="panel-body sa-sub">
+            سقف سیاست تعیین‌نشده «اعمال نشد» است، نه صفر — اجرای واقعی همچنان مسدود می‌ماند.
+            دلیل هر صرافی مستقل است؛ نبودِ دفتر ساختاری (نقل‌قول تک‌قیمتی) هرگز با نبودِ دفتر در یک
+            چرخه یکی گزارش نمی‌شود.
+          </div>
+        </section>
+      ) : null}
 
       {/* ── health and safety, one line each ─────────────────────────── */}
       <div className="sa-cc-health">

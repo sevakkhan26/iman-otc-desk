@@ -41,12 +41,20 @@ export function microsToUsdt(micros: number): number {
 export type BookSide = "buy" | "sell";
 
 export type BookProblem =
+  | "quote_only_no_order_book"
   | "book_missing"
   | "book_empty"
   | "book_crossed"
   | "book_unusable_level";
 
 export const BOOK_PROBLEM_FA: Record<BookProblem, string> = {
+  /*
+   * Structural, not a fault: an OTC dealer quotes one price and publishes no
+   * ladder. It must never be reported alongside a venue whose book simply
+   * failed to arrive — one can never have depth, the other is missing it right
+   * now, and the operator actions are completely different.
+   */
+  quote_only_no_order_book: "این منبع نقل‌قول تک‌قیمتی است و اساساً دفتر سفارش ندارد",
   book_missing: "دفتر سفارش برای این منبع ثبت نشده است",
   book_empty: "دفتر سفارش هیچ سطح قابل استفاده‌ای ندارد",
   book_crossed: "دفتر متقاطع است (بهترین خرید بالاتر از بهترین فروش)",
@@ -62,10 +70,18 @@ export const BOOK_PROBLEM_FA: Record<BookProblem, string> = {
  */
 export function validateBook(
   bids: BookLevel[] | null,
-  asks: BookLevel[] | null
+  asks: BookLevel[] | null,
+  /**
+   * The venue's market model. An OTC quote has no ladder by design, which is a
+   * different fact from a book that should exist and did not arrive — grouping
+   * the two hides a real outage behind a permanent, expected limitation.
+   */
+  marketModel?: string
 ): { ok: true } | { ok: false; problem: BookProblem; detailFa: string } {
   if (!bids || !asks) {
-    return { ok: false, problem: "book_missing", detailFa: BOOK_PROBLEM_FA.book_missing };
+    const structural = marketModel === "OTC_QUOTE";
+    const problem: BookProblem = structural ? "quote_only_no_order_book" : "book_missing";
+    return { ok: false, problem, detailFa: BOOK_PROBLEM_FA[problem] };
   }
   const usable = (l: BookLevel) =>
     Number.isFinite(l.priceToman) &&
@@ -270,4 +286,219 @@ export function candidateQuantities(input: {
   add(ceiling);
 
   return [...points].sort((a, b) => a - b);
+}
+
+/* ── Phase 8C-5 — per-venue capacity, with one exact reason each ─────────── */
+
+export type VenueCapacityReason =
+  | "ok"
+  | "quote_only_no_order_book"
+  | "book_missing"
+  | "book_empty"
+  | "book_crossed"
+  | "book_unusable_level"
+  | "no_balance_record"
+  | "no_confirmed_fee"
+  | "zero_balance";
+
+export const VENUE_CAPACITY_REASON_FA: Record<VenueCapacityReason, string> = {
+  ok: "ظرفیت محاسبه شد",
+  quote_only_no_order_book: "نقل‌قول تک‌قیمتی — بدون دفتر سفارش (محدودیت ساختاری، نه خرابی)",
+  book_missing: "دفتر سفارش در این چرخه دریافت نشد",
+  book_empty: "دفتر سفارش هیچ سطح قابل استفاده‌ای ندارد",
+  book_crossed: "دفتر متقاطع است — دادهٔ نامعتبر",
+  book_unusable_level: "سطحی با قیمت یا مقدار نامعتبر در دفتر وجود دارد",
+  no_balance_record: "موجودی مجازی برای این صرافی ثبت نشده است",
+  no_confirmed_fee: "کارمزد تأییدشده برای این صرافی موجود نیست",
+  zero_balance: "موجودی این سمت صفر است"
+};
+
+/** One capped quantity with the evidence behind it. */
+export type CapacityCap = {
+  key: "depth" | "irt_balance" | "usdt_balance" | "capital_share" | "policy_order_size" | "policy_exposure";
+  labelFa: string;
+  /** Null means NOT APPLIED — an unset policy or an unmeasurable input. */
+  capUsdtMicros: number | null;
+  detailFa: string;
+};
+
+export type VenueSideCapacity = {
+  /** The binding minimum across every applied cap. Null when not computable. */
+  capacityUsdtMicros: number | null;
+  reason: VenueCapacityReason;
+  reasonFa: string;
+  /** Which cap produced the minimum. Null when capacity is null. */
+  limitingCap: CapacityCap["key"] | null;
+  caps: CapacityCap[];
+};
+
+export type VenueCapacity = {
+  sourceId: string;
+  marketModel: string;
+  /** Buying USDT here: funded by toman, limited by the ask ladder. */
+  buy: VenueSideCapacity;
+  /** Selling USDT here: funded by USDT, limited by the bid ladder. */
+  sell: VenueSideCapacity;
+};
+
+const CAP_LABEL_FA: Record<CapacityCap["key"], string> = {
+  depth: "عمق دفتر",
+  irt_balance: "موجودی تومانی",
+  usdt_balance: "موجودی تتری",
+  capital_share: "سهم طرح سرمایه",
+  policy_order_size: "سقف حجم سفارش (سیاست)",
+  policy_exposure: "سقف تمرکز (سیاست)"
+};
+
+function sideUnavailable(reason: VenueCapacityReason, caps: CapacityCap[] = []): VenueSideCapacity {
+  return {
+    capacityUsdtMicros: null,
+    reason,
+    reasonFa: VENUE_CAPACITY_REASON_FA[reason],
+    limitingCap: null,
+    caps
+  };
+}
+
+function resolveSide(caps: CapacityCap[]): VenueSideCapacity {
+  const applied = caps.filter((c) => c.capUsdtMicros !== null);
+  if (!applied.length) return sideUnavailable("no_balance_record", caps);
+  let min = Number.POSITIVE_INFINITY;
+  let limiting: CapacityCap["key"] | null = null;
+  for (const c of applied) {
+    if ((c.capUsdtMicros as number) < min) {
+      min = c.capUsdtMicros as number;
+      limiting = c.key;
+    }
+  }
+  return {
+    capacityUsdtMicros: min,
+    reason: min > 0 ? "ok" : "zero_balance",
+    reasonFa: VENUE_CAPACITY_REASON_FA[min > 0 ? "ok" : "zero_balance"],
+    limitingCap: limiting,
+    caps
+  };
+}
+
+/**
+ * How much this venue could buy and sell, side by side, with the exact reason
+ * whenever it could not be measured.
+ *
+ * Every venue answers independently. Two venues with no capacity may have
+ * completely different causes — one is an OTC dealer that will never publish a
+ * ladder, another simply missed a cycle — and reporting them together hides a
+ * real outage behind a permanent, expected limitation. That is why the reason
+ * lives on the venue rather than being inferred by whoever renders the table.
+ *
+ * A policy that is UNSET contributes `null`, meaning NOT APPLIED. It is never
+ * a cap of zero and never an invented default; execution is blocked elsewhere.
+ */
+export function venueCapacity(input: {
+  sourceId: string;
+  marketModel: string;
+  bookBids: BookLevel[] | null;
+  bookAsks: BookLevel[] | null;
+  irtToman: number | null;
+  usdtMicros: number | null;
+  /** Admin-confirmed taker fee. Null blocks the side that pays it. */
+  feeBps: number | null;
+  buyFeeAsset: string;
+  sellFeeAsset: string;
+  /** Best executable prices, for turning toman ceilings into quantities. */
+  capitalShareToman: number | null;
+  policyOrderSizeMicros: number | null;
+  policyExposureMicros: number | null;
+}): VenueCapacity {
+  const check = validateBook(input.bookBids, input.bookAsks, input.marketModel);
+  const base = { sourceId: input.sourceId, marketModel: input.marketModel };
+
+  if (!check.ok) {
+    const r = check.problem as VenueCapacityReason;
+    return { ...base, buy: sideUnavailable(r), sell: sideUnavailable(r) };
+  }
+  if (input.irtToman === null || input.usdtMicros === null) {
+    return {
+      ...base,
+      buy: sideUnavailable("no_balance_record"),
+      sell: sideUnavailable("no_balance_record")
+    };
+  }
+  if (input.feeBps === null) {
+    return {
+      ...base,
+      buy: sideUnavailable("no_confirmed_fee"),
+      sell: sideUnavailable("no_confirmed_fee")
+    };
+  }
+
+  const asks = input.bookAsks as BookLevel[];
+  const bids = input.bookBids as BookLevel[];
+  const bestAsk = orderedLevels(asks, "buy")[0]?.priceToman ?? 0;
+
+  const cap = (
+    key: CapacityCap["key"],
+    capUsdtMicros: number | null,
+    detailFa: string
+  ): CapacityCap => ({ key, labelFa: CAP_LABEL_FA[key], capUsdtMicros, detailFa });
+
+  const tomanToMicros = (toman: number, price: number) =>
+    price > 0 ? Math.floor((toman / price) * USDT_MICROS) : 0;
+
+  /* Buying here: the ask ladder and this venue's toman, fee-inclusive. */
+  const buyPerUsdt = input.buyFeeAsset === "IRT" ? bestAsk * (1 + input.feeBps / 10_000) : bestAsk;
+  const buyCaps: CapacityCap[] = [
+    cap("depth", totalDepthMicros(asks), `${asks.length} سطح فروش در دفتر`),
+    cap(
+      "irt_balance",
+      buyPerUsdt > 0 ? Math.floor((input.irtToman / buyPerUsdt) * USDT_MICROS) : 0,
+      `${input.irtToman.toLocaleString("en-US")} تومان با کارمزد ${input.feeBps} bps در ${input.buyFeeAsset}`
+    ),
+    cap(
+      "capital_share",
+      input.capitalShareToman === null ? null : tomanToMicros(input.capitalShareToman, bestAsk),
+      input.capitalShareToman === null
+        ? "سهم طرح در دسترس نیست؛ اعمال نشد."
+        : `${input.capitalShareToman.toLocaleString("en-US")} تومان`
+    ),
+    cap(
+      "policy_order_size",
+      input.policyOrderSizeMicros,
+      input.policyOrderSizeMicros === null ? "تعیین‌نشده — اعمال نشد" : "سیاست حداکثر حجم سفارش"
+    ),
+    cap(
+      "policy_exposure",
+      input.policyExposureMicros,
+      input.policyExposureMicros === null ? "تعیین‌نشده — اعمال نشد" : "سیاست سقف تمرکز"
+    )
+  ];
+
+  /*
+   * Selling here: the bid ladder and this venue's USDT. When the sell fee is
+   * taken in USDT the venue is debited quantity PLUS fee, so the balance must
+   * cover size × (1 + fee) — dividing by (1 + fee) is what makes the reported
+   * capacity actually deliverable rather than one fee short.
+   */
+  const sellCapMicros =
+    input.sellFeeAsset === "USDT"
+      ? Math.floor(input.usdtMicros / (1 + input.feeBps / 10_000))
+      : input.usdtMicros;
+
+  const sellCaps: CapacityCap[] = [
+    cap("depth", totalDepthMicros(bids), `${bids.length} سطح خرید در دفتر`),
+    cap(
+      "usdt_balance",
+      sellCapMicros,
+      `${microsToUsdt(input.usdtMicros)} تتر با کارمزد ${input.feeBps} bps در ${input.sellFeeAsset}` +
+        (input.sellFeeAsset === "USDT"
+          ? ` → ${microsToUsdt(sellCapMicros)} تتر قابل تحویل`
+          : "")
+    ),
+    cap(
+      "policy_order_size",
+      input.policyOrderSizeMicros,
+      input.policyOrderSizeMicros === null ? "تعیین‌نشده — اعمال نشد" : "سیاست حداکثر حجم سفارش"
+    )
+  ];
+
+  return { ...base, buy: resolveSide(buyCaps), sell: resolveSide(sellCaps) };
 }

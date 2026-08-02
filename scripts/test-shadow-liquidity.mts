@@ -28,6 +28,7 @@ const {
   cumulativeCurve,
   totalDepthMicros,
   validateBook,
+  venueCapacity,
   walkBook,
   usdtToMicros,
   microsToUsdt
@@ -655,6 +656,131 @@ await test("an unset policy blocks the trade but never hides the capacity study"
   });
   assert.equal(badBook.candidates.length, 0, "no study without a usable book");
   assert.ok(badBook.blockers.some((b) => b.code === "book_invalid"));
+});
+
+/* ── Phase 8C-5 regressions: the two audited figures ─────────────────────── */
+
+await test("8C-5 regression: fee-inclusive sell capacity is balance ÷ (1 + fee)", () => {
+  /*
+   * Audited case: Tetherland holding 3,217.854868 USDT with a 45 bps sell fee
+   * taken in USDT. The venue is debited quantity PLUS fee, so the deliverable
+   * quantity is balance ÷ 1.0045 = 3,203.4394 — NOT the raw balance, and not
+   * balance × (1 − fee), which would overstate it by a fee-squared term.
+   */
+  const v = venueCapacity({
+    sourceId: "tetherland",
+    marketModel: "ORDER_BOOK",
+    bookBids: [lv(195_000, 10_000)] as never,
+    bookAsks: [lv(196_000, 10_000)] as never,
+    irtToman: 485_699_479,
+    usdtMicros: usdtToMicros(3217.854868),
+    feeBps: 45,
+    buyFeeAsset: "IRT",
+    sellFeeAsset: "USDT",
+    capitalShareToman: null,
+    policyOrderSizeMicros: null,
+    policyExposureMicros: null
+  });
+  const cap = v.sell.caps.find((c) => c.key === "usdt_balance")?.capUsdtMicros as number;
+  // Floored to whole micros: 3,203.439390 rather than a rounded-up 3,203.4394,
+  // because rounding up would report a quantity the balance cannot deliver.
+  assert.equal(cap, Math.floor(usdtToMicros(3217.854868) / 1.0045));
+  assert.equal(cap, 3_203_439_390);
+  assert.ok(Math.abs(microsToUsdt(cap) - 3217.854868 / 1.0045) < 1e-5);
+  assert.ok(microsToUsdt(cap) <= 3217.854868 / 1.0045, "never rounds up");
+  assert.ok(cap < usdtToMicros(3217.854868), "never the raw balance");
+  /*
+   * The lookalike form balance × (1 − fee) is NOT the same number: 1/(1+f) and
+   * (1−f) differ by f² , so that form understates capacity by ~0.065 USDT here.
+   * Pinning the division keeps the two from being silently interchanged.
+   */
+  const lookalike = usdtToMicros(3217.854868 * (1 - 45 / 10_000));
+  assert.ok(cap > lookalike, "division by (1+f) is not multiplication by (1−f)");
+  assert.ok(microsToUsdt(cap - lookalike) < 0.1, "and the gap is the f² term, nothing larger");
+
+  // An IRT-settled sell fee consumes no USDT, so the whole balance is deliverable.
+  const irtFee = venueCapacity({
+    sourceId: "tetherland",
+    marketModel: "ORDER_BOOK",
+    bookBids: [lv(195_000, 10_000)] as never,
+    bookAsks: [lv(196_000, 10_000)] as never,
+    irtToman: 1,
+    usdtMicros: usdtToMicros(3217.854868),
+    feeBps: 45,
+    buyFeeAsset: "IRT",
+    sellFeeAsset: "IRT",
+    capitalShareToman: null,
+    policyOrderSizeMicros: null,
+    policyExposureMicros: null
+  });
+  assert.equal(
+    irtFee.sell.caps.find((c) => c.key === "usdt_balance")?.capUsdtMicros,
+    usdtToMicros(3217.854868)
+  );
+});
+
+await test("8C-5 regression: quote-only is never grouped with a missing book", () => {
+  const common = {
+    bookBids: null,
+    bookAsks: null,
+    irtToman: 555_555_556,
+    usdtMicros: usdtToMicros(2857.85),
+    feeBps: 30,
+    buyFeeAsset: "IRT",
+    sellFeeAsset: "USDT",
+    capitalShareToman: null,
+    policyOrderSizeMicros: null,
+    policyExposureMicros: null
+  };
+  // AbanTether: an OTC dealer. Structural, permanent, expected.
+  const quoteOnly = venueCapacity({ ...common, sourceId: "abantether", marketModel: "OTC_QUOTE" });
+  assert.equal(quoteOnly.buy.reason, "quote_only_no_order_book");
+  assert.equal(quoteOnly.sell.reason, "quote_only_no_order_book");
+  assert.ok(quoteOnly.buy.reasonFa.includes("ساختاری"), "stated as structural, not a fault");
+
+  // A book venue that missed a cycle. Transient, and an operator should act.
+  const outage = venueCapacity({ ...common, sourceId: "bitpin", marketModel: "ORDER_BOOK" });
+  assert.equal(outage.buy.reason, "book_missing");
+  assert.notEqual(outage.buy.reason, quoteOnly.buy.reason, "the two causes never collapse");
+  assert.notEqual(outage.buy.reasonFa, quoteOnly.buy.reasonFa);
+
+  // And the same distinction reaches the sizer's blockers.
+  const q = size({ buySnapshot: snap("nobitex", null as never, null as never, { marketModel: "OTC_QUOTE" }) });
+  assert.ok(q.blockers.some((b) => b.code === "quote_only_no_order_book"));
+  const m = size({ buySnapshot: snap("nobitex", null as never, null as never, { marketModel: "ORDER_BOOK" }) });
+  assert.ok(m.blockers.some((b) => b.code === "book_invalid"));
+});
+
+await test("8C-5 a venue with a real book reports capacity on both sides", () => {
+  // Bitpin: 20 levels a side. It must produce numbers, not an unavailable flag.
+  const v = venueCapacity({
+    sourceId: "bitpin",
+    marketModel: "ORDER_BOOK",
+    bookBids: Array.from({ length: 20 }, (_, i) => lv(195_000 - i * 10, 5)) as never,
+    bookAsks: Array.from({ length: 20 }, (_, i) => lv(196_000 + i * 10, 5)) as never,
+    irtToman: 555_555_556,
+    usdtMicros: usdtToMicros(2857.85),
+    feeBps: 30,
+    buyFeeAsset: "IRT",
+    sellFeeAsset: "USDT",
+    capitalShareToman: 1_111_111_111,
+    policyOrderSizeMicros: null,
+    policyExposureMicros: null
+  });
+  assert.equal(v.buy.reason, "ok");
+  assert.equal(v.sell.reason, "ok");
+  assert.ok((v.buy.capacityUsdtMicros as number) > 0);
+  assert.ok((v.sell.capacityUsdtMicros as number) > 0);
+  assert.ok(v.buy.limitingCap, "the limiting cap is named");
+  // Depth is 100 USDT a side, which binds well before the toman balance.
+  assert.equal(v.buy.limitingCap, "depth");
+  assert.equal(v.buy.capacityUsdtMicros, usdtToMicros(100));
+
+  // An unset policy is NOT APPLIED — never a cap of zero.
+  const policy = v.buy.caps.find((c) => c.key === "policy_order_size");
+  assert.equal(policy?.capUsdtMicros, null);
+  assert.ok(policy?.detailFa.includes("اعمال نشد"));
+  assert.notEqual(v.buy.capacityUsdtMicros, 0, "an unset policy must not zero the capacity");
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

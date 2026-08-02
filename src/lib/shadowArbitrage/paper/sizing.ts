@@ -110,6 +110,7 @@ export type SizingBlockerCode =
   | "edge_below_floor"
   | "not_net_positive"
   | "book_invalid"
+  | "quote_only_no_order_book"
   | "depth_exhausted";
 
 export const SIZING_BLOCKER_FA: Record<SizingBlockerCode, string> = {
@@ -125,6 +126,7 @@ export const SIZING_BLOCKER_FA: Record<SizingBlockerCode, string> = {
   edge_below_floor: "حاشیهٔ تعدیل‌شده از کف سیاست کمتر است",
   not_net_positive: "سود تعدیل‌شده اکیداً مثبت نیست",
   book_invalid: "دفتر سفارش قابل استفاده نیست",
+  quote_only_no_order_book: "منبع نقل‌قول تک‌قیمتی است و دفتر سفارش ندارد",
   depth_exhausted: "عمق مشاهده‌شده برای هیچ حجم قابل قبولی کافی نیست"
 };
 
@@ -476,10 +478,26 @@ export function computeRouteSize(input: SizingInput): SizingResult {
   }
 
   /* ── 5. the books themselves must be usable ──────────────────────────── */
-  const buyCheck = validateBook(buy.bookBids, buy.bookAsks);
-  if (!buyCheck.ok) blockers.push(blocker("book_invalid", input.buySourceId, buyCheck.detailFa));
-  const sellCheck = validateBook(sell.bookBids, sell.bookAsks);
-  if (!sellCheck.ok) blockers.push(blocker("book_invalid", input.sellSourceId, sellCheck.detailFa));
+  const buyCheck = validateBook(buy.bookBids, buy.bookAsks, buy.marketModel);
+  if (!buyCheck.ok) {
+    blockers.push(
+      blocker(
+        buyCheck.problem === "quote_only_no_order_book" ? "quote_only_no_order_book" : "book_invalid",
+        input.buySourceId,
+        buyCheck.detailFa
+      )
+    );
+  }
+  const sellCheck = validateBook(sell.bookBids, sell.bookAsks, sell.marketModel);
+  if (!sellCheck.ok) {
+    blockers.push(
+      blocker(
+        sellCheck.problem === "quote_only_no_order_book" ? "quote_only_no_order_book" : "book_invalid",
+        input.sellSourceId,
+        sellCheck.detailFa
+      )
+    );
+  }
 
   /*
    * A missing risk policy stops the trade, not the analysis.

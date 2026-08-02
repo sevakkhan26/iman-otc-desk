@@ -45,6 +45,7 @@ import {
   computeAllRouteSizes,
   SIZING_REQUIRED_POLICIES
 } from "@/lib/shadowArbitrage/paper/sizing";
+import { venueCapacity } from "@/lib/shadowArbitrage/paper/liquidity";
 import type { ShadowSourceId } from "@/lib/shadowArbitrage/types";
 import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
 import { PAPER_FEE_SETTLEMENT, microsToUsdt, settlementFor, usdtToMicros } from "@/lib/shadowArbitrage/paper/broker";
@@ -268,8 +269,44 @@ export async function GET(request: Request) {
     ? [...exposureTomanBySource.values()].reduce((s, v) => s + v, 0)
     : null;
 
+  /*
+   * Phase 8C-5 — per-venue capacity, answered independently for every venue so
+   * two unrelated causes can never be reported as one. An OTC dealer that
+   * publishes no ladder and a book venue that missed a cycle are different
+   * facts with different operator actions.
+   */
+  const policyOrderSizeUsdt = policies.find((p) => p.definition.key === "max_order_size_usdt");
+  const policyOrderSizeMicros = policyOrderSizeUsdt?.configured
+    ? usdtToMicros(policyOrderSizeUsdt.value as number)
+    : null;
+
+  const venueCapacities = wizard.eligibleVenues.map((v) => {
+    const snapshot = snapshotById.get(v.sourceId);
+    const balance = sizingBalances.find((b) => (b.sourceId as string) === v.sourceId);
+    return {
+      ...venueCapacity({
+        sourceId: v.sourceId,
+        marketModel: snapshot?.marketModel ?? "ORDER_BOOK",
+        bookBids: snapshot?.bookBids ?? null,
+        bookAsks: snapshot?.bookAsks ?? null,
+        irtToman: balance?.irtToman ?? null,
+        usdtMicros: balance?.usdtMicros ?? null,
+        feeBps: feeBpsById.get(v.sourceId) ?? null,
+        buyFeeAsset: settlementFor(v.sourceId as ShadowSourceId, "buy").feeAsset,
+        sellFeeAsset: settlementFor(v.sourceId as ShadowSourceId, "sell").feeAsset,
+        capitalShareToman: allocationTomanBySource.get(v.sourceId) ?? null,
+        policyOrderSizeMicros,
+        // Exposure is a portfolio-level ceiling, not a per-venue one; it is
+        // applied per route where the current exposure is known.
+        policyExposureMicros: null
+      }),
+      nameFa: v.nameFa
+    };
+  });
+
   const sizing = {
     requiredPolicies: SIZING_REQUIRED_POLICIES,
+    venueCapacities,
     missingPolicies: SIZING_REQUIRED_POLICIES.filter(
       (k) => !policies.find((p) => p.definition.key === k)?.configured
     ),

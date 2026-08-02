@@ -253,7 +253,16 @@ export function ShadowArbitrageView() {
          * Hydrate the persisted proposal so a refresh shows the same one, with
          * its status and the durable audit result — not an empty panel.
          */
-        if (payload.allocation?.proposal) setProposal(payload.allocation.proposal);
+        if (payload.allocation?.proposal) {
+          setProposal(payload.allocation.proposal);
+          /*
+           * Repopulate the scenario controls from what the proposal was built
+           * on, so a hard reload shows the inputs that produced it rather than
+           * silently resetting them to UNSET.
+           */
+          const caps = payload.allocation.proposal.scenarioCaps;
+          if (caps && Object.keys(caps).length) setScenarioCaps(caps);
+        }
       }
       if (rRes.ok) setReadiness((await rRes.json()) as ReadinessPayload);
       if (accRes.ok) setAccounts((await accRes.json()) as AccountsPayload);

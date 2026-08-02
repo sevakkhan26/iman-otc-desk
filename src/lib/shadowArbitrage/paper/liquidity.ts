@@ -341,7 +341,12 @@ export type VenueCapacity = {
   sell: VenueSideCapacity;
 };
 
-const CAP_LABEL_FA: Record<CapacityCap["key"], string> = {
+/**
+ * Persian labels for the caps. Exported so the UI can NAME a limiter without
+ * re-deriving it — `venueCapacity()` stays the only place a capacity or a
+ * limiter is decided.
+ */
+export const CAP_LABEL_FA: Record<CapacityCap["key"], string> = {
   depth: "عمق دفتر",
   irt_balance: "موجودی تومانی",
   usdt_balance: "موجودی تتری",

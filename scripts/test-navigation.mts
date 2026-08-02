@@ -2251,5 +2251,106 @@ await test("8C the Command Center never scrolls the page sideways", () => {
   }
 });
 
+/* ══ Phase 8C close-out — capacity column and lifecycle labels ═══════════════ */
+
+await test("8C the allocation table shows capacity and limiter from venueCapacity()", () => {
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  assert.ok(cc.includes("<th scope=\"col\">ظرفیت و محدودکننده</th>"));
+
+  // Buy and sell are reported independently, each with its own limiter.
+  for (const field of [
+    "r.buyCapacityUsdtMicros",
+    "r.sellCapacityUsdtMicros",
+    "r.buyLimiter",
+    "r.sellLimiter",
+    "r.buyReason",
+    "r.sellReason"
+  ]) {
+    assert.ok(cc.includes(field), `the column must read ${field} from the stored row`);
+  }
+
+  /*
+   * Single source: the UI NAMES a limiter, it never decides one. No capacity
+   * arithmetic may appear in the component — fee division, depth summation or
+   * a min() across caps would mean two implementations that can disagree.
+   */
+  const table = cc.slice(cc.indexOf("ظرفیت و محدودکننده"));
+  for (const banned of ["totalDepthMicros", "validateBook", "orderedLevels", "/ (1 +", "Math.min("]) {
+    assert.equal(table.includes(banned), false, `capacity must not be recomputed in the UI: ${banned}`);
+  }
+  // Labels come from the engine's own maps, not from strings retyped here.
+  assert.ok(cc.includes("CAP_LABEL_FA["));
+  assert.ok(cc.includes("VENUE_CAPACITY_REASON_FA["));
+  assert.ok(cc.includes('from "@/lib/shadowArbitrage/paper/liquidity"'));
+});
+
+await test("8C an unavailable side shows its exact reason, never a zero", () => {
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  // Null capacity renders the reason; it must not fall through to a number.
+  assert.ok(cc.includes("r.buyCapacityUsdtMicros === null ? ("));
+  assert.ok(cc.includes("r.sellCapacityUsdtMicros === null ? ("));
+
+  // AbanTether's structural case is a first-class reason with its own label.
+  const liq = read("src/lib/shadowArbitrage/paper/liquidity.ts");
+  assert.ok(liq.includes("quote_only_no_order_book:"));
+  assert.ok(
+    liq.includes("نقل‌قول تک‌قیمتی — بدون دفتر سفارش (محدودیت ساختاری، نه خرابی)"),
+    "it is stated as structural, not as missing or broken"
+  );
+  // And it is never collapsed into the missing-book reason.
+  assert.notEqual(
+    liq.match(/quote_only_no_order_book: "([^"]+)"/)?.[1],
+    liq.match(/\n  book_missing: "([^"]+)"/)?.[1]
+  );
+});
+
+await test("8C record type and latest decision are labelled so they cannot contradict", () => {
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  // The row's own nature.
+  assert.ok(cc.includes("نوع رکورد:"));
+  assert.ok(cc.includes("پیشنهاد ثبت‌شده — آمادهٔ اعمال"));
+  assert.ok(cc.includes("پیش‌نمایش (قابل اعمال نیست)"));
+  // What later happened to it.
+  assert.ok(cc.includes("آخرین تصمیم ماندگار روی این رکورد:"));
+  assert.ok(cc.includes("اعمال شد"));
+  assert.ok(cc.includes("رد شد — کهنه"));
+  // And an explicit note that the two are different axes.
+  assert.ok(cc.includes("هرگز یکدیگر را نقض نمی‌کنند"));
+  // Raw enum values are not shown as the primary label.
+  assert.equal(cc.includes(">{proposalDecision.decision}<"), false);
+});
+
+await test("8C scenario inputs and the proposal survive a hard reload", () => {
+  const view = read("src/components/ShadowArbitrageView.tsx");
+  // Hydrated from the server payload, not from component memory.
+  assert.ok(view.includes("payload.allocation?.proposal"));
+  assert.ok(view.includes("setProposal(payload.allocation.proposal)"));
+  assert.ok(view.includes("payload.allocation.proposal.scenarioCaps"));
+  assert.ok(view.includes("setScenarioCaps(caps)"));
+
+  // The server recovers them from the stored note, so they are durable.
+  const route = read("app/api/shadow-arbitrage/paper/route.ts");
+  assert.ok(route.includes("SCENARIO ("));
+  assert.ok(route.includes("scenarioCaps"));
+  assert.ok(route.includes("listProposals(1)"), "the latest proposal is loaded on GET");
+  assert.ok(route.includes("listDecisions"), "and its latest decision");
+});
+
+await test("8C the capacity column stays inside the page at every width", () => {
+  const css = read("app/globals.css");
+  // The table lives in the shared scrolling wrapper, so a wide row scrolls
+  // inside its own container rather than widening the page.
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  const table = cc.slice(cc.indexOf("تخصیص فعلی در برابر پیشنهادی") - 800);
+  assert.ok(table.includes("sa-table-wrap"), "the allocation table is wrapped");
+  const wrap = css.slice(css.indexOf(".sa-table-wrap {"));
+  assert.ok(wrap.slice(0, 200).includes("overflow-x: auto"));
+  // And the page-level guard still covers the Command Center containers.
+  const guard = css.slice(css.indexOf(".sa-tabs-wrap,"), css.indexOf(".sa-tabs-wrap,") + 260);
+  for (const sel of [".sa-cc", ".sa-cc-kpis", ".sa-cc-health"]) {
+    assert.ok(guard.includes(sel), `${sel} must carry the min-width guard`);
+  }
+});
+
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

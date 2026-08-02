@@ -18,6 +18,10 @@ import {
 } from "@/components/shadowArbitrage/labels";
 import { evidenceFor, type PaperEvidence } from "@/components/shadowArbitrage/opportunityModel";
 import {
+  CAP_LABEL_FA,
+  VENUE_CAPACITY_REASON_FA
+} from "@/lib/shadowArbitrage/paper/liquidity";
+import {
   summarisePortfolio,
   type VenueAllocation
 } from "@/lib/shadowArbitrage/paper/portfolio";
@@ -147,6 +151,8 @@ export const SCENARIO_CAP_FA: Record<string, string> = {
 export type ProposalView = {
   id: string;
   status?: string;
+  /** The unapproved caps that shaped a PREVIEW, so controls survive a reload. */
+  scenarioCaps?: Record<string, number> | null;
   createdAt?: string;
   note?: string | null;
   fingerprints?: { books: string; fees: string; accounts: string; policy: string };
@@ -164,6 +170,9 @@ export type ProposalView = {
     sharePercent: number;
     buyCapacityUsdtMicros: number | null;
     sellCapacityUsdtMicros: number | null;
+    /** Which cap bound each side. Null when capacity is unavailable. */
+    buyLimiter: string | null;
+    sellLimiter: string | null;
     buyReason: string;
     sellReason: string;
     reasonFa: string;
@@ -1235,8 +1244,13 @@ export function CommandCenter({
 
             {proposal ? (
               <div className="sa-sub">
-                پیشنهاد <Bidi>{proposal.id.slice(0, 8)}</Bidi> · وضعیت{" "}
-                <span className="sa-strong">{proposal.status ?? "PROPOSED"}</span>
+                پیشنهاد <Bidi>{proposal.id.slice(0, 8)}</Bidi> ·{" "}
+                <span className="sa-sub">نوع رکورد:</span>{" "}
+                <span className="sa-strong">
+                  {proposal.status === "PREVIEW"
+                    ? "پیش‌نمایش (قابل اعمال نیست)"
+                    : "پیشنهاد ثبت‌شده — آمادهٔ اعمال"}
+                </span>
                 {proposal.status === "PREVIEW"
                   ? " — بر پایهٔ سقف سناریویی تأییدنشده ساخته شده و قابل اعمال نیست."
                   : null}
@@ -1259,8 +1273,19 @@ export function CommandCenter({
                 }`}
                 role="status"
               >
-                آخرین تصمیم ثبت‌شده: <span className="sa-strong">{proposalDecision.decision}</span> —{" "}
-                {proposalDecision.detailFa} ({proposalDecision.decidedBy})
+                <span className="sa-sub">آخرین تصمیم ماندگار روی این رکورد:</span>{" "}
+                <span className="sa-strong">
+                  {proposalDecision.decision === "APPLIED"
+                    ? "اعمال شد"
+                    : proposalDecision.decision === "REJECTED_STALE"
+                      ? "رد شد — کهنه"
+                      : "ناموفق"}
+                </span>{" "}
+                — {proposalDecision.detailFa} ({proposalDecision.decidedBy})
+                <div className="sa-sub">
+                  «نوع رکورد» می‌گوید این ردیف چیست و «تصمیم ماندگار» می‌گوید بعداً چه بر سرش
+                  آمد؛ چون ذخیره‌سازی افزودنی است، این دو هرگز یکدیگر را نقض نمی‌کنند.
+                </div>
               </div>
             ) : null}
             <p className="sa-sub">
@@ -1289,6 +1314,7 @@ export function CommandCenter({
                       <th scope="col" className="num">تتر پیشنهادی</th>
                       <th scope="col" className="num">ارزش پیشنهادی</th>
                       <th scope="col" className="num">تغییر</th>
+                      <th scope="col">ظرفیت و محدودکننده</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1319,6 +1345,55 @@ export function CommandCenter({
                           </td>
                           <td className={`num ${(delta ?? 0) >= 0 ? "sa-pos" : "sa-neg"}`}>
                             {delta === null ? DASH : <TomanAmount value={delta} />}
+                          </td>
+                          {/*
+                            Read straight from the stored proposal row, which
+                            `venueCapacity()` produced at generation time. The UI
+                            names a limiter; it never decides one.
+                          */}
+                          <td className="sa-sub">
+                            <div className="sa-stack-2">
+                              <span>
+                                خرید:{" "}
+                                {r.buyCapacityUsdtMicros === null ? (
+                                  <span className="sa-strong">
+                                    {VENUE_CAPACITY_REASON_FA[
+                                      r.buyReason as keyof typeof VENUE_CAPACITY_REASON_FA
+                                    ] ?? r.buyReason}
+                                  </span>
+                                ) : (
+                                  <>
+                                    <Bidi>
+                                      {toFaDigits((r.buyCapacityUsdtMicros / 1_000_000).toFixed(2))}
+                                    </Bidi>{" "}
+                                    تتر ·{" "}
+                                    {CAP_LABEL_FA[r.buyLimiter as keyof typeof CAP_LABEL_FA] ??
+                                      r.buyLimiter ??
+                                      "—"}
+                                  </>
+                                )}
+                              </span>
+                              <span>
+                                فروش:{" "}
+                                {r.sellCapacityUsdtMicros === null ? (
+                                  <span className="sa-strong">
+                                    {VENUE_CAPACITY_REASON_FA[
+                                      r.sellReason as keyof typeof VENUE_CAPACITY_REASON_FA
+                                    ] ?? r.sellReason}
+                                  </span>
+                                ) : (
+                                  <>
+                                    <Bidi>
+                                      {toFaDigits((r.sellCapacityUsdtMicros / 1_000_000).toFixed(2))}
+                                    </Bidi>{" "}
+                                    تتر ·{" "}
+                                    {CAP_LABEL_FA[r.sellLimiter as keyof typeof CAP_LABEL_FA] ??
+                                      r.sellLimiter ??
+                                      "—"}
+                                  </>
+                                )}
+                              </span>
+                            </div>
                           </td>
                         </tr>
                       );

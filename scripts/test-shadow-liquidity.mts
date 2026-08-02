@@ -31,7 +31,9 @@ const {
   venueCapacity,
   walkBook,
   usdtToMicros,
-  microsToUsdt
+  microsToUsdt,
+  CAP_LABEL_FA,
+  VENUE_CAPACITY_REASON_FA
 } = await import("../src/lib/shadowArbitrage/paper/liquidity.ts");
 const { computeRouteSize, SIZING_REQUIRED_POLICIES } = await import(
   "../src/lib/shadowArbitrage/paper/sizing.ts"
@@ -781,6 +783,66 @@ await test("8C-5 a venue with a real book reports capacity on both sides", () =>
   assert.equal(policy?.capUsdtMicros, null);
   assert.ok(policy?.detailFa.includes("اعمال نشد"));
   assert.notEqual(v.buy.capacityUsdtMicros, 0, "an unset policy must not zero the capacity");
+});
+
+await test("8C close-out: capacity, limiter and reason are decided in one place", () => {
+  // Buy and sell answer independently: a venue can be limited by depth on one
+  // side and by a balance on the other, and each says which.
+  const v = venueCapacity({
+    sourceId: "wallex",
+    marketModel: "ORDER_BOOK",
+    // Deep bids, thin asks.
+    bookBids: Array.from({ length: 10 }, (_, i) => lv(195_000 - i * 10, 500)) as never,
+    bookAsks: [lv(196_000, 4)] as never,
+    irtToman: 10_000_000_000,
+    usdtMicros: usdtToMicros(12),
+    feeBps: 35,
+    buyFeeAsset: "IRT",
+    sellFeeAsset: "USDT",
+    capitalShareToman: null,
+    policyOrderSizeMicros: null,
+    policyExposureMicros: null
+  });
+  assert.equal(v.buy.limitingCap, "depth", "the thin ask ladder binds the buy side");
+  assert.equal(v.buy.capacityUsdtMicros, usdtToMicros(4));
+  assert.equal(v.sell.limitingCap, "usdt_balance", "the small USDT balance binds the sell side");
+  // Fee-inclusive: 12 / 1.0035, floored.
+  assert.equal(v.sell.capacityUsdtMicros, Math.floor(usdtToMicros(12) / 1.0035));
+  assert.equal(v.buy.reason, "ok");
+  assert.equal(v.sell.reason, "ok");
+
+  // Every limiter key the UI can receive has a label in the engine's own map.
+  for (const side of [v.buy, v.sell]) {
+    for (const c of side.caps) {
+      assert.ok(CAP_LABEL_FA[c.key], `${c.key} needs a label`);
+    }
+  }
+});
+
+await test("8C close-out: an OTC quote reports quote_only, with both sides unavailable", () => {
+  const v = venueCapacity({
+    sourceId: "abantether",
+    marketModel: "OTC_QUOTE",
+    bookBids: null,
+    bookAsks: null,
+    irtToman: 555_555_556,
+    usdtMicros: usdtToMicros(2857.85),
+    feeBps: 30,
+    buyFeeAsset: "IRT",
+    sellFeeAsset: "USDT",
+    capitalShareToman: 1_111_111_111,
+    policyOrderSizeMicros: null,
+    policyExposureMicros: null
+  });
+  // Unavailable, with a reason — never a capacity of zero, which would read as
+  // "this venue can trade nothing right now" rather than "it has no ladder".
+  assert.equal(v.buy.capacityUsdtMicros, null);
+  assert.equal(v.sell.capacityUsdtMicros, null);
+  assert.notEqual(v.buy.capacityUsdtMicros, 0);
+  assert.equal(v.buy.reason, "quote_only_no_order_book");
+  assert.equal(v.sell.reason, "quote_only_no_order_book");
+  assert.equal(v.buy.limitingCap, null, "nothing limited it; there was nothing to limit");
+  assert.ok(VENUE_CAPACITY_REASON_FA.quote_only_no_order_book.includes("ساختاری"));
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

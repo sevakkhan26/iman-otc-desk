@@ -492,8 +492,23 @@ export async function GET(request: Request) {
       ? latestDecisions[0]
       : ((await listDecisions(latestProposal?.id, 1))[0] ?? null);
 
+  /*
+   * Scenario caps are recorded in the note as `SCENARIO {...}`. Parsing them
+   * back means the controls repopulate after a hard reload instead of silently
+   * resetting to UNSET, which would misrepresent what the proposal was built on.
+   */
+  let scenarioCaps: Record<string, number> | null = null;
+  const scenarioMatch = latestProposal?.note?.match(/^SCENARIO (\{.*?\})/);
+  if (scenarioMatch) {
+    try {
+      scenarioCaps = JSON.parse(scenarioMatch[1]) as Record<string, number>;
+    } catch {
+      scenarioCaps = null;
+    }
+  }
+
   const allocation = {
-    proposal: latestProposal,
+    proposal: latestProposal ? { ...latestProposal, scenarioCaps } : null,
     decision: latestDecision
       ? {
           decision: latestDecision.decision,

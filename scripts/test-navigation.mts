@@ -2637,5 +2637,80 @@ await test("8D-B desktop tables, real mobile cards, and shared primitives only",
   assert.equal(/style=\{\{/.test(pe), false);
 });
 
+/* ══ Phase 8E — the Admin Decision Desk ══════════════════════════════════════ */
+
+await test("8E blocked gates are grouped by what they are waiting for", () => {
+  const lr = read("src/components/shadowArbitrage/LiveReadiness.tsx");
+  for (const [kind, titleFa] of [
+    ["GATE_NOT_MATURE", "منتظر زمان"],
+    ["MISSING_POLICY", "منتظر تصمیم مدیر"],
+    ["MISSING_EVIDENCE", "منتظر ثبت شواهد"],
+    ["SYSTEM_FAILURE", "خرابی سامانه"]
+  ] as Array<[string, string]>) {
+    assert.ok(lr.includes(`"${kind}"`), `missing group ${kind}`);
+    assert.ok(lr.includes(titleFa), `missing label ${titleFa}`);
+  }
+  // Grouping reads the engine's own classification; it does not re-derive one.
+  assert.ok(lr.includes("g.blockerKind === kind"));
+  assert.ok(lr.includes('g.status !== "PASSED"'));
+});
+
+await test("8E the four evidence groups have real attestation forms", () => {
+  const lr = read("src/components/shadowArbitrage/LiveReadiness.tsx");
+  assert.ok(lr.includes("const ATTESTATION_FORMS"));
+  for (const kind of [
+    "api_capability",
+    "key_permissions",
+    "transfer_costs",
+    "reconciliation_runbook"
+  ]) {
+    assert.ok(lr.includes(`kind: "${kind}"`), `missing evidence form: ${kind}`);
+  }
+  // Every claim must be ticked before an attestation can be recorded.
+  assert.ok(lr.includes("form.claims.every((c) => claims[form.kind]?.[c.key])"));
+  // Recording states a fact; it never arms anything, and says so.
+  assert.ok(lr.includes("هیچ دروازه‌ای را مسلح نمی‌کند"));
+  assert.ok(lr.includes('action: "attest"'));
+  // No credential, endpoint or secret is ever collected.
+  for (const banned of ["apiKey", "apiSecret", "privateKey", "passphrase", "endpoint:"]) {
+    assert.equal(lr.includes(banned), false, `the desk must not collect ${banned}`);
+  }
+  const claimText = lr.slice(lr.indexOf("const ATTESTATION_FORMS"), lr.indexOf("export function LiveReadiness"));
+  assert.ok(claimText.includes("هیچ کلید یا رمزی در این سامانه ذخیره نشده است"));
+});
+
+await test("8E the desk offers no default, auto-approval or gate activation", () => {
+  const lr = stripComments(read("src/components/shadowArbitrage/LiveReadiness.tsx"));
+  // Only the three append-only actions the API already accepts.
+  const actions = [...lr.matchAll(/action: "([a-z_]+)"/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(actions)].sort(), ["attest", "review", "set_policy"]);
+  for (const banned of ["arm", "enable_live", "go_live", "activate", "placeOrder"]) {
+    assert.equal(lr.includes(`"${banned}"`), false, `the desk must not offer ${banned}`);
+  }
+  // No policy value is pre-filled anywhere in the component.
+  const policy = read("src/lib/shadowArbitrage/live/policy.ts");
+  assert.equal(/default\s*:/.test(policy), false, "no policy definition carries a default");
+  assert.ok(policy.includes("that is deliberate and load-bearing"));
+  // Safety is unchanged.
+  const capability = read("src/lib/shadowArbitrage/live/capability.ts");
+  assert.ok(capability.includes("export const LIVE_EXECUTION_IMPLEMENTED = false as const"));
+});
+
+await test("8E the decision-desk CSS is layout only and responsive", () => {
+  const css = read("app/globals.css");
+  const sec = css.slice(css.indexOf("Phase 8E admin decision desk"));
+  assert.equal(/backdrop-filter\s*:/.test(sec), false);
+  assert.equal(/box-shadow\s*:/.test(sec), false);
+  assert.equal(/background\s*:/.test(sec), false);
+  const tracks = [...sec.matchAll(/grid-template-columns\s*:\s*([^;]+);/g)].map((m) => m[1]);
+  for (const t of tracks) assert.ok(t.includes("minmax(0,"), `track must shrink: ${t}`);
+  assert.ok(sec.includes("@media (max-width: 900px)"), "it collapses to one column");
+  assert.ok(sec.includes("min-height: 36px"), "claim rows stay tappable");
+  const sizes = [...sec.matchAll(/font-size:\s*([\d.]+)px/g)].map((m) => Number(m[1]));
+  assert.equal(sizes.filter((n) => n < 12).length, 0);
+  const selectors = [...sec.matchAll(/^(\.[a-z][^{\n,]*)\s*[,{]/gm)].map((m) => m[1].trim());
+  for (const sel of selectors) assert.ok(/\.sa-/.test(sel), `selector escapes scope: ${sel}`);
+});
+
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

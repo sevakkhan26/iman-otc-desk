@@ -46,6 +46,16 @@ import {
   SIZING_REQUIRED_POLICIES
 } from "@/lib/shadowArbitrage/paper/sizing";
 import { venueCapacity } from "@/lib/shadowArbitrage/paper/liquidity";
+import {
+  applyProposal,
+  fingerprint,
+  recordProposal,
+  type Fingerprints
+} from "@/db/repositories/shadowAllocation";
+import {
+  buildLiquidityAwarePlan,
+  type RouteObservation
+} from "@/lib/shadowArbitrage/paper/allocation";
 import type { ShadowSourceId } from "@/lib/shadowArbitrage/types";
 import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
 import { PAPER_FEE_SETTLEMENT, microsToUsdt, settlementFor, usdtToMicros } from "@/lib/shadowArbitrage/paper/broker";
@@ -187,6 +197,146 @@ function envelope(extra: Record<string, unknown>) {
     realOrders: false,
     serverNow: new Date().toISOString(),
     ...extra
+  };
+}
+
+/**
+ * Everything both allocation actions need, derived once from live evidence.
+ *
+ * The fingerprints are taken here so a proposal and a later apply are compared
+ * against the same four facts — books, fees, account evidence and the policy
+ * caps. Any drift between them makes the proposal stale, which is what stops an
+ * allocation computed against a market that no longer exists from being applied.
+ */
+async function buildAllocationContext(): Promise<
+  | { ok: false; messageFa: string }
+  | {
+      ok: true;
+      totalCapitalToman: number;
+      valuationPriceToman: number;
+      venueIds: string[];
+      observations: RouteObservation[];
+      capacityBySource: Map<string, ReturnType<typeof venueCapacity>>;
+      fingerprints: Fingerprints;
+      appliedPolicyCaps: Record<string, number>;
+      unsetPolicyCaps: string[];
+      sessionId: string | null;
+    }
+> {
+  const [snap, lastMatrix, fees, accounts, policyValues] = await Promise.all([
+    snapshot(null),
+    loadLastMatrix(),
+    loadLatestFeeConfirmations(),
+    loadLatestAccountConfirmations(),
+    loadRiskPolicyValues()
+  ]);
+
+  const readiness = buildAllReadiness(Object.values(fees), Date.now(), Object.values(accounts));
+  const venues = classifyAllVenues(readiness).filter((v) => v.executable);
+  if (!venues.length) return { ok: false, messageFa: "هیچ صرافی اجراپذیری وجود ندارد." };
+
+  const sources = lastMatrix?.sources ?? [];
+  const snapshotById = new Map(sources.map((x) => [x.sourceId as string, x]));
+  const price =
+    snap.session?.valuationPriceToman ??
+    deriveValuationPrice(await loadLatestSourceSnapshots());
+  if (!price || price <= 0) {
+    return { ok: false, messageFa: "قیمت مبنای تتر در دسترس نیست؛ بدون آن تخصیص انجام نمی‌شود." };
+  }
+
+  const total = snap.session?.totalCapitalToman ?? DEFAULT_CAPITAL_TOMAN;
+  const balances = (snap.balances ?? []).map((b) => ({
+    sourceId: b.sourceId,
+    irtToman: b.irtToman,
+    usdtMicros: usdtToMicros(b.usdt)
+  }));
+  const shareBySource = new Map<string, number>(
+    (snap.session?.openingAllocations ?? []).map((a) => [
+      a.sourceId as string,
+      Math.round(a.irtToman + a.usdtUnits * price)
+    ])
+  );
+
+  const policies = buildPolicyState(policyValues);
+  const orderSize = policies.find((p) => p.definition.key === "max_order_size_usdt");
+  const orderSizeMicros = orderSize?.configured ? usdtToMicros(orderSize.value as number) : null;
+
+  const capacityBySource = new Map<string, ReturnType<typeof venueCapacity>>();
+  for (const v of venues) {
+    const sn = snapshotById.get(v.sourceId);
+    const bal = balances.find((b) => b.sourceId === v.sourceId);
+    capacityBySource.set(
+      v.sourceId,
+      venueCapacity({
+        sourceId: v.sourceId,
+        marketModel: sn?.marketModel ?? "ORDER_BOOK",
+        bookBids: sn?.bookBids ?? null,
+        bookAsks: sn?.bookAsks ?? null,
+        irtToman: bal?.irtToman ?? null,
+        usdtMicros: bal?.usdtMicros ?? null,
+        feeBps: readiness.find((r) => r.sourceId === v.sourceId)?.takerFeeBps ?? null,
+        buyFeeAsset: settlementFor(v.sourceId as ShadowSourceId, "buy").feeAsset,
+        sellFeeAsset: settlementFor(v.sourceId as ShadowSourceId, "sell").feeAsset,
+        capitalShareToman: shareBySource.get(v.sourceId) ?? null,
+        policyOrderSizeMicros: orderSizeMicros,
+        policyExposureMicros: null
+      })
+    );
+  }
+
+  /*
+   * Observations drive the role split. Only FILLED history is used — a route
+   * the desk actually captured profit on is evidence; a route that merely
+   * looked good is not.
+   */
+  const byRoute = new Map<string, RouteObservation>();
+  for (const t of snap.trades ?? []) {
+    const key = `${t.buySourceId}->${t.sellSourceId}`;
+    const prev = byRoute.get(key);
+    const pnl = Number(t.riskAdjustedPnlToman ?? 0);
+    if (prev) {
+      prev.occurrences += 1;
+      prev.riskAdjustedPnlToman += pnl;
+    } else {
+      byRoute.set(key, {
+        buySourceId: t.buySourceId,
+        sellSourceId: t.sellSourceId,
+        occurrences: 1,
+        riskAdjustedPnlToman: pnl,
+        capacityUsdtMicros: capacityBySource.get(t.buySourceId)?.buy.capacityUsdtMicros ?? 0
+      });
+    }
+  }
+
+  const appliedPolicyCaps: Record<string, number> = {};
+  const unsetPolicyCaps: string[] = [];
+  for (const p of policies) {
+    if (p.configured && p.value !== null) appliedPolicyCaps[p.definition.key] = p.value;
+    else unsetPolicyCaps.push(p.definition.key);
+  }
+
+  return {
+    ok: true,
+    totalCapitalToman: total,
+    valuationPriceToman: price,
+    venueIds: venues.map((v) => v.sourceId),
+    observations: [...byRoute.values()].sort((a, b) =>
+      `${a.buySourceId}->${a.sellSourceId}`.localeCompare(`${b.buySourceId}->${b.sellSourceId}`)
+    ),
+    capacityBySource,
+    fingerprints: {
+      books: fingerprint(
+        sources
+          .map((x) => ({ id: x.sourceId, bids: x.bookBids, asks: x.bookAsks }))
+          .sort((a, b) => a.id.localeCompare(b.id))
+      ),
+      fees: fingerprint(fees),
+      accounts: fingerprint(accounts),
+      policy: fingerprint({ applied: appliedPolicyCaps, unset: [...unsetPolicyCaps].sort() })
+    },
+    appliedPolicyCaps,
+    unsetPolicyCaps,
+    sessionId: snap.session?.id ?? null
   };
 }
 
@@ -352,8 +502,89 @@ export async function POST(request: Request) {
   }
 
   const action = String(body.action ?? "");
-  if (!["create", "start", "pause", "resume", "stop"].includes(action)) {
+  if (
+    !["create", "start", "pause", "resume", "stop", "propose_allocation", "apply_allocation"].includes(
+      action
+    )
+  ) {
     return bad("عملیات نامعتبر است");
+  }
+
+  /*
+   * Phase 8C-5 — allocation proposals.
+   *
+   * `propose_allocation` only computes and stores; it never changes a balance.
+   * `apply_allocation` is the single explicit step that does, and it refuses a
+   * proposal whose evidence has moved. Neither can place an order.
+   */
+  if (action === "propose_allocation" || action === "apply_allocation") {
+    const ctx = await buildAllocationContext();
+    if (!ctx.ok) return bad(ctx.messageFa, "allocation_unavailable");
+
+    if (action === "propose_allocation") {
+      const plan = buildLiquidityAwarePlan({
+        totalCapitalToman: ctx.totalCapitalToman,
+        valuationPriceToman: ctx.valuationPriceToman,
+        venueIds: ctx.venueIds,
+        observations: ctx.observations
+      });
+      if (plan.residualToman !== 0) {
+        return bad(`پیشنهاد حفظ سرمایه را نقض کرد: باقی‌مانده ${plan.residualToman}`);
+      }
+      const stored = await recordProposal({
+        totalCapitalToman: plan.totalCapitalToman,
+        valuationPriceToman: plan.valuationPriceToman,
+        allocatedToman: plan.allocatedToman,
+        residualToman: plan.residualToman,
+        rows: plan.rows.map((r) => {
+          const cap = ctx.capacityBySource.get(r.sourceId);
+          return {
+            sourceId: r.sourceId,
+            role: r.role,
+            irtToman: r.irtToman,
+            usdtUnits: r.usdtUnits,
+            valueToman: r.valueToman,
+            sharePercent: r.sharePercent,
+            buyCapacityUsdtMicros: cap?.buy.capacityUsdtMicros ?? null,
+            sellCapacityUsdtMicros: cap?.sell.capacityUsdtMicros ?? null,
+            buyLimiter: cap?.buy.limitingCap ?? null,
+            sellLimiter: cap?.sell.limitingCap ?? null,
+            buyReason: cap?.buy.reason ?? "no_balance_record",
+            sellReason: cap?.sell.reason ?? "no_balance_record",
+            reasonFa: r.reasonFa
+          };
+        }),
+        fingerprints: ctx.fingerprints,
+        appliedPolicyCaps: ctx.appliedPolicyCaps,
+        unsetPolicyCaps: ctx.unsetPolicyCaps,
+        observations: ctx.observations,
+        createdBy: session.u ?? "admin",
+        note: typeof body.note === "string" ? body.note.slice(0, 500) : null
+      });
+      return new NextResponse(
+        JSON.stringify(envelope({ proposal: stored, warningsFa: plan.errorsFa })),
+        { status: 200, headers: SHADOW_NO_STORE }
+      );
+    }
+
+    const proposalId = String(body.proposalId ?? "");
+    const idempotencyKey = String(body.idempotencyKey ?? "");
+    if (!proposalId || !idempotencyKey) {
+      return bad("شناسهٔ پیشنهاد و کلید یکتاسازی الزامی است");
+    }
+    if (!ctx.sessionId) return bad("برای اعمال تخصیص، یک نشست کاغذی لازم است");
+
+    const outcome = await applyProposal({
+      proposalId,
+      sessionId: ctx.sessionId,
+      idempotencyKey,
+      currentFingerprints: ctx.fingerprints,
+      decidedBy: session.u ?? "admin"
+    });
+    return new NextResponse(JSON.stringify(envelope({ outcome })), {
+      status: outcome.ok || outcome.idempotentReplay ? 200 : 409,
+      headers: SHADOW_NO_STORE
+    });
   }
 
   if (action === "create") {

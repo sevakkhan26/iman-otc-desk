@@ -132,6 +132,28 @@ export type VenueCapacityView = {
   };
 };
 
+export type ProposalView = {
+  id: string;
+  totalCapitalToman: number;
+  allocatedToman: number;
+  residualToman: number;
+  appliedPolicyCaps: Record<string, number>;
+  unsetPolicyCaps: string[];
+  rows: Array<{
+    sourceId: string;
+    role: string;
+    irtToman: number;
+    usdtUnits: number;
+    valueToman: number;
+    sharePercent: number;
+    buyCapacityUsdtMicros: number | null;
+    sellCapacityUsdtMicros: number | null;
+    buyReason: string;
+    sellReason: string;
+    reasonFa: string;
+  }>;
+};
+
 export type SizingView = {
   requiredPolicies: string[];
   missingPolicies: string[];
@@ -168,6 +190,11 @@ type Props = {
   serverNow: string | null;
   onRefresh: () => void;
   onOpenSection: (id: ShadowTabId) => void;
+  /** Append-only allocation proposal, when one has been generated. */
+  proposal: ProposalView | null;
+  proposalBusy: boolean;
+  onProposeAllocation: () => void;
+  onApplyAllocation: () => void;
   /** Session create / start / pause / stop, supplied by the page. */
   sessionControls?: React.ReactNode;
   /** Everything technical, folded away behind one disclosure. */
@@ -252,6 +279,10 @@ export function CommandCenter({
   serverNow,
   onRefresh,
   onOpenSection,
+  proposal,
+  proposalBusy,
+  onProposeAllocation,
+  onApplyAllocation,
   sessionControls,
   advanced
 }: Props) {
@@ -1104,6 +1135,104 @@ export function CommandCenter({
             دلیل هر صرافی مستقل است؛ نبودِ دفتر ساختاری (نقل‌قول تک‌قیمتی) هرگز با نبودِ دفتر در یک
             چرخه یکی گزارش نمی‌شود.
           </div>
+
+          {/* ── current versus proposed allocation ────────────────────── */}
+          <div className="panel-body sa-stack-2">
+            <div className="sa-chips">
+              <button
+                type="button"
+                className="sa-btn-details glass-control"
+                disabled={proposalBusy}
+                onClick={onProposeAllocation}
+              >
+                {proposalBusy ? "در حال محاسبه…" : "ساخت پیشنهاد تخصیص"}
+              </button>
+              {proposal ? (
+                <button
+                  type="button"
+                  className="sa-btn-clear glass-control"
+                  disabled={proposalBusy}
+                  onClick={onApplyAllocation}
+                >
+                  اعمال پیشنهاد (نیازمند تأیید صریح)
+                </button>
+              ) : null}
+            </div>
+            <p className="sa-sub">
+              ساخت پیشنهاد فقط محاسبه و ثبت می‌کند و هیچ موجودی‌ای را تغییر نمی‌دهد. تخصیص فعلی تا
+              زمانی که مدیر صریحاً «اعمال» را نزند دست‌نخورده می‌ماند، و پیشنهادی که شواهدش (دفتر،
+              کارمزد، حساب یا سیاست) تغییر کرده باشد رد می‌شود.
+            </p>
+          </div>
+
+          {proposal ? (
+            <>
+              <div className="panel-body sa-table-wrap">
+                <table className="sa-table">
+                  <caption className="sa-sub">
+                    تخصیص فعلی در برابر پیشنهادی — مجموع پیشنهاد{" "}
+                    <TomanAmount value={proposal.allocatedToman} /> با باقی‌ماندهٔ{" "}
+                    {toFaDigits(proposal.residualToman)}
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">صرافی</th>
+                      <th scope="col">نقش</th>
+                      <th scope="col" className="num">تومان فعلی</th>
+                      <th scope="col" className="num">تومان پیشنهادی</th>
+                      <th scope="col" className="num">تتر فعلی</th>
+                      <th scope="col" className="num">تتر پیشنهادی</th>
+                      <th scope="col" className="num">ارزش پیشنهادی</th>
+                      <th scope="col" className="num">تغییر</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {proposal.rows.map((r) => {
+                      const cur = portfolio?.balances.find((b) => b.sourceId === r.sourceId);
+                      const curValue = cur
+                        ? Math.round(cur.irtToman + cur.usdt * (markPrice ?? 0))
+                        : null;
+                      const delta = curValue === null ? null : r.valueToman - curValue;
+                      return (
+                        <tr key={r.sourceId}>
+                          <td>{r.sourceId}</td>
+                          <td className="sa-sub">{r.role}</td>
+                          <td className="num">
+                            {cur ? <TomanAmount value={cur.irtToman} /> : DASH}
+                          </td>
+                          <td className="num">
+                            <TomanAmount value={r.irtToman} />
+                          </td>
+                          <td className="num">
+                            {cur ? <Bidi>{toFaDigits(cur.usdt.toFixed(2))}</Bidi> : DASH}
+                          </td>
+                          <td className="num">
+                            <Bidi>{toFaDigits(r.usdtUnits.toFixed(2))}</Bidi>
+                          </td>
+                          <td className="num">
+                            <TomanAmount value={r.valueToman} />
+                          </td>
+                          <td className={`num ${(delta ?? 0) >= 0 ? "sa-pos" : "sa-neg"}`}>
+                            {delta === null ? DASH : <TomanAmount value={delta} />}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="panel-body sa-sub">
+                سقف‌های اعمال‌شده:{" "}
+                {Object.keys(proposal.appliedPolicyCaps).length
+                  ? Object.entries(proposal.appliedPolicyCaps)
+                      .map(([k, v]) => `${k}=${v}`)
+                      .join("، ")
+                  : "هیچ‌کدام"}{" "}
+                · تعیین‌نشده (اعمال نشد):{" "}
+                <span className="sa-strong">{proposal.unsetPolicyCaps.join("، ") || "—"}</span>
+              </div>
+            </>
+          ) : null}
         </section>
       ) : null}
 

@@ -478,10 +478,20 @@ await test("8A no API, database, calculation or safety logic changed", () => {
     [...new Set(endpoints)].sort(),
     ["accounts", "analytics", "history", "live-readiness", "matrix", "observation", "paper"]
   );
-  // The only mutating call is the pre-existing pause/resume control.
+  /*
+   * Mutating calls, all simulation-only: the pre-existing pause/resume control,
+   * and the two Phase 8C-5 allocation actions. Proposing only computes and
+   * stores; applying rewrites VIRTUAL balances behind an explicit admin press.
+   * None of them can reach an exchange.
+   */
   const posts = view.match(/method: "POST"/g) ?? [];
-  assert.equal(posts.length, 1);
+  assert.equal(posts.length, 3);
   assert.ok(view.includes('JSON.stringify({ action })'));
+  assert.ok(view.includes('action: "propose_allocation"'));
+  assert.ok(view.includes('action: "apply_allocation"'));
+  // Applying is idempotent by construction: the key is derived, not random.
+  assert.ok(view.includes("idempotencyKey: `apply:${proposal.id}`"));
+  assert.equal(/Math\.random\(\)/.test(view), false, "an idempotency key must be deterministic");
   // Every shadow API route is still admin-only.
   for (const r of ["matrix", "observation", "paper", "live-readiness", "capital", "accounts"]) {
     assert.ok(read(`app/api/shadow-arbitrage/${r}/route.ts`).includes("requireAdminSession"));
@@ -1993,7 +2003,13 @@ await test("8C session create, start, pause and stop live in the Command Center"
     assert.ok(paper.includes(`action: "${action}"`), `missing ${action} action`);
   }
   const route = read("app/api/shadow-arbitrage/paper/route.ts");
-  assert.ok(route.includes('["create", "start", "pause", "resume", "stop"]'), "no new API action");
+  // Phase 8C-5 added exactly two actions, both simulation-only.
+  assert.ok(
+    route.includes('["create", "start", "pause", "resume", "stop", "propose_allocation", "apply_allocation"]')
+  );
+  for (const banned of ["place_order", "arm", "go_live", "withdraw", "deposit", "transfer"]) {
+    assert.equal(route.includes(`"${banned}"`), false, `no ${banned} action may exist`);
+  }
 
   // The ledger moved to Opportunities & Trades; the same component renders it.
   assert.ok(

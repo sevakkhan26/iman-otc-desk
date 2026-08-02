@@ -603,6 +603,69 @@ export const shadowCapitalPlans = pgTable(
 );
 
 /**
+ * Phase 8C-5 — append-only allocation proposals.
+ *
+ * A proposal is what the optimizer WOULD do with the virtual portfolio. It is
+ * never applied automatically and never edited: applying appends a decision
+ * row, so the history of what was proposed and what was accepted survives in
+ * full. Simulation only — no order, no transfer, no exchange contact.
+ */
+export const shadowAllocationProposals = pgTable(
+  "shadow_allocation_proposals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    totalCapitalToman: bigint("total_capital_toman", { mode: "number" }).notNull(),
+    valuationPriceToman: integer("valuation_price_toman").notNull(),
+    /** Re-valued from the stored rows, so a row proves its own conservation. */
+    allocatedToman: bigint("allocated_toman", { mode: "number" }).notNull(),
+    residualToman: bigint("residual_toman", { mode: "number" }).notNull(),
+    rows: jsonb("rows").$type<unknown[]>().notNull(),
+    booksFingerprint: text("books_fingerprint").notNull(),
+    feesFingerprint: text("fees_fingerprint").notNull(),
+    accountsFingerprint: text("accounts_fingerprint").notNull(),
+    policyFingerprint: text("policy_fingerprint").notNull(),
+    /** UNSET caps are listed explicitly; they are never stored as zero. */
+    appliedPolicyCaps: jsonb("applied_policy_caps").$type<unknown>().notNull(),
+    unsetPolicyCaps: jsonb("unset_policy_caps").$type<string[]>().notNull(),
+    observations: jsonb("observations").$type<unknown[]>().notNull(),
+    status: text("status").notNull().default("PROPOSED"),
+    createdBy: text("created_by").notNull(),
+    note: text("note"),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [index("shadow_allocation_proposals_created_idx").on(t.createdAt)]
+);
+
+/**
+ * Append-only decision log for proposals.
+ *
+ * The unique idempotency key is the whole apply-once guarantee: a retry with
+ * the same key cannot insert a second row, so a duplicated request returns the
+ * first outcome instead of re-applying it.
+ */
+export const shadowAllocationDecisions = pgTable(
+  "shadow_allocation_decisions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    proposalId: uuid("proposal_id")
+      .notNull()
+      .references(() => shadowAllocationProposals.id),
+    sessionId: uuid("session_id"),
+    decision: text("decision").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    detailFa: text("detail_fa").notNull(),
+    balancesBefore: jsonb("balances_before").$type<unknown[]>(),
+    balancesAfter: jsonb("balances_after").$type<unknown[]>(),
+    decidedBy: text("decided_by").notNull(),
+    decidedAt: ts("decided_at").notNull().defaultNow()
+  },
+  (t) => [
+    uniqueIndex("shadow_allocation_decisions_idem_idx").on(t.idempotencyKey),
+    index("shadow_allocation_decisions_proposal_idx").on(t.proposalId, t.decidedAt)
+  ]
+);
+
+/**
  * Phase 5 — explicit admin confirmation of a simulated capital plan.
  * Append-only. An approval is pinned to the plan and to the account/fee
  * readiness it was granted against, so a later change invalidates it.

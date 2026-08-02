@@ -9,6 +9,7 @@ import {
   CommandCenter,
   type CommandBalance,
   type CommandSession,
+  type ProposalView,
   type SizingView
 } from "@/components/shadowArbitrage/CommandCenter";
 import { ObservationHeader } from "@/components/shadowArbitrage/ObservationHeader";
@@ -102,6 +103,8 @@ export function ShadowArbitrageView() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [selected, setSelected] = useState<ShadowOpportunity | null>(null);
+  const [proposal, setProposal] = useState<ProposalView | null>(null);
+  const [proposalBusy, setProposalBusy] = useState(false);
 
   /**
    * Tab changes go through the URL, so back/forward and refresh restore the
@@ -131,6 +134,65 @@ export function ShadowArbitrageView() {
     params.set("tab", tab);
     router.replace(`${pathname}?${params.toString()}`, { scroll: false });
   }, [rawTab, tab, pathname, router, searchParams]);
+
+  /**
+   * Generate an allocation proposal. This only computes and stores — the active
+   * allocation is untouched until an admin presses Apply.
+   */
+  const proposeAllocation = useCallback(async () => {
+    setProposalBusy(true);
+    setNotice(null);
+    try {
+      const res = await fetch("/api/shadow-arbitrage/paper", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ action: "propose_allocation" })
+      });
+      const body = (await res.json().catch(() => null)) as
+        | { proposal?: ProposalView; message?: string }
+        | null;
+      if (!res.ok) throw new Error(body?.message ?? "ساخت پیشنهاد ممکن نشد");
+      setProposal(body?.proposal ?? null);
+      setNotice("پیشنهاد تخصیص ساخته و ثبت شد. تا زمانی که «اعمال» را نزنید هیچ موجودی تغییر نمی‌کند.");
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "ساخت پیشنهاد ممکن نشد");
+    } finally {
+      setProposalBusy(false);
+    }
+  }, []);
+
+  /**
+   * Apply the current proposal. The idempotency key is derived from the
+   * proposal id, so a double click or a retried request cannot apply twice.
+   */
+  const applyAllocation = useCallback(async () => {
+    if (!proposal) return;
+    setProposalBusy(true);
+    setNotice(null);
+    try {
+      const res = await fetch("/api/shadow-arbitrage/paper", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          action: "apply_allocation",
+          proposalId: proposal.id,
+          idempotencyKey: `apply:${proposal.id}`
+        })
+      });
+      const body = (await res.json().catch(() => null)) as
+        | { outcome?: { detailFa?: string }; message?: string }
+        | null;
+      setNotice(body?.outcome?.detailFa ?? body?.message ?? "اعمال پیشنهاد ممکن نشد");
+      await load(false);
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "اعمال پیشنهاد ممکن نشد");
+    } finally {
+      setProposalBusy(false);
+    }
+    // `load` is defined below and is stable; referencing it here is intentional.
+  }, [proposal]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = useCallback(async (refresh = false) => {
     setLoading(true);
@@ -353,6 +415,10 @@ export function ShadowArbitrageView() {
             serverNow={serverNow}
             onRefresh={() => void load(true)}
             onOpenSection={selectTab}
+            proposal={proposal}
+            proposalBusy={proposalBusy}
+            onProposeAllocation={() => void proposeAllocation()}
+            onApplyAllocation={() => void applyAllocation()}
             /* Create, start, pause, resume and end the virtual session. */
             sessionControls={<PaperSimple parts={{ session: true, summary: false, ledger: false }} />}
             /*

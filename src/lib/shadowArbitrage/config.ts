@@ -287,11 +287,16 @@ export const SHADOW_SOURCES: ShadowSourceConfig[] = [
     eligibilityBase: "EXECUTABLE_NOW",
     feeBps: null,
     feeStatus: "unknown",
-    feeLabel: "مرجع / API پایدار تأییدنشده",
+    feeLabel: "کارمزد از شواهد پلکان حساب خوانده می‌شود",
     feeReferenceUrl: null,
     feeVerifiedAt: null,
+    /*
+     * The old text read "this source is reference-only; neither its fee nor its
+     * executability is confirmed" — untrue on both counts since the promotion,
+     * and it is rendered verbatim on the venue card.
+     */
     feeExplanation:
-      "منبع فقط مرجع است؛ کارمزد و اجراپذیری هیچ‌کدام تأیید نشده‌اند.",
+      "کارمزد این صرافی از شواهد پلکان حساب (صرافی + حالت اجرا + پلهٔ جاری) خوانده می‌شود و در نبود تطابق، نرخی اعمال نمی‌شود.",
     enabled: true,
     timeoutMs: 12_000,
     rateLimitNote: "API عمومی پایدار تأیید نشده — فاصلهٔ محافظه‌کارانه اعمال می‌شود.",

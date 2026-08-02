@@ -24,11 +24,13 @@ import {
   SHADOW_COST_RECORDS,
   clampPollInterval,
   SHADOW_POLL_MIN_MS,
-  SHADOW_POLL_MAX_MS
+  SHADOW_POLL_MAX_MS,
+  getSourceConfig
 } from "../src/lib/shadowArbitrage/config.ts";
 import {
   certifyFromSnapshot,
   CERTIFICATION_BASE,
+  isCertifiedExecutable,
   resetCertifications,
   getCertification
 } from "../src/lib/shadowArbitrage/certification.ts";
@@ -573,6 +575,136 @@ await test("Arzinja and Tetherland certify to LIVE_VERIFIED once their checks pa
   unproved.meta.directionVerified = false;
   unproved.sourceBlockedReasons = ["quote_direction_unverified"];
   assert.notEqual(certifyFromSnapshot(unproved).status, "LIVE_VERIFIED");
+});
+
+await test("Arzinja is certified as an order book, so the depth gate applies to it", () => {
+  resetCertifications();
+  /*
+   * The base entry used to read REFERENCE. That did not make certification
+   * stricter — it made it INCOMPLETE: the executable-depth gate is keyed on the
+   * model, so a cycle returning only a header price would still have been
+   * called LIVE_VERIFIED. Naming the model correctly subjects Arzinja to the
+   * same proof as the other seven books.
+   */
+  assert.equal(CERTIFICATION_BASE.arzinja.marketModel, "ORDER_BOOK");
+  assert.equal(
+    CERTIFICATION_BASE.arzinja.marketModel,
+    getSourceConfig("arzinja").marketModel,
+    "certification and config describe the same market"
+  );
+
+  const noDepth = mockSource("arzinja", "a", 194_750, 193_000);
+  noDepth.meta.depthAvailable = false;
+  const degraded = certifyFromSnapshot(noDepth);
+  assert.equal(degraded.status, "LIVE_DEGRADED", "no depth, no verification");
+  assert.ok(degraded.statusReason);
+  assert.equal(degraded.verifiedAt, null);
+
+  // With real depth on both sides it passes on its own evidence, not by name.
+  const full = certifyFromSnapshot(mockSource("arzinja", "a", 194_750, 193_000));
+  assert.equal(full.status, "LIVE_VERIFIED");
+});
+
+await test("no venue is promoted to executable by name — every gate still bites", () => {
+  resetCertifications();
+  /*
+   * Each failure is applied to Arzinja specifically, because it is the venue a
+   * name-based exception would most plausibly have been written for.
+   */
+  const cases: Array<[string, (s: NormalizedSourceSnapshot) => void]> = [
+    ["direction unproved", (s) => { s.meta.directionVerified = false; }],
+    ["price unit ambiguous", (s) => { s.meta.priceUnit = "ambiguous"; }],
+    ["no executable depth", (s) => { s.meta.depthAvailable = false; }],
+    ["rate limited", (s) => { s.meta.rateLimited = true; }],
+    ["stale beyond budget", (s) => { s.stale = true; }],
+    ["source unreachable", (s) => { s.health = "unavailable"; s.errorReason = "HTTP 500"; }]
+  ];
+  for (const [label, break_] of cases) {
+    resetCertifications();
+    const s = mockSource("arzinja", "a", 194_750, 193_000);
+    break_(s);
+    const cert = certifyFromSnapshot(s);
+    assert.notEqual(cert.status, "LIVE_VERIFIED", `${label} must not certify`);
+    assert.equal(isCertifiedExecutable(cert.status), false, `${label} is not executable`);
+  }
+
+  // And a venue whose config still declares REFERENCE_ONLY stays out entirely,
+  // regardless of how clean its response is.
+  const referenceOnly = mockSource("arzinja", "a", 194_750, 193_000, {
+    eligibilityBase: "REFERENCE_ONLY"
+  });
+  const built = buildOpportunitiesDetailed([
+    referenceOnly,
+    mockSource("nobitex", "n", 190_000, 189_000)
+  ], [], new Date().toISOString());
+  for (const o of built.drafts.filter((d) => d.buySourceId === "arzinja" || d.sellSourceId === "arzinja")) {
+    assert.notEqual(o.eligibility, "EXECUTABLE_NOW");
+    assert.ok(o.blockedReasons.includes("reference_only"));
+  }
+});
+
+await test("persisted account evidence outranks the compiled-in account status", () => {
+  /*
+   * Bitpin, AbanTether, Ramzinex and Bit24 still carry `accountStatus:
+   * "unverified"` in config while the admin's own KYC evidence says otherwise.
+   * While config decided this, every route touching them was blocked as
+   * `account_required` — the evidence was recorded, displayed, and ignored.
+   */
+  const stale = ["bitpin", "abantether", "ramzinex", "bit24"] as const;
+  for (const id of stale) {
+    assert.equal(
+      getSourceConfig(id).accountStatus,
+      "unverified",
+      `${id} still carries the legacy default, so this test is still meaningful`
+    );
+  }
+
+  const sources = [
+    mockSource("nobitex", "n", 190_000, 189_500),
+    mockSource("bitpin", "b", 189_000, 191_000, { accountStatus: "unverified" })
+  ];
+  const now = new Date().toISOString();
+
+  // Without evidence the legacy default still applies — absence never approves.
+  const legacy = buildOpportunitiesDetailed(sources, [], now);
+  const legacyRoutes = legacy.drafts.filter((d) => d.sellSourceId === "bitpin");
+  assert.ok(legacyRoutes.length, "the route exists");
+  assert.ok(
+    legacyRoutes.every((o) => o.blockedReasons.includes("account_required")),
+    "an unconfirmed venue keeps the conservative default"
+  );
+
+  // With evidence, the confirmation decides — and nothing else changes.
+  const confirmed = buildOpportunitiesDetailed(sources, [], now, {
+    accountEvidence: {
+      nobitex: { executionEligible: true, kycComplete: true },
+      bitpin: { executionEligible: true, kycComplete: true }
+    }
+  });
+  const confirmedRoutes = confirmed.drafts.filter((d) => d.sellSourceId === "bitpin");
+  assert.ok(
+    confirmedRoutes.every((o) => !o.blockedReasons.includes("account_required")),
+    "confirmed evidence clears the account block"
+  );
+  assert.ok(
+    confirmedRoutes.every((o) => o.eligibility !== "ACCOUNT_REQUIRED"),
+    "and the route is no longer labelled account-required"
+  );
+
+  // Evidence that BARS a venue is obeyed just as strictly, even where config
+  // would have allowed it. The rule is "evidence decides", not "evidence opens".
+  const barred = buildOpportunitiesDetailed(sources, [], now, {
+    accountEvidence: {
+      nobitex: { executionEligible: false, kycComplete: true },
+      bitpin: { executionEligible: true, kycComplete: true }
+    }
+  });
+  assert.ok(
+    barred.drafts
+      .filter((d) => d.buySourceId === "nobitex" || d.sellSourceId === "nobitex")
+      .every((o) => o.blockedReasons.includes("account_required")),
+    "a barred venue is blocked even though config calls it verified"
+  );
 });
 
 /* ── economics ────────────────────────────────────────────────────────────── */

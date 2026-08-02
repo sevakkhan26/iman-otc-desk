@@ -1898,6 +1898,9 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
       // evidence authoritative for every consumer. Evidence and matching only —
       // no order, no credential, no exchange call.
       "drizzle/0012_shadow_fee_tier_evidence.sql",
+      // Append order for the same evidence — the only monotonic tie-break an
+      // append-only table has. Additive column, no row is rewritten.
+      "drizzle/0013_shadow_fee_tier_seq.sql",
       "src/db/repositories/shadowFeeTier.ts",
       "src/lib/shadowArbitrage/effectiveFees.ts"
     ]);

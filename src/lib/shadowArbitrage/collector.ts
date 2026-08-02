@@ -29,6 +29,7 @@ import {
   ensureObservationSession,
   getObservation,
   loadLastSourceStates,
+  loadLatestAccountConfirmations,
   loadLifecyclesForMerge,
   retentionCleanup,
   touchHeartbeat,
@@ -36,6 +37,7 @@ import {
   withShadowLock,
   type ObservationSnapshot
 } from "@/db/repositories/shadowArbitrage";
+import { buildAllReadiness } from "@/lib/shadowArbitrage/accounts";
 import { loadEffectiveFees } from "@/lib/shadowArbitrage/effectiveFees";
 import { runPaperExecutionIsolated } from "@/lib/shadowArbitrage/paper/run";
 import { persistShadowCycle, saveCertifications } from "@/lib/shadowArbitrage/store";
@@ -215,10 +217,37 @@ async function runCycleLocked(input: {
    * evidence does not match is present with an explicit null, so its routes are
    * fee-unknown instead of silently priced with the compiled-in default.
    */
-  const { confirmedFeeBps } = await loadEffectiveFees(Date.now());
+  const effectiveFees = await loadEffectiveFees(Date.now());
+  const { confirmedFeeBps } = effectiveFees;
+
+  /*
+   * Phase 8E-B — account eligibility comes from the persisted admin evidence,
+   * through the same readiness layer the panels read. The compiled-in
+   * `accountStatus` in `config.ts` is a default for an unconfirmed venue, not a
+   * veto over a recorded confirmation: while it decided this, four venues the
+   * admin had verified were still blocking every route they touched.
+   */
+  const accountConfirmations = await loadLatestAccountConfirmations();
+  const readiness = buildAllReadiness(
+    effectiveFees.overrides,
+    Date.now(),
+    Object.values(accountConfirmations),
+    effectiveFees.blocks
+  );
+  const accountEvidence: Partial<
+    Record<ShadowSourceId, { executionEligible: boolean; kycComplete: boolean }>
+  > = {};
+  for (const r of readiness) {
+    accountEvidence[r.sourceId] = {
+      executionEligible: r.executionEligible,
+      kycComplete: r.kycComplete
+    };
+  }
+
   const built = buildOpportunitiesDetailed(aged, previousLifecycles, serverNow, {
     certStatuses: certStatusMap(certBySource),
-    confirmedFeeBps
+    confirmedFeeBps,
+    accountEvidence
   });
 
   const ok = aged.filter((s) => s.health === "healthy" || s.health === "degraded").length;

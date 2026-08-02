@@ -108,7 +108,18 @@ export type PreviewApp = {
  * so every figure derived from them is a demonstration, never market data.
  */
 export async function startPreviewApp(
-  options: { seed?: boolean; port?: number; dist?: string; debugPort?: number } = {}
+  options: {
+    seed?: boolean;
+    port?: number;
+    dist?: string;
+    debugPort?: number;
+    /**
+     * Which seeder to run when `seed` is set. Defaults to the screenshot
+     * fixture; the Paper drawer acceptance passes its own, because it needs a
+     * market that actually crosses and one fill produced by the real engine.
+     */
+    seedScript?: string;
+  } = {}
 ): Promise<PreviewApp> {
   const port = options.port ?? Number(process.env.PREVIEW_PORT ?? 3187);
   const debugPort = options.debugPort ?? Number(process.env.PREVIEW_DEBUG_PORT ?? 9333);
@@ -145,8 +156,9 @@ export async function startPreviewApp(
   });
 
   if (options.seed) {
-    log("seeding the throwaway database with demonstration data (not market data)");
-    const seeded = await execFileAsync("npx", ["--yes", "tsx", "scripts/preview-seed-shadow.mts"], {
+    const seedScript = options.seedScript ?? "scripts/preview-seed-shadow.mts";
+    log(`seeding the throwaway database with ${seedScript} (demonstration data, not market data)`);
+    const seeded = await execFileAsync("npx", ["--yes", "tsx", seedScript], {
       cwd: repoRoot,
       env,
       maxBuffer: 16 * 1024 * 1024

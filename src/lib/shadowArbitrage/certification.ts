@@ -230,7 +230,19 @@ export const CERTIFICATION_BASE: Record<ShadowSourceId, SourceCertificationBase>
     endpoint: "https://api-v2.arzinja.ir/api/v1/trade/p2p/orderbook?pair=USDTIRT",
     documentationUrl: null,
     marketSymbol: "USDTIRT (P2P)",
-    marketModel: "REFERENCE",
+    /*
+     * ORDER_BOOK, matching what the adapter actually walks and what
+     * `config.ts` already declared.
+     *
+     * While this read REFERENCE the venue was not being certified LESS
+     * strictly — it was being certified less COMPLETELY: the depth gate below
+     * is keyed on the model, so `base.marketModel === "ORDER_BOOK" &&
+     * !meta.depthAvailable` never ran for Arzinja and a cycle that returned
+     * only a header price would still have been called LIVE_VERIFIED. Naming
+     * the model correctly subjects it to the same executable-depth proof as
+     * the other seven books; it grants nothing.
+     */
+    marketModel: "ORDER_BOOK",
     priceUnit: "IRT",
     quantityUnit: "USDT",
     directionNote:

@@ -37,6 +37,7 @@
     "test:fee-tier": "npx --yes tsx scripts/test-fee-tier.mts",
     "test:paper-browser": "npx --yes tsx scripts/test-paper-browser.mts",
     "test:paper-drawer": "npx --yes tsx scripts/test-paper-drawer-browser.mts",
+    "test:paper-acceptance": "npx --yes tsx scripts/test-paper-acceptance.mts",
     "test:migration-0013": "npx --yes tsx scripts/test-migration-0013.mts",
     "test:evidence": "npx --yes tsx scripts/test-admin-evidence.mts",
     "test:sizing": "npx --yes tsx scripts/test-shadow-sizing.mts && npx --yes tsx scripts/test-shadow-liquidity.mts && npx --yes tsx scripts/test-shadow-allocation-store.mts && npx --yes tsx scripts/test-fee-tier.mts",

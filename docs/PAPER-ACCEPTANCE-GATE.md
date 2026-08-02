@@ -8,6 +8,22 @@ Neither is part of `pnpm test`. They need a running application, they take
 minutes, and one of them mutates session status — none of which belongs in the
 unit-test command.
 
+## `pnpm test:paper-acceptance` — run this one
+
+Runs both modes below and exits 0 only when the live RC gate has zero genuine
+failures, every check it reported as NOT_APPLICABLE carries an explicit verified
+reason (and is one of the fourteen drawer checks), and the fixture gate passes
+all twenty of its checks with nothing skipped.
+
+PASS, NOT_APPLICABLE and FAIL are counted and printed separately, per mode and
+in total. The rule that decides the verdict lives in
+`scripts/paperAcceptanceVerdict.mts` and is tested adversarially: twelve shapes
+a hidden regression could take are each required to be rejected.
+
+Nothing is swallowed. A crashed child, a missing summary line, a skip without a
+reason, a skip of a check that is not skippable, or a non-zero exit with no
+recorded failure all fail the acceptance.
+
 ## `pnpm test:paper-browser` — mandatory before any release
 
 Drives the **live RC on `http://127.0.0.1:3210`**. Start the RC first; the gate
@@ -22,11 +38,15 @@ It mutates nothing except session status, and compares every ledger, balance and
 history count before and after.
 
 **Fourteen of its assertions open the calculation drawer of a filled trade and
-therefore require the RC ledger to contain at least one fill.** When the market
-has offered no net-positive route, those fourteen cannot run — they are reported
-as failures but they have not found a defect. Do not wait for a fill, and never
-write one into the RC to make them pass. Run the drawer gate below instead, and
-report both results.
+therefore require the RC ledger to contain at least one fill.** When there is no
+fill they are reported as NOT_APPLICABLE rather than FAIL — but only after the
+gate has PROVED why, as an ordinary passing check: the ledger holds no filled
+trade AND every current route is blocked solely by `non_positive_net`. A ledger
+that is empty because routes are blocked on evidence, certification or an
+unknown fee is a defect, and that check goes red instead.
+
+Whenever a fill does exist the fourteen run for real and a broken drawer fails
+the gate. Never write a fill into the RC to make them pass.
 
 ## `pnpm test:paper-drawer` — the drawer, on its own fixture
 

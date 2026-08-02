@@ -1810,6 +1810,207 @@ await test("8B every new selector is scoped under .sa-*", () => {
   }
 });
 
+/* ── 8E-B: the Paper acceptance contract ─────────────────────────────────── */
+
+await test("8E-B the acceptance verdict rejects every way a run can look quiet", async () => {
+  const { acceptanceProblems, SKIPPABLE_CHECKS, FIXTURE_MIN_PASS } = await import(
+    "./paperAcceptanceVerdict.mts"
+  );
+
+  const REASON =
+    "the RC ledger holds no filled trade and all 78 current routes are blocked solely by non_positive_net";
+  const drawerSkips = [...SKIPPABLE_CHECKS].map((name) => ({ name, reason: REASON }));
+  const goodLive = {
+    mode: "live-rc",
+    pass: 50,
+    notApplicable: drawerSkips.length,
+    fail: 0,
+    skipped: drawerSkips
+  };
+  const goodFixture = {
+    mode: "fixture",
+    pass: FIXTURE_MIN_PASS,
+    notApplicable: 0,
+    fail: 0,
+    skipped: []
+  };
+  const ok = { live: goodLive, liveExitCode: 0, fixture: goodFixture, fixtureExitCode: 0 };
+
+  // The shape this phase actually produces is the only one that passes.
+  assert.deepEqual(acceptanceProblems(ok), [], "a clean run passes");
+  assert.equal(SKIPPABLE_CHECKS.size, 14, "exactly the fourteen drawer checks may be skipped");
+
+  /*
+   * Each case below is a way a regression could hide. Every one must be
+   * rejected — if any of them passed, the gate would be decorative.
+   */
+  const mustFail: Array<[string, Parameters<typeof acceptanceProblems>[0]]> = [
+    ["a genuine live failure", { ...ok, live: { ...goodLive, fail: 1 } }],
+    [
+      "a check that is not allowed to skip",
+      {
+        ...ok,
+        live: {
+          ...goodLive,
+          notApplicable: 1,
+          skipped: [{ name: "load and hard refresh issue no POST", reason: REASON }]
+        }
+      }
+    ],
+    [
+      "a skip with no reason",
+      {
+        ...ok,
+        live: {
+          ...goodLive,
+          notApplicable: 1,
+          skipped: [{ name: "drawer shows حجم", reason: "" }]
+        }
+      }
+    ],
+    [
+      "a skip with a hand-waving reason",
+      {
+        ...ok,
+        live: {
+          ...goodLive,
+          notApplicable: 1,
+          skipped: [{ name: "drawer shows حجم", reason: "no fill" }]
+        }
+      }
+    ],
+    [
+      "a skip count that disagrees with the list",
+      { ...ok, live: { ...goodLive, notApplicable: 99 } }
+    ],
+    ["a live gate that crashed", { ...ok, live: null }],
+    ["a live gate that died without recording a failure", { ...ok, liveExitCode: 1 }],
+    ["a fixture failure", { ...ok, fixture: { ...goodFixture, fail: 1 } }],
+    [
+      "a fixture that skipped anything at all",
+      {
+        ...ok,
+        fixture: {
+          ...goodFixture,
+          notApplicable: 1,
+          skipped: [{ name: "drawer shows حجم", reason: REASON }]
+        }
+      }
+    ],
+    [
+      "a fixture that ran fewer checks than required",
+      { ...ok, fixture: { ...goodFixture, pass: FIXTURE_MIN_PASS - 1 } }
+    ],
+    ["a fixture gate that crashed", { ...ok, fixture: null }],
+    ["a fixture gate that died silently", { ...ok, fixtureExitCode: 1 }]
+  ];
+  for (const [label, input] of mustFail) {
+    assert.ok(acceptanceProblems(input).length > 0, `${label} must be rejected`);
+  }
+});
+
+await test("8E-B neither browser gate can pass by swallowing a result", async () => {
+  const gates = [
+    "scripts/test-paper-browser.mts",
+    "scripts/test-paper-drawer-browser.mts",
+    "scripts/test-paper-acceptance.mts",
+    "scripts/paperAcceptanceVerdict.mts"
+  ];
+  /**
+   * The bodies of every `try` block in a file, found by matching braces.
+   *
+   * The rule that matters is not "no catch anywhere" — waiting for Chrome to
+   * boot and killing an already-dead process are legitimate — it is that no
+   * ASSERTION may sit inside one, because a swallowed exception there turns a
+   * broken check into silence.
+   */
+  function caughtBodies(src: string): string[] {
+    const out: string[] = [];
+    let i = src.indexOf("try {");
+    while (i !== -1) {
+      let depth = 0;
+      let j = i + 4;
+      for (; j < src.length; j += 1) {
+        if (src[j] === "{") depth += 1;
+        else if (src[j] === "}") {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+      // `try { … } finally { … }` swallows nothing: the exception still
+      // propagates and the process still exits non-zero. Only a catch hides.
+      if (/^\s*catch\b/.test(src.slice(j + 1))) out.push(src.slice(i, j + 1));
+      i = src.indexOf("try {", j + 1);
+    }
+    return out;
+  }
+
+  for (const file of gates) {
+    const raw = read(file);
+    const src = stripComments(raw);
+    assert.equal(/\|\|\s*true/.test(src), false, `${file} has no "|| true"`);
+    assert.equal(/process\.exit\(0\)/.test(src), false, `${file} never forces a zero exit`);
+    // A catch with nothing in it, not even a note, is a swallowed result.
+    assert.equal(
+      /catch\s*(\([^)]*\))?\s*\{\s*\}/.test(raw),
+      false,
+      `${file} has no silent, unannotated catch`
+    );
+    for (const body of caughtBodies(src)) {
+      assert.equal(
+        /\bcheck\s*\(|\bnotApplicable\s*\(/.test(body),
+        false,
+        `${file} keeps assertions out of try/catch blocks`
+      );
+    }
+  }
+
+  /*
+   * The live gate may only skip after proving WHY: the precondition is an
+   * ordinary check, so an unexplained empty ledger is red before any skip.
+   */
+  const live = read("scripts/test-paper-browser.mts");
+  assert.ok(
+    live.includes("an empty ledger is fully explained by market conditions alone"),
+    "the no-fill precondition is asserted, not assumed"
+  );
+  assert.ok(
+    live.includes("if (drawerRunnable) {"),
+    "and the drawer checks run for real whenever a fill exists"
+  );
+  assert.ok(
+    live.includes("ACCEPTANCE_SUMMARY"),
+    "the live gate reports a machine-readable verdict"
+  );
+
+  // The fixture gate must never gain a skip path at all.
+  const fixture = read("scripts/test-paper-drawer-browser.mts");
+  assert.equal(/notApplicable\s*\(/.test(fixture), false, "the fixture gate cannot skip a check");
+});
+
+await test("8E-B the fill fixture is isolated, and never called a live trade", async () => {
+  const fixture = read("scripts/seed-paper-fill-fixture.mts");
+  // It refuses anything but a throwaway database.
+  assert.ok(fixture.includes('startsWith("pglite:")'), "it only writes PGlite");
+  assert.ok(fixture.includes("refusing to write a project database"), "and never a project database");
+  // The fill comes from the real engine, not from hand-written arithmetic.
+  assert.ok(fixture.includes("runPaperExecutionForCycle"), "the real engine produces the fill");
+  assert.equal(
+    /cashPnlIrtToman\s*[:=]\s*-?\d/.test(fixture),
+    false,
+    "no PnL figure is written by hand"
+  );
+  assert.ok(
+    fixture.includes("the fixture produced no fill"),
+    "and a fixture that fails to fill throws instead of passing vacuously"
+  );
+  const drawer = read("scripts/test-paper-drawer-browser.mts");
+  assert.ok(
+    drawer.includes("not a market observation and not a live trade"),
+    "the fixture fill is never presented as a live trade"
+  );
+});
+
 await test("8B the UI redesign added no backend logic of its own", async () => {
   const uiFiles = [
     "src/components/shadowArbitrage/OpportunitiesPanel.tsx",

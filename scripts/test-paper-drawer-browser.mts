@@ -151,8 +151,23 @@ try {
   await app.stop();
 }
 
-console.log(`\nResult: ${passed} passed, ${failed} failed\n`);
+console.log(`\nResult: ${passed} PASS, 0 NOT_APPLICABLE, ${failed} FAIL\n`);
 console.log(
   "Every price behind these figures is invented fixture data. The fill was produced by the real engine over that fixture; it is not a market observation and not a live trade.\n"
+);
+
+/*
+ * Nothing here may ever be "not applicable": the fixture guarantees its own
+ * fill and fails loudly if the engine does not produce one, so every check must
+ * actually execute.
+ */
+console.log(
+  `ACCEPTANCE_SUMMARY ${JSON.stringify({
+    mode: "fixture",
+    pass: passed,
+    notApplicable: 0,
+    fail: failed,
+    skipped: []
+  })}`
 );
 if (failed) process.exit(1);

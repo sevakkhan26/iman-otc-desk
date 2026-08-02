@@ -2444,5 +2444,198 @@ await test("8C capacity is computed once: no duplicate implementation exists", (
   assert.equal(/1 \+ [a-zA-Z]*[Ff]eeBps \/ 10_?000/.test(route), false, "no fee maths in the route");
 });
 
+/* ══ Phase 8D-B — the Paper Execution tab ════════════════════════════════════ */
+
+await test("8D-B the paper tab is one panel with the permanent banner", () => {
+  const pe = read("src/components/shadowArbitrage/PaperExecution.tsx");
+  assert.ok(pe.includes('PAPER_BANNER_EN = "PAPER EXECUTION — NO REAL ORDERS OR TRANSFERS"'));
+  // Rendered unconditionally — not inside any status branch.
+  const banner = pe.slice(pe.indexOf("{PAPER_BANNER_EN}") - 400, pe.indexOf("{PAPER_BANNER_EN}"));
+  assert.equal(/\?\s*\($/.test(banner.trim()), false, "the banner is never conditional");
+
+  // One panel, not a competing second one: the view still mounts it once.
+  const view = read("src/components/ShadowArbitrageView.tsx");
+  assert.equal((view.match(/<PaperExecution/g) ?? []).length, 1);
+});
+
+await test("8D-B the session section shows identity, cycles and guarded controls", () => {
+  const pe = read("src/components/shadowArbitrage/PaperExecution.tsx");
+  for (const label of [
+    "<dt>وضعیت</dt>",
+    "<dt>حالت</dt>",
+    "<dt>شناسهٔ نشست</dt>",
+    "<dt>شناسهٔ مشاهده</dt>",
+    "<dt>آخرین چرخهٔ ارزیابی‌شده</dt>",
+    "<dt>آخرین معاملهٔ انجام‌شده</dt>"
+  ]) {
+    assert.ok(pe.includes(label), `session section needs ${label}`);
+  }
+  // Pause/resume are two-step, and they are the ONLY mutations.
+  assert.ok(pe.includes('setConfirming("pause")'));
+  assert.ok(pe.includes('setConfirming("resume")'));
+  assert.ok(pe.includes("بله، انجام بده"));
+  const actions = [...pe.matchAll(/action,\s*sessionId|JSON\.stringify\(\{ action/g)];
+  assert.ok(actions.length >= 1);
+  for (const banned of ['"create"', '"start"', '"stop"', '"apply_allocation"']) {
+    assert.equal(pe.includes(banned), false, `the paper tab must not offer ${banned}`);
+  }
+  // Nothing starts a session on mount: the effect only reads.
+  const effect = pe.slice(pe.indexOf("useEffect(() => {"), pe.indexOf("}, [load]);"));
+  assert.ok(effect.includes("void load()"));
+  assert.equal(/method: "POST"/.test(effect), false, "mounting must never mutate");
+  assert.ok(pe.includes("استقرار یا بازکردن این صفحه هرگز نشستی نمی‌سازد"));
+});
+
+await test("8D-B the five financial metrics are separate cards, never merged", () => {
+  const pe = read("src/components/shadowArbitrage/PaperExecution.tsx");
+  for (const [label, field] of [
+    ["جریان نقدی تومانی", "stats.cashPnlIrtToman"],
+    ["تغییر موجودی تتری", "stats.inventoryDeltaUsdtMicros"],
+    ["ارزش تومانی کارمزد تتری", "stats.sellFeeValueToman"],
+    ["سود خالص اقتصادی", "stats.economicNetPnlToman"],
+    ["سود تعدیل‌شده با ریسک", "stats.riskAdjustedPnlToman"]
+  ] as Array<[string, string]>) {
+    assert.ok(pe.includes(`label="${label}"`), `missing metric card: ${label}`);
+    assert.ok(pe.includes(field), `card must read ${field} from the server`);
+  }
+  // Cash and economic PnL are never added together anywhere.
+  assert.equal(
+    /cashPnlIrtToman\s*\+\s*economicNetPnlToman/.test(pe),
+    false,
+    "cash and economic PnL must never be merged"
+  );
+  // Secondary metrics exist too.
+  for (const label of ["معاملات", "نرخ تبدیل فرصت", "کارمزد پرداخت‌شده"]) {
+    assert.ok(pe.includes(`label="${label}"`), `missing secondary metric: ${label}`);
+  }
+});
+
+await test("8D-B filters, pagination and URL state behave deterministically", () => {
+  const pe = read("src/components/shadowArbitrage/PaperExecution.tsx");
+  // Every piece of view state lives in the URL, so a reload restores it.
+  for (const key of ["pv", "pq", "pout", "preason", "pper", "ppage"]) {
+    assert.ok(pe.includes(`"${key}"`), `${key} must be URL state`);
+  }
+  assert.ok(pe.includes("useShadowViewState()"));
+  // Changing a filter returns to page 1; paging never resets a filter.
+  assert.ok(pe.includes('write({ ...patch, ppage: "1" })'));
+  for (const f of ["pq:", "pout:", "preason:"]) {
+    assert.ok(pe.includes(`setFilter({ ${f}`), `${f} must go through setFilter`);
+  }
+  // An out-of-range page self-corrects inside paginate(), not by clamping here.
+  assert.ok(pe.includes("paginate(ledger, rawPage, perPage)"));
+  assert.ok(pe.includes("pageSizes={OPPORTUNITY_PAGE_SIZES}"), "10 / 20 / 50");
+  assert.ok(pe.includes("<Pager"));
+});
+
+await test("8D-B nine venue rows, quote semantics and a details drawer", () => {
+  const pe = read("src/components/shadowArbitrage/PaperExecution.tsx");
+  // The matrix is the server's, rendered row by row.
+  assert.ok(pe.includes("venueSemantics?.matrix"));
+  assert.ok(pe.includes("matrix.map((m)"));
+  for (const col of ["مدل داده", "نقش", "تومان مجازی", "تتر مجازی", "ظرفیت خرید", "ظرفیت فروش"]) {
+    assert.ok(pe.includes(col), `balance view needs ${col}`);
+  }
+  // A dealer is labelled as an executable quote, never as a book.
+  assert.ok(pe.includes('m.dataType === "EXECUTABLE_QUOTE" ? "نقل‌قول اجراپذیر" : "دفتر سفارش"'));
+  assert.equal(pe.includes("bookBids"), false, "the tab never touches book fields");
+
+  // The drawer shows both legs and all five figures.
+  for (const dt of [
+    "<dt>پای خرید</dt>",
+    "<dt>پای فروش</dt>",
+    "<dt>VWAP خرید / فروش</dt>",
+    "<dt>قیمت مرجع</dt>",
+    "<dt>بافر ریسک</dt>",
+    "<dt>جریان نقدی تومانی</dt>",
+    "<dt>تغییر موجودی تتری</dt>",
+    "<dt>ارزش تومانی کارمزد تتری</dt>",
+    "<dt>سود خالص اقتصادی</dt>",
+    "<dt>سود تعدیل‌شده</dt>"
+  ]) {
+    assert.ok(pe.includes(dt), `drawer needs ${dt}`);
+  }
+});
+
+await test("8D-B the paper tab recomputes no financial or capacity figure", () => {
+  const pe = stripComments(read("src/components/shadowArbitrage/PaperExecution.tsx"));
+  // It may not call the engine, and it may not re-derive its arithmetic.
+  for (const banned of [
+    "venueCapacity(",
+    "checkQuote(",
+    "walkBook(",
+    "totalDepthMicros(",
+    "computeRouteSize(",
+    "planFill(",
+    "buyIrtCapacityMicros(",
+    "sellUsdtCapacityMicros("
+  ]) {
+    assert.equal(pe.includes(banned), false, `the UI must not call ${banned}`);
+  }
+  // No fee maths, no VWAP maths, no PnL composition in the component.
+  assert.equal(/\/ 10_?000/.test(pe), false, "no bps arithmetic in the UI");
+  assert.equal(/1 \+ [a-zA-Z]*[Ff]ee/.test(pe), false, "no fee-inclusive division in the UI");
+  assert.equal(
+    /economicNetPnlToman\s*-\s*[a-zA-Z]/.test(pe),
+    false,
+    "risk-adjusted PnL is the server's number, not a subtraction here"
+  );
+  // Dividing by 1e6 to DISPLAY micros is formatting, not computation, and is
+  // the only arithmetic allowed; it never feeds another figure.
+  assert.ok(pe.includes("/ 1_000_000"), "micros are formatted for display");
+});
+
+await test("8D-B unknown values are em dashes carrying their own reason", () => {
+  const pe = read("src/components/shadowArbitrage/PaperExecution.tsx");
+  assert.ok(pe.includes("function Unknown({ why }"));
+  assert.ok(pe.includes('<span className="sa-unknown" title={why}>'));
+  // Used for every figure that can genuinely be absent.
+  for (const why of [
+    "این رکورد اجرا نشده است",
+    "کارمزد تأییدشده‌ای برای این سمت ثبت نشده است",
+    "قیمت مرجع این چرخه در دسترس نبود",
+    "موجودی مجازی برای این صرافی ثبت نشده است"
+  ]) {
+    assert.ok(pe.includes(why), `missing reason: ${why}`);
+  }
+  // Loading, error and empty states are explicit.
+  assert.ok(pe.includes("در حال بارگذاری وضعیت اجرای کاغذی"));
+  assert.ok(pe.includes("sa-callout-danger"));
+  assert.ok(pe.includes("با این فیلترها هیچ رکوردی وجود ندارد"));
+});
+
+await test("8D-B desktop tables, real mobile cards, and shared primitives only", () => {
+  const pe = read("src/components/shadowArbitrage/PaperExecution.tsx");
+  assert.ok(pe.includes("sa-paper-desktop"));
+  assert.ok(pe.includes("sa-paper-cards"));
+  // Cards are real markup, not a restyled table.
+  assert.ok(pe.includes('className="panel sa-panel sa-paper-card"'));
+
+  const css = read("app/globals.css");
+  const sec = css.slice(css.indexOf("Phase 8D paper execution"));
+  assert.ok(sec.includes(".sa-paper-cards {\n  display: none;\n}"), "cards are desktop-hidden");
+  const mobile = sec.slice(sec.indexOf("@media (max-width: 768px)"));
+  assert.ok(mobile.includes(".sa-paper-desktop"), "tables hide on a phone");
+  assert.ok(mobile.includes("min-height: 36px"), "touch targets are 36px");
+  // Layout only: no forked material, nothing below 12px.
+  assert.equal(/backdrop-filter\s*:/.test(sec), false);
+  assert.equal(/box-shadow\s*:/.test(sec), false);
+  assert.equal(/background\s*:/.test(sec), false);
+  const sizes = [...sec.matchAll(/font-size:\s*([\d.]+)px/g)].map((m) => Number(m[1]));
+  assert.equal(sizes.filter((n) => n < 12).length, 0, "no text below 12px");
+  // Every selector stays inside the Shadow scope.
+  const selectors = [...sec.matchAll(/^(\.[a-z][^{\n,]*)\s*[,{]/gm)].map((m) => m[1].trim());
+  assert.ok(selectors.length > 3);
+  for (const sel of selectors) assert.ok(/\.sa-/.test(sel), `selector escapes scope: ${sel}`);
+
+  // Material comes from the shared primitives.
+  for (const needle of ["glass-control", "glass-tabbar", "panel sa-panel"]) {
+    assert.ok(pe.includes(needle), `must reuse ${needle}`);
+  }
+  // No font, no inline style.
+  assert.equal(/font-family|fontFamily/.test(pe), false);
+  assert.equal(/style=\{\{/.test(pe), false);
+});
+
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

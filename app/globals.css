@@ -8107,3 +8107,68 @@ table th {
     min-height: 36px;
   }
 }
+
+
+/* ── Shadow Arbitrage · Phase 8D paper execution ──────────────────────────── */
+/*
+ * LAYOUT ONLY — same contract as 8A/8B/8C. Material comes from `.panel`,
+ * `.glass-control` and `.glass-tabbar`; nothing here declares a background,
+ * border colour, shadow or blur of its own, and the type scale is the
+ * dashboard's own (12px labels, 13px body).
+ */
+.sa-paper {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Desktop shows tables; a phone gets real cards instead of a squeezed table. */
+.sa-paper-cards {
+  display: none;
+}
+.sa-paper-card {
+  padding: 12px 14px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.sa-paper-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+.sa-paper-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin: 0;
+}
+.sa-paper-card-grid dt {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+.sa-paper-card-grid dd {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 768px) {
+  .sa-paper-desktop {
+    display: none;
+  }
+  .sa-paper-cards {
+    display: grid;
+    gap: 12px;
+  }
+  /* Touch targets grow rather than shrink. */
+  .sa-paper .sa-btn-details,
+  .sa-paper .sa-btn-clear,
+  .sa-paper .sa-seg {
+    min-height: 36px;
+  }
+}

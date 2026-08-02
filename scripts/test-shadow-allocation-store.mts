@@ -320,6 +320,58 @@ await test("a proposal applies at most once, even under a different key", async 
   assert.equal(applied.length, 1, "exactly one APPLIED row exists for the proposal");
 });
 
+await test("a PREVIEW built on an unapproved scenario cap can never be applied", async () => {
+  const p = await recordProposal({
+    ...base(),
+    status: "PREVIEW",
+    scenarioCaps: { max_order_size_usdt: 500 }
+  });
+  assert.equal(p.status, "PREVIEW");
+  assert.ok(p.note?.includes("SCENARIO"), "the unapproved caps are recorded for audit");
+
+  const out = await applyProposal({
+    proposalId: p.id,
+    sessionId: SESSION,
+    idempotencyKey: `preview-${p.id}`,
+    currentFingerprints: { ...FP },
+    decidedBy: "test"
+  });
+  assert.equal(out.ok, false);
+  assert.equal(out.decision, "FAILED");
+  assert.ok(out.detailFa.includes("قابل اعمال نیست"));
+
+  // The refusal is durable, and no APPLIED row was created.
+  const decisions = await listDecisions(p.id, 100);
+  assert.equal(decisions.filter((d) => d.decision === "APPLIED").length, 0);
+  assert.ok(decisions.some((d) => d.decision === "FAILED"));
+});
+
+await test("UNSET and an explicit zero are stored as different things", async () => {
+  // Zero is a real cap: it is APPLIED, with the value 0.
+  const zero = await recordProposal({
+    ...base(),
+    appliedPolicyCaps: { max_order_size_usdt: 0 },
+    unsetPolicyCaps: ["max_venue_exposure_percent"]
+  });
+  assert.equal(zero.appliedPolicyCaps.max_order_size_usdt, 0);
+  assert.equal(zero.unsetPolicyCaps.includes("max_order_size_usdt"), false);
+
+  // UNSET is a name in the unset list and absent from the applied map.
+  const unset = await recordProposal({
+    ...base(),
+    appliedPolicyCaps: {},
+    unsetPolicyCaps: ["max_order_size_usdt"]
+  });
+  assert.equal("max_order_size_usdt" in unset.appliedPolicyCaps, false);
+  assert.ok(unset.unsetPolicyCaps.includes("max_order_size_usdt"));
+
+  // The two must not be confusable after a round trip.
+  const backZero = await getProposal(zero.id);
+  const backUnset = await getProposal(unset.id);
+  assert.equal(backZero?.appliedPolicyCaps.max_order_size_usdt, 0);
+  assert.equal(backUnset?.appliedPolicyCaps.max_order_size_usdt, undefined);
+});
+
 /* ── fingerprints ────────────────────────────────────────────────────────── */
 
 await test("fingerprints are stable under key order and change with content", () => {

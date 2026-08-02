@@ -132,8 +132,24 @@ export type VenueCapacityView = {
   };
 };
 
+export const SCENARIO_CAP_KEYS = [
+  "max_order_size_usdt",
+  "max_venue_exposure_percent",
+  "min_risk_adjusted_edge_percent"
+] as const;
+
+export const SCENARIO_CAP_FA: Record<string, string> = {
+  max_order_size_usdt: "حداکثر حجم هر سفارش (تتر)",
+  max_venue_exposure_percent: "سقف تمرکز روی یک صرافی (٪)",
+  min_risk_adjusted_edge_percent: "حداقل حاشیهٔ تعدیل‌شده (٪)"
+};
+
 export type ProposalView = {
   id: string;
+  status?: string;
+  createdAt?: string;
+  note?: string | null;
+  fingerprints?: { books: string; fees: string; accounts: string; policy: string };
   totalCapitalToman: number;
   allocatedToman: number;
   residualToman: number;
@@ -192,7 +208,13 @@ type Props = {
   onOpenSection: (id: ShadowTabId) => void;
   /** Append-only allocation proposal, when one has been generated. */
   proposal: ProposalView | null;
+  proposalDecision: { decision: string; detailFa: string; decidedBy: string; decidedAt: string } | null;
   proposalBusy: boolean;
+  /** null = UNSET (not applied); an explicit 0 is a real cap of zero. */
+  scenarioCaps: Record<string, number | null>;
+  onScenarioCapChange: (key: string, value: number | null) => void;
+  applyArmed: boolean;
+  onArmApply: (armed: boolean) => void;
   onProposeAllocation: () => void;
   onApplyAllocation: () => void;
   /** Session create / start / pause / stop, supplied by the page. */
@@ -280,7 +302,12 @@ export function CommandCenter({
   onRefresh,
   onOpenSection,
   proposal,
+  proposalDecision,
   proposalBusy,
+  scenarioCaps,
+  onScenarioCapChange,
+  applyArmed,
+  onArmApply,
   onProposeAllocation,
   onApplyAllocation,
   sessionControls,
@@ -1138,6 +1165,33 @@ export function CommandCenter({
 
           {/* ── current versus proposed allocation ────────────────────── */}
           <div className="panel-body sa-stack-2">
+            {/* Scenario caps: preview only, never an approval. */}
+            <div className="sa-filter-body">
+              {SCENARIO_CAP_KEYS.map((key) => {
+                const v = scenarioCaps[key];
+                const unset = v === null || v === undefined;
+                return (
+                  <label className="sa-field" key={key}>
+                    <span className="sa-field-label">{SCENARIO_CAP_FA[key]}</span>
+                    <input
+                      className="sa-control glass-control"
+                      inputMode="decimal"
+                      placeholder="تعیین‌نشده"
+                      value={unset ? "" : String(v)}
+                      onChange={(e) => {
+                        const raw = e.target.value.trim();
+                        // Empty means UNSET. "0" is a real cap and stays 0.
+                        onScenarioCapChange(key, raw === "" ? null : Number(raw));
+                      }}
+                    />
+                    <span className="sa-sub">
+                      {unset ? "تعیین‌نشده — در تحلیل اعمال نمی‌شود" : `اعمال می‌شود: ${toFaDigits(v)}`}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+
             <div className="sa-chips">
               <button
                 type="button"
@@ -1145,19 +1199,70 @@ export function CommandCenter({
                 disabled={proposalBusy}
                 onClick={onProposeAllocation}
               >
-                {proposalBusy ? "در حال محاسبه…" : "ساخت پیشنهاد تخصیص"}
+                {proposalBusy ? "در حال محاسبه…" : "ساخت پیشنهاد (فقط پیش‌نمایش)"}
               </button>
-              {proposal ? (
-                <button
-                  type="button"
-                  className="sa-btn-clear glass-control"
-                  disabled={proposalBusy}
-                  onClick={onApplyAllocation}
-                >
-                  اعمال پیشنهاد (نیازمند تأیید صریح)
-                </button>
+              {proposal && proposal.status !== "PREVIEW" ? (
+                applyArmed ? (
+                  <>
+                    <button
+                      type="button"
+                      className="sa-btn-clear glass-control"
+                      disabled={proposalBusy}
+                      onClick={onApplyAllocation}
+                    >
+                      بله، همین پیشنهاد را اعمال کن
+                    </button>
+                    <button
+                      type="button"
+                      className="sa-btn-clear glass-control"
+                      onClick={() => onArmApply(false)}
+                    >
+                      انصراف
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="sa-btn-clear glass-control"
+                    disabled={proposalBusy}
+                    onClick={() => onArmApply(true)}
+                  >
+                    اعمال پیشنهاد…
+                  </button>
+                )
               ) : null}
             </div>
+
+            {proposal ? (
+              <div className="sa-sub">
+                پیشنهاد <Bidi>{proposal.id.slice(0, 8)}</Bidi> · وضعیت{" "}
+                <span className="sa-strong">{proposal.status ?? "PROPOSED"}</span>
+                {proposal.status === "PREVIEW"
+                  ? " — بر پایهٔ سقف سناریویی تأییدنشده ساخته شده و قابل اعمال نیست."
+                  : null}
+                {proposal.fingerprints ? (
+                  <>
+                    {" "}
+                    · اثرانگشت‌ها: دفتر <Bidi>{proposal.fingerprints.books.slice(0, 8)}</Bidi> ·
+                    کارمزد <Bidi>{proposal.fingerprints.fees.slice(0, 8)}</Bidi> · حساب{" "}
+                    <Bidi>{proposal.fingerprints.accounts.slice(0, 8)}</Bidi> · سیاست{" "}
+                    <Bidi>{proposal.fingerprints.policy.slice(0, 8)}</Bidi>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+
+            {proposalDecision ? (
+              <div
+                className={`sa-callout ${
+                  proposalDecision.decision === "APPLIED" ? "sa-callout-muted" : "sa-callout-warn"
+                }`}
+                role="status"
+              >
+                آخرین تصمیم ثبت‌شده: <span className="sa-strong">{proposalDecision.decision}</span> —{" "}
+                {proposalDecision.detailFa} ({proposalDecision.decidedBy})
+              </div>
+            ) : null}
             <p className="sa-sub">
               ساخت پیشنهاد فقط محاسبه و ثبت می‌کند و هیچ موجودی‌ای را تغییر نمی‌دهد. تخصیص فعلی تا
               زمانی که مدیر صریحاً «اعمال» را نزند دست‌نخورده می‌ماند، و پیشنهادی که شواهدش (دفتر،

@@ -59,6 +59,10 @@ type PaperPayload = {
   transitions?: PaperLedgerRow[];
   wizard?: { markPriceToman: number | null };
   sizing?: SizingView;
+  allocation?: {
+    proposal: ProposalView | null;
+    decision: { decision: string; detailFa: string; decidedBy: string; decidedAt: string } | null;
+  };
 };
 
 /** Account and fee readiness, read once and shared by both redesigned tabs. */
@@ -105,6 +109,12 @@ export function ShadowArbitrageView() {
   const [selected, setSelected] = useState<ShadowOpportunity | null>(null);
   const [proposal, setProposal] = useState<ProposalView | null>(null);
   const [proposalBusy, setProposalBusy] = useState(false);
+  /**
+   * Scenario caps. `null` is UNSET — not applied to the analysis — and is
+   * deliberately distinct from an explicit 0, which is a real limit of zero.
+   */
+  const [scenarioCaps, setScenarioCaps] = useState<Record<string, number | null>>({});
+  const [applyArmed, setApplyArmed] = useState(false);
 
   /**
    * Tab changes go through the URL, so back/forward and refresh restore the
@@ -147,7 +157,7 @@ export function ShadowArbitrageView() {
         method: "POST",
         headers: { "content-type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ action: "propose_allocation" })
+        body: JSON.stringify({ action: "propose_allocation", scenarioCaps })
       });
       const body = (await res.json().catch(() => null)) as
         | { proposal?: ProposalView; message?: string }
@@ -160,7 +170,7 @@ export function ShadowArbitrageView() {
     } finally {
       setProposalBusy(false);
     }
-  }, []);
+  }, [scenarioCaps]);
 
   /**
    * Apply the current proposal. The idempotency key is derived from the
@@ -236,7 +246,15 @@ export function ShadowArbitrageView() {
       }
       // These sources are best-effort: the page stays useful without them, and
       // a tab that needs one says so rather than showing an invented value.
-      if (pRes.ok) setPaper((await pRes.json()) as PaperPayload);
+      if (pRes.ok) {
+        const payload = (await pRes.json()) as PaperPayload;
+        setPaper(payload);
+        /*
+         * Hydrate the persisted proposal so a refresh shows the same one, with
+         * its status and the durable audit result — not an empty panel.
+         */
+        if (payload.allocation?.proposal) setProposal(payload.allocation.proposal);
+      }
       if (rRes.ok) setReadiness((await rRes.json()) as ReadinessPayload);
       if (accRes.ok) setAccounts((await accRes.json()) as AccountsPayload);
     } catch (e) {
@@ -416,9 +434,19 @@ export function ShadowArbitrageView() {
             onRefresh={() => void load(true)}
             onOpenSection={selectTab}
             proposal={proposal}
+            proposalDecision={paper?.allocation?.decision ?? null}
             proposalBusy={proposalBusy}
+            scenarioCaps={scenarioCaps}
+            onScenarioCapChange={(key, value) =>
+              setScenarioCaps((prev) => ({ ...prev, [key]: value }))
+            }
+            applyArmed={applyArmed}
+            onArmApply={setApplyArmed}
             onProposeAllocation={() => void proposeAllocation()}
-            onApplyAllocation={() => void applyAllocation()}
+            onApplyAllocation={() => {
+              setApplyArmed(false);
+              void applyAllocation();
+            }}
             /* Create, start, pause, resume and end the virtual session. */
             sessionControls={<PaperSimple parts={{ session: true, summary: false, ledger: false }} />}
             /*

@@ -49,6 +49,8 @@ import { venueCapacity } from "@/lib/shadowArbitrage/paper/liquidity";
 import {
   applyProposal,
   fingerprint,
+  listDecisions,
+  listProposals,
   recordProposal,
   type Fingerprints
 } from "@/db/repositories/shadowAllocation";
@@ -475,7 +477,36 @@ export async function GET(request: Request) {
     })
   };
 
-  return new NextResponse(JSON.stringify(envelope({ ...snap, history, wizard, sizing })), {
+  /*
+   * Phase 8C-5 — the latest persisted proposal and what was decided about it.
+   * Loaded on every read so a refresh shows the same proposal, status and
+   * audit result rather than an empty panel.
+   */
+  const [latestProposals, latestDecisions] = await Promise.all([
+    listProposals(1),
+    listDecisions(undefined, 1)
+  ]);
+  const latestProposal = latestProposals[0] ?? null;
+  const latestDecision =
+    latestProposal && latestDecisions[0]?.proposalId === latestProposal.id
+      ? latestDecisions[0]
+      : ((await listDecisions(latestProposal?.id, 1))[0] ?? null);
+
+  const allocation = {
+    proposal: latestProposal,
+    decision: latestDecision
+      ? {
+          decision: latestDecision.decision,
+          detailFa: latestDecision.detailFa,
+          decidedBy: latestDecision.decidedBy,
+          decidedAt: String(latestDecision.decidedAt)
+        }
+      : null,
+    /** What the engine would apply right now — for the staleness banner. */
+    currentFingerprintsAvailable: true
+  };
+
+  return new NextResponse(JSON.stringify(envelope({ ...snap, history, wizard, sizing, allocation })), {
     status: 200,
     headers: SHADOW_NO_STORE
   });
@@ -522,6 +553,24 @@ export async function POST(request: Request) {
     if (!ctx.ok) return bad(ctx.messageFa, "allocation_unavailable");
 
     if (action === "propose_allocation") {
+      /*
+       * Scenario caps let an administrator ask "what would this look like if
+       * the limit were X" WITHOUT approving X. A proposal built on them is
+       * marked PREVIEW and can never be applied — applying a plan shaped by an
+       * unapproved limit would launder a guess into the active allocation.
+       *
+       * `null` means UNSET (not applied); an explicit 0 is a real value and
+       * stays distinct from it.
+       */
+      const raw = (body.scenarioCaps ?? {}) as Record<string, unknown>;
+      const scenarioCaps: Record<string, number> = {};
+      for (const [k, v] of Object.entries(raw)) {
+        if (v === null || v === undefined || v === "") continue;
+        const n = Number(v);
+        if (Number.isFinite(n) && n >= 0) scenarioCaps[k] = n;
+      }
+      const isScenario = Object.keys(scenarioCaps).length > 0;
+
       const plan = buildLiquidityAwarePlan({
         totalCapitalToman: ctx.totalCapitalToman,
         valuationPriceToman: ctx.valuationPriceToman,
@@ -555,10 +604,12 @@ export async function POST(request: Request) {
           };
         }),
         fingerprints: ctx.fingerprints,
-        appliedPolicyCaps: ctx.appliedPolicyCaps,
-        unsetPolicyCaps: ctx.unsetPolicyCaps,
+        appliedPolicyCaps: { ...ctx.appliedPolicyCaps, ...scenarioCaps },
+        unsetPolicyCaps: ctx.unsetPolicyCaps.filter((k) => !(k in scenarioCaps)),
         observations: ctx.observations,
         createdBy: session.u ?? "admin",
+        status: isScenario ? "PREVIEW" : "PROPOSED",
+        scenarioCaps: isScenario ? scenarioCaps : null,
         note: typeof body.note === "string" ? body.note.slice(0, 500) : null
       });
       return new NextResponse(

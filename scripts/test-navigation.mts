@@ -2143,8 +2143,17 @@ await test("8C unknown figures are em dashes, never invented numbers", () => {
   assert.ok(cc.includes("summary ? <TomanAmount value={summary.drawdownToman} /> : DASH"));
   // Marked value without a mark price stays unknown rather than being guessed.
   assert.ok(cc.includes("بدون قیمت مبنا محاسبه نمی‌شود"));
-  for (const fake of ["lorem", "placeholder", "sampleData", "MOCK", "dummy"]) {
+  /*
+   * No fabricated DATA. The bare word "placeholder" is excluded because it is
+   * also a legitimate HTML input attribute — the scenario controls use it to
+   * label an UNSET cap — so the check targets fake-data identifiers instead.
+   */
+  for (const fake of ["lorem", "placeholderData", "sampleData", "MOCK", "dummy", "fakeData"]) {
     assert.equal(cc.toLowerCase().includes(fake.toLowerCase()), false, `no ${fake}`);
+  }
+  // Every `placeholder=` occurrence must be an input attribute, nothing else.
+  for (const m of cc.match(/placeholder[^=]*=/g) ?? []) {
+    assert.equal(m, "placeholder=", `unexpected placeholder usage: ${m}`);
   }
 });
 

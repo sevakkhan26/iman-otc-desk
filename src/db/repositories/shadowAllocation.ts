@@ -101,6 +101,13 @@ export async function recordProposal(input: {
   unsetPolicyCaps: string[];
   observations: unknown[];
   createdBy: string;
+  /**
+   * PROPOSED — built from approved policy only, and applicable.
+   * PREVIEW  — shaped by an unapproved scenario cap, and never applicable.
+   */
+  status?: "PROPOSED" | "PREVIEW";
+  /** The unapproved caps that shaped a PREVIEW, recorded for the audit trail. */
+  scenarioCaps?: Record<string, number> | null;
   note?: string | null;
 }): Promise<StoredProposal> {
   /*
@@ -132,9 +139,12 @@ export async function recordProposal(input: {
         appliedPolicyCaps: input.appliedPolicyCaps,
         unsetPolicyCaps: input.unsetPolicyCaps,
         observations: input.observations,
-        status: "PROPOSED",
+        status: input.status ?? "PROPOSED",
         createdBy: input.createdBy,
-        note: input.note ?? null
+        note:
+          input.scenarioCaps && Object.keys(input.scenarioCaps).length
+            ? `SCENARIO ${JSON.stringify(input.scenarioCaps)}${input.note ? ` — ${input.note}` : ""}`
+            : (input.note ?? null)
       })
       .returning();
     return hydrate(row);
@@ -255,6 +265,36 @@ export async function applyProposal(input: {
       .limit(1);
     if (!found.length) throw new Error("proposal not found");
     const proposal = hydrate(found[0]);
+
+    /*
+     * A PREVIEW was shaped by a limit nobody approved. Applying it would turn
+     * a hypothetical into the active allocation, so it is refused outright.
+     */
+    if (proposal.status !== "PROPOSED") {
+      const detailFa = `این پیشنهاد از نوع «${proposal.status}» است و بر پایهٔ سقفی ساخته شده که تأیید نشده؛ قابل اعمال نیست. برای اعمال، پیشنهادی بدون سناریو بسازید.`;
+      const [rec] = await db
+        .insert(shadowAllocationDecisions)
+        .values({
+          id: randomUUID(),
+          proposalId: proposal.id,
+          sessionId: input.sessionId,
+          decision: "FAILED",
+          idempotencyKey: input.idempotencyKey,
+          detailFa,
+          balancesBefore: null,
+          balancesAfter: null,
+          decidedBy: input.decidedBy
+        })
+        .returning();
+      return {
+        ok: false,
+        decision: "FAILED",
+        detailFa,
+        idempotentReplay: false,
+        proposalId: proposal.id,
+        decidedAt: toIso(rec.decidedAt)
+      };
+    }
 
     /*
      * A proposal is applied at most once, whatever key is presented.

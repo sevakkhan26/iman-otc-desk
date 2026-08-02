@@ -33,7 +33,8 @@ const {
   usdtToMicros,
   microsToUsdt,
   CAP_LABEL_FA,
-  VENUE_CAPACITY_REASON_FA
+  VENUE_CAPACITY_REASON_FA,
+  checkQuote
 } = await import("../src/lib/shadowArbitrage/paper/liquidity.ts");
 const { computeRouteSize, SIZING_REQUIRED_POLICIES } = await import(
   "../src/lib/shadowArbitrage/paper/sizing.ts"
@@ -485,12 +486,12 @@ await test("venue roles come from observed sides, not from a preference", () => 
   assert.equal(byId.get("nobitex")?.role, "BOTH", "buys on one route, sells on another");
   assert.equal(byId.get("wallex")?.role, "SELL_SIDE");
   assert.equal(byId.get("bitpin")?.role, "BUY_SIDE");
-  assert.equal(byId.get("arzinja")?.role, "UNUSED");
+  assert.equal(byId.get("arzinja")?.role, "EXPLORATION");
   // A losing route funds nothing.
   const losing = deriveVenueDemand(NINE, [
     { buySourceId: "nobitex", sellSourceId: "wallex", occurrences: 10, riskAdjustedPnlToman: -1, capacityUsdtMicros: 1 }
   ]);
-  assert.ok(losing.every((d) => d.role === "UNUSED"));
+  assert.ok(losing.every((d) => d.role === "EXPLORATION"));
 });
 
 await test("allocation follows role: buyers hold toman, sellers hold USDT", () => {
@@ -570,7 +571,7 @@ await test("with no profitable observation the plan says so instead of pretendin
   });
   assert.equal(plan.allocatedToman, TEN_B, "still conserved");
   assert.ok(plan.errorsFa.some((e) => e.includes("آگاهانه نیست")), "and honest about being uninformed");
-  assert.ok(plan.rows.every((r) => r.role === "UNUSED"));
+  assert.ok(plan.rows.every((r) => r.role === "EXPLORATION"));
 });
 
 /* ── 9. safety boundary ──────────────────────────────────────────────────── */
@@ -734,11 +735,16 @@ await test("8C-5 regression: quote-only is never grouped with a missing book", (
     policyOrderSizeMicros: null,
     policyExposureMicros: null
   };
-  // AbanTether: an OTC dealer. Structural, permanent, expected.
+  /*
+   * AbanTether: an OTC dealer. With no quote supplied this cycle the reason is
+   * `quote_missing` — sharper than the old catch-all, and still nothing to do
+   * with a book venue whose ladder failed to arrive.
+   */
   const quoteOnly = venueCapacity({ ...common, sourceId: "abantether", marketModel: "OTC_QUOTE" });
-  assert.equal(quoteOnly.buy.reason, "quote_only_no_order_book");
-  assert.equal(quoteOnly.sell.reason, "quote_only_no_order_book");
-  assert.ok(quoteOnly.buy.reasonFa.includes("ساختاری"), "stated as structural, not a fault");
+  assert.equal(quoteOnly.buy.reason, "quote_missing");
+  assert.equal(quoteOnly.sell.reason, "quote_missing");
+  // The structural label still exists for the sizer's book path.
+  assert.ok(VENUE_CAPACITY_REASON_FA.quote_only_no_order_book.includes("ساختاری"));
 
   // A book venue that missed a cycle. Transient, and an operator should act.
   const outage = venueCapacity({ ...common, sourceId: "bitpin", marketModel: "ORDER_BOOK" });
@@ -835,14 +841,125 @@ await test("8C close-out: an OTC quote reports quote_only, with both sides unava
     policyExposureMicros: null
   });
   // Unavailable, with a reason — never a capacity of zero, which would read as
-  // "this venue can trade nothing right now" rather than "it has no ladder".
+  // "this venue can trade nothing right now" rather than "no quote arrived".
   assert.equal(v.buy.capacityUsdtMicros, null);
   assert.equal(v.sell.capacityUsdtMicros, null);
   assert.notEqual(v.buy.capacityUsdtMicros, 0);
-  assert.equal(v.buy.reason, "quote_only_no_order_book");
-  assert.equal(v.sell.reason, "quote_only_no_order_book");
+  assert.equal(v.buy.reason, "quote_missing");
+  assert.equal(v.sell.reason, "quote_missing");
   assert.equal(v.buy.limitingCap, null, "nothing limited it; there was nothing to limit");
   assert.ok(VENUE_CAPACITY_REASON_FA.quote_only_no_order_book.includes("ساختاری"));
+});
+
+/* ── Phase 8C final: quote capacity and venue semantics ──────────────────── */
+
+const QUOTE_VENUE = {
+  sourceId: "abantether",
+  marketModel: "OTC_QUOTE",
+  bookBids: null,
+  bookAsks: null,
+  irtToman: 555_555_556,
+  usdtMicros: usdtToMicros(2857.85),
+  feeBps: 30,
+  buyFeeAsset: "IRT",
+  sellFeeAsset: "USDT",
+  capitalShareToman: 1_111_111_111,
+  policyOrderSizeMicros: null,
+  policyExposureMicros: null
+} as const;
+
+const FRESH_QUOTE = {
+  userBuyPriceToman: 192_287,
+  userSellPriceToman: 190_230,
+  maxExecutableUsdt: 50_000,
+  ageMs: 461,
+  stale: false,
+  maxQuoteAgeMs: null
+};
+
+await test("a dealer quote with a published maximum yields real capacity", () => {
+  const v = venueCapacity({ ...QUOTE_VENUE, quote: FRESH_QUOTE } as never);
+  assert.equal(v.buy.reason, "ok");
+  assert.equal(v.sell.reason, "ok");
+  assert.ok((v.buy.capacityUsdtMicros as number) > 0, "a quote with a max IS capacity");
+  assert.ok((v.sell.capacityUsdtMicros as number) > 0);
+
+  // The published maximum is a cap like any other, labelled as the quote's own.
+  const depthCap = v.buy.caps.find((c) => c.key === "depth");
+  assert.equal(depthCap?.capUsdtMicros, usdtToMicros(50_000));
+  assert.ok(depthCap?.detailFa.includes("بدون دفتر سفارش"), "it is not called a book");
+
+  // Balances still bind, fee-inclusive on the sell side.
+  assert.equal(
+    v.sell.caps.find((c) => c.key === "usdt_balance")?.capUsdtMicros,
+    Math.floor(usdtToMicros(2857.85) / 1.003)
+  );
+  // No order-book fields were fabricated anywhere.
+  assert.equal(QUOTE_VENUE.bookBids, null);
+  assert.equal(QUOTE_VENUE.bookAsks, null);
+});
+
+await test("a quote without a published maximum is unverified, not zero", () => {
+  const v = venueCapacity({
+    ...QUOTE_VENUE,
+    quote: { ...FRESH_QUOTE, maxExecutableUsdt: null }
+  } as never);
+  assert.equal(v.buy.capacityUsdtMicros, null, "null, never 0");
+  assert.equal(v.sell.capacityUsdtMicros, null);
+  assert.equal(v.buy.reason, "quote_capacity_unverified");
+  assert.equal(v.sell.reason, "quote_capacity_unverified");
+  assert.ok(v.buy.reasonFa.includes("حداکثر حجم اجراپذیر اعلام نشده"));
+});
+
+await test("missing, stale and unverified quotes are three different reasons", () => {
+  const missing = checkQuote({ ...FRESH_QUOTE, userBuyPriceToman: null });
+  assert.equal(missing.ok, false);
+  assert.equal((missing as Any).reason, "quote_missing");
+
+  const stale = checkQuote({ ...FRESH_QUOTE, stale: true });
+  assert.equal((stale as Any).reason, "quote_stale");
+
+  const overAge = checkQuote({ ...FRESH_QUOTE, ageMs: 90_000, maxQuoteAgeMs: 60_000 });
+  assert.equal((overAge as Any).reason, "quote_stale");
+
+  const unverified = checkQuote({ ...FRESH_QUOTE, maxExecutableUsdt: null });
+  assert.equal((unverified as Any).reason, "quote_capacity_unverified");
+
+  // A dealer never sells below its own bid; the reverse is bad parsing.
+  const reversed = checkQuote({ ...FRESH_QUOTE, userBuyPriceToman: 100, userSellPriceToman: 200 });
+  assert.equal((reversed as Any).reason, "quote_direction_unverified");
+
+  // All four are distinct strings — none may collapse into another.
+  const reasons = [missing, stale, unverified, reversed].map((r) => (r as Any).reason);
+  assert.equal(new Set(reasons).size, 4);
+
+  const ok = checkQuote(FRESH_QUOTE);
+  assert.equal(ok.ok, true);
+  assert.equal((ok as Any).maxMicros, usdtToMicros(50_000));
+});
+
+await test("a funded venue with no observed route is EXPLORATION, never UNUSED", () => {
+  const plan = buildLiquidityAwarePlan({
+    totalCapitalToman: TEN_B,
+    valuationPriceToman: 194_396,
+    venueIds: NINE,
+    observations: [
+      { buySourceId: "nobitex", sellSourceId: "wallex", occurrences: 5, riskAdjustedPnlToman: 9_000, capacityUsdtMicros: usdtToMicros(100) }
+    ]
+  });
+  const idle = plan.rows.filter((r) => r.role === "EXPLORATION");
+  assert.ok(idle.length > 0, "some venues have no observed route yet");
+  for (const r of idle) {
+    assert.ok(r.valueToman > 0, "and every one of them is funded");
+  }
+  // The retired label is gone from the type and from every row.
+  assert.equal(
+    plan.rows.some((r) => (r.role as string) === "UNUSED"),
+    false,
+    "a funded venue must never be called unused"
+  );
+  assert.equal(plan.allocatedToman, TEN_B, "still conserved exactly");
+  assert.equal(plan.residualToman, 0);
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

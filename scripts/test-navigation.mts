@@ -2352,5 +2352,74 @@ await test("8C the capacity column stays inside the page at every width", () => 
   }
 });
 
+await test("8C the four venue facts are counted and shown separately", () => {
+  const route = read("app/api/shadow-arbitrage/paper/route.ts");
+  // Four independent counts, derived from four different sources.
+  for (const key of ["kycConfirmed", "accountEligible", "capacityMeasurable", "routeUsable"]) {
+    assert.ok(route.includes(`${key}:`), `the API must count ${key} on its own`);
+  }
+  assert.ok(route.includes("quoteOnly:"));
+  assert.ok(route.includes("unverified:"));
+
+  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
+  for (const label of [
+    "احراز هویت تأییدشده",
+    "حساب اجراپذیر",
+    "ظرفیت قابل اندازه‌گیری",
+    "قابل استفاده در مسیر (این چرخه)",
+    "نقل‌قولی / تأییدنشده"
+  ]) {
+    assert.ok(cc.includes(label), `missing label: ${label}`);
+  }
+  // The conflated summary is gone: no single ratio stands for all four.
+  assert.equal(cc.includes("آمادگی حساب و کارمزد"), false, "the merged label is retired");
+});
+
+await test("8C a funded venue is EXPLORATION and AbanTether keeps null book fields", () => {
+  // Stripped of comments: the prose explains the rename, the CODE must not use it.
+  const alloc = stripComments(read("src/lib/shadowArbitrage/paper/allocation.ts"));
+  assert.ok(alloc.includes('"EXPLORATION"'));
+  assert.equal(/\bUNUSED\b/.test(alloc), false, "the contradictory label is gone from the code");
+  assert.ok(alloc.includes("EXPLORATION: \"اکتشافی"));
+
+  // Quote venues are measured from the quote; no book is ever synthesised.
+  const liq = read("src/lib/shadowArbitrage/paper/liquidity.ts");
+  assert.ok(liq.includes("function quoteVenueCapacity("));
+  assert.ok(liq.includes("export function checkQuote("));
+  for (const reason of [
+    "quote_capacity_unverified",
+    "quote_missing",
+    "quote_stale",
+    "quote_direction_unverified"
+  ]) {
+    assert.ok(liq.includes(`${reason}:`), `missing reason: ${reason}`);
+  }
+  // The adapter still publishes no ladder for a dealer.
+  const aban = read("src/lib/shadowArbitrage/adapters/abantether.ts");
+  assert.ok(aban.includes('kind: "OTC_QUOTE"'));
+  assert.ok(aban.includes("bids: []") && aban.includes("asks: []"));
+  assert.ok(aban.includes("depthAvailable: false"));
+  // And normalization stores null rather than an empty array.
+  const base = read("src/lib/shadowArbitrage/adapters/base.ts");
+  assert.ok(base.includes('bookBids: walkable ? cappedLevels(result.bids, "sell") : null'));
+});
+
+await test("8C capacity is computed once: no duplicate implementation exists", () => {
+  // Stripped of comments: a doc comment may NAME the engine function; the
+  // component must never CALL it.
+  const cc = stripComments(read("src/components/shadowArbitrage/CommandCenter.tsx"));
+  for (const banned of ["checkQuote(", "venueCapacity(", "totalDepthMicros(", "walkBook("]) {
+    assert.equal(cc.includes(banned), false, `the UI must not call ${banned}`);
+  }
+  // Exactly one module owns the calculation.
+  const liq = read("src/lib/shadowArbitrage/paper/liquidity.ts");
+  assert.equal((liq.match(/export function venueCapacity\(/g) ?? []).length, 1);
+  assert.equal((liq.match(/function quoteVenueCapacity\(/g) ?? []).length, 1);
+  // And the API calls it rather than reimplementing it.
+  const route = read("app/api/shadow-arbitrage/paper/route.ts");
+  assert.ok(route.includes("venueCapacity({"));
+  assert.equal(/1 \+ [a-zA-Z]*[Ff]eeBps \/ 10_?000/.test(route), false, "no fee maths in the route");
+});
+
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

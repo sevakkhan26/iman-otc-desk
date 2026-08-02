@@ -299,7 +299,11 @@ export type VenueCapacityReason =
   | "book_unusable_level"
   | "no_balance_record"
   | "no_confirmed_fee"
-  | "zero_balance";
+  | "zero_balance"
+  | "quote_capacity_unverified"
+  | "quote_missing"
+  | "quote_stale"
+  | "quote_direction_unverified";
 
 export const VENUE_CAPACITY_REASON_FA: Record<VenueCapacityReason, string> = {
   ok: "ظرفیت محاسبه شد",
@@ -310,8 +314,77 @@ export const VENUE_CAPACITY_REASON_FA: Record<VenueCapacityReason, string> = {
   book_unusable_level: "سطحی با قیمت یا مقدار نامعتبر در دفتر وجود دارد",
   no_balance_record: "موجودی مجازی برای این صرافی ثبت نشده است",
   no_confirmed_fee: "کارمزد تأییدشده برای این صرافی موجود نیست",
-  zero_balance: "موجودی این سمت صفر است"
+  zero_balance: "موجودی این سمت صفر است",
+  /*
+   * A dealer quote with no published maximum. We know the price but not how
+   * much of it is real, and a quote without a size is not a capacity claim —
+   * so capacity stays null rather than borrowing a number from somewhere else.
+   */
+  quote_capacity_unverified: "نقل‌قول منتشر شده اما حداکثر حجم اجراپذیر اعلام نشده است",
+  quote_missing: "نقل‌قول این چرخه دریافت نشد",
+  quote_stale: "نقل‌قول از بودجهٔ تازگی عبور کرده است",
+  quote_direction_unverified: "جهت نقل‌قول تأیید نشد (خرید پایین‌تر از فروش)"
 };
+
+/**
+ * A dealer quote modelled as executable capacity.
+ *
+ * An OTC dealer publishes ONE price good for any size up to a stated maximum —
+ * there is no ladder, so VWAP does not degrade with size and there are no
+ * breakpoints. That is a different market model, not a degenerate order book,
+ * and it is modelled directly rather than by inventing levels.
+ *
+ * The published maximum is the venue's own number. Without it the price is
+ * still a price but not a capacity, and capacity is null with an exact reason.
+ */
+export type QuoteCapacityInput = {
+  userBuyPriceToman: number | null;
+  userSellPriceToman: number | null;
+  /** Published by the venue. Null means it stated no executable size. */
+  maxExecutableUsdt: number | null;
+  ageMs: number;
+  stale: boolean;
+  maxQuoteAgeMs: number | null;
+};
+
+export type QuoteCheck =
+  | { ok: true; maxMicros: number; buyPriceToman: number; sellPriceToman: number }
+  | { ok: false; reason: VenueCapacityReason; detailFa: string };
+
+export function checkQuote(q: QuoteCapacityInput): QuoteCheck {
+  const { userBuyPriceToman: buy, userSellPriceToman: sell } = q;
+  if (buy === null || sell === null || buy <= 0 || sell <= 0) {
+    return { ok: false, reason: "quote_missing", detailFa: VENUE_CAPACITY_REASON_FA.quote_missing };
+  }
+  // A dealer never sells below its own bid; the reverse means bad parsing.
+  if (buy < sell) {
+    return {
+      ok: false,
+      reason: "quote_direction_unverified",
+      detailFa: VENUE_CAPACITY_REASON_FA.quote_direction_unverified
+    };
+  }
+  if (q.stale || (q.maxQuoteAgeMs !== null && q.ageMs > q.maxQuoteAgeMs)) {
+    return {
+      ok: false,
+      reason: "quote_stale",
+      detailFa: `${VENUE_CAPACITY_REASON_FA.quote_stale} — سن ${Math.round(q.ageMs)} میلی‌ثانیه`
+    };
+  }
+  if (q.maxExecutableUsdt === null || !(q.maxExecutableUsdt > 0)) {
+    return {
+      ok: false,
+      reason: "quote_capacity_unverified",
+      detailFa: VENUE_CAPACITY_REASON_FA.quote_capacity_unverified
+    };
+  }
+  return {
+    ok: true,
+    maxMicros: usdtToMicros(q.maxExecutableUsdt),
+    buyPriceToman: Math.round(buy),
+    sellPriceToman: Math.round(sell)
+  };
+}
 
 /** One capped quantity with the evidence behind it. */
 export type CapacityCap = {
@@ -413,10 +486,21 @@ export function venueCapacity(input: {
   capitalShareToman: number | null;
   policyOrderSizeMicros: number | null;
   policyExposureMicros: number | null;
+  /** Present for OTC dealers. Order-book venues leave it undefined. */
+  quote?: QuoteCapacityInput;
 }): VenueCapacity {
-  const check = validateBook(input.bookBids, input.bookAsks, input.marketModel);
   const base = { sourceId: input.sourceId, marketModel: input.marketModel };
 
+  /*
+   * A dealer quote is measured on its own terms. Its order-book fields stay
+   * null — nothing is fabricated — and its capacity comes from the price and
+   * the maximum the venue itself published.
+   */
+  if (input.marketModel === "OTC_QUOTE") {
+    return quoteVenueCapacity(input, base);
+  }
+
+  const check = validateBook(input.bookBids, input.bookAsks, input.marketModel);
   if (!check.ok) {
     const r = check.problem as VenueCapacityReason;
     return { ...base, buy: sideUnavailable(r), sell: sideUnavailable(r) };
@@ -497,6 +581,108 @@ export function venueCapacity(input: {
         (input.sellFeeAsset === "USDT"
           ? ` → ${microsToUsdt(sellCapMicros)} تتر قابل تحویل`
           : "")
+    ),
+    cap(
+      "policy_order_size",
+      input.policyOrderSizeMicros,
+      input.policyOrderSizeMicros === null ? "تعیین‌نشده — اعمال نشد" : "سیاست حداکثر حجم سفارش"
+    )
+  ];
+
+  return { ...base, buy: resolveSide(buyCaps), sell: resolveSide(sellCaps) };
+}
+
+/**
+ * Capacity for an OTC dealer.
+ *
+ * The published maximum caps both sides; balances, the capital share and the
+ * policy caps apply exactly as they do to a book venue. There is no depth cap
+ * because there is no ladder — the quote's own maximum IS the depth statement.
+ */
+function quoteVenueCapacity(
+  input: {
+    irtToman: number | null;
+    usdtMicros: number | null;
+    feeBps: number | null;
+    buyFeeAsset: string;
+    sellFeeAsset: string;
+    capitalShareToman: number | null;
+    policyOrderSizeMicros: number | null;
+    quote?: QuoteCapacityInput;
+  },
+  base: { sourceId: string; marketModel: string }
+): VenueCapacity {
+  if (!input.quote) {
+    return {
+      ...base,
+      buy: sideUnavailable("quote_missing"),
+      sell: sideUnavailable("quote_missing")
+    };
+  }
+  const q = checkQuote(input.quote);
+  if (!q.ok) {
+    return { ...base, buy: sideUnavailable(q.reason), sell: sideUnavailable(q.reason) };
+  }
+  if (input.irtToman === null || input.usdtMicros === null) {
+    return {
+      ...base,
+      buy: sideUnavailable("no_balance_record"),
+      sell: sideUnavailable("no_balance_record")
+    };
+  }
+  if (input.feeBps === null) {
+    return {
+      ...base,
+      buy: sideUnavailable("no_confirmed_fee"),
+      sell: sideUnavailable("no_confirmed_fee")
+    };
+  }
+
+  const cap = (
+    key: CapacityCap["key"],
+    capUsdtMicros: number | null,
+    detailFa: string
+  ): CapacityCap => ({ key, labelFa: CAP_LABEL_FA[key], capUsdtMicros, detailFa });
+
+  const buyPerUsdt =
+    input.buyFeeAsset === "IRT" ? q.buyPriceToman * (1 + input.feeBps / 10_000) : q.buyPriceToman;
+  const sellCapMicros =
+    input.sellFeeAsset === "USDT"
+      ? Math.floor(input.usdtMicros / (1 + input.feeBps / 10_000))
+      : input.usdtMicros;
+
+  const quoteDetail = `حداکثر اجراپذیر اعلام‌شدهٔ خودِ صرافی: ${microsToUsdt(q.maxMicros)} تتر (بدون دفتر سفارش)`;
+
+  const buyCaps: CapacityCap[] = [
+    cap("depth", q.maxMicros, quoteDetail),
+    cap(
+      "irt_balance",
+      buyPerUsdt > 0 ? Math.floor((input.irtToman / buyPerUsdt) * USDT_MICROS) : 0,
+      `${input.irtToman.toLocaleString("en-US")} تومان با کارمزد ${input.feeBps} bps در ${input.buyFeeAsset}`
+    ),
+    cap(
+      "capital_share",
+      input.capitalShareToman === null
+        ? null
+        : Math.floor((input.capitalShareToman / q.buyPriceToman) * USDT_MICROS),
+      input.capitalShareToman === null
+        ? "سهم طرح در دسترس نیست؛ اعمال نشد."
+        : `${input.capitalShareToman.toLocaleString("en-US")} تومان`
+    ),
+    cap(
+      "policy_order_size",
+      input.policyOrderSizeMicros,
+      input.policyOrderSizeMicros === null ? "تعیین‌نشده — اعمال نشد" : "سیاست حداکثر حجم سفارش"
+    )
+  ];
+
+  const sellCaps: CapacityCap[] = [
+    cap("depth", q.maxMicros, quoteDetail),
+    cap(
+      "usdt_balance",
+      sellCapMicros,
+      `${microsToUsdt(input.usdtMicros)} تتر با کارمزد ${input.feeBps} bps در ${input.sellFeeAsset}` +
+        (input.sellFeeAsset === "USDT" ? ` → ${microsToUsdt(sellCapMicros)} تتر قابل تحویل` : "")
     ),
     cap(
       "policy_order_size",

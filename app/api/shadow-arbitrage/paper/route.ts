@@ -450,31 +450,81 @@ export async function GET(request: Request) {
         policyOrderSizeMicros,
         // Exposure is a portfolio-level ceiling, not a per-venue one; it is
         // applied per route where the current exposure is known.
-        policyExposureMicros: null
+        policyExposureMicros: null,
+        // Order-book venues leave this undefined; a dealer is measured from it.
+        quote:
+          snapshot?.marketModel === "OTC_QUOTE"
+            ? {
+                userBuyPriceToman: snapshot.userBuyPriceToman,
+                userSellPriceToman: snapshot.userSellPriceToman,
+                maxExecutableUsdt: snapshot.maxExecutableUsdt,
+                ageMs: snapshot.ageMs,
+                stale: snapshot.stale,
+                maxQuoteAgeMs: policies.find((p) => p.definition.key === "max_quote_age_ms")
+                  ?.configured
+                  ? ((policies.find((p) => p.definition.key === "max_quote_age_ms")
+                      ?.value as number) ?? null)
+                  : null
+              }
+            : undefined
       }),
       nameFa: v.nameFa
     };
   });
 
+  const sizingRoutes = computeAllRouteSizes({
+    venueIds: wizard.eligibleVenues.map((v) => v.sourceId),
+    snapshotById,
+    feeBpsById,
+    settlementFor: (id, side) => settlementFor(id as ShadowSourceId, side),
+    balances: sizingBalances,
+    allocationTomanBySource,
+    portfolioValueToman,
+    exposureTomanBySource,
+    policies,
+    slippageBufferBps: SLIPPAGE_BUFFER_BPS
+  });
+
+  /*
+   * Four DIFFERENT facts, counted separately.
+   *
+   * "9/9 executable" collapsed all of them into one number and implied a
+   * readiness nobody established: KYC says who we are, capacity says whether
+   * the market data supports sizing, the role says what the plan funds it for,
+   * and route-usable says whether it can actually take a trade this cycle. A
+   * venue can be first without being last.
+   */
+  const venueSemantics = {
+    kycConfirmed: wizardReadiness.filter((r) => r.kycComplete).length,
+    accountEligible: wizardReadiness.filter((r) => r.executionEligible).length,
+    total: wizardReadiness.length,
+    capacityMeasurable: venueCapacities.filter(
+      (v) => v.buy.capacityUsdtMicros !== null || v.sell.capacityUsdtMicros !== null
+    ).length,
+    routeUsable: wizard.eligibleVenues.filter((v) =>
+      sizingRoutes.some(
+        (r) =>
+          (r.buySourceId === v.sourceId || r.sellSourceId === v.sourceId) &&
+          r.sizing.candidates.length > 0
+      )
+    ).length,
+    quoteOnly: venueCapacities
+      .filter((v) => v.marketModel === "OTC_QUOTE")
+      .map((v) => ({ sourceId: v.sourceId, buyReason: v.buy.reason, sellReason: v.sell.reason })),
+    unverified: venueCapacities
+      .filter((v) => v.buy.capacityUsdtMicros === null && v.sell.capacityUsdtMicros === null)
+      .map((v) => ({ sourceId: v.sourceId, reason: v.buy.reason, reasonFa: v.buy.reasonFa }))
+  };
+
   const sizing = {
     requiredPolicies: SIZING_REQUIRED_POLICIES,
+    venueSemantics,
     venueCapacities,
     missingPolicies: SIZING_REQUIRED_POLICIES.filter(
       (k) => !policies.find((p) => p.definition.key === k)?.configured
     ),
     probeSizesUsdt: SHADOW_TRADE_SIZES,
-    routes: computeAllRouteSizes({
-      venueIds: wizard.eligibleVenues.map((v) => v.sourceId),
-      snapshotById,
-      feeBpsById,
-      settlementFor: (id, side) => settlementFor(id as ShadowSourceId, side),
-      balances: sizingBalances,
-      allocationTomanBySource,
-      portfolioValueToman,
-      exposureTomanBySource,
-      policies,
-      slippageBufferBps: SLIPPAGE_BUFFER_BPS
-    })
+    routes: sizingRoutes
   };
 
   /*

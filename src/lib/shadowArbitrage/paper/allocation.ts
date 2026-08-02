@@ -13,7 +13,8 @@
  *   BUY_SIDE   — appears as the buy venue on profitable routes → toman;
  *   SELL_SIDE  — appears as the sell venue → USDT;
  *   BOTH       — appears on both sides → split by observed weight;
- *   UNUSED     — appears on no profitable route → a floor, not a share.
+ *   EXPLORATION— appears on no profitable route yet → a discovery floor,
+ *                funded precisely so it can be measured.
  *
  * Weight comes from observed risk-adjusted profit and route frequency, not from
  * a preference: a venue that carried more profitable volume gets more capital.
@@ -28,13 +29,20 @@
  */
 import { usdtToMicros, microsToUsdt } from "@/lib/shadowArbitrage/paper/liquidity";
 
-export type VenueRole = "BUY_SIDE" | "SELL_SIDE" | "BOTH" | "UNUSED";
+/**
+ * EXPLORATION replaces the old UNUSED label.
+ *
+ * A venue with no observed profitable route still receives the discovery floor,
+ * so calling it UNUSED contradicted its own non-zero allocation. It is not
+ * unused — it is funded precisely so it can be measured.
+ */
+export type VenueRole = "BUY_SIDE" | "SELL_SIDE" | "BOTH" | "EXPLORATION";
 
 export const VENUE_ROLE_FA: Record<VenueRole, string> = {
   BUY_SIDE: "سمت خرید — نیازمند تومان",
   SELL_SIDE: "سمت فروش — نیازمند تتر",
   BOTH: "دوطرفه — نیازمند هر دو",
-  UNUSED: "بدون مسیر سودآور مشاهده‌شده"
+  EXPLORATION: "اکتشافی — سهم دارد تا سنجیده شود"
 };
 
 /** What one route was observed to do, aggregated over the window. */
@@ -108,7 +116,7 @@ export function deriveVenueDemand(
       sourceId,
       {
         sourceId,
-        role: "UNUSED" as VenueRole,
+        role: "EXPLORATION" as VenueRole,
         buyWeight: 0,
         sellWeight: 0,
         occurrencesAsBuy: 0,
@@ -141,7 +149,7 @@ export function deriveVenueDemand(
   for (const d of demand.values()) {
     const buys = d.buyWeight > 0;
     const sells = d.sellWeight > 0;
-    d.role = buys && sells ? "BOTH" : buys ? "BUY_SIDE" : sells ? "SELL_SIDE" : "UNUSED";
+    d.role = buys && sells ? "BOTH" : buys ? "BUY_SIDE" : sells ? "SELL_SIDE" : "EXPLORATION";
   }
 
   return [...demand.values()].sort((a, b) => a.sourceId.localeCompare(b.sourceId));
@@ -235,7 +243,7 @@ export function buildLiquidityAwarePlan(input: {
      * first — a venue must be able to buy before it can have anything to sell.
      */
     let irtShare: number;
-    if (d.role === "BUY_SIDE" || d.role === "UNUSED") irtShare = share;
+    if (d.role === "BUY_SIDE" || d.role === "EXPLORATION") irtShare = share;
     else if (d.role === "SELL_SIDE") irtShare = 0;
     else irtShare = weight > 0 ? Math.floor((share * d.buyWeight) / weight) : Math.floor(share / 2);
 
@@ -301,6 +309,6 @@ function reasonFor(d: VenueDemand): string {
     case "BOTH":
       return `در ${buys} مسیر سمت خرید و در ${sells} مسیر سمت فروش بود؛ سهم به نسبت سود هر سمت تقسیم شد.`;
     default:
-      return "هیچ مسیر سودآوری با این صرافی مشاهده نشد؛ فقط کف اکتشاف تخصیص یافت تا امکان سنجش آینده بماند.";
+      return "هنوز مسیر سودآوری با این صرافی مشاهده نشده؛ سهم اکتشافی گرفت تا بتوان آن را سنجید.";
   }
 }

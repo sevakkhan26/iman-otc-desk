@@ -179,8 +179,19 @@ export type ProposalView = {
   }>;
 };
 
+export type VenueSemanticsView = {
+  kycConfirmed: number;
+  accountEligible: number;
+  total: number;
+  capacityMeasurable: number;
+  routeUsable: number;
+  quoteOnly: Array<{ sourceId: string; buyReason: string; sellReason: string }>;
+  unverified: Array<{ sourceId: string; reason: string; reasonFa: string }>;
+};
+
 export type SizingView = {
   requiredPolicies: string[];
+  venueSemantics?: VenueSemanticsView;
   missingPolicies: string[];
   venueCapacities?: VenueCapacityView[];
   routes: RouteSizingView[];
@@ -441,6 +452,7 @@ export function CommandCenter({
   const capacityOnly = !best && Boolean(bestSizing);
 
   const sizedCount = sizing?.routes.filter((r) => r.sizing.status === "SIZED").length ?? 0;
+  const sem = sizing?.venueSemantics ?? null;
 
   const healthySources = sources.filter((s) => s.health === "healthy").length;
   const progress = observation?.progressPercent ?? null;
@@ -1433,15 +1445,63 @@ export function CommandCenter({
         </section>
 
         <section className="panel sa-panel sa-cc-mini">
-          <h3 className="sa-cc-mini-title">آمادگی حساب و کارمزد</h3>
+          <h3 className="sa-cc-mini-title">وضعیت صرافی‌ها</h3>
+          {/*
+            Four different facts, never collapsed into one "9/9". A venue can be
+            KYC-confirmed and account-eligible while its market data cannot be
+            measured this cycle and no route through it is usable — those are
+            separate questions with separate answers.
+          */}
           <dl className="sa-cc-mini-list">
             <div>
-              <dt>صرافی اجراپذیر</dt>
+              <dt>احراز هویت تأییدشده</dt>
               <dd>
-                {accounts ? <Ratio part={accounts.executable} whole={accounts.total} /> : DASH}
+                {sem ? <Ratio part={sem.kycConfirmed} whole={sem.total} /> : DASH}
               </dd>
             </div>
             <div>
+              <dt>حساب اجراپذیر</dt>
+              <dd>
+                {sem ? (
+                  <Ratio part={sem.accountEligible} whole={sem.total} />
+                ) : accounts ? (
+                  <Ratio part={accounts.executable} whole={accounts.total} />
+                ) : (
+                  DASH
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>ظرفیت قابل اندازه‌گیری</dt>
+              <dd>{sem ? <Ratio part={sem.capacityMeasurable} whole={sem.total} /> : DASH}</dd>
+            </div>
+            <div>
+              <dt>قابل استفاده در مسیر (این چرخه)</dt>
+              <dd>{sem ? <Ratio part={sem.routeUsable} whole={sem.total} /> : DASH}</dd>
+            </div>
+            <div className="sa-cc-wide">
+              <dt>نقل‌قولی / تأییدنشده</dt>
+              <dd className="sa-cc-reason">
+                {sem
+                  ? sem.quoteOnly.length || sem.unverified.length
+                    ? [
+                        ...sem.quoteOnly.map(
+                          (q) =>
+                            `${q.sourceId}: نقل‌قولی — ${
+                              VENUE_CAPACITY_REASON_FA[
+                                q.buyReason as keyof typeof VENUE_CAPACITY_REASON_FA
+                              ] ?? q.buyReason
+                            }`
+                        ),
+                        ...sem.unverified
+                          .filter((u) => !sem.quoteOnly.some((q) => q.sourceId === u.sourceId))
+                          .map((u) => `${u.sourceId}: ${u.reasonFa}`)
+                      ].join(" · ")
+                    : "هیچ‌کدام"
+                  : "—"}
+              </dd>
+            </div>
+            <div className="sa-cc-wide">
               <dt>جزئیات</dt>
               <dd>
                 <button

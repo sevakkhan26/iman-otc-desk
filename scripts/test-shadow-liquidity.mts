@@ -1048,5 +1048,115 @@ await test("audit: one valid leg is enough to participate in arbitrage", () => {
   assert.equal(participates, true);
 });
 
+/* ── Bit24 audit fixtures: real upstream shapes, both directions ─────────── */
+
+/*
+ * Captured from https://pro.bit24.cash/api/v3/markets/USDT-IRT/order-books.
+ * `buy_orders` are the venue's BIDS (the user sells into them) and
+ * `sell_orders` are its ASKS. The adapter maps them that way, and these
+ * fixtures pin it: if the sides were ever swapped, the valid book below would
+ * read as crossed and the crossed one would read as valid.
+ */
+const BIT24_VALID = {
+  buy_orders: [
+    { price: "192010", amount: "520.806" },
+    { price: "192000", amount: "52.083" }
+  ],
+  sell_orders: [
+    { price: "192513", amount: "2077.795" },
+    { price: "192602", amount: "1994.76" }
+  ]
+};
+
+const BIT24_CROSSED = {
+  buy_orders: [{ price: "193000", amount: "10" }],
+  sell_orders: [{ price: "192000", amount: "10" }]
+};
+
+const asLevels = (rows: Array<{ price: string; amount: string }>) =>
+  rows.map((r) => ({ priceToman: Number(r.price), amountUsdt: Number(r.amount) }));
+
+await test("bit24: a valid upstream book passes with sides mapped as published", () => {
+  const bids = asLevels(BIT24_VALID.buy_orders);
+  const asks = asLevels(BIT24_VALID.sell_orders);
+  assert.equal(validateBook(bids as never, asks as never).ok, true);
+
+  const v = venueCapacity({
+    sourceId: "bit24",
+    marketModel: "ORDER_BOOK",
+    bookBids: bids as never,
+    bookAsks: asks as never,
+    irtToman: 200_000_000,
+    usdtMicros: usdtToMicros(100),
+    feeBps: 30,
+    buyFeeAsset: "IRT",
+    sellFeeAsset: "USDT",
+    capitalShareToman: null,
+    policyOrderSizeMicros: null,
+    policyExposureMicros: null
+  });
+  assert.equal(v.buy.reason, "ok");
+  assert.equal(v.sell.reason, "ok");
+  assert.ok((v.buy.capacityUsdtMicros as number) > 0, "a valid book yields buy capacity");
+
+  // The mapping itself: buy_orders must be BELOW sell_orders. Swapping the two
+  // would make this book crossed, which is exactly what must never be done to
+  // make validation pass.
+  assert.ok(Math.max(...bids.map((l) => l.priceToman)) < Math.min(...asks.map((l) => l.priceToman)));
+  assert.equal(
+    validateBook(asks as never, bids as never).ok,
+    false,
+    "swapping the sides produces a crossed book — proof the mapping is load-bearing"
+  );
+});
+
+await test("bit24: a crossed upstream book fails closed and recovers on the next valid cycle", () => {
+  const crossedBids = asLevels(BIT24_CROSSED.buy_orders);
+  const crossedAsks = asLevels(BIT24_CROSSED.sell_orders);
+  const bad = validateBook(crossedBids as never, crossedAsks as never);
+  assert.equal(bad.ok, false);
+  assert.equal((bad as Any).problem, "book_crossed");
+
+  const blocked = venueCapacity({
+    sourceId: "bit24",
+    marketModel: "ORDER_BOOK",
+    bookBids: crossedBids as never,
+    bookAsks: crossedAsks as never,
+    irtToman: 200_000_000,
+    usdtMicros: usdtToMicros(100),
+    feeBps: 30,
+    buyFeeAsset: "IRT",
+    sellFeeAsset: "USDT",
+    capitalShareToman: null,
+    policyOrderSizeMicros: null,
+    policyExposureMicros: null
+  });
+  // Fail closed: null capacity and an exact reason — never a forced number,
+  // and never a side swap to make the check pass.
+  assert.equal(blocked.buy.capacityUsdtMicros, null);
+  assert.equal(blocked.sell.capacityUsdtMicros, null);
+  assert.equal(blocked.buy.reason, "book_crossed");
+  assert.ok(VENUE_CAPACITY_REASON_FA.book_crossed.includes("نامعتبر"));
+
+  // Recovery is automatic: the very next valid cycle measures normally. The
+  // blocker is per-cycle state, not a sticky flag on the venue.
+  const recovered = venueCapacity({
+    sourceId: "bit24",
+    marketModel: "ORDER_BOOK",
+    bookBids: asLevels(BIT24_VALID.buy_orders) as never,
+    bookAsks: asLevels(BIT24_VALID.sell_orders) as never,
+    irtToman: 200_000_000,
+    usdtMicros: usdtToMicros(100),
+    feeBps: 30,
+    buyFeeAsset: "IRT",
+    sellFeeAsset: "USDT",
+    capitalShareToman: null,
+    policyOrderSizeMicros: null,
+    policyExposureMicros: null
+  });
+  assert.equal(recovered.buy.reason, "ok");
+  assert.ok((recovered.buy.capacityUsdtMicros as number) > 0);
+});
+
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

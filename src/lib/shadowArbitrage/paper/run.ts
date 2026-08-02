@@ -30,6 +30,7 @@ import { buildPolicyState } from "@/lib/shadowArbitrage/live/policy";
 import { mulPriceSizeToman } from "@/lib/shadowArbitrage/money";
 import { describeRebalance, evaluateCycle } from "@/lib/shadowArbitrage/paper/engine";
 import { microsToUsdt, type VenueBalance } from "@/lib/shadowArbitrage/paper/broker";
+import type { QuoteCapacityInput } from "@/lib/shadowArbitrage/paper/liquidity";
 import type { NormalizedSourceSnapshot, ShadowOpportunity, ShadowSourceId } from "@/lib/shadowArbitrage/types";
 
 export type PaperCycleOutcome = {
@@ -111,6 +112,24 @@ export async function runPaperExecutionForCycle(input: {
   );
   const portfolioValueToman = [...exposureTomanBySource.values()].reduce((s, v) => s + v, 0);
 
+  const maxQuoteAgePolicy = buildPolicyState(policyValues).find(
+    (p) => p.definition.key === "max_quote_age_ms"
+  );
+  const quoteBySource = new Map<string, QuoteCapacityInput>();
+  for (const snap of input.sources) {
+    if (snap.marketModel !== "OTC_QUOTE") continue;
+    quoteBySource.set(snap.sourceId as string, {
+      userBuyPriceToman: snap.userBuyPriceToman,
+      userSellPriceToman: snap.userSellPriceToman,
+      maxExecutableUsdt: snap.maxExecutableUsdt,
+      ageMs: snap.ageMs,
+      stale: snap.stale,
+      maxQuoteAgeMs: maxQuoteAgePolicy?.configured
+        ? ((maxQuoteAgePolicy.value as number) ?? null)
+        : null
+    });
+  }
+
   const evaluation = evaluateCycle({
     opportunities: input.opportunities,
     sources: input.sources,
@@ -122,7 +141,16 @@ export async function runPaperExecutionForCycle(input: {
       allocationTomanBySource,
       portfolioValueToman,
       exposureTomanBySource,
-      slippageBufferBps: SLIPPAGE_BUFFER_BPS
+      slippageBufferBps: SLIPPAGE_BUFFER_BPS,
+      /*
+       * Dealer quotes for OTC venues, built from THIS cycle's snapshots.
+       *
+       * Without them the sizer has no ladder for a quote venue and refuses it,
+       * which meant an OTC dealer could be sized in the read-only preview and
+       * yet never fill in paper execution — the screen and the engine
+       * disagreeing about the same venue.
+       */
+      quoteBySource
     }
   });
 

@@ -45,9 +45,12 @@ import {
 } from "@/lib/shadowArbitrage/paper/broker";
 import { policyValueOrNull, type RiskPolicyKey, type RiskPolicyState } from "@/lib/shadowArbitrage/live/policy";
 import {
+  buyIrtCapacityMicros,
   candidateQuantities,
   executableLadder,
   orderedLevels,
+  sellUsdtCapacityMicros,
+  tomanCeilingMicros,
   totalDepthMicros,
   walkBook,
   type BookSide,
@@ -285,48 +288,6 @@ function bestPriceToman(levels: BookLevel[] | null, side: BookSide): number | nu
 }
 
 /**
- * Largest size the buy venue's toman can fund, in micros.
- *
- * Mirrors the broker exactly: when the buy fee settles in IRT it is ADDED to
- * the debit, so the venue must cover notional + fee; when it settles in USDT it
- * comes out of what arrives, so only the notional is funded from toman.
- */
-function buyIrtCapMicros(
-  irtToman: number,
-  buyVwapToman: number,
-  buyFeeBps: number,
-  settlement: SideSettlement
-): number {
-  if (irtToman <= 0 || buyVwapToman <= 0) return 0;
-  const perUsdt = settlement.feeAsset === "IRT" ? buyVwapToman * (1 + buyFeeBps / 10_000) : buyVwapToman;
-  if (perUsdt <= 0) return 0;
-  return Math.floor((irtToman / perUsdt) * 1_000_000);
-}
-
-/**
- * Largest size the sell venue's USDT can deliver, in micros.
- *
- * When the sell fee settles in USDT the venue is debited quantity PLUS fee, so
- * the balance must cover size × (1 + fee) — the fee-inclusive form. When it
- * settles in IRT the balance only has to cover the quantity itself.
- */
-function sellUsdtCapMicros(
-  usdtMicros: number,
-  sellFeeBps: number,
-  settlement: SideSettlement
-): number {
-  if (usdtMicros <= 0) return 0;
-  if (settlement.feeAsset !== "USDT") return usdtMicros;
-  return Math.floor(usdtMicros / (1 + sellFeeBps / 10_000));
-}
-
-/** Toman ceiling converted to a size cap at a given price, in micros. */
-function tomanCapToMicros(capToman: number, priceToman: number): number {
-  if (capToman <= 0 || priceToman <= 0) return 0;
-  return Math.floor((capToman / priceToman) * 1_000_000);
-}
-
-/**
  * Price a concrete size, reproducing the broker's leg arithmetic exactly.
  *
  * Kept separate from `planFill` on purpose: sizing has to evaluate candidate
@@ -554,13 +515,22 @@ export function computeRouteSize(input: SizingInput): SizingResult {
    */
   const bestBuy = bestPriceToman(buyAsks, "buy") as number;
   const depthCap = Math.min(totalDepthMicros(buyAsks), totalDepthMicros(sellBids));
-  const irtCap = buyIrtCapMicros(buyBalance.irtToman, bestBuy, buyFeeBps, input.buySettlement);
-  const usdtCap = sellUsdtCapMicros(sellBalance.usdtMicros, sellFeeBps, input.sellSettlement);
+  const irtCap = buyIrtCapacityMicros(
+    buyBalance.irtToman,
+    bestBuy,
+    buyFeeBps,
+    input.buySettlement.feeAsset
+  );
+  const usdtCap = sellUsdtCapacityMicros(
+    sellBalance.usdtMicros,
+    sellFeeBps,
+    input.sellSettlement.feeAsset
+  );
 
   const allocationCap =
     input.buyVenueAllocationToman === null
       ? null
-      : tomanCapToMicros(input.buyVenueAllocationToman, bestBuy);
+      : tomanCeilingMicros(input.buyVenueAllocationToman, bestBuy);
 
   const orderCap =
     policy.max_order_size_usdt === undefined
@@ -576,7 +546,7 @@ export function computeRouteSize(input: SizingInput): SizingResult {
       (input.portfolioValueToman * (policy.max_venue_exposure_percent as number)) / 100
     );
     const headroomToman = ceilingToman - input.buyVenueExposureToman;
-    concentrationCap = tomanCapToMicros(Math.max(0, headroomToman), bestBuy);
+    concentrationCap = tomanCeilingMicros(Math.max(0, headroomToman), bestBuy);
     concentrationDetail = `سقف ${policy.max_venue_exposure_percent}٪ پرتفوی = ${ceilingToman.toLocaleString("en-US")} تومان، فضای باقی‌مانده ${Math.max(0, headroomToman).toLocaleString("en-US")} تومان`;
   }
 

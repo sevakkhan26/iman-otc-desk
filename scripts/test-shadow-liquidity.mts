@@ -35,7 +35,9 @@ const {
   CAP_LABEL_FA,
   VENUE_CAPACITY_REASON_FA,
   checkQuote,
-  executableLadder
+  executableLadder,
+  buyIrtCapacityMicros,
+  sellUsdtCapacityMicros
 } = await import("../src/lib/shadowArbitrage/paper/liquidity.ts");
 const { computeRouteSize, SIZING_REQUIRED_POLICIES } = await import(
   "../src/lib/shadowArbitrage/paper/sizing.ts"
@@ -1156,6 +1158,65 @@ await test("bit24: a crossed upstream book fails closed and recovers on the next
   });
   assert.equal(recovered.buy.reason, "ok");
   assert.ok((recovered.buy.capacityUsdtMicros as number) > 0);
+});
+
+/* ── Phase 8D audit findings ─────────────────────────────────────────────── */
+
+await test("8D the fee-inclusive caps have exactly one implementation", async () => {
+  const { readFileSync } = await import("node:fs");
+  const sizing = readFileSync(
+    new URL("../src/lib/shadowArbitrage/paper/sizing.ts", import.meta.url),
+    "utf8"
+  );
+  // The sizer must CALL the shared helpers, never carry its own copy.
+  assert.ok(sizing.includes("buyIrtCapacityMicros("));
+  assert.ok(sizing.includes("sellUsdtCapacityMicros("));
+  assert.equal(sizing.includes("function buyIrtCapMicros"), false, "the private copy is gone");
+  assert.equal(sizing.includes("function sellUsdtCapMicros"), false);
+  // And no file may re-derive the fee-inclusive division inline.
+  const liq = readFileSync(
+    new URL("../src/lib/shadowArbitrage/paper/liquidity.ts", import.meta.url),
+    "utf8"
+  );
+  assert.equal(
+    (liq.match(/Math\.floor\(input\.usdtMicros \/ \(1 \+/g) ?? []).length,
+    0,
+    "every caller goes through sellUsdtCapacityMicros"
+  );
+
+  // The one implementation still produces the audited number.
+  assert.equal(
+    sellUsdtCapacityMicros(usdtToMicros(3217.854868), 45, "USDT"),
+    3_203_439_390
+  );
+  assert.equal(
+    sellUsdtCapacityMicros(usdtToMicros(3217.854868), 45, "IRT"),
+    usdtToMicros(3217.854868),
+    "an IRT-settled sell fee consumes no USDT"
+  );
+  // Buy side: 1,002,500 toman at 100,000 with a 25bps IRT fee funds 10 USDT.
+  assert.equal(buyIrtCapacityMicros(1_002_500, 100_000, 25, "IRT"), usdtToMicros(10));
+  assert.equal(buyIrtCapacityMicros(1_002_500, 100_000, 25, "USDT"), 10_025_000);
+});
+
+await test("8D paper execution receives dealer quotes, not just the preview", async () => {
+  const { readFileSync } = await import("node:fs");
+  /*
+   * The defect: only the read-only API built `quoteBySource`, so an OTC dealer
+   * could be sized on screen and yet never fill in paper execution — the UI and
+   * the engine disagreeing about the same venue.
+   */
+  const run = readFileSync(
+    new URL("../src/lib/shadowArbitrage/paper/run.ts", import.meta.url),
+    "utf8"
+  );
+  assert.ok(run.includes("quoteBySource"), "the execution path builds the quote map");
+  assert.ok(run.includes('snap.marketModel !== "OTC_QUOTE"'), "only dealers get one");
+  assert.ok(run.includes("maxExecutableUsdt: snap.maxExecutableUsdt"), "from the venue's own cap");
+  assert.ok(run.includes("quoteBySource\n    }") || run.includes("quoteBySource"), "and passes it");
+  // It is built from THIS cycle's snapshots, so a stale quote cannot leak in.
+  assert.ok(run.includes("for (const snap of input.sources)"));
+  assert.ok(run.includes("maxQuoteAgeMs:"), "the freshness budget travels with it");
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

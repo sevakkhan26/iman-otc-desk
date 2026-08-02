@@ -288,6 +288,55 @@ export function candidateQuantities(input: {
   return [...points].sort((a, b) => a - b);
 }
 
+/* ── fee-inclusive balance caps — ONE implementation ─────────────────────── */
+
+/**
+ * Largest quantity a venue's toman can fund, in micros.
+ *
+ * When the buy fee settles in IRT it is ADDED to the debit, so the balance must
+ * cover notional + fee. When it settles in USDT it comes out of what arrives,
+ * so only the notional is funded from toman.
+ */
+export function buyIrtCapacityMicros(
+  irtToman: number,
+  priceToman: number,
+  feeBps: number,
+  feeAsset: string
+): number {
+  if (irtToman <= 0 || priceToman <= 0) return 0;
+  const perUsdt = feeAsset === "IRT" ? priceToman * (1 + feeBps / 10_000) : priceToman;
+  if (perUsdt <= 0) return 0;
+  return Math.floor((irtToman / perUsdt) * USDT_MICROS);
+}
+
+/**
+ * Largest quantity a venue's USDT can deliver, in micros.
+ *
+ * With a USDT-settled sell fee the venue is debited quantity PLUS fee, so the
+ * balance must cover size × (1 + fee); dividing by (1 + fee) is what makes the
+ * reported capacity actually deliverable rather than one fee short. With an
+ * IRT-settled fee the whole balance is deliverable.
+ *
+ * Both the sizer and the capacity model call THIS function. Three copies of
+ * this formula existed once; they agreed, which is exactly why the divergence
+ * would have been invisible until it mattered.
+ */
+export function sellUsdtCapacityMicros(
+  usdtMicros: number,
+  feeBps: number,
+  feeAsset: string
+): number {
+  if (usdtMicros <= 0) return 0;
+  if (feeAsset !== "USDT") return usdtMicros;
+  return Math.floor(usdtMicros / (1 + feeBps / 10_000));
+}
+
+/** A toman ceiling expressed as a quantity at a given price, in micros. */
+export function tomanCeilingMicros(capToman: number, priceToman: number): number {
+  if (capToman <= 0 || priceToman <= 0) return 0;
+  return Math.floor((capToman / priceToman) * USDT_MICROS);
+}
+
 /* ── Phase 8C-5 — per-venue capacity, with one exact reason each ─────────── */
 
 export type VenueCapacityReason =
@@ -530,21 +579,19 @@ export function venueCapacity(input: {
     detailFa: string
   ): CapacityCap => ({ key, labelFa: CAP_LABEL_FA[key], capUsdtMicros, detailFa });
 
-  const tomanToMicros = (toman: number, price: number) =>
-    price > 0 ? Math.floor((toman / price) * USDT_MICROS) : 0;
-
   /* Buying here: the ask ladder and this venue's toman, fee-inclusive. */
-  const buyPerUsdt = input.buyFeeAsset === "IRT" ? bestAsk * (1 + input.feeBps / 10_000) : bestAsk;
   const buyCaps: CapacityCap[] = [
     cap("depth", totalDepthMicros(asks), `${asks.length} سطح فروش در دفتر`),
     cap(
       "irt_balance",
-      buyPerUsdt > 0 ? Math.floor((input.irtToman / buyPerUsdt) * USDT_MICROS) : 0,
+      buyIrtCapacityMicros(input.irtToman, bestAsk, input.feeBps, input.buyFeeAsset),
       `${input.irtToman.toLocaleString("en-US")} تومان با کارمزد ${input.feeBps} bps در ${input.buyFeeAsset}`
     ),
     cap(
       "capital_share",
-      input.capitalShareToman === null ? null : tomanToMicros(input.capitalShareToman, bestAsk),
+      input.capitalShareToman === null
+        ? null
+        : tomanCeilingMicros(input.capitalShareToman, bestAsk),
       input.capitalShareToman === null
         ? "سهم طرح در دسترس نیست؛ اعمال نشد."
         : `${input.capitalShareToman.toLocaleString("en-US")} تومان`
@@ -567,10 +614,7 @@ export function venueCapacity(input: {
    * cover size × (1 + fee) — dividing by (1 + fee) is what makes the reported
    * capacity actually deliverable rather than one fee short.
    */
-  const sellCapMicros =
-    input.sellFeeAsset === "USDT"
-      ? Math.floor(input.usdtMicros / (1 + input.feeBps / 10_000))
-      : input.usdtMicros;
+  const sellCapMicros = sellUsdtCapacityMicros(input.usdtMicros, input.feeBps, input.sellFeeAsset);
 
   const sellCaps: CapacityCap[] = [
     cap("depth", totalDepthMicros(bids), `${bids.length} سطح خرید در دفتر`),
@@ -644,12 +688,7 @@ function quoteVenueCapacity(
     detailFa: string
   ): CapacityCap => ({ key, labelFa: CAP_LABEL_FA[key], capUsdtMicros, detailFa });
 
-  const buyPerUsdt =
-    input.buyFeeAsset === "IRT" ? q.buyPriceToman * (1 + input.feeBps / 10_000) : q.buyPriceToman;
-  const sellCapMicros =
-    input.sellFeeAsset === "USDT"
-      ? Math.floor(input.usdtMicros / (1 + input.feeBps / 10_000))
-      : input.usdtMicros;
+  const sellCapMicros = sellUsdtCapacityMicros(input.usdtMicros, input.feeBps, input.sellFeeAsset);
 
   const quoteDetail = `حداکثر اجراپذیر اعلام‌شدهٔ خودِ صرافی: ${microsToUsdt(q.maxMicros)} تتر (بدون دفتر سفارش)`;
 
@@ -657,14 +696,14 @@ function quoteVenueCapacity(
     cap("depth", q.maxMicros, quoteDetail),
     cap(
       "irt_balance",
-      buyPerUsdt > 0 ? Math.floor((input.irtToman / buyPerUsdt) * USDT_MICROS) : 0,
+      buyIrtCapacityMicros(input.irtToman, q.buyPriceToman, input.feeBps, input.buyFeeAsset),
       `${input.irtToman.toLocaleString("en-US")} تومان با کارمزد ${input.feeBps} bps در ${input.buyFeeAsset}`
     ),
     cap(
       "capital_share",
       input.capitalShareToman === null
         ? null
-        : Math.floor((input.capitalShareToman / q.buyPriceToman) * USDT_MICROS),
+        : tomanCeilingMicros(input.capitalShareToman, q.buyPriceToman),
       input.capitalShareToman === null
         ? "سهم طرح در دسترس نیست؛ اعمال نشد."
         : `${input.capitalShareToman.toLocaleString("en-US")} تومان`

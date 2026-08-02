@@ -29,6 +29,7 @@ import {
 } from "@/components/shadowArbitrage/opportunityModel";
 import type {
   FeeConfirmationAudit,
+  VenueFeeEvidence,
   VenueReadiness
 } from "@/components/shadowArbitrage/sourcesModel";
 import {
@@ -68,6 +69,8 @@ type PaperPayload = {
 /** Account and fee readiness, read once and shared by both redesigned tabs. */
 type AccountsPayload = {
   venues: VenueReadiness[];
+  /** Phase 8E-B — the applied fee per venue, resolved on the server. */
+  feeEvidence: VenueFeeEvidence[];
   auditHistory: FeeConfirmationAudit[];
   feeReverifyDays: number;
 };
@@ -542,6 +545,7 @@ export function ShadowArbitrageView() {
               health={obs?.sourceHealth ?? []}
               snapshots={sources}
               venues={accounts?.venues ?? []}
+              feeEvidence={accounts?.feeEvidence ?? []}
               auditHistory={accounts?.auditHistory ?? []}
               feeReverifyDays={accounts?.feeReverifyDays ?? null}
               pollIntervalMs={pollIntervalMs}

@@ -15,56 +15,80 @@
 const { recordFeeTierEvidence, listFeeTierEvidence } = await import(
   "../src/db/repositories/shadowFeeTier.ts"
 );
+const { loadFeeConfirmations, loadLatestFeeConfirmations, recordFeeConfirmation } = await import(
+  "../src/db/repositories/shadowArbitrage.ts"
+);
 const { closeDb } = await import("../src/db/client.ts");
 
-/** The confirmation this import represents. One key, one import. */
-const EVIDENCE_KEY = "admin-tier-2026-08-02";
-const CONFIRMED_AT = "2026-08-02T00:00:00.000Z";
-const CONFIRMED_BY = "otc-iman";
-const VALID_FOR_DAYS = 30;
-const PROVENANCE = "ADMIN_CONFIRMED_SCREENSHOT";
+import {
+  APPROVED_FEE_TIERS as TIERS,
+  CONFIRMED_AT,
+  CONFIRMED_BY,
+  EVIDENCE_KEY,
+  PROVENANCE,
+  TIER_IN_FORCE_KEY,
+  VALID_FOR_DAYS
+} from "./approvedFeeTiers.mts";
 
 /**
- * Approved tiers, exactly as supplied.
+ * Reconcile the tier the account is recorded as being ON.
  *
- * `makerFeeBps`/`takerFeeBps` repeat the rates already confirmed for each
- * venue's ORDER_BOOK mode. Arzinja's 0/0 is scoped to ORDER_BOOK here and
- * nowhere else: no Easy Trade or Convert row is written, so those modes have no
- * evidence and will fail closed rather than inherit zero.
+ * Effective-fee selection matches the evidence's tier against the tier in
+ * force, and the tier in force lives on the append-only account/fee
+ * confirmation. Where the stored value is not the approved tier label, an
+ * append (never an update) states the approved one.
+ *
+ * The one venue this touches today is AbanTether, whose stored label reads
+ * "current 0.30% tier" — a description of a rate, not the name of a tier. The
+ * administrator's evidence names no tier for it, so the declared tier becomes
+ * null: «پلکان اعلام نشده». Guessing "Base" there would have matched a real fee
+ * row and quietly authorised it.
  */
-const TIERS: Array<{
-  sourceId: string;
-  tierLabel: string | null;
-  makerFeeBps: number | null;
-  takerFeeBps: number | null;
-  executionMode: "ORDER_BOOK" | "OTC_QUOTE";
-  note?: string;
-}> = [
-  { sourceId: "nobitex", tierLabel: "Base", makerFeeBps: 25, takerFeeBps: 25, executionMode: "ORDER_BOOK" },
-  { sourceId: "wallex", tierLabel: "Base Level 1", makerFeeBps: 25, takerFeeBps: 30, executionMode: "ORDER_BOOK" },
-  { sourceId: "tabdeal", tierLabel: "VIP1", makerFeeBps: 24, takerFeeBps: 28, executionMode: "ORDER_BOOK" },
-  { sourceId: "bitpin", tierLabel: "Base Level 1", makerFeeBps: 30, takerFeeBps: 35, executionMode: "ORDER_BOOK" },
-  {
-    sourceId: "abantether",
-    // The supplied evidence names no tier for this venue. Null, not "Base".
-    tierLabel: null,
-    makerFeeBps: 30,
-    takerFeeBps: 30,
-    executionMode: "OTC_QUOTE",
-    note: "شواهد ارائه‌شده هیچ پلکانی برای این صرافی نام نبرده است"
-  },
-  { sourceId: "ramzinex", tierLabel: "Base", makerFeeBps: 20, takerFeeBps: 25, executionMode: "ORDER_BOOK" },
-  { sourceId: "bit24", tierLabel: "VIP0", makerFeeBps: 20, takerFeeBps: 20, executionMode: "ORDER_BOOK" },
-  { sourceId: "tetherland", tierLabel: "Bronze", makerFeeBps: 45, takerFeeBps: 45, executionMode: "ORDER_BOOK" },
-  {
-    sourceId: "arzinja",
-    tierLabel: "Level 1",
-    makerFeeBps: 0,
-    takerFeeBps: 0,
-    executionMode: "ORDER_BOOK",
-    note: "صفر فقط برای حالت دفتر سفارش/معاملهٔ بازار تأیید شده است؛ خرید و فروش آسان و تبدیل شواهد جداگانه لازم دارند"
+async function reconcileTierInForce(): Promise<number> {
+  const latest = await loadLatestFeeConfirmations();
+  let appended = 0;
+  for (const t of TIERS) {
+    const row = latest[t.sourceId];
+    if (!row) continue;
+    if ((row.feeTier ?? null) === (t.tierLabel ?? null)) continue;
+    // Already declared on a previous run: the key makes the write a no-op, so
+    // report it as such instead of counting an append that did not happen.
+    const already = (await loadFeeConfirmations(t.sourceId)).some(
+      (r) => r.evidenceKey === TIER_IN_FORCE_KEY
+    );
+    if (already) continue;
+    /*
+     * Stamped NOW, not with the import's nominal date. The row being corrected
+     * may itself have been confirmed later today, and "latest confirmation
+     * wins" compares confirmation instants — a backdated correction would be
+     * written, counted, and then quietly ignored by the very lookup it exists
+     * to change. Idempotency comes from the evidence key, not the timestamp.
+     */
+    await recordFeeConfirmation({
+      sourceId: t.sourceId,
+      // Carried over unchanged — this append declares a tier, not a new rate.
+      takerFeeBps: row.takerFeeBps,
+      makerFeeBps: row.makerFeeBps,
+      feeTier: t.tierLabel,
+      sourceUrl: row.sourceUrl,
+      provenance: PROVENANCE,
+      validDays: row.validDays,
+      referenceMetadata: row.referenceMetadata,
+      evidenceKey: TIER_IN_FORCE_KEY,
+      confirmedBy: CONFIRMED_BY,
+      confirmedAt: new Date().toISOString(),
+      note:
+        t.tierLabel === null
+          ? `پلکان اعلام‌شدهٔ قبلی «${row.feeTier}» نام یک پله نبود بلکه توصیف نرخ بود؛ شواهد موجود هیچ پله‌ای برای این صرافی نام نمی‌برد.`
+          : `پلکان جاری حساب «${t.tierLabel}» اعلام شد؛ نرخ‌ها بدون تغییر منتقل شدند.`
+    });
+    console.log(
+      `[tier-in-force] ${t.sourceId}: «${row.feeTier ?? "—"}» → «${t.tierLabel ?? "پلکان اعلام نشده"}»`
+    );
+    appended += 1;
   }
-];
+  return appended;
+}
 
 async function main() {
   const before = (await listFeeTierEvidence()).length;
@@ -92,10 +116,13 @@ async function main() {
     if (!existing) written += 1;
   }
 
+  const tierInForceAppends = await reconcileTierInForce();
+
   const after = await listFeeTierEvidence();
   console.log(`[fee-tier] rows before      ${before}`);
   console.log(`[fee-tier] written this run ${written}`);
   console.log(`[fee-tier] rows after       ${after.length}`);
+  console.log(`[fee-tier] tier-in-force appends ${tierInForceAppends}`);
   console.log("");
   for (const r of [...after].sort((a, b) => a.sourceId.localeCompare(b.sourceId))) {
     console.log(

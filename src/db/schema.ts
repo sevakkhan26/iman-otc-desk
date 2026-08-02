@@ -630,11 +630,18 @@ export const shadowFeeTierEvidence = pgTable(
     /** Null when the evidence carried no link. Never fabricated. */
     sourceUrl: text("source_url"),
     note: text("note"),
-    createdAt: ts("created_at").notNull().defaultNow()
+    createdAt: ts("created_at").notNull().defaultNow(),
+    /**
+     * Append order. The only monotonic fact an append-only table has: wall
+     * clocks tie at millisecond resolution, and a tie used to leave the newest
+     * confirmation decided by UUID comparison.
+     */
+    seq: bigserial("seq", { mode: "number" })
   },
   (t) => [
     uniqueIndex("shadow_fee_tier_evidence_key_idx").on(t.sourceId, t.executionMode, t.evidenceKey),
-    index("shadow_fee_tier_evidence_lookup_idx").on(t.sourceId, t.executionMode, t.confirmedAt)
+    index("shadow_fee_tier_evidence_lookup_idx").on(t.sourceId, t.executionMode, t.confirmedAt),
+    index("shadow_fee_tier_evidence_seq_idx").on(t.sourceId, t.executionMode, t.seq)
   ]
 );
 

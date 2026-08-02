@@ -30,12 +30,15 @@ export function computeRouteEconomics(input: {
   buyVwapToman: number;
   sellVwapToman: number;
   /**
-   * Admin-confirmed taker fees, in basis points, keyed by venue.
+   * The effective taker fee per venue, in basis points.
    *
-   * A confirmation from the venue's own panel is better evidence than the
-   * compiled-in provisional value, so it wins when present. Absent an entry the
-   * configured fee is used, and when neither exists the route stays
-   * fee-unknown — a missing fee is never treated as zero.
+   * Phase 8E-B — PRESENCE IS AUTHORITATIVE. A venue that appears in this map is
+   * answered by it, including when its value is `null`: null means the evidence
+   * was checked and refused (wrong tier, wrong execution mode, expired, absent),
+   * and the route must stay fee-unknown. Falling back to `cfg.feeBps` there
+   * would be exactly the venue-wide default the fail-closed selector exists to
+   * prevent. Only a venue the caller did not describe at all falls back to the
+   * configured value.
    */
   confirmedFeeBps?: Partial<Record<ShadowSourceId, number | null>>;
 }): RouteFeeBreakdown {
@@ -44,8 +47,13 @@ export function computeRouteEconomics(input: {
   const buyCost = mulPriceSizeToman(input.buyVwapToman, input.sizeUsdt);
   const sellProceeds = mulPriceSizeToman(input.sellVwapToman, input.sizeUsdt);
 
-  const resolvedBuyFee = input.confirmedFeeBps?.[input.buySourceId] ?? buyCfg.feeBps;
-  const resolvedSellFee = input.confirmedFeeBps?.[input.sellSourceId] ?? sellCfg.feeBps;
+  const supplied = input.confirmedFeeBps ?? {};
+  const resolvedBuyFee = input.buySourceId in supplied
+    ? supplied[input.buySourceId]
+    : buyCfg.feeBps;
+  const resolvedSellFee = input.sellSourceId in supplied
+    ? supplied[input.sellSourceId]
+    : sellCfg.feeBps;
 
   const feeUnknown = resolvedBuyFee === null || resolvedSellFee === null ||
     resolvedBuyFee === undefined || resolvedSellFee === undefined;

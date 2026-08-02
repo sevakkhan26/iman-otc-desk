@@ -56,6 +56,58 @@ export type VenueReadiness = {
   notes: string;
 };
 
+/**
+ * Phase 8E-B — the applied fee for one venue, exactly as the server resolved it.
+ *
+ * Every field is transported, never recomputed: whether the evidence matched,
+ * on which tier and execution mode, and the precise reason when it did not.
+ * The panel has no way to decide a match on its own, which is the point.
+ */
+export type VenueFeeEvidence = {
+  sourceId: string;
+  nameFa: string;
+  executionMode: string | null;
+  executionModeFa: string;
+  currentTierLabel: string | null;
+  evidenceTierLabel: string | null;
+  ok: boolean;
+  makerFeeBps: number | null;
+  takerFeeBps: number | null;
+  provenance: string | null;
+  evidenceKey: string | null;
+  confirmedBy: string | null;
+  confirmedAt: string | null;
+  validForDays: number | null;
+  expiresAt: string | null;
+  sourceUrl: string | null;
+  note: string | null;
+  miss: string | null;
+  blockerFa: string | null;
+  executable: boolean;
+  referenceModes: Array<{
+    mode: string;
+    modeFa: string;
+    hasEvidence: boolean;
+    makerFeeBps: number | null;
+    takerFeeBps: number | null;
+    labelFa: string;
+  }>;
+  noticesFa: string[];
+  history: Array<{
+    id: string;
+    executionMode: string;
+    tierLabel: string | null;
+    makerFeeBps: number | null;
+    takerFeeBps: number | null;
+    provenance: string;
+    evidenceKey: string;
+    confirmedBy: string;
+    confirmedAt: string;
+    expiresAt: string | null;
+    note: string | null;
+  }>;
+};
+
 export type FeeConfirmationAudit = {
   id: string;
   sourceId: string;
@@ -149,9 +201,27 @@ export type VenueRow = {
   blockingReason: string | null;
   buySettlement: SideSettlement;
   sellSettlement: SideSettlement;
+
+  /** The applied-fee resolution, or null when the endpoint did not describe it. */
+  feeEvidence: VenueFeeEvidence | null;
 };
 
 const DAY_MS = 86_400_000;
+
+export const FEE_MISS_FA: Record<string, string> = {
+  no_evidence_for_mode: "شواهدی برای این حالت اجرا نیست",
+  tier_mismatch: "ناسازگاری پله",
+  expired: "منقضی",
+  fees_missing: "نرخ ثبت نشده",
+  reference_only_venue: "بدون حالت اجرایی"
+};
+
+export const EXECUTION_MODE_LABEL_FA: Record<string, string> = {
+  ORDER_BOOK: "دفتر سفارش (معاملهٔ بازار)",
+  EASY_TRADE: "خرید و فروش آسان",
+  CONVERT: "تبدیل",
+  OTC_QUOTE: "نقل‌قول OTC"
+};
 
 /**
  * Fee expiry from the same rule the accounts endpoint applies for staleness:
@@ -175,6 +245,7 @@ export type BuildVenueRowsInput = {
   health: SourceHealthRow[];
   snapshots: NormalizedSourceSnapshot[];
   venues: VenueReadiness[];
+  feeEvidence?: VenueFeeEvidence[];
   feeReverifyDays: number | null;
 };
 
@@ -188,6 +259,7 @@ export function buildVenueRows(input: BuildVenueRowsInput): VenueRow[] {
     input.snapshots.map((s) => [s.sourceId, s])
   );
   const venueById = new Map(input.venues.map((v) => [v.sourceId, v]));
+  const feeEvidenceById = new Map((input.feeEvidence ?? []).map((f) => [f.sourceId, f]));
 
   // Union of every id any source described, so nothing silently disappears.
   const ids: string[] = [];
@@ -246,7 +318,8 @@ export function buildVenueRows(input: BuildVenueRowsInput): VenueRow[] {
       requiredAction: v?.requiredAction ?? null,
       blockingReason: v?.blockingReason ?? null,
       buySettlement: settlementFor(sourceId, "buy"),
-      sellSettlement: settlementFor(sourceId, "sell")
+      sellSettlement: settlementFor(sourceId, "sell"),
+      feeEvidence: feeEvidenceById.get(sourceId) ?? null
     };
   });
 }
@@ -263,6 +336,10 @@ export type VenueSummary = {
   feesCurrent: number;
   feesStale: number;
   feesUnknown: number;
+  /** Venues whose applied rate matched venue + execution mode + tier in force. */
+  feeEvidenceMatched: number;
+  /** Venues that failed closed, counted by the exact miss. */
+  feeEvidenceBlocked: number;
 };
 
 /**
@@ -283,7 +360,9 @@ export function summarizeVenues(rows: VenueRow[]): VenueSummary {
     referenceOnly: 0,
     feesCurrent: 0,
     feesStale: 0,
-    feesUnknown: 0
+    feesUnknown: 0,
+    feeEvidenceMatched: 0,
+    feeEvidenceBlocked: 0
   };
   for (const r of rows) {
     if (r.health === "healthy") summary.healthy += 1;
@@ -293,6 +372,11 @@ export function summarizeVenues(rows: VenueRow[]): VenueSummary {
     if (r.kycComplete) summary.kycConfirmed += 1;
     if (r.accountState === "VERIFIED") summary.accountsReady += 1;
     if (r.referenceOnly) summary.referenceOnly += 1;
+
+    if (r.feeEvidence) {
+      if (r.feeEvidence.ok) summary.feeEvidenceMatched += 1;
+      else summary.feeEvidenceBlocked += 1;
+    }
 
     const documented =
       r.feeProvenance === "OFFICIAL_PUBLISHED" || r.feeProvenance === "ADMIN_CONFIRMED";

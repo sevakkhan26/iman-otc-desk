@@ -61,6 +61,13 @@ export type FeeTierRecord = {
   note: string | null;
   /** When we recorded it. Breaks ties when two confirmations share a stamp. */
   createdAt: string;
+  /**
+   * Append order. Settles the tie that wall clocks cannot: `confirmedAt` is
+   * shared by every row of a bulk import by design, and `createdAt` is read
+   * back at millisecond resolution, so two rows appended in the same
+   * millisecond are indistinguishable by time alone.
+   */
+  seq: number;
 };
 
 function toIso(value: unknown): string | null {
@@ -85,7 +92,8 @@ function hydrate(row: typeof shadowFeeTierEvidence.$inferSelect): FeeTierRecord 
     expiresAt: toIso(row.expiresAt),
     sourceUrl: row.sourceUrl,
     note: row.note,
-    createdAt: toIso(row.createdAt) as string
+    createdAt: toIso(row.createdAt) as string,
+    seq: Number(row.seq)
   };
 }
 
@@ -165,11 +173,11 @@ export async function recordFeeTierEvidence(input: RecordFeeTierInput): Promise<
 export async function listFeeTierEvidence(sourceId?: string): Promise<FeeTierRecord[]> {
   const db = await getDbAsync();
   const q = db.select().from(shadowFeeTierEvidence);
+  // Append order settles rows that share a confirmation instant.
+  const newestFirst = [desc(shadowFeeTierEvidence.confirmedAt), desc(shadowFeeTierEvidence.seq)];
   const rows = sourceId
-    ? await q
-        .where(eq(shadowFeeTierEvidence.sourceId, sourceId))
-        .orderBy(desc(shadowFeeTierEvidence.confirmedAt))
-    : await q.orderBy(desc(shadowFeeTierEvidence.confirmedAt));
+    ? await q.where(eq(shadowFeeTierEvidence.sourceId, sourceId)).orderBy(...newestFirst)
+    : await q.orderBy(...newestFirst);
   return rows.map(hydrate);
 }
 
@@ -216,16 +224,20 @@ export function selectEffectiveFee(input: {
   const forMode = input.records
     .filter((r) => r.sourceId === input.sourceId && r.executionMode === input.executionMode)
     /*
-     * Newest first. Two confirmations can carry the SAME confirmedAt — a bulk
-     * import stamps one instant across every venue — so recording time breaks
-     * the tie and the id settles it. Without that the "newest" record would
-     * depend on row order, and the effective fee could change between reads.
+     * Newest first, then LAST APPENDED.
+     *
+     * Two confirmations can carry the same `confirmedAt` — a bulk import stamps
+     * one instant across every venue — and they can also share `createdAt`,
+     * which is a wall clock read back at millisecond resolution. Only the
+     * append sequence orders them for certain. Without it the "newest" record
+     * fell through to comparing UUIDs, so the effective fee could differ
+     * between two reads of the very same rows.
      */
     .sort(
       (a, b) =>
         Date.parse(b.confirmedAt) - Date.parse(a.confirmedAt) ||
-        Date.parse(b.createdAt) - Date.parse(a.createdAt) ||
-        b.id.localeCompare(a.id)
+        b.seq - a.seq ||
+        Date.parse(b.createdAt) - Date.parse(a.createdAt)
     );
 
   if (!forMode.length) {

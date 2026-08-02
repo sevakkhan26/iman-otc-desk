@@ -7,7 +7,6 @@ import {
   loadLatestCapitalApproval,
   loadLatestCapitalPlan,
   loadLatestAccountConfirmations,
-  loadLatestFeeConfirmations,
   loadLatestSourceSnapshots,
   loadRunStats
 } from "@/db/repositories/shadowArbitrage";
@@ -28,6 +27,7 @@ import {
 import { buildAllReadiness } from "@/lib/shadowArbitrage/accounts";
 import { classifyAllVenues, evaluateRecommendation } from "@/lib/shadowArbitrage/capital";
 import { SHADOW_BANNER } from "@/lib/shadowArbitrage/config";
+import { loadEffectiveFees } from "@/lib/shadowArbitrage/effectiveFees";
 import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
 import {
   LIVE_EXECUTION_IMPLEMENTED,
@@ -91,7 +91,7 @@ async function buildReport() {
     observation,
     worker,
     runStats,
-    latestFees,
+    effectiveFees,
     snapshots,
     savedPlan,
     approvalRow,
@@ -102,7 +102,7 @@ async function buildReport() {
     getObservation(),
     getWorkerHeartbeat(),
     loadRunStats(),
-    loadLatestFeeConfirmations(),
+    loadEffectiveFees(Date.now()),
     loadLatestSourceSnapshots(),
     loadLatestCapitalPlan(),
     loadLatestCapitalApproval(),
@@ -135,9 +135,10 @@ async function buildReport() {
   };
 
   const readiness = buildAllReadiness(
-    Object.values(latestFees),
+    effectiveFees.overrides,
     Date.now(),
-    Object.values(accountEvidence)
+    Object.values(accountEvidence),
+    effectiveFees.blocks
   );
   const venueStates = classifyAllVenues(readiness);
   const policies = buildPolicyState(policyValues);

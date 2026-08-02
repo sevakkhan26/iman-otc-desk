@@ -6,7 +6,6 @@ import {
   loadLatestCapitalApproval,
   loadLatestCapitalPlan,
   loadLatestAccountConfirmations,
-  loadLatestFeeConfirmations,
   loadLatestSourceSnapshots
 } from "@/db/repositories/shadowArbitrage";
 import {
@@ -38,6 +37,7 @@ import {
   type CapitalPlanInput
 } from "@/lib/shadowArbitrage/capital";
 import { SHADOW_BANNER, SHADOW_SOURCES, SHADOW_TRADE_SIZES, SLIPPAGE_BUFFER_BPS } from "@/lib/shadowArbitrage/config";
+import { loadEffectiveFees } from "@/lib/shadowArbitrage/effectiveFees";
 import { loadRiskPolicyValues } from "@/db/repositories/shadowLive";
 import { loadLastMatrix } from "@/lib/shadowArbitrage/store";
 import { buildPolicyState } from "@/lib/shadowArbitrage/live/policy";
@@ -228,12 +228,17 @@ async function buildAllocationContext(): Promise<
   const [snap, lastMatrix, fees, accounts, policyValues] = await Promise.all([
     snapshot(null),
     loadLastMatrix(),
-    loadLatestFeeConfirmations(),
+    loadEffectiveFees(Date.now()),
     loadLatestAccountConfirmations(),
     loadRiskPolicyValues()
   ]);
 
-  const readiness = buildAllReadiness(Object.values(fees), Date.now(), Object.values(accounts));
+  const readiness = buildAllReadiness(
+    fees.overrides,
+    Date.now(),
+    Object.values(accounts),
+    fees.blocks
+  );
   const venues = classifyAllVenues(readiness).filter((v) => v.executable);
   if (!venues.length) return { ok: false, messageFa: "هیچ صرافی اجراپذیری وجود ندارد." };
 
@@ -356,14 +361,15 @@ export async function GET(request: Request) {
    */
   const [wizardSnapshots, wizardFees, wizardAccounts, latestPlan] = await Promise.all([
     loadLatestSourceSnapshots(),
-    loadLatestFeeConfirmations(),
+    loadEffectiveFees(Date.now()),
     loadLatestAccountConfirmations(),
     loadLatestCapitalPlan()
   ]);
   const wizardReadiness = buildAllReadiness(
-    Object.values(wizardFees),
+    wizardFees.overrides,
     Date.now(),
-    Object.values(wizardAccounts)
+    Object.values(wizardAccounts),
+    wizardFees.blocks
   );
   const wizard = {
     markPriceToman: deriveValuationPrice(wizardSnapshots),
@@ -773,7 +779,7 @@ export async function POST(request: Request) {
       body.mode === "APPROVED_PLAN" ? "APPROVED_PLAN" : "PROVISIONAL_EVALUATION";
 
     const [latestFees, snapshots, observation, savedPlan, approvalRow] = await Promise.all([
-      loadLatestFeeConfirmations(),
+      loadEffectiveFees(Date.now()),
       loadLatestSourceSnapshots(),
       getObservation(),
       loadLatestCapitalPlan(),
@@ -791,9 +797,10 @@ export async function POST(request: Request) {
 
     const accountEvidence = await loadLatestAccountConfirmations();
     const readiness = buildAllReadiness(
-      Object.values(latestFees),
+      latestFees.overrides,
       Date.now(),
-      Object.values(accountEvidence)
+      Object.values(accountEvidence),
+      latestFees.blocks
     );
     const venueStates = classifyAllVenues(readiness);
 

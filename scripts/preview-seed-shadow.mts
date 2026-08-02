@@ -41,6 +41,7 @@ const {
   claimWorkerLease,
   touchHeartbeat
 } = await import("../src/db/repositories/shadowArbitrage.ts");
+const { recordFeeTierEvidence } = await import("../src/db/repositories/shadowFeeTier.ts");
 const { createPaperSession, setPaperSessionStatus } = await import(
   "../src/db/repositories/shadowPaper.ts"
 );
@@ -165,8 +166,17 @@ await persistShadowCycle({
   blockedCounts: built.blockedCounts
 });
 
-// Fee evidence for the venues the desk holds accounts on, so the fee columns
-// show a real provenance chain rather than "unknown" everywhere.
+/*
+ * Fee evidence for the venues the desk holds accounts on, so the fee columns
+ * show a real provenance chain rather than "unknown" everywhere.
+ *
+ * BOTH halves are required, and they must agree. The confirmation records which
+ * tier the account is on; the tier evidence records the rate confirmed FOR that
+ * tier and that execution mode. Effective-fee selection matches the two and
+ * fails closed when they disagree — so seeding only the confirmation would give
+ * a preview where every venue is fee-unknown and every panel is empty.
+ */
+const PREVIEW_TIER = "پلهٔ پایه";
 for (const [sourceId, bps] of [
   ["nobitex", 25],
   ["wallex", 35],
@@ -175,9 +185,24 @@ for (const [sourceId, bps] of [
   await recordFeeConfirmation({
     sourceId,
     takerFeeBps: bps,
-    feeTier: "پلهٔ پایه",
+    feeTier: PREVIEW_TIER,
     sourceUrl: "https://example.invalid/preview-fee-schedule",
     confirmedBy: "preview-admin",
+    note: "دادهٔ نمونهٔ پیش‌نمایش"
+  });
+  await recordFeeTierEvidence({
+    sourceId,
+    // These three are order-book venues in the preview's own market model.
+    executionMode: "ORDER_BOOK",
+    tierLabel: PREVIEW_TIER,
+    makerFeeBps: bps,
+    takerFeeBps: bps,
+    provenance: "ADMIN_CONFIRMED_SCREENSHOT",
+    evidenceKey: "preview-seed",
+    confirmedBy: "preview-admin",
+    confirmedAt: nowIso,
+    validForDays: 30,
+    sourceUrl: null,
     note: "دادهٔ نمونهٔ پیش‌نمایش"
   });
 }

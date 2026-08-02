@@ -29,7 +29,6 @@ import {
   ensureObservationSession,
   getObservation,
   loadLastSourceStates,
-  loadLatestFeeConfirmations,
   loadLifecyclesForMerge,
   retentionCleanup,
   touchHeartbeat,
@@ -37,6 +36,7 @@ import {
   withShadowLock,
   type ObservationSnapshot
 } from "@/db/repositories/shadowArbitrage";
+import { loadEffectiveFees } from "@/lib/shadowArbitrage/effectiveFees";
 import { runPaperExecutionIsolated } from "@/lib/shadowArbitrage/paper/run";
 import { persistShadowCycle, saveCertifications } from "@/lib/shadowArbitrage/store";
 import type {
@@ -210,15 +210,12 @@ async function runCycleLocked(input: {
 
   const previousLifecycles = await loadLifecyclesForMerge();
   /*
-   * Admin-confirmed taker fees are better evidence than the compiled-in
-   * provisional values, and for several venues they are the only fee evidence
-   * that exists. Without them those venues would report fee-unknown forever.
+   * Phase 8E-B — the applied taker rate comes from the fee-tier evidence,
+   * matched on venue AND execution mode AND the tier in force. A venue whose
+   * evidence does not match is present with an explicit null, so its routes are
+   * fee-unknown instead of silently priced with the compiled-in default.
    */
-  const confirmedFees = await loadLatestFeeConfirmations();
-  const confirmedFeeBps: Partial<Record<ShadowSourceId, number | null>> = {};
-  for (const [sourceId, row] of Object.entries(confirmedFees)) {
-    confirmedFeeBps[sourceId as ShadowSourceId] = (row as { takerFeeBps: number }).takerFeeBps;
-  }
+  const { confirmedFeeBps } = await loadEffectiveFees(Date.now());
   const built = buildOpportunitiesDetailed(aged, previousLifecycles, serverNow, {
     certStatuses: certStatusMap(certBySource),
     confirmedFeeBps

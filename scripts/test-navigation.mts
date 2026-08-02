@@ -1892,7 +1892,14 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
       "src/lib/shadowArbitrage/collector.ts",
       "src/lib/shadowArbitrage/config.ts",
       "src/lib/shadowArbitrage/calculate.ts",
-      "src/lib/shadowArbitrage/fees.ts"
+      "src/lib/shadowArbitrage/fees.ts",
+      // Phase 8E-B fee-tier and execution-mode evidence: the additive
+      // migration, its append-only repository, and the resolver that makes the
+      // evidence authoritative for every consumer. Evidence and matching only —
+      // no order, no credential, no exchange call.
+      "drizzle/0012_shadow_fee_tier_evidence.sql",
+      "src/db/repositories/shadowFeeTier.ts",
+      "src/lib/shadowArbitrage/effectiveFees.ts"
     ]);
     const changed = execFileSync("git", ["diff", "--name-only", baseline, "--", ...paths], {
       encoding: "utf8"

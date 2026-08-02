@@ -9,10 +9,7 @@
  * The whole entry point is wrapped so a paper failure can never take down the
  * collector — the observation must keep running no matter what happens here.
  */
-import {
-  loadLatestAccountConfirmations,
-  loadLatestFeeConfirmations
-} from "@/db/repositories/shadowArbitrage";
+import { loadLatestAccountConfirmations } from "@/db/repositories/shadowArbitrage";
 import {
   commitPaperCycle,
   getActivePaperSession,
@@ -26,6 +23,7 @@ import { loadRiskPolicyValues } from "@/db/repositories/shadowLive";
 import { buildAllReadiness } from "@/lib/shadowArbitrage/accounts";
 import { classifyAllVenues } from "@/lib/shadowArbitrage/capital";
 import { SLIPPAGE_BUFFER_BPS } from "@/lib/shadowArbitrage/config";
+import { loadEffectiveFees } from "@/lib/shadowArbitrage/effectiveFees";
 import { buildPolicyState } from "@/lib/shadowArbitrage/live/policy";
 import { mulPriceSizeToman } from "@/lib/shadowArbitrage/money";
 import { describeRebalance, evaluateCycle } from "@/lib/shadowArbitrage/paper/engine";
@@ -71,16 +69,27 @@ export async function runPaperExecutionForCycle(input: {
   if (!session) return { ran: false, reason: "no_session" };
   if (session.status !== "RUNNING") return { ran: false, reason: "not_running", sessionId: session.id };
 
-  const [latestFees, accountEvidence, balanceRows, filledIds, policyValues] = await Promise.all([
-    loadLatestFeeConfirmations(),
+  const [effectiveFees, accountEvidence, balanceRows, filledIds, policyValues] = await Promise.all([
+    loadEffectiveFees(Date.now()),
     loadLatestAccountConfirmations(),
     loadPaperBalances(session.id),
     loadFilledLifecycleIds(session.id),
     loadRiskPolicyValues()
   ]);
 
+  /*
+   * Phase 8E-B — the paper engine prices and settles with the same effective
+   * fee the collector validated the opportunity with. A venue whose evidence
+   * did not match arrives as a block, so it carries no rate here either and
+   * never becomes executable on a fallback number.
+   */
   const venueStates = classifyAllVenues(
-    buildAllReadiness(Object.values(latestFees), Date.now(), Object.values(accountEvidence))
+    buildAllReadiness(
+      effectiveFees.overrides,
+      Date.now(),
+      Object.values(accountEvidence),
+      effectiveFees.blocks
+    )
   );
   const balances: VenueBalance[] = balanceRows.map((b) => ({
     sourceId: b.sourceId as ShadowSourceId,

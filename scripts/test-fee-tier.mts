@@ -347,6 +347,417 @@ await test("evidence survives a database reopen", async () => {
   assert.ok(after.some((r) => r.sourceId === "arzinja" && r.executionMode === "ORDER_BOOK"));
 });
 
+/* ── deterministic ordering ──────────────────────────────────────────────── */
+
+await test("two confirmations appended in the same instant order by append, not by chance", async () => {
+  /*
+   * The failure this pins: a bulk import stamps ONE confirmedAt across every
+   * venue, and two rows written back to back can also share createdAt at
+   * millisecond resolution. With only those two keys the ordering fell through
+   * to comparing random UUIDs, so the effective fee could differ between two
+   * reads of identical data. The append sequence is the only monotonic fact.
+   */
+  const stamp = "2026-08-04T00:00:00.000Z";
+  const first = await recordFeeTierEvidence(
+    base({ sourceId: "ramzinex", evidenceKey: "same-1", takerFeeBps: 20, confirmedAt: stamp })
+  );
+  const second = await recordFeeTierEvidence(
+    base({ sourceId: "ramzinex", evidenceKey: "same-2", takerFeeBps: 21, confirmedAt: stamp })
+  );
+  assert.equal(first.confirmedAt, second.confirmedAt, "the two share a confirmation instant");
+  assert.ok(second.seq > first.seq, "but the later append has the higher sequence");
+
+  // Resolving repeatedly — and over a shuffled record list — never wavers.
+  const all = await records();
+  for (const order of [all, [...all].reverse(), [...all].slice().sort((a, b) => a.id.localeCompare(b.id))]) {
+    const pick = selectEffectiveFee({
+      records: order,
+      sourceId: "ramzinex",
+      executionMode: "ORDER_BOOK",
+      currentTierLabel: "Base",
+      nowMs: NOW
+    });
+    assert.equal(pick.ok, true);
+    if (pick.ok) assert.equal(pick.takerFeeBps, 21, "the last append wins, whatever the row order");
+  }
+});
+
+/* ── the approved import, and the runtime that consumes it ───────────────── */
+
+const {
+  APPROVED_FEE_TIERS,
+  EVIDENCE_KEY: APPROVED_KEY,
+  CONFIRMED_AT: APPROVED_AT,
+  CONFIRMED_BY: APPROVED_BY,
+  PROVENANCE: APPROVED_PROVENANCE,
+  VALID_FOR_DAYS: APPROVED_VALID_DAYS
+} = await import("./approvedFeeTiers.mts");
+
+const { buildEffectiveFees, executionModeFor, ZERO_FEE_ORDER_BOOK_ONLY_FA, QUOTE_EXECUTABLE_NO_TIER_FA, NO_EVIDENCE_FOR_REFERENCE_MODE_FA } =
+  await import("../src/lib/shadowArbitrage/effectiveFees.ts");
+const { buildAllReadiness, venueUsableForNetProfit } = await import(
+  "../src/lib/shadowArbitrage/accounts.ts"
+);
+const { computeRouteEconomics } = await import("../src/lib/shadowArbitrage/fees.ts");
+const { buildVenueRows } = await import("../src/components/shadowArbitrage/sourcesModel.ts");
+
+/** What the administrator approved, restated here independently of the source. */
+const EXPECTED_APPROVALS: Array<[string, string, string | null, number, number]> = [
+  ["nobitex", "ORDER_BOOK", "Base", 25, 25],
+  ["wallex", "ORDER_BOOK", "Base Level 1", 25, 30],
+  ["tabdeal", "ORDER_BOOK", "VIP1", 24, 28],
+  ["bitpin", "ORDER_BOOK", "Base Level 1", 30, 35],
+  ["abantether", "OTC_QUOTE", null, 30, 30],
+  ["ramzinex", "ORDER_BOOK", "Base", 20, 25],
+  ["bit24", "ORDER_BOOK", "VIP0", 20, 20],
+  ["tetherland", "ORDER_BOOK", "Bronze", 45, 45],
+  ["arzinja", "ORDER_BOOK", "Level 1", 0, 0]
+];
+
+await test("the approved import is nine records over nine unique venue+mode pairs", () => {
+  assert.equal(APPROVED_FEE_TIERS.length, 9);
+  const pairs = APPROVED_FEE_TIERS.map((t) => `${t.sourceId}:${t.executionMode}`);
+  assert.equal(new Set(pairs).size, 9, "no venue+mode pair appears twice");
+  assert.equal(
+    new Set(APPROVED_FEE_TIERS.map((t) => t.sourceId)).size,
+    9,
+    "and no venue appears twice either"
+  );
+  // Eight order books plus one dealer quote — the shape of the desk.
+  assert.equal(APPROVED_FEE_TIERS.filter((t) => t.executionMode === "ORDER_BOOK").length, 8);
+  assert.equal(APPROVED_FEE_TIERS.filter((t) => t.executionMode === "OTC_QUOTE").length, 1);
+  for (const [sourceId, mode, tier, maker, taker] of EXPECTED_APPROVALS) {
+    const t = APPROVED_FEE_TIERS.find((x) => x.sourceId === sourceId);
+    assert.ok(t, `${sourceId} is present`);
+    assert.equal(t!.executionMode, mode, `${sourceId} mode`);
+    assert.equal(t!.tierLabel, tier, `${sourceId} tier`);
+    assert.equal(t!.makerFeeBps, maker, `${sourceId} maker`);
+    assert.equal(t!.takerFeeBps, taker, `${sourceId} taker`);
+  }
+  // The one venue whose evidence names no tier stays null, never "Base".
+  assert.equal(APPROVED_FEE_TIERS.find((t) => t.sourceId === "abantether")!.tierLabel, null);
+  // Not one Easy Trade or Convert rate was approved.
+  assert.equal(
+    APPROVED_FEE_TIERS.some((t) => t.executionMode === "EASY_TRADE" || t.executionMode === "CONVERT"),
+    false
+  );
+});
+
+await test("each venue's execution mode comes from the market it actually trades", () => {
+  for (const [sourceId, mode] of EXPECTED_APPROVALS) {
+    assert.equal(
+      executionModeFor(sourceId as never),
+      mode,
+      `${sourceId} is matched on the mode the engine walks`
+    );
+  }
+});
+
+async function importApproved() {
+  for (const t of APPROVED_FEE_TIERS) {
+    await recordFeeTierEvidence({
+      sourceId: t.sourceId,
+      executionMode: t.executionMode,
+      tierLabel: t.tierLabel,
+      makerFeeBps: t.makerFeeBps,
+      takerFeeBps: t.takerFeeBps,
+      provenance: APPROVED_PROVENANCE,
+      evidenceKey: APPROVED_KEY,
+      confirmedBy: APPROVED_BY,
+      confirmedAt: APPROVED_AT,
+      validForDays: APPROVED_VALID_DAYS,
+      sourceUrl: null,
+      note: t.note ?? null
+    });
+  }
+  return (await records()).filter((r) => r.evidenceKey === APPROVED_KEY);
+}
+
+await test("importing the approved tiers twice still leaves nine rows", async () => {
+  const first = await importApproved();
+  assert.equal(first.length, 9, "nine rows after the first import");
+  const second = await importApproved();
+  assert.equal(second.length, 9, "and nine after the second — the import is idempotent");
+  assert.equal(
+    new Set(second.map((r) => `${r.sourceId}:${r.executionMode}`)).size,
+    9,
+    "one row per venue+mode, no duplicate"
+  );
+});
+
+/** Tier in force per venue, as the append-only confirmation table records it. */
+function confirmationsFor(tierByVenue: Record<string, string | null>) {
+  const out: Record<string, never> = {} as Record<string, never>;
+  for (const t of APPROVED_FEE_TIERS) {
+    (out as Record<string, unknown>)[t.sourceId] = {
+      id: `c-${t.sourceId}`,
+      sourceId: t.sourceId,
+      takerFeeBps: 999,
+      makerFeeBps: 999,
+      feeTier: t.sourceId in tierByVenue ? tierByVenue[t.sourceId] : t.tierLabel,
+      sourceUrl: null,
+      provenance: APPROVED_PROVENANCE,
+      validDays: 30,
+      referenceMetadata: null,
+      evidenceKey: "tier-in-force",
+      confirmedBy: APPROVED_BY,
+      confirmedAt: APPROVED_AT,
+      note: null
+    };
+  }
+  return out;
+}
+
+const approvedRecords = async () => (await records()).filter((r) => r.evidenceKey === APPROVED_KEY);
+
+await test("the runtime resolves all nine venues from the tier evidence alone", async () => {
+  const eff = buildEffectiveFees({
+    records: await approvedRecords(),
+    confirmations: confirmationsFor({}),
+    nowMs: NOW
+  });
+  assert.equal(eff.venues.length, 9);
+  assert.equal(eff.venues.filter((v) => v.ok).length, 9, "every venue matched");
+  assert.equal(eff.blocks.length, 0);
+  for (const [sourceId, mode, tier, maker, taker] of EXPECTED_APPROVALS) {
+    const v = eff.byVenue[sourceId];
+    assert.equal(v.executionMode, mode);
+    assert.equal(v.evidenceTierLabel, tier);
+    assert.equal(v.makerFeeBps, maker);
+    assert.equal(v.takerFeeBps, taker);
+    // The applied rate is the evidence's, never the confirmation's 999.
+    assert.equal(eff.confirmedFeeBps[sourceId as never], taker, `${sourceId} applied taker`);
+  }
+});
+
+await test("Arzinja's zero and AbanTether's missing tier are stated, not implied", async () => {
+  const eff = buildEffectiveFees({
+    records: await approvedRecords(),
+    confirmations: confirmationsFor({}),
+    nowMs: NOW
+  });
+
+  const arz = eff.byVenue.arzinja;
+  assert.ok(
+    arz.noticesFa.includes(ZERO_FEE_ORDER_BOOK_ONLY_FA),
+    "the zero-fee caveat names the order book"
+  );
+  for (const m of arz.referenceModes) {
+    assert.equal(m.hasEvidence, false, `${m.mode} has no evidence`);
+    assert.equal(m.labelFa, NO_EVIDENCE_FOR_REFERENCE_MODE_FA);
+    assert.equal(m.takerFeeBps, null, "and therefore no rate — zero never leaks into it");
+  }
+
+  const aban = eff.byVenue.abantether;
+  assert.equal(aban.evidenceTierLabel, null);
+  assert.equal(aban.executable, true, "a dealer quote is executable");
+  assert.ok(aban.noticesFa.includes(QUOTE_EXECUTABLE_NO_TIER_FA));
+
+  // Every other venue is an order book with a named tier and no such caveat.
+  for (const v of eff.venues) {
+    if (v.sourceId === "arzinja" || v.sourceId === "abantether") continue;
+    assert.equal(v.noticesFa.length, 0, `${v.sourceId} needs no caveat`);
+  }
+});
+
+await test("a tier change blocks the venue end to end until it is reconfirmed", async () => {
+  const all = await approvedRecords();
+  const changed = buildEffectiveFees({
+    records: all,
+    // The account moved to VIP2. Nothing else changed.
+    confirmations: confirmationsFor({ tabdeal: "VIP2" }),
+    nowMs: NOW
+  });
+  const v = changed.byVenue.tabdeal;
+  assert.equal(v.ok, false);
+  assert.equal(v.miss, "tier_mismatch");
+  assert.equal(v.takerFeeBps, null, "no rate survives the mismatch");
+  assert.equal(changed.confirmedFeeBps.tabdeal, null, "and none reaches route economics");
+  assert.ok(v.blockerFa && v.blockerFa.includes("VIP2"), "the reason names both tiers");
+  // The other eight are untouched — invalidation is per venue, not global.
+  assert.equal(changed.venues.filter((x) => x.ok).length, 8);
+
+  // Reconfirming fees for the new tier restores it, by appending not updating.
+  await recordFeeTierEvidence({
+    sourceId: "tabdeal",
+    executionMode: "ORDER_BOOK",
+    tierLabel: "VIP2",
+    makerFeeBps: 20,
+    takerFeeBps: 24,
+    provenance: APPROVED_PROVENANCE,
+    evidenceKey: "admin-tier-vip2",
+    confirmedBy: APPROVED_BY,
+    confirmedAt: "2026-08-05T00:00:00.000Z",
+    validForDays: 30,
+    sourceUrl: null,
+    note: null
+  });
+  const after = buildEffectiveFees({
+    records: (await records()).filter(
+      (r) => r.evidenceKey === APPROVED_KEY || r.evidenceKey === "admin-tier-vip2"
+    ),
+    confirmations: confirmationsFor({ tabdeal: "VIP2" }),
+    nowMs: NOW
+  });
+  assert.equal(after.byVenue.tabdeal.ok, true);
+  assert.equal(after.byVenue.tabdeal.takerFeeBps, 24);
+  // The superseded record is still on file. Nothing was overwritten.
+  assert.ok(
+    after.byVenue.tabdeal.history.some((h) => h.tierLabel === "VIP1"),
+    "the old confirmation survives in the append-only history"
+  );
+});
+
+await test("readiness fails closed on a block instead of using the config fee", async () => {
+  const eff = buildEffectiveFees({
+    records: await approvedRecords(),
+    confirmations: confirmationsFor({ bitpin: "VIP9" }),
+    nowMs: NOW
+  });
+  const readiness = buildAllReadiness(eff.overrides, NOW, [], eff.blocks);
+  const bitpin = readiness.find((r) => r.sourceId === "bitpin")!;
+  assert.equal(bitpin.takerFeeBps, null, "no rate at all — not the compiled-in 30 bps");
+  assert.equal(bitpin.feeProvenance, "UNKNOWN");
+  assert.equal(venueUsableForNetProfit(bitpin), false, "and it cannot back a net-positive route");
+  assert.ok(bitpin.blockingReason && bitpin.blockingReason.includes("پلکان"), "with the exact reason");
+  // A matched venue keeps the rate the evidence gave it.
+  const nobitex = readiness.find((r) => r.sourceId === "nobitex")!;
+  assert.equal(nobitex.takerFeeBps, 25);
+  assert.equal(venueUsableForNetProfit(nobitex), true);
+});
+
+await test("an explicit null fee blocks a route rather than falling back", () => {
+  /*
+   * Wallex carries a compiled-in provisional 35 bps, so it is the venue that
+   * actually demonstrates the fix: before presence became authoritative, a
+   * refused rate fell straight through to that number and the route priced as
+   * though the fee were known.
+   */
+  const priced = computeRouteEconomics({
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    sizeUsdt: 100,
+    buyVwapToman: 100_000,
+    sellVwapToman: 102_000,
+    confirmedFeeBps: { nobitex: 25, wallex: null }
+  });
+  assert.equal(priced.feeUnknown, true, "a refused fee is unknown, not the config value");
+  assert.ok(priced.blocked.includes("fee_unknown"));
+  assert.equal(priced.buyFeeToman, 0, "and nothing is charged on a fee we do not know");
+  assert.equal(priced.sellFeeBps, 0, "the 35 bps default never appears");
+
+  // A venue the caller never described still falls back — unchanged behaviour.
+  const legacy = computeRouteEconomics({
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    sizeUsdt: 100,
+    buyVwapToman: 100_000,
+    sellVwapToman: 102_000,
+    confirmedFeeBps: { nobitex: 25 }
+  });
+  assert.equal(legacy.feeUnknown, false);
+  assert.equal(legacy.sellFeeBps, 35);
+});
+
+await test("every runtime consumer of a fee goes through the effective selector", async () => {
+  const { readFileSync } = await import("node:fs");
+  const read = (rel: string) => readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
+
+  const consumers = [
+    "src/lib/shadowArbitrage/collector.ts",
+    "src/lib/shadowArbitrage/paper/run.ts",
+    "app/api/shadow-arbitrage/accounts/route.ts",
+    "app/api/shadow-arbitrage/capital/route.ts",
+    "app/api/shadow-arbitrage/paper/route.ts",
+    "app/api/shadow-arbitrage/live-readiness/route.ts"
+  ];
+  for (const rel of consumers) {
+    const src = read(rel);
+    assert.ok(src.includes("loadEffectiveFees("), `${rel} resolves fees through the selector`);
+    assert.equal(
+      src.includes("loadLatestFeeConfirmations("),
+      false,
+      `${rel} no longer reads the raw confirmation table for a rate`
+    );
+  }
+
+  // Exactly one module may read it — the resolver that matches mode and tier.
+  const resolver = read("src/lib/shadowArbitrage/effectiveFees.ts");
+  assert.ok(resolver.includes("loadLatestFeeConfirmations()"));
+  assert.ok(resolver.includes("selectEffectiveFee("), "and it uses the fail-closed selector");
+});
+
+await test("all nine Sources cards carry the server's own resolution", async () => {
+  const eff = buildEffectiveFees({
+    records: await approvedRecords(),
+    confirmations: confirmationsFor({ tetherland: "Silver" }),
+    nowMs: NOW
+  });
+  const readiness = buildAllReadiness(eff.overrides, NOW, [], eff.blocks);
+  const rows = buildVenueRows({
+    certifications: [],
+    health: [],
+    snapshots: [],
+    venues: readiness as never,
+    feeEvidence: eff.venues as never,
+    feeReverifyDays: 90
+  });
+  assert.equal(rows.length, 9, "one card per venue");
+  for (const r of rows) {
+    assert.ok(r.feeEvidence, `${r.sourceId} has its resolution attached`);
+    const src = eff.byVenue[r.sourceId];
+    assert.equal(r.feeEvidence!.takerFeeBps, src.takerFeeBps, `${r.sourceId} taker is transported`);
+    assert.equal(r.feeEvidence!.executionMode, src.executionMode);
+    assert.equal(r.feeEvidence!.evidenceTierLabel, src.evidenceTierLabel);
+    assert.equal(r.feeEvidence!.currentTierLabel, src.currentTierLabel);
+    assert.equal(r.feeEvidence!.ok, src.ok);
+    assert.equal(r.feeEvidence!.blockerFa, src.blockerFa);
+    // Confirmation and expiry are present whenever a record backed the answer.
+    if (src.ok) {
+      assert.ok(r.feeEvidence!.confirmedAt, `${r.sourceId} states when it was confirmed`);
+      assert.ok(r.feeEvidence!.expiresAt, `${r.sourceId} states when it expires`);
+      assert.ok(r.feeEvidence!.provenance, `${r.sourceId} states where it came from`);
+    }
+  }
+  const blocked = rows.find((r) => r.sourceId === "tetherland")!;
+  assert.equal(blocked.feeEvidence!.ok, false, "a mismatched venue is shown as blocked");
+  assert.equal(blocked.feeEvidence!.miss, "tier_mismatch");
+
+  // The panel renders these; it must not compute a match of its own.
+  const panel = (await import("node:fs")).readFileSync(
+    new URL("../src/components/shadowArbitrage/SourcesPanel.tsx", import.meta.url),
+    "utf8"
+  );
+  assert.equal(
+    /selectEffectiveFee|tier_mismatch\s*===|currentTierLabel\s*===/.test(panel),
+    false,
+    "the panel decides no match on its own"
+  );
+});
+
+await test("the Sources panel prints the three required statements", async () => {
+  const { readFileSync } = await import("node:fs");
+  const effSrc = readFileSync(
+    new URL("../src/lib/shadowArbitrage/effectiveFees.ts", import.meta.url),
+    "utf8"
+  );
+  for (const label of [
+    "کارمزد ۰/۰ فقط برای دفتر سفارش",
+    "اعمال نمی‌شود؛ شواهد این حالت وجود ندارد",
+    "نقل‌قول اجراپذیر — پلکان اعلام نشده"
+  ]) {
+    assert.ok(effSrc.includes(label), `the server produces «${label}»`);
+  }
+  const panel = readFileSync(
+    new URL("../src/components/shadowArbitrage/SourcesPanel.tsx", import.meta.url),
+    "utf8"
+  );
+  // The panel renders them from the payload rather than restating them.
+  assert.ok(panel.includes("noticesFa"), "notices are rendered from the server payload");
+  assert.ok(panel.includes("labelFa"), "reference-mode labels come from the server too");
+  assert.ok(panel.includes("پلکان اعلام نشده"), "a null tier is named, never blank");
+});
+
 await closeDb();
 await rm(dataDir, { recursive: true, force: true });
 

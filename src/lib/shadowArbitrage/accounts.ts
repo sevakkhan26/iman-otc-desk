@@ -116,6 +116,22 @@ export type FeeOverride = {
   note: string | null;
 };
 
+/**
+ * A venue whose fee evidence did not match, with the exact reason.
+ *
+ * Phase 8E-B. Passing one of these is how a caller says "this venue's rate is
+ * not merely absent, it was refused" — which must NOT fall back to the
+ * compiled-in provisional value the way a plain missing override does. Without
+ * this distinction the fail-closed selector would be undone one line later by
+ * `cfg.feeBps`.
+ */
+export type FeeBlock = {
+  sourceId: string;
+  /** `no_evidence_for_mode` | `tier_mismatch` | `expired` | `fees_missing` | … */
+  miss: string;
+  detailFa: string;
+};
+
 /** Admin-confirmed account evidence, as the readiness layer consumes it. */
 export type AccountOverride = {
   sourceId: string;
@@ -145,7 +161,8 @@ export function buildVenueReadiness(
   sourceId: ShadowSourceId,
   override?: FeeOverride | null,
   nowMs: number = Date.now(),
-  accountOverride?: AccountOverride | null
+  accountOverride?: AccountOverride | null,
+  feeBlock?: FeeBlock | null
 ): VenueReadiness {
   const cfg = getSourceConfig(sourceId);
 
@@ -184,7 +201,15 @@ export function buildVenueReadiness(
   let officialSourceUrl: string | null = cfg.feeReferenceUrl;
   let feeVerifiedAt: string | null = null;
 
-  if (override) {
+  if (feeBlock) {
+    /*
+     * Refused, not missing. The venue keeps no rate, no provenance and no
+     * expiry, so `venueUsableForNetProfit` rejects it and nothing downstream can
+     * mistake the compiled-in provisional value for evidence. The reason travels
+     * with it, because an unexplained block is not an acceptable state.
+     */
+    feeProvenance = "UNKNOWN";
+  } else if (override) {
     takerFeeBps = override.takerFeeBps;
     makerFeeBps = override.makerFeeBps ?? null;
     referenceMetadata = override.referenceMetadata ?? null;
@@ -239,6 +264,10 @@ export function buildVenueReadiness(
   } else if (accountState === "NEEDS_ACCOUNT") {
     requiredAction = "افتتاح و احراز هویت حساب در این صرافی.";
     blockingReason = "حساب کاربری احرازشده وجود ندارد.";
+  } else if (feeBlock) {
+    // The precise miss, never a generic "fee not confirmed".
+    requiredAction = "ثبت یا تأیید مجدد شواهد کارمزد برای همین صرافی، همین حالت اجرا و همین پله.";
+    blockingReason = feeBlock.detailFa;
   } else if (feeProvenance === "UNKNOWN") {
     requiredAction = "ثبت پلهٔ کارمزد رسمی حساب از پنل صرافی.";
     blockingReason = "کارمزد این صرافی تأیید نشده است.";
@@ -279,12 +308,20 @@ export function buildVenueReadiness(
 export function buildAllReadiness(
   overrides: FeeOverride[] = [],
   nowMs: number = Date.now(),
-  accountOverrides: AccountOverride[] = []
+  accountOverrides: AccountOverride[] = [],
+  feeBlocks: FeeBlock[] = []
 ): VenueReadiness[] {
   const byId = new Map(overrides.map((o) => [o.sourceId, o]));
   const accountsById = new Map(accountOverrides.map((a) => [a.sourceId, a]));
+  const blocksById = new Map(feeBlocks.map((b) => [b.sourceId, b]));
   return SHADOW_SOURCES.map((cfg) =>
-    buildVenueReadiness(cfg.id, byId.get(cfg.id) ?? null, nowMs, accountsById.get(cfg.id) ?? null)
+    buildVenueReadiness(
+      cfg.id,
+      byId.get(cfg.id) ?? null,
+      nowMs,
+      accountsById.get(cfg.id) ?? null,
+      blocksById.get(cfg.id) ?? null
+    )
   );
 }
 

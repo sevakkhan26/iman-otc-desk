@@ -1134,7 +1134,7 @@ await test("Phase 4 surface excludes OMPFinex and never accepts credentials", ()
     assert.ok(route.includes(secret), `must explicitly refuse ${secret}`);
   }
   const ui = readFileSync(
-    new URL("../src/components/shadowArbitrage/AccountReadiness.tsx", import.meta.url),
+    new URL("../src/components/shadowArbitrage/SourcesPanel.tsx", import.meta.url),
     "utf8"
   );
   assert.equal(/ompfinex/i.test(ui), false);

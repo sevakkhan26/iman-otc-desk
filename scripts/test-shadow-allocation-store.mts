@@ -30,15 +30,17 @@ const dataDir = await mkdtemp(path.join(tmpdir(), "otc-alloc-test-"));
 process.env.DATABASE_URL = `pglite:${path.join(dataDir, "pglite")}`;
 process.env.SHADOW_COLLECTOR_ENABLED = "false";
 
-const { execRaw, closeDb } = await import("../src/db/client.ts");
-const { readdir, readFile } = await import("node:fs/promises");
+const { closeDb } = await import("../src/db/client.ts");
 
-// Apply every migration the same way the app does.
-const dir = new URL("../drizzle/", import.meta.url);
-for (const file of (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort()) {
-  const sql = await readFile(new URL(file, dir), "utf8");
-  await execRaw(sql.replace(/CREATE INDEX CONCURRENTLY/g, "CREATE INDEX"));
-}
+/*
+ * Apply migrations through the APPLICATION'S OWN runner, not by executing the
+ * raw SQL. The runner rewrites statements for PGlite — it strips
+ * `DEFAULT gen_random_uuid()` — so a test that applies raw SQL silently gets a
+ * schema the app never has, and would pass while production inserts NULL ids.
+ * That exact bug shipped once; running the real path is what catches it.
+ */
+const { runMigrations } = await import("../src/db/migrate.ts");
+await runMigrations();
 
 const {
   applyProposal,
@@ -290,6 +292,34 @@ await test("a failed apply leaves no partial decision behind", async () => {
   assert.equal((await listDecisions(undefined, 200)).length, before, "nothing was appended");
 });
 
+await test("a proposal applies at most once, even under a different key", async () => {
+  const p = await recordProposal(base());
+  const first = await applyProposal({
+    proposalId: p.id,
+    sessionId: SESSION,
+    idempotencyKey: `once-a-${p.id}`,
+    currentFingerprints: { ...FP },
+    decidedBy: "test"
+  });
+  assert.equal(first.decision, "APPLIED");
+  assert.equal(first.idempotentReplay, false);
+
+  // A brand-new key must NOT re-apply: the proposal is the unit applied once.
+  const second = await applyProposal({
+    proposalId: p.id,
+    sessionId: SESSION,
+    idempotencyKey: `once-b-${p.id}`,
+    currentFingerprints: { ...FP },
+    decidedBy: "test"
+  });
+  assert.equal(second.ok, false, "a second apply is refused");
+  assert.equal(second.idempotentReplay, true);
+  assert.ok(second.detailFa.includes("قبلاً"), "it says the proposal was already applied");
+
+  const applied = (await listDecisions(p.id, 100)).filter((d) => d.decision === "APPLIED");
+  assert.equal(applied.length, 1, "exactly one APPLIED row exists for the proposal");
+});
+
 /* ── fingerprints ────────────────────────────────────────────────────────── */
 
 await test("fingerprints are stable under key order and change with content", () => {
@@ -354,6 +384,7 @@ await test("the allocation surface adds no order, credential or transfer path", 
 
 await closeDb();
 await rm(dataDir, { recursive: true, force: true });
+
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

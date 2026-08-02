@@ -1877,6 +1877,10 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
       "src/lib/shadowArbitrage/adapters/base.ts",
       "src/lib/shadowArbitrage/store.ts",
       "src/lib/shadowArbitrage/types.ts",
+      // Phase 8C-5 append-only allocation proposals: additive migration and
+      // its repository. Simulation only — it moves virtual balances, never funds.
+      "drizzle/0011_shadow_allocation_proposals.sql",
+      "src/db/repositories/shadowAllocation.ts",
       "src/lib/shadowArbitrage/live/readiness.ts",
       // certifying Tetherland and Arzinja: direction proof, units, freshness,
       // depth, and routing the confirmed fees into the economics

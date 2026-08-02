@@ -16,7 +16,7 @@
  * Everything stored is virtual. Applying a proposal rewrites the balances of a
  * PAPER session; it places no order and moves no funds.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
 import { getDbAsync } from "@/db/client";
 import {
@@ -119,6 +119,7 @@ export async function recordProposal(input: {
     const [row] = await db
       .insert(shadowAllocationProposals)
       .values({
+        id: randomUUID(),
         totalCapitalToman: input.totalCapitalToman,
         valuationPriceToman: input.valuationPriceToman,
         allocatedToman: input.allocatedToman,
@@ -255,6 +256,36 @@ export async function applyProposal(input: {
     if (!found.length) throw new Error("proposal not found");
     const proposal = hydrate(found[0]);
 
+    /*
+     * A proposal is applied at most once, whatever key is presented.
+     *
+     * Per-key idempotency alone only stops a RETRY; it would still let a new
+     * key re-apply the same plan, appending a second APPLIED row and making
+     * "when did this allocation take effect" ambiguous. The proposal itself is
+     * the unit that gets applied once — generate a fresh one to allocate again.
+     */
+    const already = await db
+      .select()
+      .from(shadowAllocationDecisions)
+      .where(
+        and(
+          eq(shadowAllocationDecisions.proposalId, proposal.id),
+          eq(shadowAllocationDecisions.decision, "APPLIED")
+        )
+      )
+      .limit(1);
+    if (already.length) {
+      const d = already[0];
+      return {
+        ok: false,
+        decision: "APPLIED",
+        detailFa: `این پیشنهاد قبلاً در ${toIso(d.decidedAt)} اعمال شده است؛ برای تخصیص دوباره یک پیشنهاد تازه بسازید.`,
+        idempotentReplay: true,
+        proposalId: proposal.id,
+        decidedAt: toIso(d.decidedAt)
+      };
+    }
+
     const drifted = (
       [
         ["books", "دفتر سفارش"],
@@ -271,6 +302,7 @@ export async function applyProposal(input: {
       const [rec] = await db
         .insert(shadowAllocationDecisions)
         .values({
+          id: randomUUID(),
           proposalId: proposal.id,
           sessionId: input.sessionId,
           decision: "REJECTED_STALE",
@@ -346,6 +378,7 @@ export async function applyProposal(input: {
     const [rec] = await db
       .insert(shadowAllocationDecisions)
       .values({
+        id: randomUUID(),
         proposalId: proposal.id,
         sessionId: input.sessionId,
         decision: "APPLIED",

@@ -10,7 +10,10 @@
 -- funds and touches no exchange.
 
 CREATE TABLE IF NOT EXISTS shadow_allocation_proposals (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  -- Supplied by the application: the migration runner strips
+  -- `DEFAULT gen_random_uuid()` on PGlite, so a DB-side default would leave
+  -- this NOT NULL column with nothing to fill it.
+  id uuid PRIMARY KEY,
 
   -- What the proposal is for. Conservation is checked against this figure and
   -- stored beside it, so a stored row proves its own arithmetic.
@@ -53,7 +56,10 @@ CREATE INDEX IF NOT EXISTS shadow_allocation_proposals_created_idx
 -- itself is never mutated. The unique index is what makes apply idempotent:
 -- a second attempt with the same idempotency key cannot write a second row.
 CREATE TABLE IF NOT EXISTS shadow_allocation_decisions (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  -- Supplied by the application: the migration runner strips
+  -- `DEFAULT gen_random_uuid()` on PGlite, so a DB-side default would leave
+  -- this NOT NULL column with nothing to fill it.
+  id uuid PRIMARY KEY,
   proposal_id uuid NOT NULL REFERENCES shadow_allocation_proposals (id),
   session_id uuid,
   decision text NOT NULL,              -- APPLIED | REJECTED_STALE | FAILED

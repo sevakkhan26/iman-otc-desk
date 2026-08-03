@@ -46,6 +46,7 @@ const {
   touchHeartbeat
 } = await import("../src/db/repositories/shadowArbitrage.ts");
 const { recordFeeTierEvidence } = await import("../src/db/repositories/shadowFeeTier.ts");
+const { loadEffectiveFees } = await import("../src/lib/shadowArbitrage/effectiveFees.ts");
 const { recordRiskPolicy } = await import("../src/db/repositories/shadowLive.ts");
 const { createPaperSession, setPaperSessionStatus } = await import(
   "../src/db/repositories/shadowPaper.ts"
@@ -209,9 +210,18 @@ for (const [policyKey, value] of [
 const accountEvidence = Object.fromEntries(
   SHADOW_SOURCES.map((c) => [c.id, { executionEligible: true, kycComplete: true }])
 );
+/*
+ * The applied fee must come from the evidence just written, exactly as the
+ * collector resolves it. Without this the economics fall back to the
+ * compiled-in provisional rates in `config.ts` — Wallex would settle at 35 bps
+ * while its own tier evidence says 30 — and the drawer would demonstrate the
+ * wrong pipeline.
+ */
+const { confirmedFeeBps } = await loadEffectiveFees(Date.now());
 const built = buildOpportunitiesDetailed(snapshots, [], nowIso, {
   certStatuses,
-  accountEvidence
+  accountEvidence,
+  confirmedFeeBps
 });
 
 const session = await ensureObservationSession(30_000);

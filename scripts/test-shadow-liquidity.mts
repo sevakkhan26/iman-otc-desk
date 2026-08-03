@@ -59,7 +59,10 @@ function policies(over: Partial<Record<string, number | undefined>> = {}) {
     max_venue_exposure_percent: 100,
     min_risk_adjusted_edge_percent: 0,
     max_quote_age_ms: 90_000,
-    max_slippage_bps: 100
+    // Wide enough that the whole graded ladder below counts as executable
+    // depth; the depth cap is then a tenth of a real 1,000 USDT book.
+    max_slippage_bps: 200,
+    max_inventory_deviation_percent: 100
   };
   const merged: Record<string, number | undefined> = { ...base, ...over };
   return buildPolicyState(
@@ -95,26 +98,56 @@ function snap(sourceId: string, bids: Any[], asks: Any[], over: Any = {}): Any {
   };
 }
 
+/**
+ * A graded ladder: `levels` steps of `amountUsdt`, each `step` toman worse
+ * than the last. Walking it makes VWAP degrade continuously with size, which
+ * is what turns the profit curve into something with an interior maximum
+ * rather than a straight line.
+ */
+function ladder(topPrice: number, step: number, levels: number, amountUsdt: number): Any[] {
+  return Array.from({ length: levels }, (_, i) => lv(topPrice + step * i, amountUsdt));
+}
+
+const BUY_LADDER = ladder(100_000, 50, 40, 25);
+const SELL_LADDER = ladder(100_800, -50, 40, 25);
+
+/**
+ * The route both the walk tests and the sizing tests share.
+ *
+ * 903.15 USDT on the sell venue delivers exactly 900 after a 35bps USDT fee,
+ * so the limiting usable balance is 900 and the capital cap is 90 — below the
+ * 100 USDT depth cap, which makes capital the binding constraint. The
+ * percentage ladder over 900 is 9/18/36/54/72/90, and the first two fall under
+ * the 25 USDT floor, leaving four candidates to choose between.
+ */
 function routeInput(over: Any = {}): Any {
   return {
     buySourceId: "nobitex",
     sellSourceId: "wallex",
     // Buy venue: asks climb. Sell venue: bids fall.
-    buySnapshot: snap("nobitex", [lv(99_000, 1_000)], [lv(100_000, 100), lv(100_500, 100), lv(102_000, 1_000)]),
-    sellSnapshot: snap("wallex", [lv(101_500, 100), lv(101_000, 100), lv(99_500, 1_000)], [lv(103_000, 1_000)]),
+    buySnapshot: snap("nobitex", [lv(99_000, 1_000)], BUY_LADDER),
+    sellSnapshot: snap("wallex", SELL_LADDER, [lv(103_000, 1_000)]),
     buyFeeBps: 25,
     sellFeeBps: 35,
     buySettlement: IRT_FEE,
     sellSettlement: USDT_FEE,
     balances: [
-      { sourceId: "nobitex", irtToman: 10_000_000_000, usdtMicros: usdtToMicros(100_000) },
-      { sourceId: "wallex", irtToman: 10_000_000_000, usdtMicros: usdtToMicros(100_000) }
+      { sourceId: "nobitex", irtToman: 2_000_000_000, usdtMicros: usdtToMicros(100_000) },
+      { sourceId: "wallex", irtToman: 10_000_000_000, usdtMicros: usdtToMicros(903.15) }
     ],
     buyVenueAllocationToman: 10_000_000_000,
     portfolioValueToman: 10_000_000_000,
     buyVenueExposureToman: 1_000_000_000,
     policies: policies(),
     slippageBufferBps: 5,
+    inventoryModel: {
+      valuationPriceToman: 100_000,
+      targets: [
+        { sourceId: "nobitex", targetUsdtSharePercent: 83.3 },
+        { sourceId: "wallex", targetUsdtSharePercent: 0.9 }
+      ],
+      maxDeviationPoints: 100
+    },
     ...over
   };
 }
@@ -177,9 +210,11 @@ await test("a walk never extrapolates past the last observed level", () => {
 
 await test("a shallow book and a deep book size very differently", () => {
   const deep = size();
+  // 300 USDT on each side: a tenth of it is 30, well under the 90 the balances
+  // would otherwise allow, so depth — not capital — decides the size.
   const shallow = size({
-    buySnapshot: snap("nobitex", [lv(99_000, 1_000)], [lv(100_000, 3)]),
-    sellSnapshot: snap("wallex", [lv(101_500, 3)], [lv(103_000, 1_000)])
+    buySnapshot: snap("nobitex", [lv(99_000, 1_000)], [lv(100_000, 300)]),
+    sellSnapshot: snap("wallex", [lv(100_800, 300)], [lv(103_000, 1_000)])
   });
   assert.equal(deep.status, "SIZED");
   assert.equal(shallow.status, "SIZED");
@@ -187,8 +222,8 @@ await test("a shallow book and a deep book size very differently", () => {
     (deep.sizeUsdtMicros as number) > (shallow.sizeUsdtMicros as number),
     "the deep book supports a bigger trade"
   );
-  assert.equal(shallow.sizeUsdtMicros, usdtToMicros(3), "capped by the shallower side");
-  assert.equal(shallow.bindingConstraint, "depth_evidence");
+  assert.equal(shallow.sizeUsdtMicros, usdtToMicros(30), "capped by the shallower side");
+  assert.equal(shallow.bindingConstraint, "depth_cap");
 });
 
 /* ── 2. book validation blocks rather than guessing ──────────────────────── */
@@ -232,19 +267,21 @@ await test("stale books block against the admin's own freshness budget", () => {
 
 await test("the optimum is interior: a larger size can earn less and must lose", () => {
   /*
-   * Ten USDT are cheap to buy and dear to sell; beyond that the books turn
-   * sharply against the trade. The profitable quantity is therefore 10, not the
-   * 60 both books could technically absorb.
+   * The graded ladder makes each extra USDT dearer to buy and cheaper to sell.
+   * Past 54 USDT that drag exceeds the remaining edge, so the profit curve
+   * turns down and the best trade is smaller than the biggest one available.
    */
-  const r = size({
-    buySnapshot: snap("nobitex", [lv(99_000, 1_000)], [lv(100_000, 10), lv(130_000, 50)]),
-    sellSnapshot: snap("wallex", [lv(102_000, 10), lv(70_000, 50)], [lv(140_000, 1_000)])
-  });
+  const r = size();
   assert.equal(r.status, "SIZED");
-  assert.equal(r.sizeUsdtMicros, usdtToMicros(10), "the interior optimum wins");
+  assert.equal(r.sizeUsdtMicros, usdtToMicros(54), "the interior optimum wins");
+  assert.deepEqual(
+    r.candidates.map((c) => c.sizeUsdtMicros),
+    [36, 54, 72, 90].map((q) => usdtToMicros(q)),
+    "the 1/2/4/6/8/10 percent ladder, floored at 25 USDT"
+  );
 
   // The bigger quantity was evaluated and was genuinely worse.
-  const big = r.candidates.find((c) => c.sizeUsdtMicros === usdtToMicros(60));
+  const big = r.candidates.find((c) => c.sizeUsdtMicros === usdtToMicros(90));
   assert.ok(big, "the larger quantity was considered, not skipped");
   assert.ok(
     (big?.riskAdjustedPnlToman ?? 0) < (r.economics?.riskAdjustedPnlToman ?? 0),
@@ -289,16 +326,18 @@ await test("a route that is unprofitable at every quantity blocks, showing its b
 await test("insufficient IRT caps the size at the walked price, not the best price", () => {
   const r = size({
     balances: [
-      { sourceId: "nobitex", irtToman: 1_000_000, usdtMicros: usdtToMicros(100_000) },
-      { sourceId: "wallex", irtToman: 10_000_000_000, usdtMicros: usdtToMicros(100_000) }
+      { sourceId: "nobitex", irtToman: 30_000_000, usdtMicros: usdtToMicros(100_000) },
+      { sourceId: "wallex", irtToman: 10_000_000_000, usdtMicros: usdtToMicros(903.15) }
     ]
   });
   assert.equal(r.status, "SIZED");
+  // Toman is now the smaller side, so it sets the capital cap.
+  assert.equal(r.capacity?.limitingSide, "buy");
   // Whatever was chosen must actually be fundable at its own walked VWAP.
   const need =
     (r.quote?.buyWalk.notionalToman as number) +
     Math.round(((r.quote?.buyWalk.notionalToman as number) * 25) / 10_000);
-  assert.ok(need <= 1_000_000, `chosen size must be affordable: needed ${need}`);
+  assert.ok(need <= 30_000_000, `chosen size must be affordable: needed ${need}`);
 });
 
 await test("the sell USDT cap is fee-inclusive and blocks when it cannot cover one USDT", () => {
@@ -316,17 +355,20 @@ await test("the sell USDT cap is fee-inclusive and blocks when it cannot cover o
 });
 
 await test("allocation and concentration caps bind and are reported", () => {
-  const alloc = size({ buyVenueAllocationToman: 500_000 });
+  // 5,000,000 toman of plan share buys 50 USDT at 100,000 — under the 90 the
+  // capital cap allows, so the plan share is what binds.
+  const alloc = size({ buyVenueAllocationToman: 5_000_000 });
   assert.equal(alloc.bindingConstraint, "venue_allocation");
 
   const conc = size({
     policies: policies({ max_venue_exposure_percent: 10 }),
     portfolioValueToman: 10_000_000_000,
-    buyVenueExposureToman: 999_500_000
+    buyVenueExposureToman: 995_000_000
   });
   const capMicros = conc.constraints.find((c) => c.key === "venue_concentration")
     ?.capUsdtMicros as number;
-  assert.ok(capMicros > 0 && capMicros < usdtToMicros(10), "headroom is small but positive");
+  // 10% of 10,000,000,000 leaves 5,000,000 toman of headroom = 50 USDT.
+  assert.equal(capMicros, usdtToMicros(50));
   assert.equal(conc.bindingConstraint, "venue_concentration");
 });
 
@@ -425,7 +467,8 @@ await test("no balance can go negative at any evaluated size", () => {
 });
 
 await test("sizes are floored to the ledger's precision and round-trip exactly", () => {
-  const r = size({ buyVenueAllocationToman: 1_234_567 });
+  const r = size({ buyVenueAllocationToman: 6_123_457 });
+  assert.equal(r.status, "SIZED");
   assert.equal((r.sizeUsdtMicros as number) % 100, 0, "quantised to 1e-4 USDT");
   assert.equal(usdtToMicros(Number((r.sizeUsdt as number).toFixed(4))), r.sizeUsdtMicros);
 });
@@ -616,10 +659,10 @@ await test("the legacy probe ladder no longer sizes anything", () => {
   // And the chosen size need not be one of 5/10/20/25 at all.
   const legacy = [5, 10, 20, 25].map((n) => usdtToMicros(n));
   const shallow = size({
-    buySnapshot: snap("nobitex", [lv(99_000, 1_000)], [lv(100_000, 7.5)]),
-    sellSnapshot: snap("wallex", [lv(101_500, 7.5)], [lv(103_000, 1_000)])
+    buySnapshot: snap("nobitex", [lv(99_000, 1_000)], [lv(100_000, 755)]),
+    sellSnapshot: snap("wallex", [lv(100_800, 755)], [lv(103_000, 1_000)])
   });
-  assert.equal(shallow.sizeUsdtMicros, usdtToMicros(7.5));
+  assert.equal(shallow.sizeUsdtMicros, usdtToMicros(75.5), "a tenth of 755, not a probe size");
   assert.equal(legacy.includes(shallow.sizeUsdtMicros as number), false, "off the legacy ladder");
 });
 
@@ -1010,7 +1053,17 @@ await test("audit: a dealer quote is a usable route leg, not an exclusion", () =
     balances: [
       { sourceId: "abantether", irtToman: 10_000_000_000, usdtMicros: usdtToMicros(100_000) },
       { sourceId: "wallex", irtToman: 10_000_000_000, usdtMicros: usdtToMicros(100_000) }
-    ]
+    ],
+    // The dealer needs an inventory target like any other venue; without one
+    // the band is unmeasurable and sizing fails closed, which is correct.
+    inventoryModel: {
+      valuationPriceToman: 100_000,
+      targets: [
+        { sourceId: "abantether", targetUsdtSharePercent: 50 },
+        { sourceId: "wallex", targetUsdtSharePercent: 50 }
+      ],
+      maxDeviationPoints: 100
+    }
   } as never);
   assert.equal(r.status, "SIZED", "a quote leg sizes like any other");
   assert.ok((r.sizeUsdtMicros as number) > 0);

@@ -1747,12 +1747,12 @@ await test("release version: one authoritative public field, valid package metad
   const pkg = JSON.parse(read("package.json")) as { version: string; private?: boolean };
 
   // The product's version is exactly what this release is called.
-  assert.equal(version.appVersion, "4.1.6.1");
+  assert.equal(version.appVersion, "4.1.7.0");
 
   // Four-part numbers are not SemVer, which is why they cannot live in
   // package.json: the production image validates it during `pnpm install`.
   const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?$/;
-  assert.equal(semver.test(version.appVersion), false, "4.1.6.1 is deliberately not SemVer");
+  assert.equal(semver.test(version.appVersion), false, "4.1.7.0 is deliberately not SemVer");
   assert.ok(semver.test(pkg.version), `package.json keeps valid SemVer, found ${pkg.version}`);
   assert.equal(pkg.version, version.packageMetadataVersion, "and the two stay in step");
   assert.equal(pkg.private, true, "the package is never published, so its version is metadata only");
@@ -2136,7 +2136,20 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
        */
       "src/lib/http.ts",
       "src/lib/shadowArbitrage/adapters/base.ts",
-      "src/lib/shadowArbitrage/paper/liquidity.ts"
+      "src/lib/shadowArbitrage/paper/liquidity.ts",
+      /*
+       * SMART_CAPITAL_DEPTH position sizing: the percentage ladder and the
+       * slippage-bounded depth it is capped by, the inventory band, the atomic
+       * capacity ledger that stops two candidates spending the same balance,
+       * and the additive migration that records why a size won. Simulation
+       * only — every one of these files is pure arithmetic over virtual
+       * balances, with no order, credential, transfer or exchange call.
+       */
+      "src/lib/shadowArbitrage/paper/smartCandidates.ts",
+      "src/lib/shadowArbitrage/paper/inventory.ts",
+      "src/lib/shadowArbitrage/paper/reservations.ts",
+      "src/db/repositories/shadowPaper.ts",
+      "drizzle/0015_shadow_smart_sizing.sql"
     ]);
     const changed = execFileSync("git", ["diff", "--name-only", baseline, "--", ...paths], {
       encoding: "utf8"

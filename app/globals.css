@@ -8240,3 +8240,125 @@ table th {
     min-height: 36px;
   }
 }
+
+/* ── SMART_CAPITAL_DEPTH sizing evidence ──────────────────────────────────── */
+
+/*
+ * Layout only. Every surface, blur, shadow and colour comes from the shared
+ * iOS27 primitives; nothing here forks material, and every selector stays
+ * inside the .sa- scope.
+ */
+.sa-sz-policy-chip {
+  letter-spacing: 0.02em;
+}
+
+.sa-sz-block {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.sa-sz-caption {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/*
+ * Why this size, and why not a larger one — the two questions a number always
+ * raises. Kept as its own block so it reads as an explanation rather than as
+ * another row of figures.
+ */
+.sa-sz-why {
+  display: grid;
+  gap: 6px;
+}
+.sa-sz-why-line {
+  margin: 0;
+  line-height: 1.85;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * Desktop keeps the table; narrow viewports get one card per row instead of a
+ * sideways scroll. An eight-column table cannot fit 390px without either
+ * shrinking the text past legibility or pushing the page into horizontal
+ * overflow, and neither is acceptable on a screen an operator decides on.
+ */
+.sa-sz-cards {
+  display: none;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  gap: 8px;
+}
+.sa-sz-card {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md, 14px);
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+/* The chosen row is marked by weight and by its own chip, never by a surface. */
+.sa-sz-card-chosen .sa-sz-card-title {
+  font-weight: 800;
+}
+.sa-sz-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 36px;
+}
+.sa-sz-card-title {
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.sa-sz-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin: 0;
+}
+.sa-sz-card-grid dt {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.sa-sz-card-grid dd {
+  margin: 0;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.sa-sz-card-note {
+  margin: 0;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+
+:root[data-theme="dark"] .sa-sz-card-grid dt,
+:root[data-theme="dark"] .sa-sz-caption {
+  color: color-mix(in srgb, var(--text) 72%, var(--muted));
+}
+
+@media (max-width: 768px) {
+  .sa-sz-desktop {
+    display: none;
+  }
+  .sa-sz-cards {
+    display: grid;
+  }
+}
+
+@media (max-width: 380px) {
+  /* One column below the narrowest supported width, so no label truncates. */
+  .sa-sz-card-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

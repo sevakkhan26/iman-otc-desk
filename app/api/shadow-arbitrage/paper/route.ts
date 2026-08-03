@@ -279,6 +279,8 @@ async function buildAllocationContext(): Promise<
         marketModel: sn?.marketModel ?? "ORDER_BOOK",
         bookBids: sn?.bookBids ?? null,
         bookAsks: sn?.bookAsks ?? null,
+        // Why the book is absent, not merely that it is.
+        sourceFailureFa: sn?.errorReason ?? sn?.degradedReason ?? null,
         irtToman: bal?.irtToman ?? null,
         usdtMicros: bal?.usdtMicros ?? null,
         feeBps: readiness.find((r) => r.sourceId === v.sourceId)?.takerFeeBps ?? null,
@@ -451,6 +453,7 @@ export async function GET(request: Request) {
         marketModel: snapshot?.marketModel ?? "ORDER_BOOK",
         bookBids: snapshot?.bookBids ?? null,
         bookAsks: snapshot?.bookAsks ?? null,
+        sourceFailureFa: snapshot?.errorReason ?? snapshot?.degradedReason ?? null,
         irtToman: balance?.irtToman ?? null,
         usdtMicros: balance?.usdtMicros ?? null,
         feeBps: feeBpsById.get(v.sourceId) ?? null,

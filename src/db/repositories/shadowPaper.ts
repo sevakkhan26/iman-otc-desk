@@ -369,6 +369,30 @@ export type PaperFillRecord = {
   economicNetPnlToman: number;
   riskAdjustedPnlToman: number;
   balancesAfter: Array<{ sourceId: string; irtToman: number; usdtMicros: number }>;
+  /**
+   * SMART_CAPITAL_DEPTH decision evidence.
+   *
+   * Optional on the type so a caller that has no sizing context still writes a
+   * valid fill — the columns are nullable and a null means "not recorded",
+   * never a value that was invented to fill the gap.
+   */
+  sizing?: {
+    policy: string;
+    reason: string;
+    limitingSide: string;
+    limitingSourceId: string;
+    limitingUsableUsdtMicros: number;
+    capitalCapUsdtMicros: number;
+    depthCapUsdtMicros: number;
+    bindingConstraint: string | null;
+    riskAdjustedReturnBps: number;
+    selectedPercentOfUsable: number | null;
+    inventoryImpactPoints: number | null;
+    nextLargerSizeUsdt: number | null;
+    nextLargerRejectionCode: string | null;
+    nextLargerRejectionReason: string | null;
+    nextLargerMarginalPnlToman: number | null;
+  };
 };
 
 export type PaperSkipRecord = {
@@ -562,6 +586,33 @@ export async function commitPaperCycle(input: {
               economicNetPnlToman: f.economicNetPnlToman,
               riskAdjustedPnlToman: f.riskAdjustedPnlToman,
               balancesAfter: f.balancesAfter,
+              sizingPolicy: f.sizing?.policy ?? null,
+              sizingReason: f.sizing?.reason ?? null,
+              limitingSide: f.sizing?.limitingSide ?? null,
+              limitingSourceId: f.sizing?.limitingSourceId ?? null,
+              limitingUsableUsdtMicros: f.sizing?.limitingUsableUsdtMicros ?? null,
+              capitalCapUsdtMicros: f.sizing?.capitalCapUsdtMicros ?? null,
+              depthCapUsdtMicros: f.sizing?.depthCapUsdtMicros ?? null,
+              bindingConstraint: f.sizing?.bindingConstraint ?? null,
+              riskAdjustedReturnBps:
+                f.sizing === undefined ? null : String(f.sizing.riskAdjustedReturnBps),
+              selectedPercentOfUsable:
+                f.sizing?.selectedPercentOfUsable === undefined ||
+                f.sizing?.selectedPercentOfUsable === null
+                  ? null
+                  : String(f.sizing.selectedPercentOfUsable),
+              inventoryImpactPoints:
+                f.sizing?.inventoryImpactPoints === undefined ||
+                f.sizing?.inventoryImpactPoints === null
+                  ? null
+                  : String(f.sizing.inventoryImpactPoints),
+              nextLargerSizeUsdt:
+                f.sizing?.nextLargerSizeUsdt === undefined || f.sizing?.nextLargerSizeUsdt === null
+                  ? null
+                  : String(f.sizing.nextLargerSizeUsdt),
+              nextLargerRejectionCode: f.sizing?.nextLargerRejectionCode ?? null,
+              nextLargerRejectionReason: f.sizing?.nextLargerRejectionReason ?? null,
+              nextLargerMarginalPnlToman: f.sizing?.nextLargerMarginalPnlToman ?? null,
               occurredAt: input.occurredAt,
               createdAt: input.occurredAt
             });

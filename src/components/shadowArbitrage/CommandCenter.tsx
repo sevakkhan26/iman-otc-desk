@@ -47,6 +47,20 @@ export type CommandSession = {
 
 export type CommandBalance = { sourceId: string; irtToman: number; usdt: number };
 
+/** Micros → a fixed four-decimal USDT string. The ledger's own precision. */
+function usdtFa(micros: number): string {
+  return (micros / 1_000_000).toFixed(4);
+}
+
+/*
+ * The two hard percentages, spelled out for the labels. They mirror
+ * `CAPITAL_CAP_PERCENT` and `DEPTH_CAP_PERCENT` in the sizing policy; the
+ * server also sends them in `policyParameters`, and a test pins the two
+ * together so a change on one side cannot drift from the other.
+ */
+export const CAPITAL_CAP_PERCENT_FA = 10;
+export const DEPTH_CAP_PERCENT_FA = 10;
+
 /** One leg's child-fill ladder, as the API returns it. */
 export type BookWalkView = {
   complete: boolean;
@@ -61,13 +75,14 @@ export type BookWalkView = {
   priceImpactPercent: number;
 };
 
-/** Phase 8C-3 — the calculated size for one route, as the API returns it. */
+/** The calculated size for one route, as the API returns it. */
 export type RouteSizingView = {
   routeKey: string;
   buySourceId: string;
   sellSourceId: string;
   sizing: {
     status: "SIZED" | "BLOCKED";
+    policy: string;
     sizeUsdt: number | null;
     bindingConstraint: string | null;
     constraints: Array<{
@@ -76,37 +91,124 @@ export type RouteSizingView = {
       capUsdtMicros: number | null;
       detailFa: string;
     }>;
+    capacity: {
+      buyUsableMicros: number;
+      sellUsableMicros: number;
+      limitingUsableMicros: number;
+      limitingSide: "buy" | "sell";
+      limitingSourceId: string;
+      capitalCapMicros: number;
+      depthCapMicros: number;
+      depthCapSide: "buy" | "sell";
+      ceilingMicros: number;
+      buyDepth: SlippageDepthView;
+      sellDepth: SlippageDepthView;
+      ladder: Array<{
+        percent: number;
+        rawMicros: number;
+        quantizedMicros: number;
+        kept: boolean;
+      }>;
+    } | null;
     liquidityMaxUsdtMicros: number | null;
     policyMaxUsdtMicros: number | null;
     maxFeasibleUsdtMicros: number | null;
     candidates: Array<{
       sizeUsdtMicros: number;
+      percentOfUsable: number | null;
       buyVwapToman: number;
       sellVwapToman: number;
       riskAdjustedPnlToman: number;
       riskAdjustedEdgePercent: number;
+      riskAdjustedReturnBps: number;
+      inventoryImpactPoints: number;
       buyLevels: number;
       sellLevels: number;
       bookParticipationPercent: number;
       priceImpactPercent: number;
+      eligible: boolean;
+      rejectionCode: string | null;
+      rejectionFa: string | null;
     }>;
+    selection: {
+      policy: string;
+      selectedSizeUsdtMicros: number;
+      selectedPercentOfUsable: number | null;
+      reasonFa: string;
+      tieBreakFa: string | null;
+      nextLarger: {
+        sizeUsdtMicros: number;
+        code: string;
+        detailFa: string;
+        marginalPnlToman: number | null;
+      } | null;
+    } | null;
+    inventory: {
+      measurable: boolean;
+      reasonFa: string;
+      impactPoints: number;
+      withinBand: boolean;
+      breachedSourceId: string | null;
+      breachDetailFa: string | null;
+      before: InventoryRowView[];
+      after: InventoryRowView[];
+    } | null;
+    baseline: {
+      policy: string;
+      executable: boolean;
+      noteFa: string;
+      bestRiskAdjustedPnlToman: number | null;
+      bestSizeUsdt: number | null;
+      rows: Array<{
+        sizeUsdt: number;
+        fillable: boolean;
+        buyVwapToman: number | null;
+        sellVwapToman: number | null;
+        riskAdjustedPnlToman: number | null;
+        riskAdjustedReturnBps: number | null;
+        reasonFa: string;
+      }>;
+    } | null;
     quote: {
       buyVwapToman: number;
       sellVwapToman: number;
+      buySlippageBps: number;
+      sellSlippageBps: number;
       buyWalk: BookWalkView;
       sellWalk: BookWalkView;
     } | null;
     economics: {
       capitalInvolvedToman: number;
       cashPnlIrtToman: number;
+      inventoryDeltaUsdtMicros: number;
       sellFeeValueToman: number;
       economicNetPnlToman: number;
       slippageBufferToman: number;
       riskAdjustedPnlToman: number;
       riskAdjustedEdgePercent: number;
+      riskAdjustedReturnBps: number;
     } | null;
     blockers: Array<{ code: string; subject: string; detailFa: string }>;
   };
+};
+
+/** One leg's depth after the admin's slippage ceiling has been applied. */
+export type SlippageDepthView = {
+  depthMicros: number;
+  totalDepthMicros: number;
+  levelsIncluded: number;
+  levelsExcluded: number;
+  bestPriceToman: number | null;
+  worstAllowedPriceToman: number | null;
+  maxSlippageBps: number;
+};
+
+export type InventoryRowView = {
+  sourceId: string;
+  usdtSharePercent: number;
+  targetUsdtSharePercent: number;
+  deviationPoints: number;
+  withinBand: boolean;
 };
 
 export type CapView = {
@@ -214,10 +316,21 @@ export type VenueSemanticsView = {
 };
 
 export type SizingView = {
+  /** `SMART_CAPITAL_DEPTH`. Named by the server, never inferred here. */
+  policy?: string;
+  policyParameters?: {
+    candidatePercents: number[];
+    capitalCapPercent: number;
+    depthCapPercent: number;
+    minExecutableUsdt: number;
+  };
   requiredPolicies: string[];
   venueSemantics?: VenueSemanticsView;
   missingPolicies: string[];
   venueCapacities?: VenueCapacityView[];
+  /** The fixed ladder, kept as a comparison baseline. Never executable. */
+  baselineSizesUsdt?: number[];
+  baselineExecutable?: boolean;
   routes: RouteSizingView[];
 };
 
@@ -611,8 +724,22 @@ export function CommandCenter({
       ) : null}
       {sizing && !sizing.missingPolicies.length ? (
         <div className="sa-callout sa-callout-muted" role="status">
-          حجم پویا فعال است — {toFaDigits(sizedCount)} مسیر از {toFaDigits(sizing.routes.length)}{" "}
-          مسیر بررسی‌شده حجم گرفت.
+          <span className="sa-chip sa-chip-sm sa-chip-good sa-sz-policy-chip">
+            {sizing.policy ?? "SMART_CAPITAL_DEPTH"}
+          </span>{" "}
+          حجم هوشمند فعال است — {toFaDigits(sizedCount)} مسیر از{" "}
+          {toFaDigits(sizing.routes.length)} مسیر بررسی‌شده حجم گرفت.
+          {sizing.policyParameters ? (
+            <span className="sa-sub">
+              {" "}
+              نامزدها {toFaDigits(sizing.policyParameters.candidatePercents.join("، "))}٪ از موجودی
+              قابل استفادهٔ سمت محدودکننده، با سقف سرمایهٔ{" "}
+              {toFaDigits(sizing.policyParameters.capitalCapPercent)}٪، سقف عمق{" "}
+              {toFaDigits(sizing.policyParameters.depthCapPercent)}٪ هر پا و حداقل اجراپذیر{" "}
+              {toFaDigits(sizing.policyParameters.minExecutableUsdt)} تتر. نردبان ثابت
+              ۵/۱۰/۲۰/۲۵ فقط مبنای مقایسه است و اجرا نمی‌شود.
+            </span>
+          ) : null}
         </div>
       ) : null}
 
@@ -805,8 +932,105 @@ export function CommandCenter({
                   <dd>
                     {bestSizing?.sizing.economics ? (
                       <Bidi>
-                        {formatPercentFa(bestSizing.sizing.economics.riskAdjustedEdgePercent)}
+                        {formatPercentFa(bestSizing.sizing.economics.riskAdjustedEdgePercent)} ·{" "}
+                        {toFaDigits(bestSizing.sizing.economics.riskAdjustedReturnBps)} bps
                       </Bidi>
+                    ) : (
+                      DASH
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>موجودی محدودکننده</dt>
+                  <dd>
+                    {bestSizing?.sizing.capacity ? (
+                      <>
+                        <Bidi>
+                          {toFaDigits(usdtFa(bestSizing.sizing.capacity.limitingUsableMicros))}
+                        </Bidi>{" "}
+                        تتر
+                        <span className="sa-cc-status-sub">
+                          {" "}
+                          · سمت {bestSizing.sizing.capacity.limitingSide === "buy" ? "خرید" : "فروش"} (
+                          {bestSizing.sizing.capacity.limitingSourceId})
+                        </span>
+                      </>
+                    ) : (
+                      DASH
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>سقف سرمایه ({toFaDigits(CAPITAL_CAP_PERCENT_FA)}٪)</dt>
+                  <dd>
+                    {bestSizing?.sizing.capacity ? (
+                      <>
+                        <Bidi>
+                          {toFaDigits(usdtFa(bestSizing.sizing.capacity.capitalCapMicros))}
+                        </Bidi>{" "}
+                        تتر
+                      </>
+                    ) : (
+                      DASH
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>سقف عمق ({toFaDigits(DEPTH_CAP_PERCENT_FA)}٪)</dt>
+                  <dd>
+                    {bestSizing?.sizing.capacity ? (
+                      <>
+                        <Bidi>{toFaDigits(usdtFa(bestSizing.sizing.capacity.depthCapMicros))}</Bidi>{" "}
+                        تتر
+                        <span className="sa-cc-status-sub">
+                          {" "}
+                          · پای {bestSizing.sizing.capacity.depthCapSide === "buy" ? "خرید" : "فروش"}
+                        </span>
+                      </>
+                    ) : (
+                      DASH
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>VWAP دو پا</dt>
+                  <dd>
+                    {bestSizing?.sizing.quote ? (
+                      <Bidi>
+                        {toFaDigits(bestSizing.sizing.quote.buyVwapToman.toLocaleString("en-US"))} ↤{" "}
+                        {toFaDigits(bestSizing.sizing.quote.sellVwapToman.toLocaleString("en-US"))}
+                      </Bidi>
+                    ) : (
+                      DASH
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>اثر بر موجودی</dt>
+                  <dd
+                    className={
+                      bestSizing?.sizing.inventory?.measurable
+                        ? bestSizing.sizing.inventory.impactPoints <= 0
+                          ? "sa-pos"
+                          : "sa-neg"
+                        : undefined
+                    }
+                  >
+                    {bestSizing?.sizing.inventory?.measurable ? (
+                      <>
+                        <Bidi>
+                          {bestSizing.sizing.inventory.impactPoints > 0 ? "+" : ""}
+                          {toFaDigits(bestSizing.sizing.inventory.impactPoints.toFixed(2))}
+                        </Bidi>{" "}
+                        واحد
+                        <span className="sa-cc-status-sub">
+                          {" "}
+                          ·{" "}
+                          {bestSizing.sizing.inventory.impactPoints <= 0
+                            ? "نزدیک‌تر به هدف"
+                            : "دورتر از هدف"}
+                        </span>
+                      </>
                     ) : (
                       DASH
                     )}
@@ -814,15 +1038,59 @@ export function CommandCenter({
                 </div>
               </dl>
 
+              {/* Why not bigger — the single question a size always raises. */}
+              {bestSizing?.sizing.selection ? (
+                <div className="sa-callout sa-callout-muted sa-sz-why" role="status">
+                  <p className="sa-sz-why-line">{bestSizing.sizing.selection.reasonFa}</p>
+                  {bestSizing.sizing.selection.tieBreakFa ? (
+                    <p className="sa-sz-why-line sa-sub">
+                      {bestSizing.sizing.selection.tieBreakFa}
+                    </p>
+                  ) : null}
+                  <p className="sa-sz-why-line">
+                    <span className="sa-strong">چرا حجم بزرگ‌تر نه؟ </span>
+                    {bestSizing.sizing.selection.nextLarger ? (
+                      <>
+                        نامزد بعدی{" "}
+                        <Bidi>
+                          {toFaDigits(
+                            usdtFa(bestSizing.sizing.selection.nextLarger.sizeUsdtMicros)
+                          )}
+                        </Bidi>{" "}
+                        تتر بود —{" "}
+                        <span className="sa-chip sa-chip-sm sa-chip-warn">
+                          {bestSizing.sizing.selection.nextLarger.code}
+                        </span>{" "}
+                        {bestSizing.sizing.selection.nextLarger.detailFa}
+                      </>
+                    ) : (
+                      "هیچ نامزد بزرگ‌تری وجود نداشت؛ حجم انتخاب‌شده خودِ سقف محدودکننده است."
+                    )}
+                  </p>
+                </div>
+              ) : null}
+
+              {/* An inventory breach is the one blocker that is about the desk. */}
+              {bestSizing?.sizing.inventory &&
+              !bestSizing.sizing.inventory.withinBand &&
+              bestSizing.sizing.status !== "SIZED" ? (
+                <div className="sa-callout sa-callout-warn" role="status">
+                  {bestSizing.sizing.inventory.breachDetailFa ??
+                    bestSizing.sizing.inventory.reasonFa}
+                </div>
+              ) : null}
+
               {/* One line: the size, or the single reason there is none. */}
               <p className={bestSizing?.sizing.status === "SIZED" ? "sa-sub" : "sa-sub sa-neg"}>
                 {bestSizing
                   ? bestSizing.sizing.status === "SIZED"
-                    ? `محدودکنندهٔ اصلی حجم: ${
-                        bestSizing.sizing.constraints.find(
-                          (c) => c.key === bestSizing.sizing.bindingConstraint
-                        )?.labelFa ?? "—"
-                      }`
+                    ? bestSizing.sizing.bindingConstraint
+                      ? `محدودکنندهٔ اصلی حجم: ${
+                          bestSizing.sizing.constraints.find(
+                            (c) => c.key === bestSizing.sizing.bindingConstraint
+                          )?.labelFa ?? bestSizing.sizing.bindingConstraint
+                        }`
+                      : "هیچ سقفی محدودکننده نبود — حجم را منحنی سود تعیین کرد، نه یک حد."
                     : `حجمی انتخاب نشد — ${bestSizing.sizing.blockers[0]?.detailFa ?? "دلیل ثبت نشده"}`
                   : "برای این مسیر هنوز محاسبه‌ای انجام نشده است."}
               </p>
@@ -1051,54 +1319,326 @@ export function CommandCenter({
                         ))
                       : null}
 
-                    {/* Route capacity at every breakpoint the books actually have. */}
+                    {/* Every evaluated candidate: eligible or with its exact cause. */}
                     {bestSizing.sizing.candidates.length ? (
-                      <div className="sa-table-wrap">
-                        <table className="sa-table">
-                          <caption className="sa-sub">
-                            ظرفیت مسیر در نقاط شکست دفتر — حجم بهینه پررنگ است
-                          </caption>
-                          <thead>
-                            <tr>
-                              <th scope="col" className="num">حجم (تتر)</th>
-                              <th scope="col" className="num">VWAP خرید</th>
-                              <th scope="col" className="num">VWAP فروش</th>
-                              <th scope="col" className="num">سود تعدیل‌شده</th>
-                              <th scope="col" className="num">حاشیه</th>
-                              <th scope="col" className="num">سطوح</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {bestSizing.sizing.candidates.map((c) => {
-                              const chosen =
-                                bestSizing.sizing.sizeUsdt !== null &&
-                                Math.round(bestSizing.sizing.sizeUsdt * 1_000_000) === c.sizeUsdtMicros;
-                              return (
-                                <tr key={c.sizeUsdtMicros} className={chosen ? "sa-strong" : undefined}>
+                      <div className="sa-sz-block">
+                        <p className="sa-sub sa-sz-caption">
+                          نامزدهای حجم — درصدی از موجودی قابل استفادهٔ سمت محدودکننده؛ حجم
+                          انتخاب‌شده پررنگ است
+                        </p>
+                        <div className="sa-table-wrap sa-sz-desktop">
+                          <table className="sa-table">
+                            <thead>
+                              <tr>
+                                <th scope="col" className="num">حجم (تتر)</th>
+                                <th scope="col" className="num">٪ ظرفیت</th>
+                                <th scope="col" className="num">VWAP خرید</th>
+                                <th scope="col" className="num">VWAP فروش</th>
+                                <th scope="col" className="num">سود تعدیل‌شده</th>
+                                <th scope="col" className="num">بازده (bps)</th>
+                                <th scope="col" className="num">اثر موجودی</th>
+                                <th scope="col">وضعیت</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {bestSizing.sizing.candidates.map((c) => {
+                                const chosen =
+                                  bestSizing.sizing.sizeUsdt !== null &&
+                                  Math.round(bestSizing.sizing.sizeUsdt * 1_000_000) ===
+                                    c.sizeUsdtMicros;
+                                return (
+                                  <tr
+                                    key={c.sizeUsdtMicros}
+                                    className={chosen ? "sa-strong" : undefined}
+                                  >
+                                    <td className="num">
+                                      <Bidi>{toFaDigits(usdtFa(c.sizeUsdtMicros))}</Bidi>
+                                      {chosen ? " ◂" : ""}
+                                    </td>
+                                    <td className="num">
+                                      {c.percentOfUsable === null ? (
+                                        <span className="sa-unknown" title="سقف محدودکننده">
+                                          سقف
+                                        </span>
+                                      ) : (
+                                        <Bidi>{toFaDigits(c.percentOfUsable)}٪</Bidi>
+                                      )}
+                                    </td>
+                                    <td className="num">
+                                      {c.buyVwapToman ? <TomanAmount value={c.buyVwapToman} /> : DASH}
+                                    </td>
+                                    <td className="num">
+                                      {c.sellVwapToman ? (
+                                        <TomanAmount value={c.sellVwapToman} />
+                                      ) : (
+                                        DASH
+                                      )}
+                                    </td>
+                                    <td
+                                      className={
+                                        c.riskAdjustedPnlToman > 0 ? "num sa-pos" : "num sa-neg"
+                                      }
+                                    >
+                                      <TomanAmount value={c.riskAdjustedPnlToman} />
+                                    </td>
+                                    <td className="num">
+                                      <Bidi>{toFaDigits(c.riskAdjustedReturnBps)}</Bidi>
+                                    </td>
+                                    <td
+                                      className={
+                                        c.inventoryImpactPoints <= 0 ? "num sa-pos" : "num sa-neg"
+                                      }
+                                    >
+                                      <Bidi>
+                                        {c.inventoryImpactPoints > 0 ? "+" : ""}
+                                        {toFaDigits(c.inventoryImpactPoints.toFixed(2))}
+                                      </Bidi>
+                                    </td>
+                                    <td className="sa-sub">
+                                      {c.eligible ? (
+                                        <span className="sa-chip sa-chip-sm sa-chip-good">
+                                          واجد شرایط
+                                        </span>
+                                      ) : (
+                                        <>
+                                          <span className="sa-chip sa-chip-sm sa-chip-warn">
+                                            {c.rejectionCode}
+                                          </span>{" "}
+                                          {c.rejectionFa}
+                                        </>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Mobile: one card per candidate, nothing scrolls sideways. */}
+                        <ul className="sa-sz-cards">
+                          {bestSizing.sizing.candidates.map((c) => {
+                            const chosen =
+                              bestSizing.sizing.sizeUsdt !== null &&
+                              Math.round(bestSizing.sizing.sizeUsdt * 1_000_000) === c.sizeUsdtMicros;
+                            return (
+                              <li
+                                key={c.sizeUsdtMicros}
+                                className={`sa-sz-card${chosen ? " sa-sz-card-chosen" : ""}`}
+                              >
+                                <div className="sa-sz-card-head">
+                                  <span className="sa-sz-card-title">
+                                    <Bidi>{toFaDigits(usdtFa(c.sizeUsdtMicros))}</Bidi> تتر
+                                    {c.percentOfUsable === null ? (
+                                      <span className="sa-cc-status-sub"> · سقف</span>
+                                    ) : (
+                                      <span className="sa-cc-status-sub">
+                                        {" "}
+                                        · {toFaDigits(c.percentOfUsable)}٪
+                                      </span>
+                                    )}
+                                  </span>
+                                  {c.eligible ? (
+                                    <span className="sa-chip sa-chip-sm sa-chip-good">
+                                      {chosen ? "انتخاب‌شده" : "واجد شرایط"}
+                                    </span>
+                                  ) : (
+                                    <span className="sa-chip sa-chip-sm sa-chip-warn">
+                                      {c.rejectionCode}
+                                    </span>
+                                  )}
+                                </div>
+                                <dl className="sa-sz-card-grid">
+                                  <div>
+                                    <dt>سود تعدیل‌شده</dt>
+                                    <dd
+                                      className={
+                                        c.riskAdjustedPnlToman > 0 ? "sa-pos" : "sa-neg"
+                                      }
+                                    >
+                                      <TomanAmount value={c.riskAdjustedPnlToman} />
+                                    </dd>
+                                  </div>
+                                  <div>
+                                    <dt>بازده</dt>
+                                    <dd>
+                                      <Bidi>{toFaDigits(c.riskAdjustedReturnBps)} bps</Bidi>
+                                    </dd>
+                                  </div>
+                                  <div>
+                                    <dt>VWAP خرید ↤ فروش</dt>
+                                    <dd>
+                                      <Bidi>
+                                        {toFaDigits(c.buyVwapToman.toLocaleString("en-US"))} ↤{" "}
+                                        {toFaDigits(c.sellVwapToman.toLocaleString("en-US"))}
+                                      </Bidi>
+                                    </dd>
+                                  </div>
+                                  <div>
+                                    <dt>اثر موجودی</dt>
+                                    <dd
+                                      className={
+                                        c.inventoryImpactPoints <= 0 ? "sa-pos" : "sa-neg"
+                                      }
+                                    >
+                                      <Bidi>
+                                        {c.inventoryImpactPoints > 0 ? "+" : ""}
+                                        {toFaDigits(c.inventoryImpactPoints.toFixed(2))} واحد
+                                      </Bidi>
+                                    </dd>
+                                  </div>
+                                </dl>
+                                {c.eligible ? null : (
+                                  <p className="sa-sub sa-sz-card-note">{c.rejectionFa}</p>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    ) : null}
+
+                    {/* The old fixed ladder, priced on the same evidence. */}
+                    {bestSizing.sizing.baseline ? (
+                      <div className="sa-sz-block">
+                        <p className="sa-sub sa-sz-caption">
+                          مبنای مقایسه — نردبان ثابت{" "}
+                          <span className="sa-chip sa-chip-sm sa-chip-muted">
+                            {bestSizing.sizing.baseline.policy}
+                          </span>{" "}
+                          <span className="sa-chip sa-chip-sm sa-chip-danger">
+                            اجرا نمی‌شود
+                          </span>
+                        </p>
+                        <div className="sa-table-wrap sa-sz-desktop">
+                          <table className="sa-table">
+                            <thead>
+                              <tr>
+                                <th scope="col" className="num">حجم ثابت (تتر)</th>
+                                <th scope="col" className="num">VWAP خرید</th>
+                                <th scope="col" className="num">VWAP فروش</th>
+                                <th scope="col" className="num">سود تعدیل‌شده</th>
+                                <th scope="col" className="num">بازده (bps)</th>
+                                <th scope="col">وضعیت</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {bestSizing.sizing.baseline.rows.map((r) => (
+                                <tr key={r.sizeUsdt}>
                                   <td className="num">
-                                    <Bidi>{toFaDigits((c.sizeUsdtMicros / 1_000_000).toFixed(4))}</Bidi>
-                                    {chosen ? " ◂" : ""}
+                                    <Bidi>{toFaDigits(r.sizeUsdt)}</Bidi>
                                   </td>
                                   <td className="num">
-                                    <TomanAmount value={c.buyVwapToman} />
+                                    {r.buyVwapToman === null ? (
+                                      DASH
+                                    ) : (
+                                      <TomanAmount value={r.buyVwapToman} />
+                                    )}
                                   </td>
                                   <td className="num">
-                                    <TomanAmount value={c.sellVwapToman} />
+                                    {r.sellVwapToman === null ? (
+                                      DASH
+                                    ) : (
+                                      <TomanAmount value={r.sellVwapToman} />
+                                    )}
                                   </td>
-                                  <td className={c.riskAdjustedPnlToman > 0 ? "num sa-pos" : "num sa-neg"}>
-                                    <TomanAmount value={c.riskAdjustedPnlToman} />
+                                  <td
+                                    className={
+                                      r.riskAdjustedPnlToman === null
+                                        ? "num"
+                                        : r.riskAdjustedPnlToman > 0
+                                          ? "num sa-pos"
+                                          : "num sa-neg"
+                                    }
+                                  >
+                                    {r.riskAdjustedPnlToman === null ? (
+                                      DASH
+                                    ) : (
+                                      <TomanAmount value={r.riskAdjustedPnlToman} />
+                                    )}
                                   </td>
                                   <td className="num">
-                                    <Bidi>{formatPercentFa(c.riskAdjustedEdgePercent)}</Bidi>
+                                    {r.riskAdjustedReturnBps === null ? (
+                                      DASH
+                                    ) : (
+                                      <Bidi>{toFaDigits(r.riskAdjustedReturnBps)}</Bidi>
+                                    )}
                                   </td>
-                                  <td className="num">
-                                    <Bidi>{`${toFaDigits(c.buyLevels)}/${toFaDigits(c.sellLevels)}`}</Bidi>
-                                  </td>
+                                  <td className="sa-sub">{r.reasonFa}</td>
                                 </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        <ul className="sa-sz-cards">
+                          {bestSizing.sizing.baseline.rows.map((r) => (
+                            <li key={r.sizeUsdt} className="sa-sz-card">
+                              <div className="sa-sz-card-head">
+                                <span className="sa-sz-card-title">
+                                  <Bidi>{toFaDigits(r.sizeUsdt)}</Bidi> تتر
+                                </span>
+                                <span className="sa-chip sa-chip-sm sa-chip-danger">
+                                  اجرا نمی‌شود
+                                </span>
+                              </div>
+                              <dl className="sa-sz-card-grid">
+                                <div>
+                                  <dt>سود تعدیل‌شده</dt>
+                                  <dd
+                                    className={
+                                      r.riskAdjustedPnlToman === null
+                                        ? undefined
+                                        : r.riskAdjustedPnlToman > 0
+                                          ? "sa-pos"
+                                          : "sa-neg"
+                                    }
+                                  >
+                                    {r.riskAdjustedPnlToman === null ? (
+                                      DASH
+                                    ) : (
+                                      <TomanAmount value={r.riskAdjustedPnlToman} />
+                                    )}
+                                  </dd>
+                                </div>
+                                <div>
+                                  <dt>بازده</dt>
+                                  <dd>
+                                    {r.riskAdjustedReturnBps === null ? (
+                                      DASH
+                                    ) : (
+                                      <Bidi>{toFaDigits(r.riskAdjustedReturnBps)} bps</Bidi>
+                                    )}
+                                  </dd>
+                                </div>
+                              </dl>
+                              <p className="sa-sub sa-sz-card-note">{r.reasonFa}</p>
+                            </li>
+                          ))}
+                        </ul>
+
+                        <p className="sa-sub">
+                          {bestSizing.sizing.baseline.noteFa}
+                          {bestSizing.sizing.baseline.bestRiskAdjustedPnlToman !== null &&
+                          bestSizing.sizing.economics ? (
+                            <>
+                              {" "}
+                              بهترین نتیجهٔ نردبان ثابت (
+                              <Bidi>
+                                {toFaDigits(bestSizing.sizing.baseline.bestSizeUsdt ?? 0)}
+                              </Bidi>{" "}
+                              تتر):{" "}
+                              <TomanAmount
+                                value={bestSizing.sizing.baseline.bestRiskAdjustedPnlToman}
+                              />{" "}
+                              در برابر{" "}
+                              <TomanAmount
+                                value={bestSizing.sizing.economics.riskAdjustedPnlToman}
+                              />{" "}
+                              حجم هوشمند.
+                            </>
+                          ) : null}
+                        </p>
                       </div>
                     ) : null}
 

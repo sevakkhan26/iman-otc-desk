@@ -847,6 +847,28 @@ export const shadowPaperLedger = pgTable(
     sellFeeValueToman: bigint("sell_fee_value_toman", { mode: "number" }),
     economicNetPnlToman: bigint("economic_net_pnl_toman", { mode: "number" }),
     riskAdjustedPnlToman: bigint("risk_adjusted_pnl_toman", { mode: "number" }),
+    /*
+     * SMART_CAPITAL_DEPTH decision evidence. All nullable and all added by an
+     * additive migration, so rows written before smart sizing keep exactly the
+     * values they already had.
+     */
+    sizingPolicy: text("sizing_policy"),
+    /** Why the chosen size won, in one line. */
+    sizingReason: text("sizing_reason"),
+    limitingSide: text("limiting_side"),
+    limitingSourceId: text("limiting_source_id"),
+    limitingUsableUsdtMicros: bigint("limiting_usable_usdt_micros", { mode: "number" }),
+    capitalCapUsdtMicros: bigint("capital_cap_usdt_micros", { mode: "number" }),
+    depthCapUsdtMicros: bigint("depth_cap_usdt_micros", { mode: "number" }),
+    bindingConstraint: text("binding_constraint"),
+    riskAdjustedReturnBps: numeric("risk_adjusted_return_bps", { precision: 12, scale: 2 }),
+    selectedPercentOfUsable: numeric("selected_percent_of_usable", { precision: 6, scale: 2 }),
+    /** Σ|deviation after| − Σ|deviation before|, in points. Negative improves. */
+    inventoryImpactPoints: numeric("inventory_impact_points", { precision: 10, scale: 4 }),
+    nextLargerSizeUsdt: numeric("next_larger_size_usdt", { precision: 12, scale: 4 }),
+    nextLargerRejectionCode: text("next_larger_rejection_code"),
+    nextLargerRejectionReason: text("next_larger_rejection_reason"),
+    nextLargerMarginalPnlToman: bigint("next_larger_marginal_pnl_toman", { mode: "number" }),
     /** FIRST_SEEN | CHANGED | FILLED | CLOSED — why this row exists at all. */
     eventType: text("event_type"),
     /** Every exact cause that applied, canonically ordered. */

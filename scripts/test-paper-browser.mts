@@ -517,10 +517,35 @@ check(
   Boolean(later.lastCycleAt) && later.lastCycleAt !== afterResume.lastCycleAt,
   JSON.stringify({ after: afterResume.lastCycleAt, later: later.lastCycleAt })
 );
+/*
+ * A resume must fabricate nothing — but it must not be asserted by demanding
+ * that a RUNNING session write nothing at all.
+ *
+ * The check above deliberately proves that new cycles ARE being evaluated, and
+ * on a live market those cycles legitimately record new candidate-state
+ * transitions and new skips as venues move and blocked reasons change. Asserting
+ * "no new rows" alongside "new cycles ran" can only both hold in a market that
+ * happens to be standing still, so it passed by luck rather than by guarantee.
+ *
+ * What a resume must never do is invent a TRADE, lose history, or write while
+ * no cycle ran. That is what is asserted here.
+ */
+const rowsGrew = later.transitions > afterResume.transitions || later.trades > afterResume.trades;
+const cycleAdvanced = later.lastCycleAt !== afterResume.lastCycleAt;
 check(
-  "and resuming still writes no spurious ledger row",
-  later.trades === before.trades && later.transitions === before.transitions,
-  JSON.stringify({ before, later })
+  "resuming fabricates no fill",
+  later.filled === before.filled,
+  JSON.stringify({ beforeFilled: before.filled, laterFilled: later.filled })
+);
+check(
+  "resuming loses no history",
+  later.trades >= afterResume.trades && later.transitions >= afterResume.transitions,
+  JSON.stringify({ afterResume, later })
+);
+check(
+  "any new row after resume is attributable to a newly evaluated cycle",
+  !rowsGrew || cycleAdvanced,
+  JSON.stringify({ afterResume, later })
 );
 
 ws.close();

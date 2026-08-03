@@ -91,10 +91,7 @@ import {
 import {
   balancesFromAllocations,
   evaluateCycle,
-  rankPricedCandidates,
-  resolveMarkPriceToman,
-  selectBestPerRoute,
-  type PricedCandidate
+  resolveMarkPriceToman
 } from "../src/lib/shadowArbitrage/paper/engine.ts";
 import {
   LIVE_EXECUTION_IMPLEMENTED,
@@ -1911,11 +1908,17 @@ await test("Phase 5 surface is admin-only, credential-free and has no execution 
 const PX = 100_000;
 const paperReadiness = () => classifyAllVenues(buildAllReadiness([], CAP_NOW));
 
+/*
+ * SMART_CAPITAL_DEPTH sizes a trade at a tenth of the limiting usable side
+ * balance and refuses anything under 25 USDT, so these fixtures carry a
+ * session-scale book rather than the probe-scale one the fixed ladder needed.
+ * Each venue opens at a 33.33% USDT share, matching the inventory targets below.
+ */
 function paperBalances(over: Partial<Record<string, [number, number]>> = {}): VenueBalance[] {
   const base: Record<string, [number, number]> = {
-    nobitex: [20_000_000, 100],
-    wallex: [20_000_000, 100],
-    tabdeal: [10_000_000, 50],
+    nobitex: [2_000_000_000, 10_000],
+    wallex: [2_000_000_000, 10_000],
+    tabdeal: [1_000_000_000, 5_000],
     ...over
   };
   return Object.entries(base).map(([sourceId, [irt, usdt]]) => ({
@@ -1939,7 +1942,10 @@ function paperSizing() {
     max_venue_exposure_percent: 100,
     min_risk_adjusted_edge_percent: 0,
     max_quote_age_ms: 90_000,
-    max_slippage_bps: 100
+    max_slippage_bps: 100,
+    // Deliberately wide: these tests are about ranking and balance contention,
+    // and the inventory band has its own tests in `test-smart-sizing.mts`.
+    max_inventory_deviation_percent: 100
   };
   return {
     policies: buildPolicyState(
@@ -1958,7 +1964,14 @@ function paperSizing() {
     portfolioValueToman: null,
     exposureTomanBySource: new Map<string, number>(),
     slippageBufferBps: 5,
-    probeSizesUsdt: [5, 10, 20, 25] as const
+    inventoryModel: {
+      valuationPriceToman: PX,
+      targets: ["nobitex", "wallex", "tabdeal"].map((sourceId) => ({
+        sourceId,
+        targetUsdtSharePercent: 33.3333
+      })),
+      maxDeviationPoints: 100
+    }
   };
 }
 
@@ -2005,10 +2018,32 @@ function paperOpportunity(over: Partial<ShadowOpportunity> = {}): ShadowOpportun
   };
 }
 
+/**
+ * Session-scale books for the paper tests.
+ *
+ * `mockSource` carries a 100 USDT level, which is a probe-scale book; smart
+ * sizing works from a tenth of real depth, so these fixtures widen the level
+ * without changing any price. One level still means VWAP does not move with
+ * size, which is what the selection tests assume.
+ */
+const paperBook = (buy: number, sell: number) => ({
+  bookAsks: [{ priceToman: buy, amountUsdt: 20_000 }],
+  bookBids: [{ priceToman: sell, amountUsdt: 20_000 }]
+});
+
 const paperSources = (over: Partial<Record<string, Partial<NormalizedSourceSnapshot>>> = {}) => [
-  mockSource("nobitex", "نوبیتکس", 100_000, 99_000, over.nobitex),
-  mockSource("wallex", "والکس", 103_000, 102_000, over.wallex),
-  mockSource("tabdeal", "تبدیل", 101_000, 100_500, over.tabdeal)
+  mockSource("nobitex", "نوبیتکس", 100_000, 99_000, {
+    ...paperBook(100_000, 99_000),
+    ...over.nobitex
+  }),
+  mockSource("wallex", "والکس", 103_000, 102_000, {
+    ...paperBook(103_000, 102_000),
+    ...over.wallex
+  }),
+  mockSource("tabdeal", "تبدیل", 101_000, 100_500, {
+    ...paperBook(101_000, 100_500),
+    ...over.tabdeal
+  })
 ];
 
 const BUY_SETTLEMENT: SideSettlement = {
@@ -2285,8 +2320,10 @@ await test("Phase 6 accounting conserves the book: only fees leave it", () => {
   // Inventory moved between venues; the buy venue received the full quantity.
   const nobitex = after.find((b) => b.sourceId === "nobitex")!;
   const wallex = after.find((b) => b.sourceId === "wallex")!;
-  assert.equal(microsToUsdt(nobitex.usdtMicros), 125);
-  assert.equal(microsToUsdt(wallex.usdtMicros), 74.9125);
+  // Both venues open at 10,000 USDT: the buy venue receives the full 25, the
+  // sell venue is debited 25 plus the 0.0875 USDT fee.
+  assert.equal(microsToUsdt(nobitex.usdtMicros), 10_025);
+  assert.equal(microsToUsdt(wallex.usdtMicros), 9_974.9125);
   assert.ok(portfolioValueToman(after, PX) > 0);
 });
 
@@ -2325,122 +2362,18 @@ await test("Phase 6 refuses a round trip that is not net positive after the buff
   if (!plan.ok) assert.equal(plan.code, "not_net_positive");
 });
 
-await test("Phase 6 picks one size per route on risk-adjusted economic PnL", () => {
-  const priced = (size: number, sellVwap: number): PricedCandidate => {
-    const plan = confirmedFill({ sizeUsdt: size, sellVwapToman: sellVwap });
-    assert.equal(plan.ok, true);
-    if (!plan.ok) throw new Error("fixture must plan");
-    return {
-      candidate: {
-        lifecycleId: `lc-${size}`,
-        routeKey: `nobitex->wallex@${size}`,
-        buySourceId: "nobitex",
-        sellSourceId: "wallex",
-        sizeUsdt: size,
-        buyVwapToman: 100_000,
-        sellVwapToman: sellVwap,
-        netProfitToman: 0,
-        slippageBufferToman: 1_000,
-        buyFeeBps: 25,
-        sellFeeBps: 35
-      },
-      plan
-    };
-  };
-
-  const list = [priced(5, 102_000), priced(25, 102_000), priced(10, 102_000), priced(20, 102_000)];
-  const { selected, dropped } = selectBestPerRoute(list);
-  assert.equal(selected.length, 1, "one size per route");
-  assert.equal(selected[0].candidate.sizeUsdt, 25, "largest economic profit wins");
-  assert.equal(dropped.length, 3);
-
-  // Deterministic across input orderings.
-  const shuffled = selectBestPerRoute([list[2], list[0], list[3], list[1]]);
-  assert.equal(shuffled.selected[0].candidate.lifecycleId, selected[0].candidate.lifecycleId);
-});
-
-await test("Phase 6 ranks competing candidates globally and deterministically", () => {
-  // Three routes competing for the same virtual balance, deliberately shuffled.
-  const mk = (
-    lifecycleId: string,
-    routeKey: string,
-    sizeUsdt: number,
-    sellVwapToman: number
-  ): PricedCandidate => {
-    const plan = confirmedFill({ sizeUsdt, sellVwapToman });
-    assert.equal(plan.ok, true);
-    if (!plan.ok) throw new Error("fixture must plan");
-    return {
-      candidate: {
-        lifecycleId,
-        routeKey,
-        buySourceId: "nobitex",
-        sellSourceId: "wallex",
-        sizeUsdt,
-        buyVwapToman: 100_000,
-        sellVwapToman,
-        netProfitToman: 0,
-        slippageBufferToman: 1_000,
-        buyFeeBps: 25,
-        sellFeeBps: 35
-      },
-      plan
-    };
-  };
-
-  const big = mk("lc-big", "a->b@25", 25, 103_000);
-  const mid = mk("lc-mid", "c->d@25", 25, 102_000);
-  const small = mk("lc-small", "e->f@10", 10, 102_000);
-
-  const ranked = rankPricedCandidates([small, big, mid]);
-  assert.deepEqual(
-    ranked.map((r) => r.candidate.lifecycleId),
-    ["lc-big", "lc-mid", "lc-small"],
-    "highest risk-adjusted economic profit first"
-  );
-  // Ranking is by economic profit, and strictly decreasing here.
-  for (let i = 1; i < ranked.length; i += 1) {
-    assert.ok(
-      ranked[i - 1].plan.riskAdjustedPnlToman >= ranked[i].plan.riskAdjustedPnlToman,
-      "the order is monotonic in risk-adjusted PnL"
-    );
-  }
-
-  // Every input permutation produces the identical order.
-  const permutations = [
-    [big, mid, small],
-    [mid, small, big],
-    [small, mid, big],
-    [mid, big, small],
-    [big, small, mid]
-  ];
-  for (const p of permutations) {
-    assert.deepEqual(
-      rankPricedCandidates(p).map((r) => r.candidate.lifecycleId),
-      ["lc-big", "lc-mid", "lc-small"]
-    );
-  }
-
-  // A perfect economic tie is still broken deterministically: size, then route
-  // key, then lifecycle id — so no two candidates can ever tie on all four.
-  const tieA = mk("lc-aaa", "z->z@25", 25, 102_000);
-  const tieB = mk("lc-bbb", "a->a@25", 25, 102_000);
-  assert.equal(tieA.plan.riskAdjustedPnlToman, tieB.plan.riskAdjustedPnlToman);
-  assert.deepEqual(
-    rankPricedCandidates([tieA, tieB]).map((r) => r.candidate.routeKey),
-    ["a->a@25", "z->z@25"]
-  );
-  assert.deepEqual(
-    rankPricedCandidates([tieB, tieA]).map((r) => r.candidate.routeKey),
-    ["a->a@25", "z->z@25"]
-  );
-});
-
 await test("Phase 6 applies the best-ranked candidate first when balances are scarce", () => {
-  // Only enough toman for a single 25 USDT round trip on the buy venue.
+  /*
+   * Both routes buy on nobitex, so its toman is the contended resource.
+   * 26,006,500 toman funds exactly 260 USDT at 100,000 with a 25bps IRT fee,
+   * so the capital cap is 26 USDT — just over the 25 USDT floor. After the
+   * first fill takes it, what is left funds only 23.39 USDT of cap, which is
+   * below the floor, so the second route cannot trade at all.
+   */
   const scarce: VenueBalance[] = [
-    { sourceId: "nobitex", irtToman: 2_600_000, usdtMicros: usdtToMicros(100) },
-    { sourceId: "wallex", irtToman: 2_600_000, usdtMicros: usdtToMicros(100) }
+    { sourceId: "nobitex", irtToman: 26_006_500, usdtMicros: usdtToMicros(1_000) },
+    { sourceId: "wallex", irtToman: 2_600_000, usdtMicros: usdtToMicros(3_000) },
+    { sourceId: "tabdeal", irtToman: 2_600_000, usdtMicros: usdtToMicros(260) }
   ];
 
   const rich = paperOpportunity({

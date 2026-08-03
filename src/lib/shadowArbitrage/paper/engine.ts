@@ -13,10 +13,20 @@
 import { SHADOW_STALE_MS, SHADOW_TRADE_SIZES } from "@/lib/shadowArbitrage/config";
 import type { RiskPolicyState } from "@/lib/shadowArbitrage/live/policy";
 import { computeRouteSize, type SizingResult } from "@/lib/shadowArbitrage/paper/sizing";
+import type { InventoryModel } from "@/lib/shadowArbitrage/paper/inventory";
+import {
+  availableBalances,
+  commitHold,
+  createReservationBook,
+  releaseHold,
+  reserveAtomic,
+  settledBalances,
+  totalReserved,
+  type ReservationBook
+} from "@/lib/shadowArbitrage/paper/reservations";
 import type { QuoteCapacityInput } from "@/lib/shadowArbitrage/paper/liquidity";
 import type { VenueCapitalState } from "@/lib/shadowArbitrage/capital";
 import {
-  applyFill,
   microsToUsdt,
   planFill,
   settlementFor,
@@ -85,7 +95,14 @@ export type PaperCandidate = {
 };
 
 export type PaperDecision =
-  | { kind: "EXECUTE"; candidate: PaperCandidate; plan: FillPlan; balancesAfter: VenueBalance[] }
+  | {
+      kind: "EXECUTE";
+      candidate: PaperCandidate;
+      plan: FillPlan;
+      balancesAfter: VenueBalance[];
+      /** The sizing that produced this fill — why this size and not a larger one. */
+      sizing: SizingResult;
+    }
   | {
       kind: "SKIP";
       candidate: PaperCandidate;
@@ -109,59 +126,14 @@ export type CycleEvaluation = {
   eligibleCandidates: number;
   executedCount: number;
   /**
-   * Phase 8C-3 — the dynamic size worked out for each route this cycle, kept
-   * whether it produced a size or a blocker. This is the evidence the UI shows
-   * and the reason a route did or did not trade.
+   * The calculated size for each route this cycle, kept whether it produced a
+   * size or a blocker. This is the evidence the UI shows and the reason a route
+   * did or did not trade.
    */
   sizing: Array<{ routeKey: string; result: SizingResult }>;
+  /** Capacity still held when the cycle ended. Zero in a clean cycle. */
+  reservations: { irtToman: number; usdtMicros: number; holds: number };
 };
-
-/** A candidate whose economics have already been priced for this cycle. */
-export type PricedCandidate = { candidate: PaperCandidate; plan: FillPlan };
-
-/**
- * Deterministic global ranking.
- *
- * Candidates compete for the same virtual balance, so the order they are applied
- * in decides which ones fit. Ranking is therefore total and reproducible:
- * highest risk-adjusted PnL first, then larger size, then route key, then
- * lifecycle id. No two candidates can ever tie on all four.
- */
-export function rankPricedCandidates(priced: PricedCandidate[]): PricedCandidate[] {
-  return [...priced].sort(
-    (a, b) =>
-      b.plan.riskAdjustedPnlToman - a.plan.riskAdjustedPnlToman ||
-      b.candidate.sizeUsdt - a.candidate.sizeUsdt ||
-      a.candidate.routeKey.localeCompare(b.candidate.routeKey) ||
-      a.candidate.lifecycleId.localeCompare(b.candidate.lifecycleId)
-  );
-}
-
-/**
- * At most one size per route per cycle, chosen on risk-adjusted economic PnL —
- * never on cash PnL, which ignores the USDT the sell fee consumes.
- */
-export function selectBestPerRoute(priced: PricedCandidate[]): {
-  selected: PricedCandidate[];
-  dropped: PricedCandidate[];
-} {
-  const byRoute = new Map<string, PricedCandidate[]>();
-  for (const p of priced) {
-    const key = `${p.candidate.buySourceId}->${p.candidate.sellSourceId}`;
-    const list = byRoute.get(key);
-    if (list) list.push(p);
-    else byRoute.set(key, [p]);
-  }
-
-  const selected: PricedCandidate[] = [];
-  const dropped: PricedCandidate[] = [];
-  for (const key of [...byRoute.keys()].sort()) {
-    const ordered = rankPricedCandidates(byRoute.get(key) ?? []);
-    selected.push(ordered[0]);
-    dropped.push(...ordered.slice(1));
-  }
-  return { selected: rankPricedCandidates(selected), dropped };
-}
 
 /** Same-cycle freshness: the snapshot must be inside the staleness budget. */
 function snapshotUsable(s: NormalizedSourceSnapshot | undefined): boolean {
@@ -222,6 +194,12 @@ export type SizingContext = {
   /** Marked value each venue currently holds. */
   exposureTomanBySource: Map<string, number>;
   slippageBufferBps: number;
+  /**
+   * Opening USDT shares per venue and the admin's deviation band. Inventory
+   * that cannot be measured blocks sizing rather than being ignored — an
+   * unmeasured limit is not a satisfied one.
+   */
+  inventoryModel: InventoryModel;
   /** Per-venue dealer quotes, for OTC sources. */
   quoteBySource?: Map<string, QuoteCapacityInput>;
 };
@@ -357,42 +335,98 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
   }
 
   /*
-   * 2. Size every route, then price it.
+   * 2. One representative candidate per route.
    *
-   * The candidate's own `sizeUsdt` is a diagnostic probe of the order book and
-   * is NOT what trades. One size is calculated per route from depth, balances,
-   * the capital plan and the risk policies, and every candidate on that route
-   * is priced at it. A route whose size cannot be justified is skipped with the
-   * exact reasons — never quietly executed at a probe size.
+   * Sizing is a property of the ROUTE — the same books, the same balances, the
+   * same policies — so every live lifecycle on a route would be sized
+   * identically. Executing more than one of them would spend the same capacity
+   * twice for a single opportunity, so the lowest lifecycle id represents the
+   * route and the rest are recorded as not selected, deterministically.
    */
-  const priced: PricedCandidate[] = [];
-  const sizingByRoute = new Map<string, SizingResult>();
   const sourceForSizing = (id: string) => input.sources.find((s) => s.sourceId === id);
-
+  const byRoute = new Map<string, PaperCandidate[]>();
   for (const c of viable) {
-    const routeKey = `${c.buySourceId}->${c.sellSourceId}`;
-    let sizing = sizingByRoute.get(routeKey);
-    if (!sizing) {
-      sizing = computeRouteSize({
-        buySourceId: c.buySourceId,
-        sellSourceId: c.sellSourceId,
-        buySnapshot: sourceForSizing(c.buySourceId),
-        sellSnapshot: sourceForSizing(c.sellSourceId),
-        buyFeeBps: c.buyFeeBps,
-        sellFeeBps: c.sellFeeBps,
-        buySettlement: settlementFor(c.buySourceId, "buy"),
-        sellSettlement: settlementFor(c.sellSourceId, "sell"),
-        balances: input.balances,
-        buyVenueAllocationToman: input.sizing.allocationTomanBySource.get(c.buySourceId) ?? null,
-        portfolioValueToman: input.sizing.portfolioValueToman,
-        buyVenueExposureToman: input.sizing.exposureTomanBySource.get(c.buySourceId) ?? null,
-        policies: input.sizing.policies,
-        slippageBufferBps: input.sizing.slippageBufferBps,
-        buyQuote: input.sizing.quoteBySource?.get(c.buySourceId),
-        sellQuote: input.sizing.quoteBySource?.get(c.sellSourceId)
-      });
-      sizingByRoute.set(routeKey, sizing);
-    }
+    const key = `${c.buySourceId}->${c.sellSourceId}`;
+    const list = byRoute.get(key);
+    if (list) list.push(c);
+    else byRoute.set(key, [c]);
+  }
+
+  const representatives: PaperCandidate[] = [];
+  for (const key of [...byRoute.keys()].sort()) {
+    const ordered = [...(byRoute.get(key) ?? [])].sort((a, b) =>
+      a.lifecycleId.localeCompare(b.lifecycleId)
+    );
+    representatives.push(ordered[0]);
+    for (const rest of ordered.slice(1)) skip(rest, ["size_not_selected"]);
+  }
+
+  /*
+   * 3. The capacity ledger.
+   *
+   * Every size from here on is calculated against the UNRESERVED balances, so
+   * two routes can never be sized to spend the same toman. Without it both
+   * would look affordable, the first would commit, and the second would be
+   * recorded as "insufficient balance" as though the market had moved — when in
+   * fact the desk had already spent the money on itself.
+   */
+  const ledger: ReservationBook = createReservationBook(input.balances);
+  const sizingByRoute = new Map<string, SizingResult>();
+
+  const sizeRoute = (c: PaperCandidate): SizingResult =>
+    computeRouteSize({
+      buySourceId: c.buySourceId,
+      sellSourceId: c.sellSourceId,
+      buySnapshot: sourceForSizing(c.buySourceId),
+      sellSnapshot: sourceForSizing(c.sellSourceId),
+      buyFeeBps: c.buyFeeBps,
+      sellFeeBps: c.sellFeeBps,
+      buySettlement: settlementFor(c.buySourceId, "buy"),
+      sellSettlement: settlementFor(c.sellSourceId, "sell"),
+      // The unreserved view — never the full book.
+      balances: availableBalances(ledger),
+      buyVenueAllocationToman: input.sizing.allocationTomanBySource.get(c.buySourceId) ?? null,
+      portfolioValueToman: input.sizing.portfolioValueToman,
+      buyVenueExposureToman: input.sizing.exposureTomanBySource.get(c.buySourceId) ?? null,
+      policies: input.sizing.policies,
+      slippageBufferBps: input.sizing.slippageBufferBps,
+      inventoryModel: input.sizing.inventoryModel,
+      buyQuote: input.sizing.quoteBySource?.get(c.buySourceId),
+      sellQuote: input.sizing.quoteBySource?.get(c.sellSourceId)
+    });
+
+  /*
+   * 4. Provisional pass — ranking only.
+   *
+   * Nothing is reserved here and nothing is committed. Its single job is to put
+   * the routes in a deterministic order of merit before capacity starts being
+   * consumed, so the most profitable route gets first claim on a shared balance
+   * rather than whichever route happened to be evaluated first.
+   */
+  const provisional = representatives.map((c) => ({ c, sizing: sizeRoute(c) }));
+  const rankedRoutes = [...provisional].sort(
+    (a, b) =>
+      (b.sizing.economics?.riskAdjustedPnlToman ?? 0) - (a.sizing.economics?.riskAdjustedPnlToman ?? 0) ||
+      (b.sizing.economics?.riskAdjustedReturnBps ?? 0) - (a.sizing.economics?.riskAdjustedReturnBps ?? 0) ||
+      (a.sizing.inventory?.impactPoints ?? 0) - (b.sizing.inventory?.impactPoints ?? 0) ||
+      a.c.routeKey.localeCompare(b.c.routeKey) ||
+      a.c.lifecycleId.localeCompare(b.c.lifecycleId)
+  );
+
+  /*
+   * 5. Authoritative pass — size, reserve, plan, commit, in rank order.
+   *
+   * The size is recalculated here against the capacity that is still free, so
+   * the number that reaches the ledger is the number that was actually
+   * affordable at the moment it was taken.
+   */
+  let executedCount = 0;
+  let eligibleCandidates = 0;
+
+  for (const { c } of rankedRoutes) {
+    const venuePairKey = `${c.buySourceId}->${c.sellSourceId}`;
+    const sizing = sizeRoute(c);
+    sizingByRoute.set(venuePairKey, sizing);
 
     if (sizing.status !== "SIZED" || sizing.sizeUsdtMicros === null || !sizing.quote || !sizing.economics) {
       skip(c, ["sizing_blocked"]);
@@ -408,7 +442,6 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       sellVwapToman: sizing.quote.sellVwapToman,
       slippageBufferToman: sizing.economics.slippageBufferToman
     };
-    const markPriceToman = sizing.quote.markPriceToman;
     const plan = planFill({
       buySourceId: sizedCandidate.buySourceId,
       sellSourceId: sizedCandidate.sellSourceId,
@@ -419,7 +452,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       sellFeeBps: sizedCandidate.sellFeeBps,
       buySettlement: settlementFor(sizedCandidate.buySourceId, "buy"),
       sellSettlement: settlementFor(sizedCandidate.sellSourceId, "sell"),
-      markPriceToman,
+      markPriceToman: sizing.quote.markPriceToman,
       slippageBufferToman: sizedCandidate.slippageBufferToman
     });
     if (!plan.ok) {
@@ -434,48 +467,92 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       });
       continue;
     }
-    priced.push({ candidate: sizedCandidate, plan });
-  }
+    eligibleCandidates += 1;
 
-  // 3. One size per route, then a total order across the whole cycle.
-  const { selected, dropped } = selectBestPerRoute(priced);
-  for (const d of dropped) skip(d.candidate, ["size_not_selected"]);
-
-  // 4. Apply in rank order against the evolving virtual book.
-  let book: VenueBalance[] = input.balances.map((b) => ({ ...b }));
-  let executedCount = 0;
-
-  for (const { candidate: c, plan } of selected) {
-    const applied = applyFill(plan, book);
-    if (!applied.ok) {
-      const code = fromBrokerCode(applied.code);
+    /*
+     * Hold both legs together or hold neither. The hold is keyed by the
+     * lifecycle id, so a cycle re-run after a restart cannot reserve the same
+     * capacity a second time.
+     */
+    const held = reserveAtomic(ledger, sizedCandidate.lifecycleId, [
+      { sourceId: plan.buyLeg.sourceId, irtToman: -plan.buyLeg.deltaIrtToman, usdtMicros: 0 },
+      { sourceId: plan.sellLeg.sourceId, irtToman: 0, usdtMicros: -plan.sellLeg.deltaUsdtMicros }
+    ]);
+    if (!held.ok) {
+      const code: PaperReasonCode =
+        held.code === "insufficient_usdt"
+          ? "insufficient_usdt"
+          : held.code === "no_balance_record"
+            ? "no_balance_record"
+            : held.code === "duplicate_hold"
+              ? "lifecycle_already_processed"
+              : "insufficient_irt";
       decisions.push({
         kind: "SKIP",
-        candidate: c,
+        candidate: sizedCandidate,
         code,
         codes: [code],
         reasonFa: reasonLabel(code),
-        requiredRebalance: applied.requiredRebalance
+        requiredRebalance:
+          held.sourceId && (held.shortfallIrtToman > 0 || held.shortfallUsdtMicros > 0)
+            ? {
+                sourceId: held.sourceId as ShadowSourceId,
+                irtTomanShort: held.shortfallIrtToman,
+                usdtMicrosShort: held.shortfallUsdtMicros
+              }
+            : null
       });
       continue;
     }
 
-    // Commit both legs together — the book only changes on a complete fill.
-    const updated = new Map(applied.balancesAfter.map((b) => [b.sourceId as string, b]));
-    book = book.map((b) => updated.get(b.sourceId) ?? b);
+    // Settle the hold into real movements. A failure releases nothing implicitly
+    // — the hold is dropped explicitly so the capacity returns to the cycle.
+    const committed = commitHold(ledger, sizedCandidate.lifecycleId, [
+      {
+        sourceId: plan.buyLeg.sourceId,
+        deltaIrtToman: plan.buyLeg.deltaIrtToman,
+        deltaUsdtMicros: plan.buyLeg.deltaUsdtMicros
+      },
+      {
+        sourceId: plan.sellLeg.sourceId,
+        deltaIrtToman: plan.sellLeg.deltaIrtToman,
+        deltaUsdtMicros: plan.sellLeg.deltaUsdtMicros
+      }
+    ]);
+    if (!committed.ok) {
+      releaseHold(ledger, sizedCandidate.lifecycleId);
+      const code: PaperReasonCode = "negative_balance_guard";
+      decisions.push({
+        kind: "SKIP",
+        candidate: sizedCandidate,
+        code,
+        codes: [code],
+        reasonFa: reasonLabel(code),
+        requiredRebalance: null
+      });
+      continue;
+    }
+
     executedCount += 1;
-    decisions.push({ kind: "EXECUTE", candidate: c, plan, balancesAfter: applied.balancesAfter });
+    decisions.push({
+      kind: "EXECUTE",
+      candidate: sizedCandidate,
+      plan,
+      balancesAfter: committed.balancesAfter,
+      sizing
+    });
   }
 
   return {
     decisions,
-    balancesAfter: book,
-    eligibleCandidates: priced.length,
+    balancesAfter: settledBalances(ledger),
+    eligibleCandidates,
     executedCount,
     // Sorted so two runs over the same cycle report routes in the same order.
     sizing: [...sizingByRoute.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([routeKey, result]) => ({ routeKey, result }))
+      .map(([routeKey, result]) => ({ routeKey, result })),
+    reservations: totalReserved(ledger)
   };
 }
 

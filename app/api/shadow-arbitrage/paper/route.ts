@@ -43,8 +43,18 @@ import { loadLastMatrix } from "@/lib/shadowArbitrage/store";
 import { buildPolicyState } from "@/lib/shadowArbitrage/live/policy";
 import {
   computeAllRouteSizes,
-  SIZING_REQUIRED_POLICIES
+  BASELINE_FIXED_SIZES_USDT,
+  CANDIDATE_PERCENTS,
+  CAPITAL_CAP_PERCENT,
+  DEPTH_CAP_PERCENT,
+  MIN_EXECUTABLE_USDT_MICROS,
+  SIZING_REQUIRED_POLICIES,
+  SMART_SIZING_POLICY
 } from "@/lib/shadowArbitrage/paper/sizing";
+import {
+  targetsFromAllocations,
+  type InventoryModel
+} from "@/lib/shadowArbitrage/paper/inventory";
 import { venueCapacity, type QuoteCapacityInput } from "@/lib/shadowArbitrage/paper/liquidity";
 import {
   applyProposal,
@@ -499,6 +509,26 @@ export async function GET(request: Request) {
     });
   }
 
+  /*
+   * The inventory band, read exactly as the engine reads it: targets from the
+   * session's own opening allocations, band from the admin policy. An unset
+   * policy leaves it null so the screen shows the same fail-closed answer the
+   * engine would give, rather than a size the engine would refuse.
+   */
+  const inventoryDeviationPolicy = policies.find(
+    (p) => p.definition.key === "max_inventory_deviation_percent"
+  );
+  const inventoryModel: InventoryModel = {
+    valuationPriceToman,
+    targets:
+      valuationPriceToman !== null && valuationPriceToman > 0
+        ? targetsFromAllocations(snap.session?.openingAllocations ?? [], valuationPriceToman)
+        : [],
+    maxDeviationPoints: inventoryDeviationPolicy?.configured
+      ? ((inventoryDeviationPolicy.value as number) ?? null)
+      : null
+  };
+
   const sizingRoutes = computeAllRouteSizes({
     venueIds: wizard.eligibleVenues.map((v) => v.sourceId),
     snapshotById,
@@ -510,6 +540,7 @@ export async function GET(request: Request) {
     exposureTomanBySource,
     policies,
     slippageBufferBps: SLIPPAGE_BUFFER_BPS,
+    inventoryModel,
     quoteBySource
   });
 
@@ -591,13 +622,32 @@ export async function GET(request: Request) {
   })();
 
   const sizing = {
+    /** The policy in force. The UI names it rather than inferring it. */
+    policy: SMART_SIZING_POLICY,
+    policyParameters: {
+      candidatePercents: CANDIDATE_PERCENTS,
+      capitalCapPercent: CAPITAL_CAP_PERCENT,
+      depthCapPercent: DEPTH_CAP_PERCENT,
+      minExecutableUsdt: MIN_EXECUTABLE_USDT_MICROS / 1_000_000
+    },
     requiredPolicies: SIZING_REQUIRED_POLICIES,
     venueSemantics,
     venueCapacities,
     missingPolicies: SIZING_REQUIRED_POLICIES.filter(
       (k) => !policies.find((p) => p.definition.key === k)?.configured
     ),
+    /**
+     * The fixed ladder, still collected as a book PROBE and still shown as a
+     * comparison baseline. It is not a sizing input and never executes.
+     */
     probeSizesUsdt: SHADOW_TRADE_SIZES,
+    baselineSizesUsdt: BASELINE_FIXED_SIZES_USDT,
+    baselineExecutable: false,
+    inventory: {
+      valuationPriceToman: inventoryModel.valuationPriceToman,
+      maxDeviationPoints: inventoryModel.maxDeviationPoints,
+      targets: inventoryModel.targets
+    },
     routes: sizingRoutes
   };
 

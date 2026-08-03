@@ -28,9 +28,12 @@ const {
   computeAllRouteSizes,
   quantizeSizeMicros,
   rankSizedRoutes,
-  MIN_TRADEABLE_USDT_MICROS,
+  MIN_EXECUTABLE_USDT_MICROS,
+  CAPITAL_CAP_PERCENT,
+  DEPTH_CAP_PERCENT,
   SIZE_GRANULARITY_MICROS,
-  SIZING_REQUIRED_POLICIES
+  SIZING_REQUIRED_POLICIES,
+  SMART_SIZING_POLICY
 } = await import("../src/lib/shadowArbitrage/paper/sizing.ts");
 const { buildPolicyState } = await import("../src/lib/shadowArbitrage/live/policy.ts");
 const { planFill, applyFill, settlementFor, usdtToMicros } = await import(
@@ -46,7 +49,8 @@ function policies(over: Partial<Record<string, number>> = {}) {
     max_venue_exposure_percent: 40,
     min_risk_adjusted_edge_percent: 0.05,
     max_quote_age_ms: 60_000,
-    max_slippage_bps: 25
+    max_slippage_bps: 25,
+    max_inventory_deviation_percent: 20
   };
   const merged = { ...base, ...over };
   return buildPolicyState(
@@ -78,7 +82,7 @@ function snap(
   buyVwap: number,
   sellVwap: number,
   over: Any = {},
-  depthUsdt = 25
+  depthUsdt = 10_000
 ): Any {
   return {
     sourceId,
@@ -116,6 +120,19 @@ function input(over: Any = {}): Any {
     buyVenueExposureToman: 1_000_000_000,
     policies: policies(),
     slippageBufferBps: 5,
+    /*
+     * Both venues open at a 33.33% USDT share (1,000,000,000 toman against
+     * 5,000 USDT at 100,000), so the band starts satisfied and any breach in a
+     * test is caused by that test rather than by the fixture.
+     */
+    inventoryModel: {
+      valuationPriceToman: 100_000,
+      targets: [
+        { sourceId: "nobitex", targetUsdtSharePercent: 33.3333 },
+        { sourceId: "wallex", targetUsdtSharePercent: 33.3333 }
+      ],
+      maxDeviationPoints: 20
+    },
     ...over
   };
 }
@@ -245,37 +262,66 @@ await test("a missing balance row blocks instead of sizing against nothing", () 
 const capOf = (r: { constraints: Array<{ key: string; capUsdtMicros: number | null }> }, key: string) =>
   r.constraints.find((c) => c.key === key)?.capUsdtMicros ?? null;
 
-await test("depth is capped by the shallower of the two observed books", () => {
-  // 10 USDT on the sell venue's bid side against 25 on the buy venue's asks.
-  const r = run({ sellSnapshot: snap("wallex", 101_100, 101_000, {}, 10) });
-  assert.equal(capOf(r, "depth_evidence"), usdtToMicros(10));
+await test("the depth cap is a tenth of the shallower leg's executable depth", () => {
+  // 300 USDT on the sell venue's bid side against 10,000 on the buy venue's
+  // asks: the depth cap is 10% of 300, and it is far below the capital cap.
+  const r = run({ sellSnapshot: snap("wallex", 101_100, 101_000, {}, 300) });
+  assert.equal(capOf(r, "depth_cap"), usdtToMicros(30), `${DEPTH_CAP_PERCENT}% of 300`);
   assert.equal(r.status, "SIZED");
-  assert.equal(r.sizeUsdtMicros, usdtToMicros(10), "depth binds");
-  assert.equal(r.bindingConstraint, "depth_evidence");
-  // The walk that priced it touched exactly that book.
-  assert.equal(r.quote?.sellWalk.filledMicros, usdtToMicros(10));
+  assert.equal(r.sizeUsdtMicros, usdtToMicros(30), "the depth cap binds");
+  assert.equal(r.bindingConstraint, "depth_cap");
+  assert.equal(r.capacity?.depthCapSide, "sell");
+  // The walk that priced it touched exactly that book, and only a tenth of it.
+  assert.equal(r.quote?.sellWalk.filledMicros, usdtToMicros(30));
   assert.equal(r.quote?.sellWalk.complete, true);
+  assert.equal(r.quote?.sellWalk.bookParticipationPercent, 10);
+});
+
+await test("the capital cap is a tenth of the limiting usable side balance", () => {
+  const r = run();
+  const cap = capOf(r, "capital_cap") as number;
+  const limiting = r.capacity!.limitingUsableMicros as number;
+  assert.equal(cap, Math.floor((limiting * CAPITAL_CAP_PERCENT) / 100));
+  // 5,000 USDT at a 35bps USDT sell fee is the smaller side here.
+  assert.equal(r.capacity!.limitingSide, "sell");
+  assert.equal(r.capacity!.limitingSourceId, "wallex");
+  assert.equal(r.bindingConstraint, "capital_cap");
+  assert.ok(
+    (r.sizeUsdtMicros as number) <= cap,
+    "no fill may exceed a tenth of the side that binds it"
+  );
 });
 
 await test("the buy IRT cap includes the buy fee, not just the notional", () => {
-  // 1,002,500 toman at 100,000/USDT with a 25bps IRT fee funds exactly 10 USDT.
+  // 1,002,500,000 toman at 100,000/USDT with a 25bps IRT fee funds exactly
+  // 10,000 USDT — and one toman less must fund strictly fewer.
   const r = run({
     balances: [
-      { sourceId: "nobitex", irtToman: 1_002_500, usdtMicros: 5_000_000_000 },
+      { sourceId: "nobitex", irtToman: 1_002_500_000, usdtMicros: 5_000_000_000 },
       { sourceId: "wallex", irtToman: 1_000_000_000, usdtMicros: 5_000_000_000 }
     ]
   });
-  assert.equal(capOf(r, "buy_irt_balance"), usdtToMicros(10));
-  assert.equal(r.bindingConstraint, "buy_irt_balance");
+  assert.equal(capOf(r, "buy_irt_balance"), usdtToMicros(10_000));
 
-  // One toman short and the cap must fall below 10 — never round up to it.
   const short = run({
     balances: [
-      { sourceId: "nobitex", irtToman: 1_002_499, usdtMicros: 5_000_000_000 },
+      { sourceId: "nobitex", irtToman: 1_002_499_999, usdtMicros: 5_000_000_000 },
       { sourceId: "wallex", irtToman: 1_000_000_000, usdtMicros: 5_000_000_000 }
     ]
   });
-  assert.ok((capOf(short, "buy_irt_balance") as number) < usdtToMicros(10));
+  assert.ok((capOf(short, "buy_irt_balance") as number) < usdtToMicros(10_000));
+
+  // And when toman is the scarce side it becomes the limiting side outright.
+  const scarce = run({
+    balances: [
+      { sourceId: "nobitex", irtToman: 100_250_000, usdtMicros: 5_000_000_000 },
+      { sourceId: "wallex", irtToman: 1_000_000_000, usdtMicros: 5_000_000_000 }
+    ]
+  });
+  assert.equal(capOf(scarce, "buy_irt_balance"), usdtToMicros(1_000));
+  assert.equal(scarce.capacity!.limitingSide, "buy");
+  assert.equal(scarce.capacity!.limitingSourceId, "nobitex");
+  assert.equal(capOf(scarce, "capital_cap"), usdtToMicros(100));
 });
 
 await test("the sell USDT cap is fee-inclusive: the venue is debited size plus fee", () => {
@@ -302,18 +348,19 @@ await test("the sell USDT cap is fee-inclusive: the venue is debited size plus f
 });
 
 await test("policy order cap and venue concentration each bind when they are smallest", () => {
-  const order = run({ policies: policies({ max_order_size_usdt: 3 }) });
+  const order = run({ policies: policies({ max_order_size_usdt: 300 }) });
   assert.equal(order.bindingConstraint, "policy_max_order_size");
-  assert.equal(order.sizeUsdtMicros, usdtToMicros(3));
+  assert.equal(order.sizeUsdtMicros, usdtToMicros(300));
 
-  // 20% of 10,000,000,000 = 2,000,000,000 ceiling; 1,999,000,000 already held
-  // leaves 1,000,000 toman of headroom = 10 USDT at 100,000.
+  // 20% of 10,000,000,000 = 2,000,000,000 ceiling; 1,990,000,000 already held
+  // leaves 10,000,000 toman of headroom = 100 USDT at 100,000.
   const conc = run({
     policies: policies({ max_venue_exposure_percent: 20 }),
-    buyVenueExposureToman: 1_999_000_000
+    buyVenueExposureToman: 1_990_000_000
   });
-  assert.equal(capOf(conc, "venue_concentration"), usdtToMicros(10));
+  assert.equal(capOf(conc, "venue_concentration"), usdtToMicros(100));
   assert.equal(conc.bindingConstraint, "venue_concentration");
+  assert.equal(conc.sizeUsdtMicros, usdtToMicros(100));
 });
 
 await test("an unmeasurable cap is null and is excluded, never treated as zero", () => {
@@ -325,10 +372,13 @@ await test("an unmeasurable cap is null and is excluded, never treated as zero",
 });
 
 await test("liquidity and policy maxima are reported separately", () => {
-  const r = run({ policies: policies({ max_order_size_usdt: 7 }) });
-  assert.equal(r.liquidityMaxUsdtMicros, usdtToMicros(25), "depth ∧ balances");
-  assert.equal(r.policyMaxUsdtMicros, usdtToMicros(7), "policies ∧ allocation");
-  assert.equal(r.sizeUsdtMicros, usdtToMicros(7));
+  const r = run({ policies: policies({ max_order_size_usdt: 700 }) });
+  // Liquidity side: the capital cap is the tightest of the five liquidity caps.
+  assert.equal(r.liquidityMaxUsdtMicros, capOf(r, "capital_cap"), "depth ∧ balances ∧ caps");
+  assert.equal(r.policyMaxUsdtMicros, usdtToMicros(700), "policies ∧ allocation");
+  // The capital cap is smaller than the order cap here, so it still decides.
+  assert.equal(r.bindingConstraint, "capital_cap");
+  assert.ok((r.sizeUsdtMicros as number) < usdtToMicros(700));
 });
 
 /* ── 4. profitability boundary ───────────────────────────────────────────── */
@@ -358,24 +408,34 @@ await test("an edge below the policy floor blocks even when the profit is positi
 await test("every reported figure is an integer and the decomposition adds up", () => {
   const r = run();
   const e = r.economics!;
+  const ratios = ["riskAdjustedEdgePercent", "riskAdjustedReturnBps"];
   for (const [k, v] of Object.entries(e)) {
-    if (k === "riskAdjustedEdgePercent") continue;
+    if (ratios.includes(k)) continue;
     assert.equal(Number.isInteger(v), true, `${k} must be an integer, got ${v}`);
   }
   assert.equal(e.economicNetPnlToman, e.cashPnlIrtToman - e.sellFeeValueToman);
   assert.equal(e.riskAdjustedPnlToman, e.economicNetPnlToman - e.slippageBufferToman);
   assert.ok(e.capitalInvolvedToman > 0);
+
+  // The two ratios are the same number in two units, to rounding.
+  assert.ok(
+    Math.abs(e.riskAdjustedReturnBps - e.riskAdjustedEdgePercent * 100) < 1,
+    `bps and percent must agree: ${e.riskAdjustedReturnBps} vs ${e.riskAdjustedEdgePercent}%`
+  );
 });
 
 /* ── 5. size floor and ledger precision ──────────────────────────────────── */
 
-await test("a size below one whole USDT blocks and names the limiting constraint", () => {
-  const r = run({ policies: policies({ max_order_size_usdt: 1 }), buyVenueAllocationToman: 50_000 });
+await test("a ceiling below the executable floor blocks and names the limiting cap", () => {
+  const r = run({ buyVenueAllocationToman: 2_400_000 });
   assert.equal(r.status, "BLOCKED");
   assert.equal(r.sizeUsdtMicros, null);
   const floor = r.blockers.find((b) => b.code === "size_floor");
   assert.ok(floor, "a size floor blocker exists");
   assert.ok(floor!.detailFa.includes("سهم این صرافی"), "it names the binding cap");
+  // The capacity study survives the block — the operator still sees the numbers.
+  assert.ok(r.capacity, "capacity is still reported");
+  assert.equal(r.candidates.length, 0);
 });
 
 await test("the size is floored to the ledger's own precision", () => {
@@ -386,18 +446,36 @@ await test("the size is floored to the ledger's own precision", () => {
   // Never rounds up: flooring keeps the size inside every balance cap.
   for (const n of [1, 99, 12_345_678]) assert.ok(quantizeSizeMicros(n) <= n);
 
-  const r = run({ buyVenueAllocationToman: 1_234_567 });
+  const r = run({ buyVenueAllocationToman: 12_345_678 });
+  assert.equal(r.status, "SIZED");
   assert.equal((r.sizeUsdtMicros as number) % SIZE_GRANULARITY_MICROS, 0);
   // Round-trips through the ledger's 4-decimal column without drift.
   const asStored = Number((r.sizeUsdt as number).toFixed(4));
   assert.equal(usdtToMicros(asStored), r.sizeUsdtMicros);
 });
 
-await test("MIN_TRADEABLE is one whole USDT and is enforced, not advisory", () => {
-  assert.equal(MIN_TRADEABLE_USDT_MICROS, 1_000_000);
-  const r = run({ buyVenueAllocationToman: 99_999 });
-  assert.equal(r.status, "BLOCKED");
-  assert.equal(r.sizeUsdt, null);
+await test("the 25 USDT minimum is enforced, not advisory", () => {
+  assert.equal(MIN_EXECUTABLE_USDT_MICROS, 25_000_000);
+  assert.equal(SMART_SIZING_POLICY, "SMART_CAPITAL_DEPTH");
+
+  // A ceiling of 24.9999 USDT is below the floor: no trade, not a smaller one.
+  const justUnder = run({ policies: policies({ max_order_size_usdt: 24.9999 }) });
+  assert.equal(justUnder.status, "BLOCKED");
+  assert.equal(justUnder.sizeUsdt, null);
+  assert.ok(justUnder.blockers.some((b) => b.code === "size_floor"));
+
+  // Exactly at the floor it trades, and at exactly the floor.
+  const atFloor = run({ policies: policies({ max_order_size_usdt: 25 }) });
+  assert.equal(atFloor.status, "SIZED");
+  assert.equal(atFloor.sizeUsdtMicros, MIN_EXECUTABLE_USDT_MICROS);
+
+  // Every candidate ever produced clears the floor.
+  for (const c of run().candidates) {
+    assert.ok(
+      c.sizeUsdtMicros >= MIN_EXECUTABLE_USDT_MICROS,
+      `candidate ${c.sizeUsdtMicros} is below the floor`
+    );
+  }
 });
 
 /* ── 6. agreement with the broker, and non-negative balances ─────────────── */
@@ -525,7 +603,11 @@ await test("the route sweep is stable, complete and excludes same-venue pairs", 
       exposureTomanBySource: new Map(venueIds.map((v) => [v, 1_000_000_000])),
       policies: policies(),
       slippageBufferBps: 5,
-      probeSizesUsdt: [5, 10, 20, 25]
+      inventoryModel: {
+        valuationPriceToman: 100_000,
+        targets: venueIds.map((sourceId) => ({ sourceId, targetUsdtSharePercent: 33.3333 })),
+        maxDeviationPoints: 20
+      }
     });
 
   const a = sweep();

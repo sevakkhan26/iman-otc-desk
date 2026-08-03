@@ -62,32 +62,41 @@ const nowIso = now.toISOString();
 const MARK = 100_000;
 
 /**
- * Invented books.
+ * Invented books, shaped so exactly ONE route crosses.
  *
- * Only `nobitex → wallex` crosses: buying at 99,900 and selling at 101,600 is
- * ~1.7%, comfortably clear of 25 + 30 bps of fees plus the slippage buffer.
- * Every other venue sits inside a band too narrow to survive costs, so the
- * engine has exactly one route to act on and the fixture is deterministic.
+ * Round-trip costs here are 25 + 30 bps of fees plus a 5 bps buffer, so any
+ * pair whose gross edge is under about 0.6% cannot trade. Only
+ * `nobitex → wallex` clears it: buying at 99,900 and selling at 101,600 is
+ * ~1.7%.
+ *
+ * Every other venue is deliberately placed so that neither leg of it can pair
+ * with anything: its bid (100,100) is only 0.2% above nobitex's ask — under even the
+ * cheapest venue pair's costs — and its ask (101,700) is above wallex's bid. One route in, one route out, and the
+ * fixture stays deterministic — which matters far more now that smart sizing
+ * funds a route from a tenth of a session-scale balance rather than from a
+ * 25 USDT probe.
  */
+const OTHER = { bid: 100_100, ask: 101_700 };
 const BOOKS: Record<string, { bid: number; ask: number } | null> = {
   nobitex: { bid: 99_820, ask: 99_900 },
   wallex: { bid: 101_600, ask: 101_700 },
-  tabdeal: { bid: 100_180, ask: 100_260 },
-  bitpin: { bid: 100_090, ask: 100_170 },
-  ramzinex: { bid: 99_960, ask: 100_040 },
-  abantether: { bid: 99_700, ask: 100_600 },
-  tetherland: { bid: 99_750, ask: 100_540 },
-  bit24: { bid: 99_640, ask: 100_710 },
-  arzinja: { bid: 100_120, ask: 100_200 }
+  tabdeal: { ...OTHER },
+  bitpin: { ...OTHER },
+  ramzinex: { ...OTHER },
+  abantether: { ...OTHER },
+  tetherland: { ...OTHER },
+  bit24: { ...OTHER },
+  arzinja: { ...OTHER }
 };
 
 /** Enough depth that a small size fills at one level and the VWAP is exact. */
 function levels(price: number, side: "bid" | "ask") {
   const step = side === "bid" ? -60 : 60;
   return [
-    { priceToman: price, amountUsdt: 40 },
-    { priceToman: price + step, amountUsdt: 120 },
-    { priceToman: price + step * 2, amountUsdt: 400 }
+    ...Array.from({ length: 60 }, (_, i) => ({
+      priceToman: price + step * i,
+      amountUsdt: 60
+    }))
   ];
 }
 
@@ -185,16 +194,17 @@ for (const cfg of SHADOW_SOURCES) {
 }
 
 /*
- * The five policies dynamic sizing refuses to proceed without. These are
+ * The policies SMART_CAPITAL_DEPTH refuses to proceed without. These are
  * fixture thresholds for a fixture database — they are not a recommendation and
  * they never reach the RC.
  */
 for (const [policyKey, value] of [
-  ["max_order_size_usdt", 25],
+  ["max_order_size_usdt", 2_000],
   ["max_venue_exposure_percent", 40],
-  ["min_risk_adjusted_edge_percent", 0.2],
+  ["min_risk_adjusted_edge_percent", 0.05],
   ["max_quote_age_ms", 60_000],
-  ["max_slippage_bps", 50]
+  ["max_slippage_bps", 600],
+  ["max_inventory_deviation_percent", 40]
 ] as const) {
   await recordRiskPolicy({
     policyKey,
@@ -269,12 +279,17 @@ const paper = await createPaperSession({
   observationId: session.id,
   name: "نشست آزمون کشوی محاسبه",
   mode: "PROVISIONAL_EVALUATION",
-  totalCapitalToman: 50_000_000,
+  /*
+   * Session scale, not probe scale. Smart sizing works from a tenth of the
+   * limiting side balance and refuses anything under 25 USDT, so a fixture
+   * funded with 20 USDT per venue can no longer produce a fill at all.
+   */
+  totalCapitalToman: SHADOW_SOURCES.length * (300_000_000 + 1_500 * MARK),
   valuationPriceToman: MARK,
   openingAllocations: SHADOW_SOURCES.map((c) => ({
     sourceId: c.id,
-    irtToman: 3_000_000,
-    usdtUnits: 20
+    irtToman: 300_000_000,
+    usdtUnits: 1_500
   })),
   approvalFingerprint: null,
   createdBy: "fixture-admin",

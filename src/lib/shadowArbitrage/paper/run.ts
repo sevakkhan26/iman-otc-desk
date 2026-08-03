@@ -27,6 +27,7 @@ import { loadEffectiveFees } from "@/lib/shadowArbitrage/effectiveFees";
 import { buildPolicyState } from "@/lib/shadowArbitrage/live/policy";
 import { mulPriceSizeToman } from "@/lib/shadowArbitrage/money";
 import { describeRebalance, evaluateCycle } from "@/lib/shadowArbitrage/paper/engine";
+import { targetsFromAllocations, type InventoryModel } from "@/lib/shadowArbitrage/paper/inventory";
 import { microsToUsdt, type VenueBalance } from "@/lib/shadowArbitrage/paper/broker";
 import type { QuoteCapacityInput } from "@/lib/shadowArbitrage/paper/liquidity";
 import type { NormalizedSourceSnapshot, ShadowOpportunity, ShadowSourceId } from "@/lib/shadowArbitrage/types";
@@ -121,9 +122,28 @@ export async function runPaperExecutionForCycle(input: {
   );
   const portfolioValueToman = [...exposureTomanBySource.values()].reduce((s, v) => s + v, 0);
 
-  const maxQuoteAgePolicy = buildPolicyState(policyValues).find(
-    (p) => p.definition.key === "max_quote_age_ms"
+  const policies = buildPolicyState(policyValues);
+
+  /*
+   * The inventory band, measured against the shares the SESSION opened with.
+   *
+   * The target is the approved opening allocation, not a house view and not an
+   * average of anything — a target nobody approved is a limit nobody reviewed.
+   * An unset deviation policy leaves `maxDeviationPoints` null, and sizing then
+   * fails closed on the exact key rather than trading against no band at all.
+   */
+  const inventoryDeviationPolicy = policies.find(
+    (p) => p.definition.key === "max_inventory_deviation_percent"
   );
+  const inventoryModel: InventoryModel = {
+    valuationPriceToman,
+    targets: targetsFromAllocations(session.openingAllocations, valuationPriceToman),
+    maxDeviationPoints: inventoryDeviationPolicy?.configured
+      ? ((inventoryDeviationPolicy.value as number) ?? null)
+      : null
+  };
+
+  const maxQuoteAgePolicy = policies.find((p) => p.definition.key === "max_quote_age_ms");
   const quoteBySource = new Map<string, QuoteCapacityInput>();
   for (const snap of input.sources) {
     if (snap.marketModel !== "OTC_QUOTE") continue;
@@ -146,11 +166,12 @@ export async function runPaperExecutionForCycle(input: {
     executedLifecycleIds: filledIds,
     balances,
     sizing: {
-      policies: buildPolicyState(policyValues),
+      policies,
       allocationTomanBySource,
       portfolioValueToman,
       exposureTomanBySource,
       slippageBufferBps: SLIPPAGE_BUFFER_BPS,
+      inventoryModel,
       /*
        * Dealer quotes for OTC venues, built from THIS cycle's snapshots.
        *
@@ -200,7 +221,36 @@ export async function runPaperExecutionForCycle(input: {
           sourceId: b.sourceId,
           irtToman: b.irtToman,
           usdtMicros: b.usdtMicros
-        }))
+        })),
+        /*
+         * Why this size and not a larger one, recorded next to the fill it
+         * decided. Reconstructing it later is impossible — the books have moved
+         * on — so if it is not written now it is gone.
+         */
+        sizing:
+          d.sizing.selection && d.sizing.capacity
+            ? {
+                policy: d.sizing.policy,
+                reason: d.sizing.selection.reasonFa,
+                limitingSide: d.sizing.capacity.limitingSide,
+                limitingSourceId: d.sizing.capacity.limitingSourceId,
+                limitingUsableUsdtMicros: d.sizing.capacity.limitingUsableMicros,
+                capitalCapUsdtMicros: d.sizing.capacity.capitalCapMicros,
+                depthCapUsdtMicros: d.sizing.capacity.depthCapMicros,
+                bindingConstraint: d.sizing.bindingConstraint,
+                riskAdjustedReturnBps: d.sizing.economics?.riskAdjustedReturnBps ?? 0,
+                selectedPercentOfUsable: d.sizing.selection.selectedPercentOfUsable,
+                inventoryImpactPoints: d.sizing.inventory?.impactPoints ?? null,
+                nextLargerSizeUsdt:
+                  d.sizing.selection.nextLarger === null
+                    ? null
+                    : microsToUsdt(d.sizing.selection.nextLarger.sizeUsdtMicros),
+                nextLargerRejectionCode: d.sizing.selection.nextLarger?.code ?? null,
+                nextLargerRejectionReason: d.sizing.selection.nextLarger?.detailFa ?? null,
+                nextLargerMarginalPnlToman:
+                  d.sizing.selection.nextLarger?.marginalPnlToman ?? null
+              }
+            : undefined
       });
       continue;
     }

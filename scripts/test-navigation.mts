@@ -2110,7 +2110,14 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
       // append-only table has. Additive column, no row is rewritten.
       "drizzle/0013_shadow_fee_tier_seq.sql",
       "src/db/repositories/shadowFeeTier.ts",
-      "src/lib/shadowArbitrage/effectiveFees.ts"
+      "src/lib/shadowArbitrage/effectiveFees.ts",
+      /*
+       * The simulator's default capital figure, and nothing else in this file.
+       * Ten billion is what the desk actually works at; fifty million meant
+       * every session opened by correcting the field. Still simulated, still
+       * editable, still bounded by MIN/MAX.
+       */
+      "src/lib/shadowArbitrage/capital.ts"
     ]);
     const changed = execFileSync("git", ["diff", "--name-only", baseline, "--", ...paths], {
       encoding: "utf8"

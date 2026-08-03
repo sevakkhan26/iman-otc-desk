@@ -609,6 +609,19 @@ export const shadowCapitalPlans = pgTable(
  * order book must never price a Convert trade. Never updated or deleted — a
  * correction is a new row.
  */
+/**
+ * One row per release whose startup reconciliation has already run.
+ *
+ * The primary key is the guard: concurrent containers race to insert the same
+ * key and exactly one wins, so a restart can never create a second capital plan
+ * or a second paper session.
+ */
+export const shadowReleaseBootstrap = pgTable("shadow_release_bootstrap", {
+  releaseKey: text("release_key").primaryKey(),
+  appliedAt: ts("applied_at").notNull().defaultNow(),
+  detail: jsonb("detail")
+});
+
 export const shadowFeeTierEvidence = pgTable(
   "shadow_fee_tier_evidence",
   {

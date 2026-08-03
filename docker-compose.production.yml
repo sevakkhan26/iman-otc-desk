@@ -20,6 +20,15 @@ services:
       OTC_FORCE_COMPOSE_DB: "1"
       OTC_DB_HOST: otc-postgres
       OTC_DB_PORT: "5432"
+      # Outbound egress for market data.
+      #
+      # PROXY_HOSTS is a full REPLACEMENT for the built-in list, so a narrow
+      # value silently drops every host it omits — which is how Ramzinex ended
+      # up going direct into a CDN block. It is pinned here, in the override the
+      # production host actually composes with, so the set cannot drift.
+      # OUTBOUND_HTTPS_PROXY stays in the host environment: it carries
+      # credentials and must never be committed.
+      PROXY_HOSTS: ${PROXY_HOSTS:-bonbast.com,navasan.net,ramzinex.com,ramzinex.ir,publicapi.ramzinex.com}
     volumes:
       - iman-otc-alerts-data:/app/data/price-alerts
 

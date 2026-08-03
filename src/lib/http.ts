@@ -86,6 +86,16 @@ function proxyHostList(): string[] {
     .filter(Boolean);
 }
 
+/**
+ * Whether an outbound proxy is configured at all.
+ *
+ * Exposed so a caller can decide to RETRY through the proxy after a direct
+ * attempt failed, without having to know the host list.
+ */
+export function hasOutboundProxy(): boolean {
+  return Boolean(getOutboundProxyAgent());
+}
+
 /** Whether this hostname should use the configured outbound HTTP(S) proxy. */
 export function shouldUseOutboundProxy(hostname: string): boolean {
   if (!getOutboundProxyAgent()) return false;
@@ -115,7 +125,19 @@ function headersToRecord(headers?: HeadersInit): Record<string, string> {
  * HTTPS uses HttpsProxyAgent; plain HTTP uses classic proxy request path.
  * Use this (or fetchJson/fetchText/…) for all server-side outbound HTTP.
  */
-export async function outboundFetch(url: string, init?: RequestInit): Promise<Response> {
+export async function outboundFetch(
+  url: string,
+  init?: RequestInit,
+  /**
+   * Force the proxy for this call, regardless of the host list.
+   *
+   * `PROXY_HOSTS` is a routing preference, and a deployment that sets it
+   * narrowly silently excludes every host it forgot. A caller that has already
+   * watched a direct attempt fail knows something the list does not, so it can
+   * ask for the proxy explicitly instead of editing the list on every host.
+   */
+  options?: { forceProxy?: boolean }
+): Promise<Response> {
   let target: URL;
   try {
     target = new URL(url);
@@ -123,8 +145,13 @@ export async function outboundFetch(url: string, init?: RequestInit): Promise<Re
     return fetch(url, init);
   }
 
-  if (!shouldUseOutboundProxy(target.hostname)) {
+  if (!options?.forceProxy && !shouldUseOutboundProxy(target.hostname)) {
     return fetch(url, init);
+  }
+  if (options?.forceProxy && !getOutboundProxyAgent()) {
+    // Asked for the proxy, none configured: the caller must not silently get a
+    // second direct attempt dressed up as a proxied one.
+    throw new ProviderError("پراکسی خروجی پیکربندی نشده است");
   }
 
   const proxyUrl = readOutboundProxyUrl();

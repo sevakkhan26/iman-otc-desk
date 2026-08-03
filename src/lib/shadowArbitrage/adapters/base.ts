@@ -1,4 +1,4 @@
-import { fetchJson, outboundFetch, ProviderError } from "@/lib/http";
+import { fetchJson, hasOutboundProxy, outboundFetch, ProviderError } from "@/lib/http";
 import {
   SHADOW_BACKOFF_BASE_MS,
   SHADOW_BACKOFF_MAX_MS,
@@ -97,6 +97,10 @@ export type ShadowResponse<T> = {
   latencyMs: number;
   attempts: number;
   rateLimited: boolean;
+  /** Whether the outbound proxy carried this response. */
+  viaProxy?: boolean;
+  /** Set when a direct attempt failed and the proxy recovered it. */
+  directFailure?: string | null;
 };
 
 /** Last request time per host, so we honour our own minimum spacing. */
@@ -137,19 +141,52 @@ function statusFromError(error: unknown): number | null {
  * inherit its DoH / fallback-IP hardening; a success there has no status to
  * report beyond "it worked".
  */
+/**
+ * Statuses a proxy can plausibly fix.
+ *
+ * A CDN that refuses one egress IP answers 403 or 429; both are about WHERE the
+ * request came from, not what it asked for. A 404 or a 500 says the same thing
+ * from any address, so retrying those through a proxy would just be a second
+ * way to fail.
+ */
+const PROXY_RETRYABLE_STATUS = new Set([403, 429]);
+
+function describeFailure(error: unknown): string {
+  if (error instanceof HttpStatusError) return `HTTP ${error.status}`;
+  if (isTimeout(error)) return "timeout";
+  const msg = error instanceof Error ? error.message : String(error);
+  return msg.slice(0, 120);
+}
+
+/** Whether a failed direct attempt is worth retrying through the proxy. */
+function proxyMightHelp(error: unknown): boolean {
+  if (error instanceof HttpStatusError) return PROXY_RETRYABLE_STATUS.has(error.status);
+  // A ProviderError means the response arrived and was wrong — bad JSON, empty
+  // body. Another network path cannot fix malformed data, and retrying it would
+  // be treating invalid market data as something to work around.
+  if (error instanceof ProviderError) return false;
+  // Everything else is transport: DNS, reset, TLS, timeout.
+  return true;
+}
+
 async function attemptOnce<T>(
   url: string,
   timeoutMs: number,
-  headers: Record<string, string>
+  headers: Record<string, string>,
+  options?: { forceProxy?: boolean }
 ): Promise<{ data: T; httpStatus: number | null }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await outboundFetch(url, {
-      cache: "no-store",
-      headers,
-      signal: controller.signal
-    });
+    const response = await outboundFetch(
+      url,
+      {
+        cache: "no-store",
+        headers,
+        signal: controller.signal
+      },
+      options?.forceProxy ? { forceProxy: true } : undefined
+    );
     const text = await response.text();
     if (!response.ok) throw new HttpStatusError(response.status);
     if (!text.trim()) throw new ProviderError("پاسخ خالی بود");
@@ -160,9 +197,22 @@ async function attemptOnce<T>(
     }
   } catch (error) {
     if (error instanceof HttpStatusError || error instanceof ProviderError) throw error;
-    // Transport-level failure — retry through the hardened client.
-    const data = await fetchJson<T>(url, timeoutMs, { headers });
-    return { data, httpStatus: null };
+    // A forced-proxy attempt must fail as itself; falling back to the hardened
+    // direct client here would report a direct success as a proxy success.
+    if (options?.forceProxy) throw error;
+    /*
+     * Transport-level failure — retry through the hardened client. If that
+     * fails too, rethrow the ORIGINAL error: the hardened client's own
+     * complaint (an unsupported scheme, a DoH miss) describes the fallback, not
+     * the venue, and letting it win would misclassify a timeout as a payload
+     * problem and skip the proxy recovery that could still fix it.
+     */
+    try {
+      const data = await fetchJson<T>(url, timeoutMs, { headers });
+      return { data, httpStatus: null };
+    } catch {
+      throw error;
+    }
   } finally {
     clearTimeout(timer);
   }
@@ -200,6 +250,14 @@ export async function shadowRequest<T>(
   let sawRateLimit = false;
   let lastStatus: number | null = null;
   let lastError: unknown = new ProviderError("no attempt made");
+  /* One proxy recovery per request, and only after a direct attempt failed. */
+  let triedProxy = false;
+  let directFailure: string | null = null;
+  const requestHeaders = {
+    "user-agent": SHADOW_UA,
+    accept: "application/json",
+    ...opts.headers
+  };
 
   while (attempts < maxAttempts) {
     // Self-imposed spacing — we never hammer a public endpoint.
@@ -216,24 +274,61 @@ export async function shadowRequest<T>(
     attempts += 1;
     const t0 = Date.now();
     try {
-      const { data, httpStatus } = await attemptOnce<T>(url, opts.timeoutMs, {
-        "user-agent": SHADOW_UA,
-        accept: "application/json",
-        ...opts.headers
-      });
+      const { data, httpStatus } = await attemptOnce<T>(url, opts.timeoutMs, requestHeaders);
       return {
         data,
         endpoint: url,
         httpStatus: httpStatus ?? 200,
         latencyMs: Date.now() - t0,
         attempts,
-        rateLimited: sawRateLimit
+        rateLimited: sawRateLimit,
+        viaProxy: false,
+        directFailure: null
       };
     } catch (error) {
       lastError = error;
       lastStatus = statusFromError(error);
       const rateLimited = lastStatus === 429 || lastStatus === 418;
       if (rateLimited) sawRateLimit = true;
+
+      /*
+       * Proxy recovery.
+       *
+       * A CDN that refuses this egress IP answers 403 or 429, and a blocked
+       * route just times out — all facts about WHERE the request came from. One
+       * retry through the configured proxy answers that, and it is deliberately
+       * not gated on PROXY_HOSTS: a deployment that narrowed that list excluded
+       * this host by omission, and the direct failure is better evidence than
+       * the list. Malformed data never reaches here — `proxyMightHelp` refuses
+       * it, because another network path cannot fix a bad payload.
+       */
+      if (!triedProxy && proxyMightHelp(error) && hasOutboundProxy()) {
+        triedProxy = true;
+        directFailure = describeFailure(error);
+        const pt0 = Date.now();
+        try {
+          const viaProxy = await attemptOnce<T>(url, opts.timeoutMs, requestHeaders, {
+            forceProxy: true
+          });
+          return {
+            data: viaProxy.data,
+            endpoint: url,
+            httpStatus: viaProxy.httpStatus ?? 200,
+            latencyMs: Date.now() - pt0,
+            attempts,
+            rateLimited: sawRateLimit,
+            viaProxy: true,
+            directFailure
+          };
+        } catch (proxyError) {
+          // Both paths failed. Keep the proxy's own status if it had one, and
+          // carry both descriptions so the reason is specific, not generic.
+          lastError = proxyError;
+          const proxyStatus = statusFromError(proxyError);
+          if (proxyStatus !== null) lastStatus = proxyStatus;
+          if (proxyStatus === 429 || proxyStatus === 418) sawRateLimit = true;
+        }
+      }
 
       // 4xx other than 429 will not change on retry.
       const permanent =
@@ -243,7 +338,11 @@ export async function shadowRequest<T>(
     }
   }
 
-  throw new ShadowSourceError(lastError instanceof Error ? lastError.message : String(lastError), {
+  const baseMessage = lastError instanceof Error ? lastError.message : String(lastError);
+  const message = directFailure
+    ? `مستقیم ${directFailure}؛ پراکسی ${describeFailure(lastError)}`
+    : baseMessage;
+  throw new ShadowSourceError(message, {
     endpoint: url,
     httpStatus: lastStatus,
     latencyMs: Date.now() - started,

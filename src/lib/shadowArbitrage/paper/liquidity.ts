@@ -76,12 +76,23 @@ export function validateBook(
    * different fact from a book that should exist and did not arrive — grouping
    * the two hides a real outage behind a permanent, expected limitation.
    */
-  marketModel?: string
+  marketModel?: string,
+  /**
+   * What the collector said when it could not get this book — an HTTP status, a
+   * timeout, a rate limit. "The book did not arrive" is true but useless on its
+   * own; the operator needs to know whether the venue refused us, timed out, or
+   * throttled us, because the response to each is different.
+   */
+  sourceFailureFa?: string | null
 ): { ok: true } | { ok: false; problem: BookProblem; detailFa: string } {
   if (!bids || !asks) {
     const structural = marketModel === "OTC_QUOTE";
     const problem: BookProblem = structural ? "quote_only_no_order_book" : "book_missing";
-    return { ok: false, problem, detailFa: BOOK_PROBLEM_FA[problem] };
+    const detailFa =
+      !structural && sourceFailureFa
+        ? `${BOOK_PROBLEM_FA[problem]} — ${sourceFailureFa}`
+        : BOOK_PROBLEM_FA[problem];
+    return { ok: false, problem, detailFa };
   }
   const usable = (l: BookLevel) =>
     Number.isFinite(l.priceToman) &&
@@ -477,11 +488,16 @@ export const CAP_LABEL_FA: Record<CapacityCap["key"], string> = {
   policy_exposure: "سقف تمرکز (سیاست)"
 };
 
-function sideUnavailable(reason: VenueCapacityReason, caps: CapacityCap[] = []): VenueSideCapacity {
+function sideUnavailable(
+  reason: VenueCapacityReason,
+  caps: CapacityCap[] = [],
+  /** The collector's own words, when they say more than the code does. */
+  detailFa?: string | null
+): VenueSideCapacity {
   return {
     capacityUsdtMicros: null,
     reason,
-    reasonFa: VENUE_CAPACITY_REASON_FA[reason],
+    reasonFa: detailFa || VENUE_CAPACITY_REASON_FA[reason],
     limitingCap: null,
     caps
   };
@@ -537,6 +553,8 @@ export function venueCapacity(input: {
   policyExposureMicros: number | null;
   /** Present for OTC dealers. Order-book venues leave it undefined. */
   quote?: QuoteCapacityInput;
+  /** The collector's own failure text, when this cycle produced no book. */
+  sourceFailureFa?: string | null;
 }): VenueCapacity {
   const base = { sourceId: input.sourceId, marketModel: input.marketModel };
 
@@ -549,10 +567,21 @@ export function venueCapacity(input: {
     return quoteVenueCapacity(input, base);
   }
 
-  const check = validateBook(input.bookBids, input.bookAsks, input.marketModel);
+  const check = validateBook(
+    input.bookBids,
+    input.bookAsks,
+    input.marketModel,
+    input.sourceFailureFa
+  );
   if (!check.ok) {
     const r = check.problem as VenueCapacityReason;
-    return { ...base, buy: sideUnavailable(r), sell: sideUnavailable(r) };
+    // Carry the upstream status/timeout through, so the operator sees WHY the
+    // book is absent rather than only that it is.
+    return {
+      ...base,
+      buy: sideUnavailable(r, [], check.detailFa),
+      sell: sideUnavailable(r, [], check.detailFa)
+    };
   }
   if (input.irtToman === null || input.usdtMicros === null) {
     return {
@@ -759,6 +788,8 @@ export function executableLadder(input: {
   bookAsks: BookLevel[] | null;
   side: BookSide;
   quote?: QuoteCapacityInput;
+  /** The collector's own failure text, when this cycle produced no book. */
+  sourceFailureFa?: string | null;
 }): LadderResult {
   if (input.marketModel === "OTC_QUOTE") {
     if (!input.quote) {
@@ -779,7 +810,12 @@ export function executableLadder(input: {
     };
   }
 
-  const check = validateBook(input.bookBids, input.bookAsks, input.marketModel);
+  const check = validateBook(
+    input.bookBids,
+    input.bookAsks,
+    input.marketModel,
+    input.sourceFailureFa
+  );
   if (!check.ok) {
     return { ok: false, reason: check.problem as VenueCapacityReason, detailFa: check.detailFa };
   }

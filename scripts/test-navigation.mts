@@ -1747,12 +1747,12 @@ await test("release version: one authoritative public field, valid package metad
   const pkg = JSON.parse(read("package.json")) as { version: string; private?: boolean };
 
   // The product's version is exactly what this release is called.
-  assert.equal(version.appVersion, "4.1.6.0");
+  assert.equal(version.appVersion, "4.1.6.1");
 
   // Four-part numbers are not SemVer, which is why they cannot live in
   // package.json: the production image validates it during `pnpm install`.
   const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?$/;
-  assert.equal(semver.test(version.appVersion), false, "4.1.6.0 is deliberately not SemVer");
+  assert.equal(semver.test(version.appVersion), false, "4.1.6.1 is deliberately not SemVer");
   assert.ok(semver.test(pkg.version), `package.json keeps valid SemVer, found ${pkg.version}`);
   assert.equal(pkg.version, version.packageMetadataVersion, "and the two stay in step");
   assert.equal(pkg.private, true, "the package is never published, so its version is metadata only");
@@ -2127,7 +2127,16 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
       "drizzle/0014_shadow_release_bootstrap.sql",
       "src/lib/shadowArbitrage/releaseBootstrap.ts",
       // The one line that calls it, from the existing startup path.
-      "instrumentation.node.ts"
+      "instrumentation.node.ts",
+      /*
+       * 4.1.6.1 hotfix: outbound egress recovery. A CDN that refuses the
+       * production IP answers 403/429 and the book never arrives; one retry
+       * through the configured proxy fixes it, and malformed data is still
+       * never retried into looking healthy.
+       */
+      "src/lib/http.ts",
+      "src/lib/shadowArbitrage/adapters/base.ts",
+      "src/lib/shadowArbitrage/paper/liquidity.ts"
     ]);
     const changed = execFileSync("git", ["diff", "--name-only", baseline, "--", ...paths], {
       encoding: "utf8"

@@ -8223,3 +8223,20 @@ table th {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ── Stage 1 acceptance: touch targets on a phone ─────────────────────────── */
+/*
+ * Two Shadow controls are real buttons rendered at text height: `.sa-linkish`
+ * measured 20px and `.sa-ov-action` 28px at 390px wide, both under the 36px a
+ * finger needs. The fix is the smallest one that works — a minimum height and
+ * vertical centring, at phone widths only. No colour, material, shadow or blur
+ * changes, and desktop is untouched, so nothing about the look moves.
+ */
+@media (max-width: 560px) {
+  .sa-linkish,
+  .sa-ov-action {
+    display: inline-flex;
+    align-items: center;
+    min-height: 36px;
+  }
+}

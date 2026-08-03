@@ -29,6 +29,7 @@ import {
   type RouteEvidence
 } from "@/lib/shadowArbitrage/capital";
 import { SHADOW_BANNER, SHADOW_SOURCES } from "@/lib/shadowArbitrage/config";
+import { getPaperSession } from "@/db/repositories/shadowPaper";
 import { loadEffectiveFees } from "@/lib/shadowArbitrage/effectiveFees";
 import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
 import type { ShadowSourceId } from "@/lib/shadowArbitrage/types";
@@ -287,11 +288,108 @@ export async function POST(request: Request) {
   }
 
   const action = String(body.action ?? "simulate");
-  if (!["simulate", "optimize", "save", "approve"].includes(action)) {
+  if (!["simulate", "optimize", "save", "approve", "copy_from_session"].includes(action)) {
     return bad("عملیات نامعتبر است");
   }
 
   const ctx = await buildContext();
+
+  /*
+   * Copy a plan from a paper session that already exists.
+   *
+   * Every number comes from the stored session — the nine allocations, the
+   * total, and the valuation price the session was struck at. The client sends
+   * one thing, a session id, and cannot influence any figure. That matters:
+   * ordinary `save` marks a plan at the LIVE price, which is right for a plan
+   * an admin is composing now, but wrong for a copy — the same allocations
+   * valued at a price that has since moved no longer conserve the total, and
+   * the plan would be refused for an over-allocation that is really just a
+   * change in the market.
+   *
+   * Append-only. Nothing existing is read for writing, and no session is
+   * created, started, paused, replaced or approved.
+   */
+  if (action === "copy_from_session") {
+    const paperSessionId = String(body.paperSessionId ?? "");
+    if (!paperSessionId) return bad("شناسهٔ نشست کاغذی لازم است");
+
+    const source = await getPaperSession(paperSessionId);
+    if (!source) return bad("نشست کاغذی با این شناسه یافت نشد", "not_found", 404);
+
+    const allocations = (source.openingAllocations ?? []).map((a) => ({
+      sourceId: a.sourceId as ShadowSourceId,
+      irtToman: a.irtToman,
+      usdtUnits: a.usdtUnits
+    }));
+    if (!allocations.length) {
+      return bad("این نشست هیچ تخصیص افتتاحیه‌ای ندارد؛ چیزی برای رونوشت نیست.");
+    }
+
+    const copied: CapitalPlanInput = {
+      totalCapitalToman: source.totalCapitalToman,
+      valuationPriceToman: source.valuationPriceToman,
+      allocations,
+      mode: "MANUAL"
+    };
+
+    /*
+     * Simulated against the SESSION's own price, so conservation is judged the
+     * way the session itself was judged. A copy that does not conserve is a
+     * copy of something broken, and is refused rather than stored.
+     */
+    const copyCtx = { ...ctx, valuationPriceToman: source.valuationPriceToman };
+    const copyResult = runSimulation(copyCtx, copied);
+    if (!copyResult.simulation.ok) {
+      return new NextResponse(
+        JSON.stringify({
+          error: "invalid_plan",
+          message: "تخصیص‌های این نشست در قیمت خودش پایستگی ندارند و ذخیره نشد.",
+          violations: copyResult.simulation.violations
+        }),
+        { status: 400, headers: SHADOW_NO_STORE }
+      );
+    }
+
+    try {
+      const saved = await saveCapitalPlan({
+        name: typeof body.name === "string" && body.name.trim()
+          ? body.name.trim().slice(0, 120)
+          : `رونوشت تخصیص از نشست ${source.name}`,
+        mode: "MANUAL",
+        totalCapitalToman: copied.totalCapitalToman,
+        valuationPriceToman: copied.valuationPriceToman,
+        reservePercent: 0,
+        allocations: copied.allocations,
+        createdBy: session.u ?? "admin",
+        note:
+          `رونوشت دقیق ${allocations.length} تخصیص افتتاحیهٔ نشست ${source.id} ` +
+          `با همان قیمت ارزش‌گذاری ${source.valuationPriceToman}. هیچ مقداری گرد، بازتوزین یا بهینه نشده است.`
+      });
+      const after = await buildContext();
+      return new NextResponse(
+        JSON.stringify(
+          envelope(after, {
+            plan: copied,
+            planSource: "SAVED",
+            savedPlanId: saved.id,
+            copiedFromSessionId: source.id,
+            history: after.history,
+            ...copyResult
+          })
+        ),
+        { status: 200, headers: SHADOW_NO_STORE }
+      );
+    } catch (error) {
+      return new NextResponse(
+        JSON.stringify({
+          error: "unavailable",
+          message: error instanceof Error ? error.message : "ذخیرهٔ رونوشت ممکن نشد"
+        }),
+        { status: 503, headers: SHADOW_NO_STORE }
+      );
+    }
+  }
+
   if (ctx.valuationPriceToman === null) {
     return bad(
       "قیمت ارزش‌گذاری تتر در دسترس نیست؛ شبیه‌سازی بدون آن انجام نمی‌شود.",

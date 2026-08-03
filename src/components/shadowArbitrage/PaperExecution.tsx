@@ -9,6 +9,7 @@ import { formatCountFa, formatPercentFa, toFaDigits } from "@/components/shadowA
 import { OPPORTUNITY_PAGE_SIZES, paginate } from "@/components/shadowArbitrage/opportunityModel";
 import { readInt, useShadowViewState } from "@/components/shadowArbitrage/urlState";
 import { CAP_LABEL_FA, VENUE_CAPACITY_REASON_FA } from "@/lib/shadowArbitrage/paper/liquidity";
+import { reasonLabel } from "@/lib/shadowArbitrage/paper/reasons";
 
 /** Permanent, never hidden, never conditional. */
 export const PAPER_BANNER_EN = "PAPER EXECUTION — NO REAL ORDERS OR TRANSFERS";
@@ -71,12 +72,19 @@ type Trade = {
   occurredAt: string;
 };
 
+/**
+ * Exactly the shape `/api/shadow-arbitrage/paper` sends.
+ *
+ * These names are not cosmetic. The payload is cast from `res.json()`, so a
+ * field this type invents is `undefined` at runtime and TypeScript never
+ * notices — which is how the reason filter came to render blank options.
+ */
 type Candidate = {
   lifecycleId: string;
   routeKey: string;
-  reason?: string | null;
+  primaryReason?: string | null;
   reasonCodes?: string[] | null;
-  observationCount?: number;
+  occurrences?: number;
 };
 
 type MatrixRow = {
@@ -103,7 +111,7 @@ type Payload = {
   trades: Trade[];
   transitions: Trade[];
   candidates: Candidate[];
-  reasonBreakdown: Array<{ reason: string; count: number }>;
+  reasonBreakdown: Array<{ code: string; candidates: number; observations: number }>;
   cycleSummaries: Array<{
     occurredAt: string;
     evaluated?: number;
@@ -703,8 +711,8 @@ export function PaperExecution() {
               >
                 <option value="">همهٔ دلایل</option>
                 {(data?.reasonBreakdown ?? []).map((r) => (
-                  <option key={r.reason} value={r.reason}>
-                    {r.reason} ({r.count})
+                  <option key={r.code} value={r.code}>
+                    {reasonLabel(r.code)} ({r.candidates})
                   </option>
                 ))}
               </select>
@@ -867,8 +875,8 @@ export function PaperExecution() {
             <div className="panel-body sa-chips">
               {(data?.reasonBreakdown ?? []).length ? (
                 (data?.reasonBreakdown ?? []).map((r) => (
-                  <span className="sa-chip sa-chip-sm sa-chip-muted" key={r.reason}>
-                    {r.reason}: {formatCountFa(r.count)}
+                  <span className="sa-chip sa-chip-sm sa-chip-muted" key={r.code}>
+                    {reasonLabel(r.code)}: {formatCountFa(r.candidates)}
                   </span>
                 ))
               ) : (
@@ -900,13 +908,19 @@ export function PaperExecution() {
                       <td>
                         <Bidi>{c.routeKey}</Bidi>
                       </td>
-                      <td>{c.reason ?? <Unknown why="دلیلی برای این نامزد ثبت نشده است" />}</td>
+                      <td>
+                        {c.primaryReason ? (
+                          reasonLabel(c.primaryReason)
+                        ) : (
+                          <Unknown why="دلیلی برای این نامزد ثبت نشده است" />
+                        )}
+                      </td>
                       <td className="sa-sub">{(c.reasonCodes ?? []).join("، ") || "—"}</td>
                       <td className="num">
-                        {c.observationCount === undefined ? (
+                        {c.occurrences === undefined ? (
                           "—"
                         ) : (
-                          <Bidi>{toFaDigits(c.observationCount)}</Bidi>
+                          <Bidi>{toFaDigits(c.occurrences)}</Bidi>
                         )}
                       </td>
                     </tr>

@@ -28,8 +28,15 @@ import {
 import { feeFromBps, mulPriceSizeToman, round2, round4 } from "@/lib/shadowArbitrage/money";
 import type { ShadowSourceId } from "@/lib/shadowArbitrage/types";
 
-/** Default virtual capital, editable by the admin. */
-export const DEFAULT_CAPITAL_TOMAN = 50_000_000;
+/**
+ * Default virtual capital, editable by the admin.
+ *
+ * The desk works at ten billion toman, so opening the simulator on fifty
+ * million meant every session started by correcting the field. This is the
+ * value the form starts on; it is still a simulated figure and still editable
+ * between MIN and MAX below.
+ */
+export const DEFAULT_CAPITAL_TOMAN = 10_000_000_000;
 
 /** Guard rails for the editable capital field. */
 export const MIN_CAPITAL_TOMAN = 1_000_000;

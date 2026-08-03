@@ -4,7 +4,7 @@ import type { NextConfig } from "next";
 /*
  * The public application version is its own file, not package.json's `version`.
  *
- * This release is numbered 4.1.4.0, which is not valid SemVer, and the
+ * This release is numbered 4.1.5.0, which is not valid SemVer, and the
  * production image runs `pnpm install --frozen-lockfile` against package.json
  * before the source is copied in — an invalid `version` there would fail the
  * deploy. package.json keeps a valid SemVer for package metadata; version.json

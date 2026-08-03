@@ -1747,12 +1747,12 @@ await test("release version: one authoritative public field, valid package metad
   const pkg = JSON.parse(read("package.json")) as { version: string; private?: boolean };
 
   // The product's version is exactly what this release is called.
-  assert.equal(version.appVersion, "4.1.4.0");
+  assert.equal(version.appVersion, "4.1.5.0");
 
   // Four-part numbers are not SemVer, which is why they cannot live in
   // package.json: the production image validates it during `pnpm install`.
   const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?$/;
-  assert.equal(semver.test(version.appVersion), false, "4.1.4.0 is deliberately not SemVer");
+  assert.equal(semver.test(version.appVersion), false, "4.1.5.0 is deliberately not SemVer");
   assert.ok(semver.test(pkg.version), `package.json keeps valid SemVer, found ${pkg.version}`);
   assert.equal(pkg.version, version.packageMetadataVersion, "and the two stay in step");
   assert.equal(pkg.private, true, "the package is never published, so its version is metadata only");
@@ -1778,7 +1778,7 @@ await test("release version: one authoritative public field, valid package metad
    * either one displayed would be a different release entirely.
    */
   for (const file of ["next.config.ts", "src/lib/version.ts", "Dockerfile", "package.json", "version.json"]) {
-    for (const forbidden of ["4.13.0", "4.14.0"]) {
+    for (const forbidden of ["4.13.0", "4.14.0", "4.15.0"]) {
       assert.equal(read(file).includes(forbidden), false, `${file} must not mention ${forbidden}`);
     }
   }
@@ -2110,7 +2110,14 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
       // append-only table has. Additive column, no row is rewritten.
       "drizzle/0013_shadow_fee_tier_seq.sql",
       "src/db/repositories/shadowFeeTier.ts",
-      "src/lib/shadowArbitrage/effectiveFees.ts"
+      "src/lib/shadowArbitrage/effectiveFees.ts",
+      /*
+       * The simulator's default capital figure, and nothing else in this file.
+       * Ten billion is what the desk actually works at; fifty million meant
+       * every session opened by correcting the field. Still simulated, still
+       * editable, still bounded by MIN/MAX.
+       */
+      "src/lib/shadowArbitrage/capital.ts"
     ]);
     const changed = execFileSync("git", ["diff", "--name-only", baseline, "--", ...paths], {
       encoding: "utf8"

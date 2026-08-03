@@ -157,6 +157,8 @@ export async function startPreviewApp(
      * market that actually crosses and one fill produced by the real engine.
      */
     seedScript?: string;
+    /** Run the release reconciliation at startup, as production does. */
+    releaseBootstrap?: boolean;
   } = {}
 ): Promise<PreviewApp> {
   const port = options.port ?? Number(process.env.PREVIEW_PORT ?? 3187);
@@ -182,6 +184,13 @@ export async function startPreviewApp(
     ADMIN_PASSWORD_HASH: "",
     // The collector must not run in a screenshot tool.
     SHADOW_COLLECTOR_ENABLED: "false",
+    /*
+     * The release reconciliation is off by default here: these harnesses seed
+     * their own sessions, and a bootstrap session would displace the one the
+     * fixture just created. The acceptance test that exercises the real startup
+     * path turns it back on explicitly.
+     */
+    SHADOW_RELEASE_BOOTSTRAP: options.releaseBootstrap ? "true" : "false",
     PORT: String(port),
     HOSTNAME: "127.0.0.1"
   };

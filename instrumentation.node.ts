@@ -64,7 +64,41 @@ async function waitForDatabase(maxAttempts = 30): Promise<boolean> {
   return false;
 }
 
+/**
+ * Apply the approved admin evidence, capital plan and paper session.
+ *
+ * Idempotent and guarded by a release key, so restarts write nothing. It must
+ * never stop the app from serving, so a failure is logged and swallowed here —
+ * the marker stays unwritten and the next start retries.
+ */
+async function reconcileRelease(): Promise<void> {
+  if (!(await waitForDatabase())) return;
+  try {
+    const migrated = await runMigrations();
+    if (migrated.applied.length) log("migrations applied", migrated.applied);
+  } catch (e) {
+    log("migrations failed — release reconciliation skipped", e instanceof Error ? e.message : e);
+    return;
+  }
+  try {
+    const { runReleaseBootstrap } = await import("@/lib/shadowArbitrage/releaseBootstrap");
+    const outcome = await runReleaseBootstrap(log);
+    if (outcome.ran) log("release bootstrap applied", outcome);
+    else log(`release bootstrap skipped (${outcome.reason ?? "unknown"})`);
+  } catch (e) {
+    log("release bootstrap failed — will retry next start", e instanceof Error ? e.message : e);
+  }
+}
+
+/**
+ * Reconcile the release's approved state, then start the collector.
+ *
+ * The reconciliation runs even when the collector is switched off: it is a data
+ * concern, not a collection one, and a deployment that disabled collection
+ * would otherwise silently skip it.
+ */
 async function start(): Promise<void> {
+  await reconcileRelease();
   if (!enabled()) {
     log("collector disabled by SHADOW_COLLECTOR_ENABLED");
     return;

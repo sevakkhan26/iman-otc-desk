@@ -14,8 +14,8 @@
  *     is requested, read or stored, and the token is worthless anywhere else.
  */
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { createHmac, randomBytes } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash, createHmac, randomBytes } from "node:crypto";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -107,6 +107,44 @@ export type PreviewApp = {
  * repositories and the real engines. The order books it feeds in are invented,
  * so every figure derived from them is a demonstration, never market data.
  */
+/**
+ * A digest of everything that ends up in the production bundle.
+ *
+ * Content, not mtimes: a `git checkout` that restores identical bytes should
+ * not force a rebuild, and touching a file without changing it should not
+ * either. Directories that never reach the bundle are skipped so an unrelated
+ * edit does not invalidate a good build.
+ */
+async function sourceFingerprint(root: string): Promise<string> {
+  const roots = ["app", "src", "public"];
+  const files = ["version.json", "next.config.ts", "package.json", "tsconfig.json"];
+  const hash = createHash("sha256");
+  const walk = async (dir: string): Promise<string[]> => {
+    const out: string[] = [];
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return out;
+    }
+    for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) out.push(...(await walk(full)));
+      else out.push(full);
+    }
+    return out;
+  };
+  const all: string[] = [];
+  for (const r of roots) all.push(...(await walk(path.join(root, r))));
+  for (const f of files) all.push(path.join(root, f));
+  for (const f of all.sort()) {
+    hash.update(f.slice(root.length));
+    hash.update(await readFile(f).catch(() => Buffer.alloc(0)));
+  }
+  return hash.digest("hex");
+}
+
 export async function startPreviewApp(
   options: {
     seed?: boolean;
@@ -167,13 +205,38 @@ export async function startPreviewApp(
   }
 
   const serverEntry = path.join(repoRoot, dist, "standalone", "server.js");
-  if (!existsSync(serverEntry)) {
-    log(`building the production bundle into ${dist} (first run)`);
+  /*
+   * Rebuild when the build is missing OR stale.
+   *
+   * "Missing only" looks cheap and is the reason this tool once served a
+   * months-old UI: the bundle existed, so it was reused, and the font and
+   * screenshot checks measured a build that predated the redesign. The habit
+   * that grew around it — deleting the whole dist before every run — cost a
+   * full four-minute rebuild every time instead.
+   *
+   * A fingerprint of the sources that actually reach the bundle settles it:
+   * unchanged sources reuse the build in seconds, changed sources rebuild
+   * exactly once. Deleting the directory by hand is never necessary again.
+   */
+  const stampFile = path.join(repoRoot, dist, ".source-stamp");
+  const stamp = await sourceFingerprint(repoRoot);
+  const cached = existsSync(serverEntry) && existsSync(stampFile)
+    ? await readFile(stampFile, "utf8").catch(() => "")
+    : "";
+  if (cached !== stamp) {
+    log(
+      existsSync(serverEntry)
+        ? `sources changed since the last build — rebuilding into ${dist}`
+        : `building the production bundle into ${dist} (first run)`
+    );
     await execFileAsync("npx", ["--yes", "next", "build"], {
       cwd: repoRoot,
       env: { ...env, OTC_NEXT_DIST: dist },
       maxBuffer: 64 * 1024 * 1024
     });
+    await writeFile(stampFile, stamp, "utf8");
+  } else {
+    log(`reusing the existing ${dist} build — sources unchanged`);
   }
 
   /*

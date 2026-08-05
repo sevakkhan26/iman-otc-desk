@@ -850,7 +850,7 @@ export function CommandCenter({
           hint={
             <>
               از {formatCountFa(classified.length)} فرصت مشاهده‌شده ·{" "}
-              <button type="button" className="sa-linkish" onClick={() => onOpenSection("trades")}>
+              <button type="button" className="sa-linkish" onClick={() => onOpenSection("book")}>
                 مشاهدهٔ فهرست
               </button>
             </>

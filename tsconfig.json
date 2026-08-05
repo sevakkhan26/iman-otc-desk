@@ -36,12 +36,13 @@
     ".next-ios27-preview/types/**/*.ts",
     ".next-local/types/**/*.ts",
     ".next-preview/types/**/*.ts",
+    ".next-rc-4180/types/**/*.ts",
+    ".next-rc/types/**/*.ts",
     ".next-shadow-build/types/**/*.ts",
     ".next-verify/types/**/*.ts",
     ".next/types/**/*.ts",
     "next-env.d.ts",
-    ".next-rc/types/**/*.ts",
-    ".next-rc-4180/types/**/*.ts"
+    ".next-rc-4190/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

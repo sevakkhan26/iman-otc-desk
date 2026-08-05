@@ -4,6 +4,7 @@
  * «سرمایه و حساب» — virtual balances, P&L and booked Paper fees.
  *
  * Labels these as Paper/virtual only. No real exchange balances or fees.
+ * Presentation-only: values come from props; no recalculation of business figures.
  */
 import { useMemo, useState } from "react";
 import { TomanAmount } from "@/components/TomanAmount";
@@ -163,12 +164,78 @@ function Metric({
   );
 }
 
+/** Subtle semantic color for P&L amounts — display only, no formula change. */
+function pnlClass(n: number | null | undefined): string {
+  if (n === null || n === undefined || !Number.isFinite(n) || n === 0) return "sa-pnl-zero";
+  return n > 0 ? "sa-pnl-pos" : "sa-pnl-neg";
+}
+
+function fmtDurationFa(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (d > 0) {
+    return `${toFaDigits(d)} روز ${toFaDigits(h)} ساعت ${toFaDigits(m)} دقیقه`;
+  }
+  if (h > 0) {
+    return `${toFaDigits(h)} ساعت ${toFaDigits(m)} دقیقه ${toFaDigits(sec)} ثانیه`;
+  }
+  return `${toFaDigits(m)} دقیقه ${toFaDigits(sec)} ثانیه`;
+}
+
+function fmtAgeFa(ageMs: number | null | undefined): string | null {
+  if (ageMs === null || ageMs === undefined || !Number.isFinite(ageMs)) return null;
+  const sec = Math.max(0, Math.round(ageMs / 1000));
+  return `سن داده: ${toFaDigits(sec)} ثانیه`;
+}
+
+function UtilBar({
+  label,
+  value,
+  max = 100,
+  tone = "neutral"
+}: {
+  label: string;
+  value: number | null;
+  max?: number;
+  tone?: "neutral" | "target" | "warn" | "reserve";
+}) {
+  const pct =
+    value === null || !Number.isFinite(value)
+      ? null
+      : Math.max(0, Math.min(100, (value / max) * 100));
+  return (
+    <div className={`sa-util-row sa-util-row--${tone}`}>
+      <div className="sa-util-row-meta">
+        <span className="sa-util-label">{label}</span>
+        <span className="sa-util-value">
+          {value === null || !Number.isFinite(value) ? (
+            DASH
+          ) : (
+            <Bidi>{toFaDigits(Number(value).toFixed(2))}٪</Bidi>
+          )}
+        </span>
+      </div>
+      <div className="sa-util-track" aria-hidden={pct === null}>
+        <div
+          className="sa-util-fill"
+          style={pct === null ? undefined : { width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function DepthSide({
   title,
-  side
+  side,
+  accent
 }: {
   title: string;
   side: VenueDepthSideView;
+  accent: "buy" | "sell";
 }) {
   const showNa = (v: number | null | undefined, fmt: (n: number) => React.ReactNode) => {
     if (v === null || v === undefined) {
@@ -182,7 +249,7 @@ function DepthSide({
   };
 
   return (
-    <div className="sa-depth-side">
+    <div className={`sa-depth-side sa-depth-side--${accent}`}>
       <h4 className="sa-depth-side-title">{title}</h4>
       {side.unavailable && side.unavailableFa ? (
         <p className="sa-sub sa-depth-unavail">{side.unavailableFa}</p>
@@ -213,15 +280,15 @@ function DepthSide({
           </dd>
         </div>
         <div>
-          <dt>سطوح پذیرفته</dt>
+          <dt>سطوح پذیرفته / خارج</dt>
           <dd>
             {showNa(side.levelsAccepted, (n) => (
               <Bidi>{toFaDigits(n)}</Bidi>
             ))}
-            {side.levelsExcluded !== null && side.levelsExcluded > 0 ? (
+            {side.levelsExcluded !== null && side.levelsExcluded !== undefined ? (
               <span className="sa-sub">
                 {" "}
-                (خارج از لغزش: <Bidi>{toFaDigits(side.levelsExcluded)}</Bidi>)
+                / <Bidi>{toFaDigits(side.levelsExcluded)}</Bidi>
               </span>
             ) : null}
           </dd>
@@ -252,23 +319,49 @@ function DepthSide({
         </div>
         <div className="sa-depth-side-full">
           <dt>محدودکننده</dt>
-          <dd className="sa-sub">
-            {side.limitingLabelFa ?? side.reasonFa ?? DASH}
-          </dd>
+          <dd className="sa-sub">{side.limitingLabelFa ?? side.reasonFa ?? DASH}</dd>
         </div>
       </dl>
     </div>
   );
 }
 
-function fmtDuration(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  const d = Math.floor(s / 86400);
-  const h = Math.floor((s % 86400) / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  if (d > 0) return `${d}d ${h}h ${m}m ${sec}s`;
-  return `${h}h ${m}m ${sec}s`;
+function ReconChip({
+  label,
+  ok
+}: {
+  label: string;
+  ok: boolean | null;
+}) {
+  if (ok === null) {
+    return (
+      <span className="sa-chip sa-chip-sm sa-chip-muted">
+        {label}: نامشخص
+      </span>
+    );
+  }
+  return (
+    <span className={`sa-chip sa-chip-sm ${ok ? "sa-chip-good" : "sa-chip-danger"}`}>
+      {label}: {ok ? "تطبیق" : "ناموفق"}
+    </span>
+  );
+}
+
+function InnerCard({
+  title,
+  children,
+  className = ""
+}: {
+  title: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={`sa-inner-card ${className}`.trim()}>
+      <h4 className="sa-inner-card-title">{title}</h4>
+      <div className="sa-inner-card-body">{children}</div>
+    </div>
+  );
 }
 
 export function AccountsSection({
@@ -292,7 +385,6 @@ export function AccountsSection({
     const list = accounting.fees.byTrade;
     if (feeWindow === "lifetime") return list;
     if (feeWindow === "today") {
-      // Server already uses Tehran day for today PnL; for fees, filter by 24h/window loosely via calendar day UTC offset is wrong — use last N ms.
       const start = now - (now % 86_400_000);
       return list.filter((t) => Date.parse(t.occurredAt) >= start);
     }
@@ -336,18 +428,33 @@ export function AccountsSection({
               {(venueDepthCards ?? []).map((depth) => (
                 <article key={depth.sourceId} className="panel sa-panel sa-acct-venue">
                   <header className="sa-acct-venue-head panel-header sa-panel-header">
-                    <div>
+                    <div className="sa-acct-venue-id">
                       <strong className="panel-title">{depth.nameFa ?? depth.sourceId}</strong>
                       <span className="sa-ps-key">{depth.sourceId}</span>
                     </div>
-                    <span className="sa-chip sa-chip-sm sa-chip-muted">بدون موجودی نشست</span>
+                    <div className="sa-acct-venue-chips">
+                      <span className="sa-chip sa-chip-sm sa-chip-muted">بدون موجودی نشست</span>
+                      {fmtAgeFa(depth.snapshotAgeMs) ? (
+                        <span className="sa-chip sa-chip-sm sa-chip-muted">
+                          {fmtAgeFa(depth.snapshotAgeMs)}
+                        </span>
+                      ) : null}
+                    </div>
                   </header>
                   <div className="panel-body sa-acct-venue-body">
                     <div className="sa-depth-block" aria-label="عمق و ظرفیت بازار">
-                      <div className="sa-depth-block-title">عمق و ظرفیت بازار</div>
+                      <div className="sa-depth-block-head">
+                        <div className="sa-depth-block-title">عمق و ظرفیت بازار</div>
+                        <details className="sa-depth-help">
+                          <summary className="sa-depth-help-sum">راهنما</summary>
+                          <p className="sa-sub">
+                            عمق = نقدینگی دفتر در پنجرهٔ لغزش · ظرفیت = پس از موجودی و سقف‌های سیاست
+                          </p>
+                        </details>
+                      </div>
                       <div className="sa-depth-sides">
-                        <DepthSide title="خرید از صرافی" side={depth.buy} />
-                        <DepthSide title="فروش به صرافی" side={depth.sell} />
+                        <DepthSide title="خرید از صرافی" side={depth.buy} accent="buy" />
+                        <DepthSide title="فروش به صرافی" side={depth.sell} accent="sell" />
                       </div>
                     </div>
                   </div>
@@ -361,81 +468,183 @@ export function AccountsSection({
   }
 
   const a = accounting;
+  const progressPct =
+    experiment && experiment.elapsedMs + experiment.remainingMs > 0
+      ? Math.max(
+          0,
+          Math.min(
+            100,
+            (experiment.elapsedMs / (experiment.elapsedMs + experiment.remainingMs)) * 100
+          )
+        )
+      : 0;
 
   return (
     <div className="sa-stack">
       {experiment ? (
-        <section className="panel sa-panel" aria-label="آزمایش چهارروزه">
-          <div className="panel-header sa-panel-header">
+        <section className="panel sa-panel sa-exp-panel" aria-label="آزمایش چهارروزه">
+          <div className="panel-header sa-panel-header sa-exp-header">
             <h3 className="panel-title">آزمایش Paper چهارروزه</h3>
-            <div className="sa-panel-note">
-              {experiment.status} · {experiment.policySetKey}
+            <div className="sa-exp-header-meta">
+              <span
+                className={`sa-chip sa-chip-sm ${
+                  experiment.status === "ACTIVE" ? "sa-chip-good" : "sa-chip-muted"
+                }`}
+              >
+                {experiment.status}
+              </span>
+              <span className="sa-chip sa-chip-sm sa-chip-muted sa-ps-setkey">
+                {experiment.policySetKey}
+              </span>
+              <span className="sa-chip sa-chip-sm sa-chip-warn sa-exp-remain-chip">
+                باقی‌مانده: <Bidi>{fmtDurationFa(experiment.remainingMs)}</Bidi>
+              </span>
             </div>
           </div>
-          <div className="panel-body">
-            <dl className="sa-acct-grid">
-              <Metric label="runId">
-                <span className="sa-ps-key">{experiment.id}</span>
-              </Metric>
-              <Metric label="شروع (Tehran)">
-                {experiment.startedAtTehran ?? formatTehran(experiment.startedAt)}
-              </Metric>
-              <Metric label="پایان (Tehran)">
-                {experiment.endsAtTehran ?? formatTehran(experiment.endsAt)}
-              </Metric>
-              <Metric label="باقی‌مانده">
-                <Bidi>{fmtDuration(experiment.remainingMs)}</Bidi>
-              </Metric>
-              <Metric label="هدف استفاده">
-                <Bidi>{toFaDigits(experiment.targetUtilizationPercent)}٪</Bidi>
-              </Metric>
-              <Metric label="سقف سخت استفاده">
-                <Bidi>{toFaDigits(experiment.maxUtilizationPercent)}٪</Bidi>
-              </Metric>
-              <Metric label="کف نقدینگی آزاد">
-                <Bidi>{toFaDigits(experiment.minReservePercent)}٪</Bidi>
-              </Metric>
-              <Metric label="سقف مسیر / صرافی">
-                <Bidi>
-                  {toFaDigits(experiment.maxRouteCapitalPercent)}٪ /{" "}
-                  {toFaDigits(experiment.maxVenueExposurePercent)}٪
-                </Bidi>
-              </Metric>
-              <Metric label="سقف USDT مشتق‌شده">
-                {experiment.derivedMaxOrderUsdt !== null ? (
-                  <Bidi>{toFaDigits(experiment.derivedMaxOrderUsdt)}</Bidi>
-                ) : (
-                  DASH
-                )}
-              </Metric>
-              <Metric label="اوج / میانگین استفاده">
-                <Bidi>
-                  {experiment.peakUtilizationPercent !== null
-                    ? toFaDigits(Number(experiment.peakUtilizationPercent).toFixed(2))
-                    : "—"}
-                  ٪ /{" "}
-                  {experiment.averageUtilizationPercent !== null
-                    ? toFaDigits(Number(experiment.averageUtilizationPercent).toFixed(2))
-                    : "—"}
-                  ٪
-                </Bidi>
-              </Metric>
-              <Metric label="سرمایهٔ اولیه">
-                <TomanAmount value={experiment.initialCapitalToman} />
-              </Metric>
-              <Metric label="نسخه انتشار">
-                <Bidi>{experiment.releaseVersion}</Bidi>
-              </Metric>
-            </dl>
-            <p className="sa-sub">
-              UTC start: {experiment.startedAt} · UTC end: {experiment.endsAt} · fingerprint:{" "}
-              <span className="sa-ps-key">{experiment.policyFingerprint}</span>
-            </p>
+          <div className="panel-body sa-exp-body">
+            <div className="sa-exp-grid">
+              <InnerCard title="زمان‌بندی دوره" className="sa-exp-schedule">
+                <div className="sa-exp-countdown" aria-label="زمان باقی‌مانده">
+                  <span className="sa-exp-countdown-label">باقی‌مانده</span>
+                  <span className="sa-exp-countdown-value">
+                    <Bidi>{fmtDurationFa(experiment.remainingMs)}</Bidi>
+                  </span>
+                </div>
+                <dl className="sa-inner-metrics">
+                  <Metric label="شروع (تهران)">
+                    {experiment.startedAtTehran ?? formatTehran(experiment.startedAt)}
+                  </Metric>
+                  <Metric label="پایان (تهران)">
+                    {experiment.endsAtTehran ?? formatTehran(experiment.endsAt)}
+                  </Metric>
+                </dl>
+                <div className="sa-exp-progress" aria-label="پیشرفت چهارروزه">
+                  <div className="sa-exp-progress-meta">
+                    <span>پیشرفت دوره</span>
+                    <Bidi>{toFaDigits(progressPct.toFixed(1))}٪</Bidi>
+                  </div>
+                  <div className="sa-util-track sa-exp-progress-track">
+                    <div className="sa-util-fill" style={{ width: `${progressPct}%` }} />
+                  </div>
+                </div>
+              </InnerCard>
+
+              <InnerCard title="مصرف سرمایه" className="sa-exp-util">
+                {/*
+                  Current utilization is not a separate field on the existing
+                  payload (only average + peak samples). Do not invent a value.
+                */}
+                <UtilBar label="استفادهٔ جاری" value={null} tone="neutral" />
+                <UtilBar
+                  label="میانگین استفاده"
+                  value={
+                    experiment.averageUtilizationPercent !== null
+                      ? Number(experiment.averageUtilizationPercent)
+                      : null
+                  }
+                  tone="neutral"
+                />
+                <UtilBar
+                  label="اوج استفاده"
+                  value={
+                    experiment.peakUtilizationPercent !== null
+                      ? Number(experiment.peakUtilizationPercent)
+                      : null
+                  }
+                  tone="warn"
+                />
+                <UtilBar
+                  label="هدف"
+                  value={experiment.targetUtilizationPercent}
+                  tone="target"
+                />
+                <UtilBar
+                  label="سقف سخت"
+                  value={experiment.maxUtilizationPercent}
+                  tone="warn"
+                />
+                <UtilBar
+                  label="کف نقدینگی آزاد"
+                  value={experiment.minReservePercent}
+                  tone="reserve"
+                />
+              </InnerCard>
+
+              <InnerCard title="محدودیت‌های سرمایه" className="sa-exp-limits">
+                <dl className="sa-inner-metrics sa-inner-metrics-2">
+                  <Metric label="سقف مسیر">
+                    <Bidi>{toFaDigits(experiment.maxRouteCapitalPercent)}٪</Bidi>
+                  </Metric>
+                  <Metric label="سقف صرافی">
+                    <Bidi>{toFaDigits(experiment.maxVenueExposurePercent)}٪</Bidi>
+                  </Metric>
+                  <Metric label="سقف USDT مشتق‌شده">
+                    {experiment.derivedMaxOrderUsdt !== null ? (
+                      <Bidi>{toFaDigits(experiment.derivedMaxOrderUsdt)}</Bidi>
+                    ) : (
+                      DASH
+                    )}
+                  </Metric>
+                  <Metric label="سرمایهٔ اولیه">
+                    <TomanAmount value={experiment.initialCapitalToman} />
+                  </Metric>
+                  <Metric label="نسخه انتشار">
+                    <Bidi>{experiment.releaseVersion}</Bidi>
+                  </Metric>
+                </dl>
+              </InnerCard>
+            </div>
+
+            <details className="sa-advanced-details sa-exp-tech">
+              <summary className="sa-panel-note">جزئیات فنی دوره</summary>
+              <dl className="sa-exp-tech-grid">
+                <div>
+                  <dt>runId</dt>
+                  <dd>
+                    <code className="sa-copyable sa-ps-key" title="قابل کپی">
+                      {experiment.id}
+                    </code>
+                  </dd>
+                </div>
+                <div>
+                  <dt>fingerprint</dt>
+                  <dd>
+                    <code className="sa-copyable sa-ps-key">{experiment.policyFingerprint}</code>
+                  </dd>
+                </div>
+                <div>
+                  <dt>UTC start</dt>
+                  <dd>
+                    <code className="sa-copyable">{experiment.startedAt}</code>
+                  </dd>
+                </div>
+                <div>
+                  <dt>UTC end</dt>
+                  <dd>
+                    <code className="sa-copyable">{experiment.endsAt}</code>
+                  </dd>
+                </div>
+                <div>
+                  <dt>شناسهٔ داخلی سیاست</dt>
+                  <dd>
+                    <code className="sa-copyable sa-ps-key">{experiment.runKey}</code>
+                  </dd>
+                </div>
+                {experiment.sessionId ? (
+                  <div>
+                    <dt>sessionId</dt>
+                    <dd>
+                      <code className="sa-copyable sa-ps-key">{experiment.sessionId}</code>
+                    </dd>
+                  </div>
+                ) : null}
+              </dl>
+            </details>
           </div>
         </section>
       ) : null}
 
-      <section className="panel sa-panel" aria-label="خلاصه پرتفوی کاغذی">
+      <section className="panel sa-panel sa-port-panel" aria-label="خلاصه پرتفوی کاغذی">
         <div className="panel-header sa-panel-header">
           <h3 className="panel-title">سرمایه و حساب (کاغذی)</h3>
           <div className="sa-panel-note">
@@ -443,78 +652,117 @@ export function AccountsSection({
             {a?.asOf ? formatTehran(a.asOf) : serverNow ? formatTehran(serverNow) : DASH}
           </div>
         </div>
-        <div className="panel-body">
-          <dl className="sa-acct-grid">
-            <Metric label="سرمایهٔ اولیه">
-              <TomanAmount value={a?.initialCapitalToman ?? session.totalCapitalToman} />
-            </Metric>
-            <Metric label="ارزش فعلی (equity)">
-              {a?.equityToman !== null && a?.equityToman !== undefined ? (
-                <TomanAmount value={a.equityToman} />
+        <div className="panel-body sa-port-body">
+          <div className="sa-port-grid">
+            <InnerCard title="ارزش پرتفوی">
+              <dl className="sa-inner-metrics sa-inner-metrics-2">
+                <Metric label="سرمایهٔ اولیه">
+                  <TomanAmount value={a?.initialCapitalToman ?? session.totalCapitalToman} />
+                </Metric>
+                <Metric label="ارزش فعلی (equity)">
+                  {a?.equityToman !== null && a?.equityToman !== undefined ? (
+                    <TomanAmount value={a.equityToman} />
+                  ) : (
+                    <span className="sa-unknown">نامشخص (قیمت مبنا)</span>
+                  )}
+                </Metric>
+                <Metric label="بازده">
+                  {a?.returnPercent !== null && a?.returnPercent !== undefined ? (
+                    <span className={pnlClass(a.returnPercent)}>
+                      <Bidi>{toFaDigits(a.returnPercent.toFixed(2))}٪</Bidi>
+                    </span>
+                  ) : (
+                    DASH
+                  )}
+                </Metric>
+                <Metric label="قیمت مبنای تتر">
+                  {a?.markPriceToman ? (
+                    <TomanAmount value={a.markPriceToman} />
+                  ) : (
+                    <span className="sa-unknown">نامشخص</span>
+                  )}
+                </Metric>
+              </dl>
+            </InnerCard>
+
+            <InnerCard title="نقدینگی">
+              <dl className="sa-inner-metrics sa-inner-metrics-2">
+                <Metric label="سرمایهٔ آزاد">
+                  {a?.freeCapitalToman !== null && a?.freeCapitalToman !== undefined ? (
+                    <TomanAmount value={a.freeCapitalToman} />
+                  ) : (
+                    DASH
+                  )}
+                </Metric>
+                <Metric label="IRT آزاد">
+                  <TomanAmount value={a?.availableIrtToman ?? 0} />
+                </Metric>
+                <Metric label="USDT آزاد">
+                  <Bidi>{toFaDigits((a?.availableUsdt ?? 0).toFixed(4))}</Bidi>
+                </Metric>
+                <Metric label="رزرو سفارش باز">
+                  <TomanAmount value={a?.reservedInOrdersToman ?? 0} />
+                </Metric>
+                <Metric label="درگیر پوزیشن باز">
+                  <TomanAmount value={a?.committedToPositionsToman ?? 0} />
+                </Metric>
+              </dl>
+            </InnerCard>
+
+            <InnerCard title="سود و زیان">
+              <dl className="sa-inner-metrics sa-inner-metrics-2">
+                <Metric label="سود امروز">
+                  <span className={pnlClass(a?.todayRealizedPnlToman ?? 0)}>
+                    <TomanAmount value={a?.todayRealizedPnlToman ?? 0} />
+                  </span>
+                </Metric>
+                <Metric label="سود تحقق‌یافته (نقدی)">
+                  <span className={pnlClass(a?.realizedCashPnlToman ?? 0)}>
+                    <TomanAmount value={a?.realizedCashPnlToman ?? 0} />
+                  </span>
+                </Metric>
+                <Metric label="سود تحقق‌نیافته">
+                  {a?.unrealizedPnlToman !== null && a?.unrealizedPnlToman !== undefined ? (
+                    <span className={pnlClass(a.unrealizedPnlToman)}>
+                      <TomanAmount value={a.unrealizedPnlToman} />
+                    </span>
+                  ) : (
+                    <span className="sa-unknown">نامشخص</span>
+                  )}
+                </Metric>
+                <Metric label="سود تحقق‌یافته (اقتصادی)">
+                  <span className={pnlClass(a?.realizedEconomicPnlToman ?? 0)}>
+                    <TomanAmount value={a?.realizedEconomicPnlToman ?? 0} />
+                  </span>
+                </Metric>
+              </dl>
+            </InnerCard>
+
+            <InnerCard title="تطبیق حساب">
+              {a?.reconciliation ? (
+                <div className="sa-recon-chips" role="list">
+                  <ReconChip
+                    label="equity"
+                    ok={a.reconciliation.equityMatchesInitialPlusPnl}
+                  />
+                  <ReconChip
+                    label="تقسیم سرمایه"
+                    ok={a.reconciliation.freePlusReservedPlusCommittedEqualsEquity}
+                  />
+                  <ReconChip
+                    label="جمع صرافی‌ها"
+                    ok={a.reconciliation.venueSumEqualsPortfolioEquity}
+                  />
+                  <ReconChip
+                    label="کارمزد"
+                    ok={a.reconciliation.feeLedgerSumMatchesBucket}
+                  />
+                </div>
               ) : (
-                <span className="sa-unknown">نامشخص (قیمت مبنا)</span>
+                <p className="sa-sub">تطبیق این چرخه در دسترس نیست.</p>
               )}
-            </Metric>
-            <Metric label="سرمایهٔ آزاد">
-              {a?.freeCapitalToman !== null && a?.freeCapitalToman !== undefined ? (
-                <TomanAmount value={a.freeCapitalToman} />
-              ) : (
-                DASH
-              )}
-            </Metric>
-            <Metric label="رزرو سفارش باز">
-              <TomanAmount value={a?.reservedInOrdersToman ?? 0} />
-            </Metric>
-            <Metric label="درگیر پوزیشن باز">
-              <TomanAmount value={a?.committedToPositionsToman ?? 0} />
-            </Metric>
-            <Metric label="IRT آزاد">
-              <TomanAmount value={a?.availableIrtToman ?? 0} />
-            </Metric>
-            <Metric label="USDT آزاد">
-              <Bidi>{toFaDigits((a?.availableUsdt ?? 0).toFixed(4))}</Bidi>
-            </Metric>
-            <Metric label="سود تحقق‌یافته (اقتصادی)">
-              <TomanAmount value={a?.realizedEconomicPnlToman ?? 0} />
-            </Metric>
-            <Metric label="سود تحقق‌نیافته">
-              {a?.unrealizedPnlToman !== null && a?.unrealizedPnlToman !== undefined ? (
-                <TomanAmount value={a.unrealizedPnlToman} />
-              ) : (
-                <span className="sa-unknown">نامشخص</span>
-              )}
-            </Metric>
-            <Metric label="سود امروز">
-              <TomanAmount value={a?.todayRealizedPnlToman ?? 0} />
-            </Metric>
-            <Metric label="بازده">
-              {a?.returnPercent !== null && a?.returnPercent !== undefined ? (
-                <Bidi>{toFaDigits(a.returnPercent.toFixed(2))}٪</Bidi>
-              ) : (
-                DASH
-              )}
-            </Metric>
-            <Metric label="قیمت مبنای تتر">
-              {a?.markPriceToman ? (
-                <TomanAmount value={a.markPriceToman} />
-              ) : (
-                <span className="sa-unknown">نامشخص</span>
-              )}
-            </Metric>
-          </dl>
-          {a?.reconciliation ? (
-            <p className="sa-sub sa-acct-recon">
-              تطبیق حساب: equity{" "}
-              {a.reconciliation.equityMatchesInitialPlusPnl === false ? "ناموفق" : "OK"} ·
-              تقسیم سرمایه{" "}
-              {a.reconciliation.freePlusReservedPlusCommittedEqualsEquity === false
-                ? "ناموفق"
-                : "OK"}{" "}
-              · جمع صرافی‌ها{" "}
-              {a.reconciliation.venueSumEqualsPortfolioEquity === false ? "ناموفق" : "OK"} ·
-              کارمزد {a.reconciliation.feeLedgerSumMatchesBucket ? "OK" : "ناموفق"}
-            </p>
-          ) : null}
+            </InnerCard>
+          </div>
         </div>
       </section>
 
@@ -527,11 +775,6 @@ export function AccountsSection({
         </div>
         <div className="panel-body sa-acct-venues">
           {(() => {
-            /*
-             * Prefer accounting venues (with balances). If the session has none
-             * yet, still render depth cards so market depth is never hidden
-             * behind an empty balance state.
-             */
             const balRows =
               a?.venues?.length
                 ? a.venues
@@ -554,65 +797,62 @@ export function AccountsSection({
             }
             return balRows.map((v) => {
               const depth = depthById.get(v.sourceId);
+              const ageLabel = fmtAgeFa(depth?.snapshotAgeMs);
               return (
                 <article key={v.sourceId} className="panel sa-panel sa-acct-venue">
                   <header className="sa-acct-venue-head panel-header sa-panel-header">
-                    <div>
-                      <strong className="panel-title">
-                        {depth?.nameFa ?? v.sourceId}
-                      </strong>
+                    <div className="sa-acct-venue-id">
+                      <strong className="panel-title">{depth?.nameFa ?? v.sourceId}</strong>
                       <span className="sa-ps-key">{v.sourceId}</span>
                     </div>
                     <div className="sa-acct-venue-chips">
                       <span className="sa-chip sa-chip-sm sa-chip-muted">موجودی کاغذی</span>
-                      {depth?.snapshotAgeMs !== null && depth?.snapshotAgeMs !== undefined ? (
-                        <span className="sa-chip sa-chip-sm sa-chip-muted">
-                          سن: <Bidi>{toFaDigits(Math.round(depth.snapshotAgeMs / 1000))}</Bidi>s
-                        </span>
+                      {ageLabel ? (
+                        <span className="sa-chip sa-chip-sm sa-chip-muted">{ageLabel}</span>
                       ) : null}
                     </div>
                   </header>
                   <div className="panel-body sa-acct-venue-body">
-                    <dl className="sa-acct-venue-grid" aria-label="موجودی">
-                      <div>
-                        <dt>موجودی IRT</dt>
-                        <dd>
+                    <div className="sa-bal-metrics" aria-label="موجودی">
+                      <div className="sa-bal-metric">
+                        <span className="sa-bal-metric-label">موجودی IRT</span>
+                        <span className="sa-bal-metric-value">
                           <TomanAmount value={v.irtToman} />
-                        </dd>
+                        </span>
                       </div>
-                      <div>
-                        <dt>موجودی USDT</dt>
-                        <dd>
+                      <div className="sa-bal-metric">
+                        <span className="sa-bal-metric-label">موجودی USDT</span>
+                        <span className="sa-bal-metric-value">
                           <Bidi>{toFaDigits(v.usdt.toFixed(4))}</Bidi>
-                        </dd>
+                        </span>
                       </div>
-                      <div>
-                        <dt>ارزش کل</dt>
-                        <dd>
+                      <div className="sa-bal-metric">
+                        <span className="sa-bal-metric-label">ارزش کل</span>
+                        <span className="sa-bal-metric-value">
                           {v.valuationToman !== null ? (
                             <TomanAmount value={v.valuationToman} />
                           ) : (
                             DASH
                           )}
-                        </dd>
+                        </span>
                       </div>
-                      <div>
-                        <dt>آزاد IRT · USDT</dt>
-                        <dd className="sa-sub">
+                      <div className="sa-bal-metric">
+                        <span className="sa-bal-metric-label">آزاد IRT · USDT</span>
+                        <span className="sa-bal-metric-value sa-sub">
                           <TomanAmount value={v.freeIrtToman} /> ·{" "}
                           <Bidi>{toFaDigits((v.freeUsdtMicros / 1e6).toFixed(4))}</Bidi>
-                        </dd>
+                        </span>
                       </div>
-                      <div>
-                        <dt>رزرو · درگیر</dt>
-                        <dd className="sa-sub">
+                      <div className="sa-bal-metric">
+                        <span className="sa-bal-metric-label">رزرو / درگیر</span>
+                        <span className="sa-bal-metric-value sa-sub">
                           <Bidi>{toFaDigits(v.reservedIrtToman)}</Bidi> ·{" "}
                           <Bidi>{toFaDigits(v.committedIrtToman)}</Bidi>
-                        </dd>
+                        </span>
                       </div>
-                      <div>
-                        <dt>حجم پیشنهادی (SMART)</dt>
-                        <dd>
+                      <div className="sa-bal-metric">
+                        <span className="sa-bal-metric-label">حجم پیشنهادی (SMART)</span>
+                        <span className="sa-bal-metric-value">
                           {depth?.smartRecommendedUsdt !== null &&
                           depth?.smartRecommendedUsdt !== undefined ? (
                             <Bidi>{toFaDigits(depth.smartRecommendedUsdt.toFixed(4))} USDT</Bidi>
@@ -622,19 +862,25 @@ export function AccountsSection({
                           {depth?.smartBindingConstraint ? (
                             <span className="sa-reason">{depth.smartBindingConstraint}</span>
                           ) : null}
-                        </dd>
+                        </span>
                       </div>
-                    </dl>
+                    </div>
 
                     <div className="sa-depth-block" aria-label="عمق و ظرفیت بازار">
-                      <div className="sa-depth-block-title">عمق و ظرفیت بازار</div>
-                      <p className="sa-sub sa-depth-legend">
-                        عمق = نقدینگی دفتر در پنجرهٔ لغزش · ظرفیت = پس از موجودی و سقف‌های سیاست
-                      </p>
+                      <div className="sa-depth-block-head">
+                        <div className="sa-depth-block-title">عمق و ظرفیت بازار</div>
+                        <details className="sa-depth-help">
+                          <summary className="sa-depth-help-sum">راهنما</summary>
+                          <p className="sa-sub">
+                            عمق = نقدینگی دفتر در پنجرهٔ لغزش · ظرفیت = پس از موجودی و سقف‌های
+                            سیاست
+                          </p>
+                        </details>
+                      </div>
                       {depth ? (
                         <div className="sa-depth-sides">
-                          <DepthSide title="خرید از صرافی" side={depth.buy} />
-                          <DepthSide title="فروش به صرافی" side={depth.sell} />
+                          <DepthSide title="خرید از صرافی" side={depth.buy} accent="buy" />
+                          <DepthSide title="فروش به صرافی" side={depth.sell} accent="sell" />
                         </div>
                       ) : (
                         <p className="sa-sub">
@@ -663,7 +909,9 @@ export function AccountsSection({
       <section className="panel sa-panel" aria-label="کارمزدهای ثبت‌شده">
         <div className="panel-header sa-panel-header">
           <h3 className="panel-title">کارمزدهای ثبت‌شده (دفتر)</h3>
-          <div className="sa-panel-note">کارمزد مدل‌شده روی fill — نه کارمزد واقعی پرداخت‌شده به صرافی</div>
+          <div className="sa-panel-note">
+            کارمزد مدل‌شده روی fill — نه کارمزد واقعی پرداخت‌شده به صرافی
+          </div>
         </div>
         <div className="panel-body">
           <div className="sa-ad-filters">
@@ -690,9 +938,7 @@ export function AccountsSection({
               <TomanAmount value={a?.fees.feeToman ?? 0} />
             </Metric>
             <Metric label="کارمزد USDT">
-              <Bidi>
-                {toFaDigits(((a?.fees.feeUsdtMicros ?? 0) / 1e6).toFixed(6))}
-              </Bidi>
+              <Bidi>{toFaDigits(((a?.fees.feeUsdtMicros ?? 0) / 1e6).toFixed(6))}</Bidi>
             </Metric>
             <Metric label="معادل تومانی کل">
               {a?.fees.totalFeeTomanEquivalent !== null &&
@@ -732,7 +978,9 @@ export function AccountsSection({
             </table>
           </div>
           <details className="sa-advanced-details">
-            <summary className="sa-panel-note">جزئیات کارمزد به ازای معامله ({feeTrades.length})</summary>
+            <summary className="sa-panel-note">
+              جزئیات کارمزد به ازای معامله ({feeTrades.length})
+            </summary>
             <div className="sa-table-wrap">
               <table className="sa-table">
                 <thead>

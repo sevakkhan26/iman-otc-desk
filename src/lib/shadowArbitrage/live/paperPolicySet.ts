@@ -177,7 +177,7 @@ export type PaperPolicyRowView = {
 };
 
 export type PaperPolicySetView = {
-  setKey: typeof PAPER_POLICY_SET_KEY;
+  setKey: string;
   validForDays: number;
   canonical: string;
   status: PaperPolicySetStatus;
@@ -193,6 +193,12 @@ export type PaperPolicySetView = {
   /** The soonest expiry among the applied rows. Null when none is applied. */
   expiresAt: string | null;
   rows: PaperPolicyRowView[];
+  /**
+   * When true the UI must not offer a one-click re-apply of PAPER_BALANCED_10B_V1
+   * (the four-day experiment owns the live policy values for the run).
+   */
+  reapplyLocked?: boolean;
+  reapplyLockedReasonFa?: string | null;
 };
 
 /**
@@ -213,21 +219,35 @@ function displayFor(entry: PaperPolicyEntry, value: number): string {
 }
 
 /**
- * Compare the approved set against what is actually in force.
+ * Compare an approved set (default V1, or an alternate such as the 4-day set)
+ * against what is actually in force.
  *
  * Pure: it reads the policy state the caller already built and returns a view.
  * It never decides to apply anything, and it never treats an unset value as a
  * default — a missing row is reported as missing, by name.
  */
-export function buildPaperPolicySetView(policies: RiskPolicyState[]): PaperPolicySetView {
+export function buildPaperPolicySetView(
+  policies: RiskPolicyState[],
+  options?: {
+    setKey?: string;
+    validForDays?: number;
+    entries?: PaperPolicyEntry[];
+    canonical?: string;
+    reapplyLocked?: boolean;
+    reapplyLockedReasonFa?: string | null;
+  }
+): PaperPolicySetView {
   const byKey = new Map(policies.map((p) => [p.definition.key, p]));
+  const entries = options?.entries ?? PAPER_POLICY_SET;
+  const setKey = options?.setKey ?? PAPER_POLICY_SET_KEY;
+  const validForDays = options?.validForDays ?? PAPER_POLICY_SET_VALID_DAYS;
 
   const missingKeys: RiskPolicyKey[] = [];
   const differingKeys: RiskPolicyKey[] = [];
   const expiredKeys: RiskPolicyKey[] = [];
   const expiries: string[] = [];
 
-  const rows: PaperPolicyRowView[] = PAPER_POLICY_SET.map((entry) => {
+  const rows: PaperPolicyRowView[] = entries.map((entry) => {
     const state = byKey.get(entry.key);
     const currentValue = state?.value ?? null;
     const expired = Boolean(state?.expired);
@@ -270,16 +290,21 @@ export function buildPaperPolicySetView(policies: RiskPolicyState[]): PaperPolic
   });
 
   let status: PaperPolicySetStatus;
-  if (missingKeys.length === PAPER_POLICY_SET.length) status = "NOT_APPLIED";
+  if (missingKeys.length === entries.length) status = "NOT_APPLIED";
   else if (expiredKeys.length) status = "EXPIRED";
   else if (missingKeys.length) status = "PARTIALLY_APPLIED";
   else if (differingKeys.length) status = "DRIFTED";
   else status = "EFFECTIVE";
 
   return {
-    setKey: PAPER_POLICY_SET_KEY,
-    validForDays: PAPER_POLICY_SET_VALID_DAYS,
-    canonical: paperPolicySetCanonical(),
+    setKey,
+    validForDays,
+    canonical:
+      options?.canonical ??
+      paperPolicySetCanonical(
+        entries.map((e) => ({ key: e.key, value: e.value })),
+        validForDays
+      ),
     status,
     statusFa: PAPER_POLICY_SET_STATUS_FA[status],
     effective: status === "EFFECTIVE",
@@ -288,6 +313,8 @@ export function buildPaperPolicySetView(policies: RiskPolicyState[]): PaperPolic
     expiredKeys,
     // The set is only in force until its earliest row lapses.
     expiresAt: expiries.length ? expiries.sort()[0] : null,
-    rows
+    rows,
+    reapplyLocked: options?.reapplyLocked,
+    reapplyLockedReasonFa: options?.reapplyLockedReasonFa ?? null
   };
 }

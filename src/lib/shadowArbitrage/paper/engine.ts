@@ -44,6 +44,17 @@ import {
   reasonsFromOpportunity,
   type PaperReasonCode
 } from "@/lib/shadowArbitrage/paper/reasons";
+import {
+  computeUtilization,
+  routeCapitalToman,
+  venueExposureAfter
+} from "@/lib/shadowArbitrage/paper/utilization";
+import {
+  PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT,
+  PAPER_4D_MAX_UTILIZATION_PERCENT,
+  PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT,
+  PAPER_4D_MIN_RESERVE_PERCENT
+} from "@/lib/shadowArbitrage/paper/experimentPolicy";
 import type {
   NormalizedSourceSnapshot,
   ShadowOpportunity,
@@ -133,6 +144,8 @@ export type CycleEvaluation = {
   sizing: Array<{ routeKey: string; result: SizingResult }>;
   /** Capacity still held when the cycle ended. Zero in a clean cycle. */
   reservations: { irtToman: number; usdtMicros: number; holds: number };
+  /** Peak concurrent reserved utilization this cycle (null when limits off). */
+  peakUtilizationPercent: number | null;
 };
 
 /** Same-cycle freshness: the snapshot must be inside the staleness budget. */
@@ -204,6 +217,21 @@ export type SizingContext = {
   quoteBySource?: Map<string, QuoteCapacityInput>;
 };
 
+/**
+ * Portfolio-level capital limits for the four-day experiment.
+ * When omitted, utilization/route/venue caps are not enforced beyond existing
+ * risk policies (backward compatible for unit tests of the pre-4D engine).
+ */
+export type PortfolioLimits = {
+  enabled: boolean;
+  equityToman: number;
+  markPriceToman: number;
+  maxUtilizationPercent?: number;
+  minReservePercent?: number;
+  maxRouteCapitalPercent?: number;
+  maxVenueExposurePercent?: number;
+};
+
 export type EvaluateInput = {
   opportunities: ShadowOpportunity[];
   sources: NormalizedSourceSnapshot[];
@@ -212,6 +240,7 @@ export type EvaluateInput = {
   executedLifecycleIds: Set<string>;
   balances: VenueBalance[];
   sizing: SizingContext;
+  portfolioLimits?: PortfolioLimits;
 };
 
 /**
@@ -422,6 +451,16 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
    */
   let executedCount = 0;
   let eligibleCandidates = 0;
+  const limits = input.portfolioLimits?.enabled ? input.portfolioLimits : null;
+  const maxUtil = limits?.maxUtilizationPercent ?? PAPER_4D_MAX_UTILIZATION_PERCENT;
+  const minReserve = limits?.minReservePercent ?? PAPER_4D_MIN_RESERVE_PERCENT;
+  const maxRoute = limits?.maxRouteCapitalPercent ?? PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT;
+  const maxVenue = limits?.maxVenueExposurePercent ?? PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT;
+  // Running reserved capital across concurrent selections this cycle.
+  let reservedBuyIrt = 0;
+  let reservedSellUsdtMicros = 0;
+  // Venue exposure snapshot that grows with selections (no double-count of same capital).
+  const liveExposure = new Map(input.sizing.exposureTomanBySource);
 
   for (const { c } of rankedRoutes) {
     const venuePairKey = `${c.buySourceId}->${c.sellSourceId}`;
@@ -467,6 +506,80 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       });
       continue;
     }
+
+    /*
+     * Portfolio utilization + route/venue capital fractions (four-day experiment).
+     * Applied after sizing and economic plan so we never force deployment and
+     * never lower the edge threshold to hit a utilization target.
+     */
+    if (limits) {
+      const capital = routeCapitalToman({
+        sizeUsdt: sizedCandidate.sizeUsdt,
+        buyVwapToman: sizedCandidate.buyVwapToman,
+        sellVwapToman: sizedCandidate.sellVwapToman,
+        markPriceToman: limits.markPriceToman
+      });
+      const routeCapToman = Math.floor((limits.equityToman * maxRoute) / 100);
+      if (capital > routeCapToman) {
+        decisions.push({
+          kind: "SKIP",
+          candidate: sizedCandidate,
+          code: "route_capital_cap",
+          codes: ["route_capital_cap"],
+          reasonFa: reasonLabel("route_capital_cap"),
+          requiredRebalance: null
+        });
+        continue;
+      }
+      const utilNow = computeUtilization({
+        equityToman: limits.equityToman,
+        markPriceToman: limits.markPriceToman,
+        reservedBuyIrtToman: reservedBuyIrt,
+        reservedSellUsdtMicros
+      });
+      if (utilNow.wouldBreach(capital, maxUtil, minReserve)) {
+        decisions.push({
+          kind: "SKIP",
+          candidate: sizedCandidate,
+          code: "portfolio_utilization_cap",
+          codes: ["portfolio_utilization_cap"],
+          reasonFa: reasonLabel("portfolio_utilization_cap"),
+          requiredRebalance: null
+        });
+        continue;
+      }
+      const buyAdd = Math.round(plan.buyLeg.notionalToman);
+      const sellAdd = Math.round(
+        sizedCandidate.sizeUsdt * (sizedCandidate.sellVwapToman || limits.markPriceToman)
+      );
+      const buyExp = liveExposure.get(sizedCandidate.buySourceId) ?? 0;
+      const sellExp = liveExposure.get(sizedCandidate.sellSourceId) ?? 0;
+      if (
+        !venueExposureAfter({
+          currentExposureToman: buyExp,
+          addToman: buyAdd,
+          equityToman: limits.equityToman,
+          maxVenuePercent: maxVenue
+        }) ||
+        !venueExposureAfter({
+          currentExposureToman: sellExp,
+          addToman: sellAdd,
+          equityToman: limits.equityToman,
+          maxVenuePercent: maxVenue
+        })
+      ) {
+        decisions.push({
+          kind: "SKIP",
+          candidate: sizedCandidate,
+          code: "venue_exposure_cap",
+          codes: ["venue_exposure_cap"],
+          reasonFa: reasonLabel("venue_exposure_cap"),
+          requiredRebalance: null
+        });
+        continue;
+      }
+    }
+
     eligibleCandidates += 1;
 
     /*
@@ -533,6 +646,23 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       continue;
     }
 
+    if (limits) {
+      reservedBuyIrt += Math.round(plan.buyLeg.notionalToman);
+      reservedSellUsdtMicros += Math.max(0, -plan.sellLeg.deltaUsdtMicros);
+      const buyAdd = Math.round(plan.buyLeg.notionalToman);
+      const sellAdd = Math.round(
+        sizedCandidate.sizeUsdt * (sizedCandidate.sellVwapToman || limits.markPriceToman)
+      );
+      liveExposure.set(
+        sizedCandidate.buySourceId,
+        (liveExposure.get(sizedCandidate.buySourceId) ?? 0) + buyAdd
+      );
+      liveExposure.set(
+        sizedCandidate.sellSourceId,
+        (liveExposure.get(sizedCandidate.sellSourceId) ?? 0) + sellAdd
+      );
+    }
+
     executedCount += 1;
     decisions.push({
       kind: "EXECUTE",
@@ -543,6 +673,16 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
     });
   }
 
+  const peakUtilizationPercent =
+    limits && limits.equityToman > 0
+      ? computeUtilization({
+          equityToman: limits.equityToman,
+          markPriceToman: limits.markPriceToman,
+          reservedBuyIrtToman: reservedBuyIrt,
+          reservedSellUsdtMicros
+        }).utilizationPercent
+      : null;
+
   return {
     decisions,
     balancesAfter: settledBalances(ledger),
@@ -552,7 +692,8 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
     sizing: [...sizingByRoute.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([routeKey, result]) => ({ routeKey, result })),
-    reservations: totalReserved(ledger)
+    reservations: totalReserved(ledger),
+    peakUtilizationPercent
   };
 }
 

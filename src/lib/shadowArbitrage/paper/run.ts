@@ -15,6 +15,7 @@ import {
   getActivePaperSession,
   loadFilledLifecycleIds,
   loadPaperBalances,
+  setPaperSessionStatus,
   type PaperFillRecord,
   type PaperSessionRow,
   type PaperSkipRecord
@@ -69,6 +70,36 @@ export async function runPaperExecutionForCycle(input: {
   const session: PaperSessionRow | null = await getActivePaperSession();
   if (!session) return { ran: false, reason: "no_session" };
   if (session.status !== "RUNNING") return { ran: false, reason: "not_running", sessionId: session.id };
+
+  /*
+   * Four-day experiment gate: while an ACTIVE experiment exists, new Paper
+   * trades only open before endsAt. After endsAt, complete the experiment and
+   * leave the collector running without new fills.
+   */
+  try {
+    const { getActiveExperiment, experimentIsOpen, completeExperiment } = await import(
+      "@/db/repositories/shadowExperiments"
+    );
+    const { loadPaperStats } = await import("@/db/repositories/shadowPaper");
+    const exp = await getActiveExperiment();
+    if (exp) {
+      const nowMs = Date.now();
+      if (!experimentIsOpen(exp, nowMs)) {
+        const stats = await loadPaperStats(session.id);
+        await completeExperiment(exp.id, {
+          completedReason: "duration_elapsed",
+          completedAt: new Date(nowMs).toISOString(),
+          filled: stats.filled,
+          skipped: stats.skipped,
+          economicNetPnlToman: stats.economicNetPnlToman
+        });
+        await setPaperSessionStatus(session.id, "STOPPED");
+        return { ran: false, reason: "not_running", sessionId: session.id };
+      }
+    }
+  } catch {
+    /* experiment module optional if migration not yet applied */
+  }
 
   const [effectiveFees, accountEvidence, balanceRows, filledIds, policyValues] = await Promise.all([
     loadEffectiveFees(Date.now()),
@@ -159,6 +190,40 @@ export async function runPaperExecutionForCycle(input: {
     });
   }
 
+  // Portfolio limits for the active four-day experiment (if any).
+  let portfolioLimits:
+    | {
+        enabled: boolean;
+        equityToman: number;
+        markPriceToman: number;
+        maxUtilizationPercent: number;
+        minReservePercent: number;
+        maxRouteCapitalPercent: number;
+        maxVenueExposurePercent: number;
+      }
+    | undefined;
+  let activeExperimentId: string | null = null;
+  try {
+    const { getActiveExperiment, experimentIsOpen } = await import(
+      "@/db/repositories/shadowExperiments"
+    );
+    const exp = await getActiveExperiment();
+    if (exp && experimentIsOpen(exp, Date.now())) {
+      activeExperimentId = exp.id;
+      portfolioLimits = {
+        enabled: true,
+        equityToman: portfolioValueToman > 0 ? portfolioValueToman : exp.initialCapitalToman,
+        markPriceToman: valuationPriceToman,
+        maxUtilizationPercent: exp.maxUtilizationPercent,
+        minReservePercent: exp.minReservePercent,
+        maxRouteCapitalPercent: exp.maxRouteCapitalPercent,
+        maxVenueExposurePercent: exp.maxVenueExposurePercent
+      };
+    }
+  } catch {
+    /* migration not yet applied */
+  }
+
   const evaluation = evaluateCycle({
     opportunities: input.opportunities,
     sources: input.sources,
@@ -181,7 +246,8 @@ export async function runPaperExecutionForCycle(input: {
        * disagreeing about the same venue.
        */
       quoteBySource
-    }
+    },
+    portfolioLimits
   });
 
   const fills: PaperFillRecord[] = [];
@@ -275,6 +341,16 @@ export async function runPaperExecutionForCycle(input: {
     fills,
     skips
   });
+
+  // Persist cycle utilization sample for average/peak on the experiment row.
+  if (activeExperimentId && evaluation.peakUtilizationPercent !== null) {
+    try {
+      const { recordUtilizationSample } = await import("@/db/repositories/shadowExperiments");
+      await recordUtilizationSample(activeExperimentId, evaluation.peakUtilizationPercent);
+    } catch {
+      /* non-fatal reporting */
+    }
+  }
 
   return {
     ran: true,

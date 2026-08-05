@@ -15,6 +15,7 @@ import {
   listPaperSessions,
   loadCandidateStates,
   loadCycleSummaries,
+  countPaperLedger,
   loadPaperBalances,
   loadPaperLedger,
   loadPaperStats,
@@ -818,12 +819,96 @@ export async function GET(request: Request) {
     });
   });
 
+  let experiment: unknown = null;
+  try {
+    const { getActiveExperiment, listExperiments, formatTehranWithSeconds } = await import(
+      "@/db/repositories/shadowExperiments"
+    );
+    const active = await getActiveExperiment();
+    const all = await listExperiments(10);
+    const pick = active ?? all[0] ?? null;
+    if (pick) {
+      const avg =
+        pick.utilizationStats.n > 0
+          ? pick.utilizationStats.sum / pick.utilizationStats.n
+          : null;
+      const nowMs = Date.now();
+      const endsMs = Date.parse(pick.endsAt);
+      const startMs = Date.parse(pick.startedAt);
+      experiment = {
+        id: pick.id,
+        runKey: pick.runKey,
+        status: pick.status,
+        policySetKey: pick.policySetKey,
+        policyFingerprint: pick.policyFingerprint,
+        releaseVersion: pick.releaseVersion,
+        startedAt: pick.startedAt,
+        endsAt: pick.endsAt,
+        startedAtTehran: formatTehranWithSeconds(pick.startedAt),
+        endsAtTehran: formatTehranWithSeconds(pick.endsAt),
+        elapsedMs: Math.max(0, nowMs - startMs),
+        remainingMs: pick.status === "ACTIVE" ? Math.max(0, endsMs - nowMs) : 0,
+        initialCapitalToman: pick.initialCapitalToman,
+        targetUtilizationPercent: pick.targetUtilizationPercent,
+        maxUtilizationPercent: pick.maxUtilizationPercent,
+        minReservePercent: pick.minReservePercent,
+        maxRouteCapitalPercent: pick.maxRouteCapitalPercent,
+        maxVenueExposurePercent: pick.maxVenueExposurePercent,
+        derivedMaxOrderUsdt: pick.derivedMaxOrderUsdt,
+        derivedMaxOrderReferencePrice: pick.derivedMaxOrderReferencePrice,
+        peakUtilizationPercent: pick.peakUtilizationPercent,
+        averageUtilizationPercent: avg,
+        sessionId: pick.sessionId,
+        summary: pick.summary,
+        history: all.map((e) => ({
+          id: e.id,
+          runKey: e.runKey,
+          status: e.status,
+          startedAt: e.startedAt,
+          endsAt: e.endsAt,
+          policySetKey: e.policySetKey
+        }))
+      };
+    }
+  } catch {
+    experiment = null;
+  }
+
+  // Server-side ledger pagination (no silent 2000-row cap for UI).
+  const url = new URL(request.url);
+  const ledgerLimit = Math.min(200, Math.max(1, Number(url.searchParams.get("ledgerLimit") ?? 50) || 50));
+  const ledgerOffset = Math.max(0, Number(url.searchParams.get("ledgerOffset") ?? 0) || 0);
+  let ledgerPage: { rows: unknown[]; total: number; limit: number; offset: number } | null =
+    null;
+  if (snap.session?.id) {
+    try {
+      const [pageRows, total] = await Promise.all([
+        loadPaperLedger(snap.session.id, {
+          outcome: "FILLED",
+          limit: ledgerLimit,
+          offset: ledgerOffset
+        }),
+        countPaperLedger(snap.session.id, { outcome: "FILLED" })
+      ]);
+      ledgerPage = {
+        rows: pageRows,
+        total,
+        limit: ledgerLimit,
+        offset: ledgerOffset
+      };
+    } catch {
+      ledgerPage = null;
+    }
+  }
+
   return new NextResponse(
     JSON.stringify(
       envelope({
         ...snap,
         accounting,
         venueDepthCards,
+        experiment,
+        ledgerPage,
         history,
         wizard,
         sizing,

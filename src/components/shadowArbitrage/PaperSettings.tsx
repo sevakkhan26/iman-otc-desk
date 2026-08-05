@@ -52,6 +52,23 @@ export type PaperPolicySetPayload = {
   expiredKeys: string[];
   expiresAt: string | null;
   rows: PolicyRowView[];
+  reapplyLocked?: boolean;
+  reapplyLockedReasonFa?: string | null;
+  experiment?: {
+    id: string;
+    runKey: string;
+    status: string;
+    startedAt: string;
+    endsAt: string;
+    durationHours: number;
+    targetUtilizationPercent: number;
+    maxUtilizationPercent: number;
+    minReservePercent: number;
+    maxRouteCapitalPercent: number;
+    maxVenueExposurePercent: number;
+    derivedMaxOrderUsdt: number | null;
+    derivedMaxOrderReferencePrice: number | null;
+  } | null;
 };
 
 type PolicyHistoryRow = {
@@ -335,9 +352,35 @@ export function PaperSettings() {
               ))}
             </ul>
 
+            {set.experiment ? (
+              <div className="sa-callout sa-callout-muted" role="status">
+                آزمایش چهارروزه فعال: runId{" "}
+                <span className="sa-ps-key">{set.experiment.id}</span> · هدف استفاده{" "}
+                <Bidi>{toFaDigits(set.experiment.targetUtilizationPercent)}٪</Bidi> · سقف{" "}
+                <Bidi>{toFaDigits(set.experiment.maxUtilizationPercent)}٪</Bidi> · ذخیره{" "}
+                <Bidi>{toFaDigits(set.experiment.minReservePercent)}٪</Bidi> · مسیر/صرافی{" "}
+                <Bidi>
+                  {toFaDigits(set.experiment.maxRouteCapitalPercent)}٪ /{" "}
+                  {toFaDigits(set.experiment.maxVenueExposurePercent)}٪
+                </Bidi>
+                {set.experiment.derivedMaxOrderUsdt !== null ? (
+                  <>
+                    {" "}
+                    · سقف USDT یخ‌زده:{" "}
+                    <Bidi>{toFaDigits(set.experiment.derivedMaxOrderUsdt)}</Bidi>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+
             {/* ── the single atomic action, behind an explicit confirmation ── */}
             <div className="sa-ps-apply">
-              {!armed ? (
+              {set.reapplyLocked ? (
+                <p className="sa-sub" role="status">
+                  {set.reapplyLockedReasonFa ??
+                    "مجموعهٔ قبلی در تاریخچه خوانا است؛ در طول آزمایش چهارروزه اعمال مجدد قفل است."}
+                </p>
+              ) : !armed ? (
                 <>
                   <p className="sa-sub">
                     اعمال، هر شش مقدار را با هم و در یک تراکنش ثبت می‌کند: یا همه ثبت می‌شوند یا

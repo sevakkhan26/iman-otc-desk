@@ -105,9 +105,36 @@ export type VenueDepthCardView = {
   smartBindingConstraint: string | null;
 };
 
+export type ExperimentView = {
+  id: string;
+  runKey: string;
+  status: string;
+  policySetKey: string;
+  policyFingerprint: string;
+  releaseVersion: string;
+  startedAt: string;
+  endsAt: string;
+  startedAtTehran?: string;
+  endsAtTehran?: string;
+  elapsedMs: number;
+  remainingMs: number;
+  initialCapitalToman: number;
+  targetUtilizationPercent: number;
+  maxUtilizationPercent: number;
+  minReservePercent: number;
+  maxRouteCapitalPercent: number;
+  maxVenueExposurePercent: number;
+  derivedMaxOrderUsdt: number | null;
+  derivedMaxOrderReferencePrice: number | null;
+  peakUtilizationPercent: number | null;
+  averageUtilizationPercent: number | null;
+  sessionId: string | null;
+};
+
 type Props = {
   accounting: AccountsAccounting | null;
   venueDepthCards?: VenueDepthCardView[] | null;
+  experiment?: ExperimentView | null;
   session: {
     id: string;
     name: string;
@@ -234,9 +261,20 @@ function DepthSide({
   );
 }
 
+function fmtDuration(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (d > 0) return `${d}d ${h}h ${m}m ${sec}s`;
+  return `${h}h ${m}m ${sec}s`;
+}
+
 export function AccountsSection({
   accounting,
   venueDepthCards,
+  experiment,
   session,
   loading,
   serverNow
@@ -326,6 +364,77 @@ export function AccountsSection({
 
   return (
     <div className="sa-stack">
+      {experiment ? (
+        <section className="panel sa-panel" aria-label="آزمایش چهارروزه">
+          <div className="panel-header sa-panel-header">
+            <h3 className="panel-title">آزمایش Paper چهارروزه</h3>
+            <div className="sa-panel-note">
+              {experiment.status} · {experiment.policySetKey}
+            </div>
+          </div>
+          <div className="panel-body">
+            <dl className="sa-acct-grid">
+              <Metric label="runId">
+                <span className="sa-ps-key">{experiment.id}</span>
+              </Metric>
+              <Metric label="شروع (Tehran)">
+                {experiment.startedAtTehran ?? formatTehran(experiment.startedAt)}
+              </Metric>
+              <Metric label="پایان (Tehran)">
+                {experiment.endsAtTehran ?? formatTehran(experiment.endsAt)}
+              </Metric>
+              <Metric label="باقی‌مانده">
+                <Bidi>{fmtDuration(experiment.remainingMs)}</Bidi>
+              </Metric>
+              <Metric label="هدف استفاده">
+                <Bidi>{toFaDigits(experiment.targetUtilizationPercent)}٪</Bidi>
+              </Metric>
+              <Metric label="سقف سخت استفاده">
+                <Bidi>{toFaDigits(experiment.maxUtilizationPercent)}٪</Bidi>
+              </Metric>
+              <Metric label="کف نقدینگی آزاد">
+                <Bidi>{toFaDigits(experiment.minReservePercent)}٪</Bidi>
+              </Metric>
+              <Metric label="سقف مسیر / صرافی">
+                <Bidi>
+                  {toFaDigits(experiment.maxRouteCapitalPercent)}٪ /{" "}
+                  {toFaDigits(experiment.maxVenueExposurePercent)}٪
+                </Bidi>
+              </Metric>
+              <Metric label="سقف USDT مشتق‌شده">
+                {experiment.derivedMaxOrderUsdt !== null ? (
+                  <Bidi>{toFaDigits(experiment.derivedMaxOrderUsdt)}</Bidi>
+                ) : (
+                  DASH
+                )}
+              </Metric>
+              <Metric label="اوج / میانگین استفاده">
+                <Bidi>
+                  {experiment.peakUtilizationPercent !== null
+                    ? toFaDigits(Number(experiment.peakUtilizationPercent).toFixed(2))
+                    : "—"}
+                  ٪ /{" "}
+                  {experiment.averageUtilizationPercent !== null
+                    ? toFaDigits(Number(experiment.averageUtilizationPercent).toFixed(2))
+                    : "—"}
+                  ٪
+                </Bidi>
+              </Metric>
+              <Metric label="سرمایهٔ اولیه">
+                <TomanAmount value={experiment.initialCapitalToman} />
+              </Metric>
+              <Metric label="نسخه انتشار">
+                <Bidi>{experiment.releaseVersion}</Bidi>
+              </Metric>
+            </dl>
+            <p className="sa-sub">
+              UTC start: {experiment.startedAt} · UTC end: {experiment.endsAt} · fingerprint:{" "}
+              <span className="sa-ps-key">{experiment.policyFingerprint}</span>
+            </p>
+          </div>
+        </section>
+      ) : null}
+
       <section className="panel sa-panel" aria-label="خلاصه پرتفوی کاغذی">
         <div className="panel-header sa-panel-header">
           <h3 className="panel-title">سرمایه و حساب (کاغذی)</h3>

@@ -258,6 +258,94 @@ export async function GET() {
     loadRiskPolicyHistory(undefined, 100)
   ]);
 
+  /*
+   * When the four-day experiment is ACTIVE, Settings compares against
+   * PAPER_BALANCED_10B_4D_V1 (with the frozen derived max order), not the
+   * older V1 500-USDT set. Prior sets remain in policyHistory read-only.
+   * Passive GET never mutates.
+   */
+  let paperPolicySet: Record<string, unknown> = {
+    ...buildPaperPolicySetView(policies),
+    fingerprint: paperPolicySetFingerprint(),
+    entries: PAPER_POLICY_SET
+  };
+  try {
+    const { getActiveExperiment } = await import("@/db/repositories/shadowExperiments");
+    const {
+      PAPER_4D_POLICY_SET_KEY,
+      PAPER_4D_RISK_POLICIES,
+      PAPER_4D_DURATION_HOURS,
+      PAPER_4D_TARGET_UTILIZATION_PERCENT,
+      PAPER_4D_MAX_UTILIZATION_PERCENT,
+      PAPER_4D_MIN_RESERVE_PERCENT,
+      PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT,
+      PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT,
+      paper4dCanonical
+    } = await import("@/lib/shadowArbitrage/paper/experimentPolicy");
+    const exp = await getActiveExperiment();
+    if (exp && exp.status === "ACTIVE" && exp.policySetKey === PAPER_4D_POLICY_SET_KEY) {
+      const maxOrder = exp.derivedMaxOrderUsdt ?? 0;
+      const entries = [
+        {
+          key: "max_order_size_usdt" as const,
+          value: maxOrder,
+          labelFa: "سقف USDT مشتق‌شده (۱۰٪ سهام در شروع)",
+          unitFa: "تتر",
+          displayFa: `${maxOrder.toLocaleString("fa-IR")} تتر (یخ‌زده در شروع آزمایش)`,
+          controlsFa:
+            "سقف مطلق یک معاملهٔ کاغذی — از درصد سرمایهٔ مسیر و قیمت مرجع شروع مشتق و یخ‌زده شده است."
+        },
+        ...PAPER_4D_RISK_POLICIES.map((p) => ({
+          key: p.key,
+          value: p.value,
+          labelFa: p.labelFa,
+          unitFa:
+            p.key === "max_quote_age_ms"
+              ? "میلی‌ثانیه"
+              : p.key === "max_slippage_bps"
+                ? "bps"
+                : "درصد",
+          displayFa: String(p.value),
+          controlsFa: p.labelFa
+        }))
+      ];
+      const view = buildPaperPolicySetView(policies, {
+        setKey: PAPER_4D_POLICY_SET_KEY,
+        validForDays: 4,
+        entries,
+        canonical: paper4dCanonical({
+          maxOrderUsdt: maxOrder,
+          markPriceToman: exp.derivedMaxOrderReferencePrice ?? 0
+        }),
+        reapplyLocked: true,
+        reapplyLockedReasonFa:
+          "آزمایش چهارروزه فعال است — مجموعهٔ PAPER_BALANCED_10B_V1 به‌صورت منفعل اعمال نمی‌شود و دکمهٔ اعمال قفل است."
+      });
+      paperPolicySet = {
+        ...view,
+        fingerprint: exp.policyFingerprint,
+        entries,
+        experiment: {
+          id: exp.id,
+          runKey: exp.runKey,
+          status: exp.status,
+          startedAt: exp.startedAt,
+          endsAt: exp.endsAt,
+          durationHours: PAPER_4D_DURATION_HOURS,
+          targetUtilizationPercent: PAPER_4D_TARGET_UTILIZATION_PERCENT,
+          maxUtilizationPercent: PAPER_4D_MAX_UTILIZATION_PERCENT,
+          minReservePercent: PAPER_4D_MIN_RESERVE_PERCENT,
+          maxRouteCapitalPercent: PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT,
+          maxVenueExposurePercent: PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT,
+          derivedMaxOrderUsdt: exp.derivedMaxOrderUsdt,
+          derivedMaxOrderReferencePrice: exp.derivedMaxOrderReferencePrice
+        }
+      };
+    }
+  } catch {
+    /* experiment table optional pre-migration */
+  }
+
   return new NextResponse(
     JSON.stringify({
       banner: SHADOW_BANNER,
@@ -279,11 +367,7 @@ export async function GET() {
        * approved. The client renders this instead of deriving it, so the screen
        * and the apply action can never disagree about what is in force.
        */
-      paperPolicySet: {
-        ...buildPaperPolicySetView(policies),
-        fingerprint: paperPolicySetFingerprint(),
-        entries: PAPER_POLICY_SET
-      },
+      paperPolicySet,
       policyDefinitions: REQUIRED_RISK_POLICIES,
       attestations,
       policyHistory,

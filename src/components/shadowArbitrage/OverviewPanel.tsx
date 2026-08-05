@@ -357,7 +357,7 @@ export function OverviewPanel({
               hint={
                 <>
                   از {formatCountFa(classified.length)} فرصت مشاهده‌شده ·{" "}
-                  <button type="button" className="sa-linkish" onClick={() => onOpenTab("trades")}>
+                  <button type="button" className="sa-linkish" onClick={() => onOpenTab("book")}>
                     مشاهدهٔ فهرست
                   </button>
                 </>
@@ -410,7 +410,7 @@ export function OverviewPanel({
         <section className="panel sa-panel sa-ov-mini">
           <div className="sa-ov-mini-head">
             <h3 className="sa-ov-mini-title">ارزیابی کاغذی</h3>
-            <DetailsAction onClick={() => onOpenTab("command")} />
+            <DetailsAction onClick={() => onOpenTab("accounts")} />
           </div>
           {paper?.present ? (
             <dl className="sa-ov-mini-list">

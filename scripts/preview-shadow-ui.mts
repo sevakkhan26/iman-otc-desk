@@ -42,7 +42,7 @@ const VIEWPORTS = [
  * Tabs to photograph. `PREVIEW_TABS` narrows the list; the default is the tab
  * shell's own default so an unchanged run keeps producing the same four files.
  */
-const TABS = (process.env.PREVIEW_TABS ?? "command")
+const TABS = (process.env.PREVIEW_TABS ?? "accounts")
   .split(",")
   .map((t) => t.trim())
   .filter(Boolean);

@@ -205,12 +205,13 @@ await test("no page, layout, API, database or backend logic was touched", () => 
   // The Shadow page itself still renders exactly what it did.
   const view = read("src/components/ShadowArbitrageView.tsx");
   for (const panel of [
-    "ObservationHeader",
-    "OpportunitiesPanel",
-    "SourcesPanel",
+    "AccountsSection",
+    "VenuesSection",
+    "BookSection",
+    "ActivityDecisions",
     "CapitalSimulator",
-    "PaperExecution",
-    "LiveReadiness"
+    "LiveReadiness",
+    "PaperSettings"
   ]) {
     assert.ok(view.includes(`<${panel}`), `${panel} must still be on the page`);
   }
@@ -220,14 +221,14 @@ await test("no page, layout, API, database or backend logic was touched", () => 
 
 /* ── Phase 8C-1 — four operator sections ─────────────────────────────────── */
 
-await test("8C the four operator sections exist in order with Persian labels", () => {
+await test("8C the five operator sections exist in order with Persian labels", () => {
   assert.deepEqual(
     SHADOW_TABS.map((t) => t.id),
-    ["command", "capital", "trades", "settings"]
+    ["accounts", "venues", "book", "activity", "settings"]
   );
   assert.deepEqual(
     SHADOW_TABS.map((t) => t.labelFa),
-    ["مرکز فرماندهی", "سرمایه و تخصیص", "فرصت‌ها و معاملات", "تنظیمات و ایمنی"]
+    ["سرمایه و حساب", "وضعیت صرافی‌ها", "سفارش‌ها و پوزیشن‌ها", "فعالیت و تصمیم‌ها", "تنظیمات"]
   );
   // Every section carries a Persian one-line explanation for its tooltip.
   for (const t of SHADOW_TABS) {
@@ -236,14 +237,14 @@ await test("8C the four operator sections exist in order with Persian labels", (
   }
 });
 
-await test("8C Command Center is the default and unknown values fall back to it", () => {
-  assert.equal(DEFAULT_SHADOW_TAB, "command");
+await test("8C Accounts is the default and unknown values fall back to it", () => {
+  assert.equal(DEFAULT_SHADOW_TAB, "accounts");
   assert.equal(SHADOW_TABS[0].id, DEFAULT_SHADOW_TAB);
-  assert.equal(parseShadowTab(null), "command");
-  assert.equal(parseShadowTab(undefined), "command");
-  assert.equal(parseShadowTab(""), "command");
-  assert.equal(parseShadowTab("nope"), "command");
-  assert.equal(parseShadowTab("../etc"), "command");
+  assert.equal(parseShadowTab(null), "accounts");
+  assert.equal(parseShadowTab(undefined), "accounts");
+  assert.equal(parseShadowTab(""), "accounts");
+  assert.equal(parseShadowTab("nope"), "accounts");
+  assert.equal(parseShadowTab("../etc"), "accounts");
   // A known slug round-trips exactly.
   for (const t of SHADOW_TABS) {
     assert.equal(parseShadowTab(t.id), t.id);
@@ -254,13 +255,16 @@ await test("8C Command Center is the default and unknown values fall back to it"
 await test("8C every retired tab URL still resolves, to the section that owns it", () => {
   // The seven Phase 8A slugs, each landing where its content actually went.
   const expected: Record<string, string> = {
-    overview: "command",
-    paper: "command",
-    opportunities: "trades",
-    analytics: "trades",
-    capital: "capital",
-    sources: "settings",
-    live: "settings"
+    command: "accounts",
+    capital: "settings",
+    trades: "book",
+    overview: "accounts",
+    paper: "accounts",
+    opportunities: "book",
+    analytics: "activity",
+    sources: "venues",
+    live: "settings",
+    activity: "activity"
   };
   assert.deepEqual({ ...SHADOW_TAB_ALIASES }, expected);
   for (const [legacy, section] of Object.entries(expected)) {
@@ -272,7 +276,8 @@ await test("8C every retired tab URL still resolves, to the section that owns it
   }
   // A retired slug is recognised as such; a current one and junk are not.
   assert.equal(isLegacyShadowTab("overview"), true);
-  assert.equal(isLegacyShadowTab("command"), false);
+  assert.equal(isLegacyShadowTab("command"), true);
+  assert.equal(isLegacyShadowTab("accounts"), false);
   assert.equal(isLegacyShadowTab(null), false);
   assert.equal(isLegacyShadowTab(""), false);
 
@@ -301,21 +306,22 @@ await test("8A the tab lives in the URL so back, forward and refresh restore it"
 await test("8C every existing panel survives, in the section that now owns it", () => {
   const view = read("src/components/ShadowArbitrageView.tsx");
   const sectionTab: Array<[string, string]> = [
-    ["CommandCenter", "command"],
-    ["OverviewPanel", "command"],
-    ["ObservationHeader", "command"],
-    ["PaperExecution", "command"],
-    ["CapitalSimulator", "capital"],
-    ["OpportunitiesPanel", "trades"],
-    ["AnalyticsPanels", "trades"],
-    ["SourcesPanel", "settings"],
-    ["LiveReadiness", "settings"]
+    ["AccountsSection", "accounts"],
+    ["VenuesSection", "venues"],
+    ["BookSection", "book"],
+    ["ActivityDecisions", "activity"],
+    ["CapitalSimulator", "settings"],
+    ["OpportunitiesPanel", "book"],
+    ["AnalyticsPanels", "book"],
+    ["LiveReadiness", "settings"],
+    ["PaperSettings", "settings"]
   ];
   for (const [component, tab] of sectionTab) {
     assert.ok(view.includes(`<${component}`), `${component} must still be rendered`);
     const guard = view.lastIndexOf(`tab === "${tab}"`, view.indexOf(`<${component}`));
     assert.ok(guard > 0, `${component} must sit inside the ${tab} tab`);
   }
+  assert.ok(read("src/components/shadowArbitrage/VenuesSection.tsx").includes("<SourcesPanel"));
   // The drawer stays outside the panels so a selected row survives a tab change.
   assert.ok(view.includes("<OpportunityDrawer"));
   const drawerIndex = view.indexOf("<OpportunityDrawer");
@@ -798,7 +804,7 @@ await test("preview harness renders the production shell, not a rebuilt one", ()
   assert.ok(preview.includes("standalone"), "it boots the production bundle");
   // It navigates the real route; the tab is a parameter, defaulting to Overview.
   assert.ok(preview.includes("/shadow-arbitrage?tab=${shot.tab}"), "it navigates the real route");
-  assert.ok(preview.includes('process.env.PREVIEW_TABS ?? "command"'));
+  assert.ok(preview.includes("PREVIEW_TABS"));
   assert.ok(preview.includes("Page.captureScreenshot"), "a real browser takes the picture");
 
   // No substitute shell, sidebar, header or icon list may exist here.
@@ -1747,12 +1753,12 @@ await test("release version: one authoritative public field, valid package metad
   const pkg = JSON.parse(read("package.json")) as { version: string; private?: boolean };
 
   // The product's version is exactly what this release is called.
-  assert.equal(version.appVersion, "4.1.8.0");
+  assert.equal(version.appVersion, "4.1.9.0");
 
   // Four-part numbers are not SemVer, which is why they cannot live in
   // package.json: the production image validates it during `pnpm install`.
   const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?$/;
-  assert.equal(semver.test(version.appVersion), false, "4.1.8.0 is deliberately not SemVer");
+  assert.equal(semver.test(version.appVersion), false, "4.1.9.0 is deliberately not SemVer");
   assert.ok(semver.test(pkg.version), `package.json keeps valid SemVer, found ${pkg.version}`);
   assert.equal(pkg.version, version.packageMetadataVersion, "and the two stay in step");
   assert.equal(pkg.private, true, "the package is never published, so its version is metadata only");
@@ -2249,15 +2255,11 @@ await test("8C the Command Center answers the standing questions on one screen",
   }
 });
 
-await test("8C session create, start, pause and stop live in the Command Center", () => {
+await test("8C session create, start, pause and stop live under Accounts", () => {
   const view = read("src/components/ShadowArbitrageView.tsx");
-  // The lifecycle controls are passed into the Command Center, not another tab.
-  assert.ok(
-    view.includes(
-      "sessionControls={<PaperSimple parts={{ session: true, summary: false, ledger: false }} />}"
-    ),
-    "the session panel is the Command Center's control slot"
-  );
+  assert.ok(view.includes("<AccountsSection"), "Accounts owns capital state");
+  const accountsUi = read("src/components/shadowArbitrage/AccountsSection.tsx");
+  assert.ok(accountsUi.includes("session: true"), "session controls present");
 
   const paper = read("src/components/shadowArbitrage/PaperSimple.tsx");
   // Plain Persian for every step of the lifecycle.
@@ -2283,58 +2285,35 @@ await test("8C session create, start, pause and stop live in the Command Center"
     assert.equal(route.includes(`"${banned}"`), false, `no ${banned} action may exist`);
   }
 
-  // The ledger moved to Opportunities & Trades; the same component renders it.
-  assert.ok(
-    view.includes("<PaperSimple parts={{ session: false, summary: false, ledger: true }} />")
-  );
+  // Closed trades live under BookSection (ledger history), not a second shell.
+  assert.ok(view.includes("<BookSection"), "Book owns closed trades");
   assert.ok(paper.includes("export type PaperParts"), "the split is a declared contract");
 });
 
-await test("8C Settings & Safety is three URL-backed views, not one long table", () => {
+await test("4.1.9.0 five sections and Settings configuration only", () => {
   const tabs = read("src/components/shadowArbitrage/tabs.ts");
-  assert.ok(tabs.includes('id: "paper"'));
-  assert.ok(tabs.includes('id: "activity"'));
-  assert.ok(tabs.includes('id: "live"'));
-  assert.ok(tabs.includes("تنظیمات Paper"));
+  assert.ok(tabs.includes("سرمایه و حساب"));
+  assert.ok(tabs.includes("وضعیت صرافی‌ها"));
+  assert.ok(tabs.includes("سفارش‌ها و پوزیشن‌ها"));
   assert.ok(tabs.includes("فعالیت و تصمیم‌ها"));
-  assert.ok(tabs.includes("آمادگی اجرای واقعی"));
-  assert.ok(tabs.includes("parseShadowSettingsView"));
-
+  assert.ok(tabs.includes('id: "paper"'));
+  assert.ok(tabs.includes('id: "capital"'));
+  assert.ok(tabs.includes('id: "live"'));
   const view = read("src/components/ShadowArbitrageView.tsx");
-  assert.ok(view.includes('parseShadowSettingsView(searchParams.get("sv"))'));
-  assert.ok(view.includes('params.set("sv", next)'));
-  assert.ok(view.includes("<PaperSettings"));
+  assert.ok(view.includes("<AccountsSection"));
+  assert.ok(view.includes("<VenuesSection"));
+  assert.ok(view.includes("<BookSection"));
   assert.ok(view.includes("<ActivityDecisions"));
+  assert.ok(view.includes('tab === "activity"'));
   assert.ok(view.includes('settingsView === "paper"'));
-  assert.ok(view.includes('settingsView === "activity"'));
+  assert.ok(view.includes('settingsView === "capital"'));
   assert.ok(view.includes('settingsView === "live"'));
-
-  // Sources + LiveReadiness live under the live settings view, still on settings tab.
-  const live = view.indexOf("<LiveReadiness");
-  const liveViewGuard = view.lastIndexOf('settingsView === "live"', live);
-  assert.ok(liveViewGuard > 0 && liveViewGuard < live, "LiveReadiness sits under آمادگی اجرای واقعی");
-  const sources = view.indexOf("<SourcesPanel");
-  const sourcesGuard = view.lastIndexOf('settingsView === "live"', sources);
-  assert.ok(sourcesGuard > 0 && sourcesGuard < sources, "SourcesPanel sits under live readiness");
-
-  // Command Center still folds diagnostics that are not daily work.
-  const advancedSlot = view.slice(
-    view.indexOf("advanced={"),
-    view.indexOf("/>\n        ) : null}\n\n        {/* ── 2.")
-  );
-  for (const panel of ["ObservationHeader", "OverviewPanel", "PaperExecution"]) {
-    assert.ok(advancedSlot.includes(`<${panel}`), `${panel} belongs behind the command fold`);
-  }
-  assert.ok(view.includes("تشخیص‌های پیشرفته"), "the trades fold is still labelled in Persian");
-
-  // Nothing on the primary surface can arm or execute anything.
-  const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
-  for (const term of ["arm", "enable_live", "execute", "go_live", "placeOrder"]) {
-    assert.equal(cc.includes(`"${term}"`), false, `the Command Center must not offer ${term}`);
-  }
-  assert.ok(cc.includes("غیرمسلح"));
-  assert.ok(cc.includes("اجرای واقعی پیاده‌سازی نشده است"));
+  assert.ok(view.includes("<LiveReadiness"));
+  const acct = read("src/lib/shadowArbitrage/paper/accounting.ts");
+  assert.ok(acct.includes("buildPortfolioAccounting"));
+  assert.ok(acct.includes("openOrders: []"));
 });
+
 
 await test("4.1.8.0 Paper policy set is one atomic, fingerprinted decision", () => {
   const set = read("src/lib/shadowArbitrage/live/paperPolicySet.ts");
@@ -2789,16 +2768,12 @@ await test("8C capacity is computed once: no duplicate implementation exists", (
 
 /* ══ Phase 8D-B — the Paper Execution tab ════════════════════════════════════ */
 
-await test("8D-B the paper tab is one panel with the permanent banner", () => {
+await test("8D-B the shell keeps one permanent Paper/safety strip", () => {
+  const view = read("src/components/ShadowArbitrageView.tsx");
+  assert.ok(view.includes("sa-warning-compact"));
+  assert.ok(view.includes("SHADOW_WARNING_FA") || view.includes("DISARMED"));
   const pe = read("src/components/shadowArbitrage/PaperExecution.tsx");
   assert.ok(pe.includes('PAPER_BANNER_EN = "PAPER EXECUTION — NO REAL ORDERS OR TRANSFERS"'));
-  // Rendered unconditionally — not inside any status branch.
-  const banner = pe.slice(pe.indexOf("{PAPER_BANNER_EN}") - 400, pe.indexOf("{PAPER_BANNER_EN}"));
-  assert.equal(/\?\s*\($/.test(banner.trim()), false, "the banner is never conditional");
-
-  // One panel, not a competing second one: the view still mounts it once.
-  const view = read("src/components/ShadowArbitrageView.tsx");
-  assert.equal((view.match(/<PaperExecution/g) ?? []).length, 1);
 });
 
 await test("8D-B the session section shows identity, cycles and guarded controls", () => {

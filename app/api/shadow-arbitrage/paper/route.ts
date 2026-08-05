@@ -28,6 +28,11 @@ import {
   type VenueAllocation
 } from "@/lib/shadowArbitrage/paper/portfolio";
 import {
+  buildPortfolioAccounting,
+  tehranDayStartMs,
+  type AccountingFill
+} from "@/lib/shadowArbitrage/paper/accounting";
+import {
   DEFAULT_CAPITAL_TOMAN,
   buildOptimizedPlan,
   classifyAllVenues,
@@ -134,15 +139,17 @@ async function snapshot(reasonFilter: string | null = null) {
       candidates: [],
       reasonBreakdown: [],
       cycleSummaries: [],
-      stats: null
+      stats: null,
+      accounting: null
     };
   }
   const [balances, trades, transitions, stats, reasonBreakdown, candidates, cycleSummaries] =
     await Promise.all([
       loadPaperBalances(session.id),
-      loadPaperLedger(session.id, { outcome: "FILLED", limit: 200 }),
+      // Financial history is append-only and must not be capped by opportunity retention.
+      loadPaperLedger(session.id, { outcome: "FILLED", limit: 2_000 }),
       // Only state transitions are stored now, so this list is already compact.
-      loadPaperLedger(session.id, { outcome: "SKIPPED", limit: 100 }),
+      loadPaperLedger(session.id, { outcome: "SKIPPED", limit: 200 }),
       loadPaperStats(session.id),
       loadReasonBreakdown(session.id),
       loadCandidateStates(session.id, {
@@ -179,6 +186,7 @@ async function snapshot(reasonFilter: string | null = null) {
         sourceId: b.sourceId,
         irtToman: b.irtToman,
         usdt: microsToUsdt(b.usdtMicros),
+        usdtMicros: b.usdtMicros,
         buySettlement: st?.buy ?? { feeAsset: "UNKNOWN", debitMode: "UNKNOWN", provenance: "UNKNOWN" },
         sellSettlement: st?.sell ?? { feeAsset: "UNKNOWN", debitMode: "UNKNOWN", provenance: "UNKNOWN" }
       };
@@ -195,7 +203,12 @@ async function snapshot(reasonFilter: string | null = null) {
       opportunityCaptureRatePercent:
         evaluated > 0 ? Math.round((stats.filled / evaluated) * 10_000) / 100 : null,
       drift
-    }
+    },
+    /**
+     * Built later in GET once the mark price is known. Placeholder so callers
+     * always see the key even when the session is empty.
+     */
+    accounting: null as unknown
   };
 }
 
@@ -695,10 +708,66 @@ export async function GET(request: Request) {
     currentFingerprintsAvailable: true
   };
 
-  return new NextResponse(JSON.stringify(envelope({ ...snap, history, wizard, sizing, allocation })), {
-    status: 200,
-    headers: SHADOW_NO_STORE
-  });
+  /*
+   * Portfolio accounting for «سرمایه و حساب» and «سفارش‌ها و پوزیشن‌ها».
+   * Server-authoritative mark and as-of; open orders/positions are empty when
+   * the broker is immediate-fill — that is reported, never faked.
+   */
+  const asOf = new Date().toISOString();
+  const markForAccounting =
+    wizard.markPriceToman ?? snap.session?.valuationPriceToman ?? null;
+  const accounting = snap.session
+    ? buildPortfolioAccounting({
+        asOf,
+        initialCapitalToman: snap.session.totalCapitalToman,
+        markPriceToman: markForAccounting,
+        balances: sizingBalances,
+        opening: snap.session.openingAllocations ?? [],
+        fills: (snap.trades ?? []).map(
+          (t): AccountingFill => ({
+            id: t.id,
+            lifecycleId: t.lifecycleId,
+            routeKey: t.routeKey,
+            buySourceId: t.buySourceId,
+            sellSourceId: t.sellSourceId,
+            sizeUsdt: t.sizeUsdt,
+            buyVwapToman: t.buyVwapToman,
+            sellVwapToman: t.sellVwapToman,
+            buyNotionalToman: t.buyNotionalToman,
+            sellNotionalToman: t.sellNotionalToman,
+            feeTomanTotal: t.feeTomanTotal,
+            feeUsdtMicrosTotal: t.feeUsdtMicrosTotal,
+            sellFeeValueToman: t.sellFeeValueToman,
+            grossSpreadToman: t.grossSpreadToman,
+            cashPnlIrtToman: t.cashPnlIrtToman,
+            economicNetPnlToman: t.economicNetPnlToman,
+            riskAdjustedPnlToman: t.riskAdjustedPnlToman,
+            slippageBufferToman: t.slippageBufferToman,
+            markPriceToman: t.markPriceToman,
+            occurredAt: t.occurredAt,
+            outcome: "FILLED"
+          })
+        ),
+        todayStartMs: tehranDayStartMs(Date.parse(asOf))
+      })
+    : null;
+
+  return new NextResponse(
+    JSON.stringify(
+      envelope({
+        ...snap,
+        accounting,
+        history,
+        wizard,
+        sizing,
+        allocation
+      })
+    ),
+    {
+      status: 200,
+      headers: SHADOW_NO_STORE
+    }
+  );
 }
 
 /**

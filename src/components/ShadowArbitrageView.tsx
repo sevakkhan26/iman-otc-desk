@@ -6,23 +6,20 @@ import { DeskPageHeader } from "@/components/DeskPageHeader";
 import { AnalyticsPanels } from "@/components/shadowArbitrage/AnalyticsPanels";
 import { CapitalSimulator } from "@/components/shadowArbitrage/CapitalSimulator";
 import {
-  CommandCenter,
   type CommandBalance,
   type CommandSession,
   type ProposalView,
   type SizingView
 } from "@/components/shadowArbitrage/CommandCenter";
-import { ObservationHeader } from "@/components/shadowArbitrage/ObservationHeader";
 import { LiveReadiness } from "@/components/shadowArbitrage/LiveReadiness";
 import { PaperSettings } from "@/components/shadowArbitrage/PaperSettings";
 import { ActivityDecisions } from "@/components/shadowArbitrage/ActivityDecisions";
+import { AccountsSection, type AccountsAccounting } from "@/components/shadowArbitrage/AccountsSection";
+import { BookSection } from "@/components/shadowArbitrage/BookSection";
+import { VenuesSection } from "@/components/shadowArbitrage/VenuesSection";
 import { OpportunitiesPanel } from "@/components/shadowArbitrage/OpportunitiesPanel";
 import { OpportunityDrawer } from "@/components/shadowArbitrage/OpportunityDrawer";
-import { OverviewPanel } from "@/components/shadowArbitrage/OverviewPanel";
-import { PaperExecution } from "@/components/shadowArbitrage/PaperExecution";
-import { PaperSimple } from "@/components/shadowArbitrage/PaperSimple";
 import { ShadowTabs } from "@/components/shadowArbitrage/ShadowTabs";
-import { SourcesPanel } from "@/components/shadowArbitrage/SourcesPanel";
 import { SHADOW_WARNING_FA } from "@/components/shadowArbitrage/labels";
 import {
   evidenceFor,
@@ -63,6 +60,7 @@ type PaperPayload = {
   balances?: CommandBalance[];
   trades?: PaperLedgerRow[];
   transitions?: PaperLedgerRow[];
+  accounting?: AccountsAccounting | null;
   /** One compact row per evaluated cycle — the Activity view's own history. */
   cycleSummaries?: Array<{
     occurredAt: string;
@@ -73,7 +71,41 @@ type PaperPayload = {
     reasonCounts: Record<string, number>;
   }>;
   wizard?: { markPriceToman: number | null };
-  sizing?: SizingView;
+  sizing?: SizingView & {
+    venueCapacities?: Array<{
+      sourceId: string;
+      nameFa?: string;
+      marketModel?: string;
+      buy?: {
+        capacityUsdtMicros: number | null;
+        limitingCap?: string | null;
+        reasonFa?: string | null;
+      };
+      sell?: {
+        capacityUsdtMicros: number | null;
+        limitingCap?: string | null;
+        reasonFa?: string | null;
+      };
+    }>;
+    venueSemantics?: {
+      matrix?: Array<{
+        sourceId: string;
+        nameFa?: string;
+        dataType?: string;
+        kycComplete?: boolean;
+        accountEligible?: boolean;
+        feeConfirmed?: boolean;
+        buyLegUsable?: boolean;
+        sellLegUsable?: boolean;
+        participates?: boolean;
+        blockerFa?: string | null;
+        buyCapacityUsdtMicros?: number | null;
+        sellCapacityUsdtMicros?: number | null;
+        buyLimiter?: string | null;
+        sellLimiter?: string | null;
+      }>;
+    };
+  };
   allocation?: {
     proposal: ProposalView | null;
     decision: { decision: string; detailFa: string; decidedBy: string; decidedAt: string } | null;
@@ -430,13 +462,14 @@ export function ShadowArbitrageView() {
         lastUpdated={matrix?.serverNow ? Date.parse(matrix.serverNow) : null}
       />
 
-      {/* Permanent, compact, never hidden — on every tab. */}
-      {/* Material from the shared .glass-control primitive; amber is a tint. */}
+      {/* One compact global safety strip — Paper only, never real orders. */}
       <div className="sa-warning sa-warning-compact glass-control" role="status">
         <span className="sa-warning-icon" aria-hidden="true">
           ⚠
         </span>
-        <span>{SHADOW_WARNING_FA}</span>
+        <span>
+          {SHADOW_WARNING_FA} · فقط Paper · سفارش واقعی و انتقال وجه وجود ندارد · DISARMED
+        </span>
       </div>
 
       <ShadowTabs active={tab} onSelect={selectTab} badges={badges} />
@@ -451,106 +484,70 @@ export function ShadowArbitrageView() {
         tabIndex={-1}
         aria-label={shadowTabLabel(tab)}
       >
-        {/* ── 1. Command Center — the landing section ───────────────────── */}
-        {tab === "command" ? (
-          <CommandCenter
+        {tab === "accounts" ? (
+          <AccountsSection
+            accounting={paper?.accounting ?? null}
+            session={paper?.session ?? null}
             loading={loading}
-            error={error}
-            stale={stale}
-            observation={observation}
-            worker={worker}
-            opportunities={allOpportunities}
-            paperEvidence={paperEvidence}
-            sources={sources}
-            portfolio={portfolio}
-            sizing={paper?.sizing ?? null}
-            accounts={accountsSummary}
-            readiness={readinessSummary}
-            serverNow={serverNow}
-            onRefresh={() => void load(true)}
-            onOpenSection={selectTab}
-            proposal={proposal}
-            proposalDecision={paper?.allocation?.decision ?? null}
-            proposalBusy={proposalBusy}
-            scenarioCaps={scenarioCaps}
-            onScenarioCapChange={(key, value) =>
-              setScenarioCaps((prev) => ({ ...prev, [key]: value }))
-            }
-            applyArmed={applyArmed}
-            onArmApply={setApplyArmed}
-            onProposeAllocation={() => void proposeAllocation()}
-            onApplyAllocation={() => {
-              setApplyArmed(false);
-              void applyAllocation();
-            }}
-            /* Create, start, pause, resume and end the virtual session. */
-            sessionControls={<PaperSimple parts={{ session: true, summary: false, ledger: false }} />}
-            /*
-             * Diagnostics, gates, policies and evidence — everything an
-             * operator does not need on the first screen — behind one fold.
-             */
-            advanced={
-              <>
-                <ObservationHeader
-                  observation={observation}
-                  worker={worker}
-                  runStats={obs?.runStats ?? null}
-                  dataCoveragePercent={analytics?.dataCoveragePercent ?? null}
-                  serverNow={serverNow}
-                  loading={loading}
-                  onPause={() => void control("pause")}
-                  onResume={() => void control("resume")}
-                />
-                <OverviewPanel
-                  loading={loading}
-                  error={error}
-                  stale={stale}
-                  observation={observation}
-                  worker={worker}
-                  runStats={obs?.runStats ?? null}
-                  analytics={analytics}
-                  opportunities={allOpportunities}
-                  sources={sources}
-                  serverNow={serverNow}
-                  paper={paperSummary}
-                  readiness={readinessSummary}
-                  accounts={accountsSummary}
-                  onRefresh={() => void load(true)}
-                  onOpenTab={selectTab}
-                />
-                <PaperExecution />
-              </>
-            }
+            serverNow={matrix?.serverNow ?? serverNow}
           />
         ) : null}
 
-        {/* ── 2. Capital & Allocation ───────────────────────────────────── */}
-        {tab === "capital" ? <CapitalSimulator /> : null}
+        {tab === "venues" ? (
+          <VenuesSection
+            certifications={obs?.certifications ?? []}
+            health={obs?.sourceHealth ?? []}
+            snapshots={sources}
+            venues={accounts?.venues ?? []}
+            feeEvidence={accounts?.feeEvidence ?? []}
+            auditHistory={accounts?.auditHistory ?? []}
+            feeReverifyDays={accounts?.feeReverifyDays ?? null}
+            pollIntervalMs={pollIntervalMs}
+            loading={loading}
+            error={error}
+            onReload={() => void load(false)}
+            venueCapacities={paper?.sizing?.venueCapacities ?? []}
+            venueSemantics={paper?.sizing?.venueSemantics?.matrix ?? null}
+            routes={paper?.sizing?.routes ?? []}
+            serverNow={matrix?.serverNow ?? null}
+          />
+        ) : null}
 
-        {/* ── 3. Opportunities & Trades ─────────────────────────────────── */}
-        {tab === "trades" ? (
+        {tab === "book" ? (
           <div className="sa-stack">
-            <OpportunitiesPanel
-              opportunities={allOpportunities}
-              sources={sources}
-              sizes={matrix?.sizes ?? [5, 10, 20, 25]}
-              venues={accounts?.venues ?? []}
-              paperLedger={paperLedger}
-              paperSessionPresent={Boolean(paper?.session)}
-              pollIntervalMs={pollIntervalMs}
+            <BookSection
+              openOrdersNoteFa={
+                paper?.accounting?.openOrdersNoteFa ??
+                "کارگزار کاغذی فعلی سفارش باز نگه نمی‌دارد."
+              }
+              openPositionsNoteFa={
+                paper?.accounting?.openPositionsNoteFa ??
+                "پوزیشن باز فقط وقتی نمایش داده می‌شود که در دفتر ثبت شده باشد."
+              }
+              closedTrades={(paper?.trades ?? []) as never}
               loading={loading}
-              stale={stale}
-              error={error}
-              onSelect={setSelected}
             />
-            {/* The immutable ledger of what the paper engine actually did. */}
-            <PaperSimple parts={{ session: false, summary: false, ledger: true }} />
             <details className="panel sa-panel sa-advanced-details">
               <summary className="panel-header sa-panel-header">
-                <span className="panel-title">تشخیص‌های پیشرفته</span>
-                <span className="sa-panel-note">تحلیل بازهٔ پایش، مسیرها و هزینه‌ها</span>
+                <span className="panel-title">فرصت‌های مشاهده‌شده</span>
+                <span className="sa-panel-note">
+                  مشاهده — نه سفارش؛ نردبان ثابت تاریخی فقط تشخیص است
+                </span>
               </summary>
               <div className="panel-body">
+                <OpportunitiesPanel
+                  opportunities={allOpportunities}
+                  sources={sources}
+                  sizes={matrix?.sizes ?? [5, 10, 20, 25]}
+                  venues={accounts?.venues ?? []}
+                  paperLedger={paperLedger}
+                  paperSessionPresent={Boolean(paper?.session)}
+                  pollIntervalMs={pollIntervalMs}
+                  loading={loading}
+                  stale={stale}
+                  error={error}
+                  onSelect={setSelected}
+                />
                 <AnalyticsPanels
                   analytics={analytics}
                   costRecords={obs?.costRecords ?? []}
@@ -561,19 +558,24 @@ export function ShadowArbitrageView() {
           </div>
         ) : null}
 
-        {/* ── 4. Settings & Safety ──────────────────────────────────────── */}
+        {tab === "activity" ? (
+          <ActivityDecisions
+            session={paper?.session ?? null}
+            ledger={(paper?.trades ?? []) as never}
+            cycleSummaries={(paper?.cycleSummaries ?? []) as never}
+            routes={paper?.sizing?.routes ?? []}
+            sizingPolicy={paper?.sizing?.policy ?? null}
+            sources={sources}
+            serverNow={matrix?.serverNow ?? null}
+            loading={loading}
+          />
+        ) : null}
+
         {tab === "settings" ? (
           <div className="sa-stack">
-            {/*
-              Three views, not one long table. They are read at different times
-              by people asking different questions: what the Paper Broker is
-              configured with, what it actually decided, and what would have to
-              be true before real execution could ever exist. Mixing them was
-              what made configuring the desk feel like six unrelated chores.
-            */}
             <nav
               className="sa-segmented sa-segmented-lg glass-tabbar sa-settings-seg"
-              aria-label="نمای تنظیمات و ایمنی"
+              aria-label="زیربخش تنظیمات"
             >
               {SHADOW_SETTINGS_VIEWS.map((v) => (
                 <button
@@ -590,44 +592,9 @@ export function ShadowArbitrageView() {
                 </button>
               ))}
             </nav>
-
             {settingsView === "paper" ? <PaperSettings /> : null}
-
-            {settingsView === "activity" ? (
-              <ActivityDecisions
-                session={paper?.session ?? null}
-                ledger={(paper?.trades ?? []) as never}
-                cycleSummaries={(paper?.cycleSummaries ?? []) as never}
-                routes={paper?.sizing?.routes ?? []}
-                sizingPolicy={paper?.sizing?.policy ?? null}
-                sources={sources}
-                serverNow={matrix?.serverNow ?? null}
-                loading={loading}
-              />
-            ) : null}
-
-            {settingsView === "live" ? (
-              <div className="sa-stack">
-                {/*
-                  Source health, accounts and fee evidence belong with the live
-                  gates: they are the evidence those gates are waiting on.
-                */}
-                <SourcesPanel
-                  certifications={obs?.certifications ?? []}
-                  health={obs?.sourceHealth ?? []}
-                  snapshots={sources}
-                  venues={accounts?.venues ?? []}
-                  feeEvidence={accounts?.feeEvidence ?? []}
-                  auditHistory={accounts?.auditHistory ?? []}
-                  feeReverifyDays={accounts?.feeReverifyDays ?? null}
-                  pollIntervalMs={pollIntervalMs}
-                  loading={loading}
-                  error={error}
-                  onReload={() => void load(false)}
-                />
-                <LiveReadiness />
-              </div>
-            ) : null}
+            {settingsView === "capital" ? <CapitalSimulator /> : null}
+            {settingsView === "live" ? <LiveReadiness /> : null}
           </div>
         ) : null}
       </div>

@@ -7768,6 +7768,195 @@ table th {
 }
 
 
+/* ── 4.1.9.0 five-section capital / venues / book ───────────────────────── */
+.sa-acct-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin: 0;
+}
+.sa-acct-grid-sm {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 12px;
+}
+.sa-acct-metric dt {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.sa-acct-metric dd {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.sa-acct-recon {
+  margin-top: 12px;
+}
+.sa-acct-venues {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+/* Venue cards reuse the shared .panel glass surface — no warm/opaque fills. */
+.sa-acct-venue.panel {
+  margin: 0;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-xl, 22px);
+}
+.sa-acct-venue-head.panel-header {
+  flex-wrap: wrap;
+}
+.sa-acct-venue-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.sa-acct-venue-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+}
+.sa-acct-venue-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin: 0;
+}
+.sa-acct-venue-grid dt {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.sa-acct-venue-grid dd {
+  margin: 0;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.sa-depth-block {
+  border-top: 1px solid var(--line-soft);
+  padding-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+.sa-depth-block-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+.sa-depth-legend {
+  margin: 0;
+  line-height: 1.7;
+}
+.sa-depth-sides {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.sa-depth-side {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md, 14px);
+  padding: 10px;
+  min-width: 0;
+}
+.sa-depth-side-title {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.sa-depth-side-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  margin: 0;
+}
+.sa-depth-side-grid dt {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.sa-depth-side-grid dd {
+  margin: 0;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.sa-depth-side-full {
+  grid-column: 1 / -1;
+}
+.sa-depth-unavail {
+  margin: 0 0 6px;
+}
+.sa-depth-details {
+  margin-top: 4px;
+}
+.sa-venue-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+.sa-venue-card {
+  /* Same shared panel glass as capital cards — no opaque custom fill. */
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-xl, 22px);
+  padding: 12px;
+  min-width: 0;
+  height: 100%;
+}
+.sa-venue-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.sa-venue-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 10px;
+  margin: 0;
+}
+.sa-venue-card-grid dt {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.sa-venue-card-grid dd {
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.sa-venue-detail {
+  margin-top: 8px;
+}
+@media (max-width: 1024px) {
+  .sa-acct-grid,
+  .sa-acct-venues,
+  .sa-venue-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 768px) {
+  .sa-acct-grid,
+  .sa-acct-grid-sm,
+  .sa-acct-venues,
+  .sa-venue-grid,
+  .sa-acct-venue-grid,
+  .sa-venue-card-grid,
+  .sa-depth-sides {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* ── Shadow Arbitrage · Phase 8C command center ───────────────────────────── */
 /*
  * LAYOUT ONLY — the same contract as Phase 8A and 8B above.
@@ -8586,120 +8775,6 @@ table th {
 @media (max-width: 380px) {
   .sa-ps-card-grid,
   .sa-ad-card-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-/* ── 4.1.9.0 five-section capital / venues / book ───────────────────────── */
-.sa-acct-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px 14px;
-  margin: 0;
-}
-.sa-acct-grid-sm {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin-top: 12px;
-}
-.sa-acct-metric dt {
-  margin: 0;
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.6;
-}
-.sa-acct-metric dd {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-.sa-acct-recon {
-  margin-top: 12px;
-}
-.sa-acct-venues {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-.sa-acct-venue {
-  border: 1px solid var(--line-soft);
-  border-radius: var(--radius-md, 14px);
-  padding: 10px 12px;
-  min-width: 0;
-}
-.sa-acct-venue-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-.sa-acct-venue-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 10px;
-  margin: 0;
-}
-.sa-acct-venue-grid dt {
-  margin: 0;
-  font-size: 12px;
-  color: var(--muted);
-}
-.sa-acct-venue-grid dd {
-  margin: 0;
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-}
-.sa-venue-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-.sa-venue-card {
-  border: 1px solid var(--line-soft);
-  border-radius: var(--radius-md, 14px);
-  padding: 10px 12px;
-  min-width: 0;
-}
-.sa-venue-card-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-.sa-venue-card-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 10px;
-  margin: 0;
-}
-.sa-venue-card-grid dt {
-  margin: 0;
-  font-size: 12px;
-  color: var(--muted);
-}
-.sa-venue-card-grid dd {
-  margin: 0;
-  font-size: 13px;
-  overflow-wrap: anywhere;
-}
-.sa-venue-detail {
-  margin-top: 8px;
-}
-@media (max-width: 1024px) {
-  .sa-acct-grid,
-  .sa-acct-venues,
-  .sa-venue-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-@media (max-width: 768px) {
-  .sa-acct-grid,
-  .sa-acct-grid-sm,
-  .sa-acct-venues,
-  .sa-venue-grid,
-  .sa-acct-venue-grid,
-  .sa-venue-card-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 }

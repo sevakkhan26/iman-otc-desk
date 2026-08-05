@@ -76,8 +76,38 @@ export type AccountsAccounting = {
   openPositionsNoteFa?: string;
 };
 
+export type VenueDepthSideView = {
+  bestPriceToman: number | null;
+  rawDepthUsdt: number | null;
+  rawDepthToman: number | null;
+  levelsAccepted: number | null;
+  levelsExcluded: number | null;
+  smartSizeVwapToman: number | null;
+  usableCapacityUsdt: number | null;
+  usableCapacityToman: number | null;
+  limitingKey: string | null;
+  limitingLabelFa: string | null;
+  reasonFa: string | null;
+  unavailable: boolean;
+  unavailableFa: string | null;
+};
+
+export type VenueDepthCardView = {
+  sourceId: string;
+  nameFa: string | null;
+  marketModel: string;
+  asOf: string;
+  snapshotAgeMs: number | null;
+  buy: VenueDepthSideView;
+  sell: VenueDepthSideView;
+  smartRecommendedUsdt: number | null;
+  smartRouteKey: string | null;
+  smartBindingConstraint: string | null;
+};
+
 type Props = {
   accounting: AccountsAccounting | null;
+  venueDepthCards?: VenueDepthCardView[] | null;
   session: {
     id: string;
     name: string;
@@ -106,8 +136,117 @@ function Metric({
   );
 }
 
-export function AccountsSection({ accounting, session, loading, serverNow }: Props) {
+function DepthSide({
+  title,
+  side
+}: {
+  title: string;
+  side: VenueDepthSideView;
+}) {
+  const showNa = (v: number | null | undefined, fmt: (n: number) => React.ReactNode) => {
+    if (v === null || v === undefined) {
+      return (
+        <span className="sa-unknown" title={side.unavailableFa ?? side.reasonFa ?? undefined}>
+          {side.unavailable ? "ناموجود" : "قابل محاسبه نیست"}
+        </span>
+      );
+    }
+    return fmt(v);
+  };
+
+  return (
+    <div className="sa-depth-side">
+      <h4 className="sa-depth-side-title">{title}</h4>
+      {side.unavailable && side.unavailableFa ? (
+        <p className="sa-sub sa-depth-unavail">{side.unavailableFa}</p>
+      ) : null}
+      <dl className="sa-depth-side-grid">
+        <div>
+          <dt>بهترین قیمت</dt>
+          <dd>
+            {showNa(side.bestPriceToman, (n) => (
+              <TomanAmount value={n} />
+            ))}
+          </dd>
+        </div>
+        <div>
+          <dt>عمق خام (USDT)</dt>
+          <dd>
+            {showNa(side.rawDepthUsdt, (n) => (
+              <Bidi>{toFaDigits(n.toFixed(4))}</Bidi>
+            ))}
+          </dd>
+        </div>
+        <div>
+          <dt>عمق خام (تومان)</dt>
+          <dd>
+            {showNa(side.rawDepthToman, (n) => (
+              <TomanAmount value={n} />
+            ))}
+          </dd>
+        </div>
+        <div>
+          <dt>سطوح پذیرفته</dt>
+          <dd>
+            {showNa(side.levelsAccepted, (n) => (
+              <Bidi>{toFaDigits(n)}</Bidi>
+            ))}
+            {side.levelsExcluded !== null && side.levelsExcluded > 0 ? (
+              <span className="sa-sub">
+                {" "}
+                (خارج از لغزش: <Bidi>{toFaDigits(side.levelsExcluded)}</Bidi>)
+              </span>
+            ) : null}
+          </dd>
+        </div>
+        <div>
+          <dt>VWAP حجم هوشمند</dt>
+          <dd>
+            {showNa(side.smartSizeVwapToman, (n) => (
+              <TomanAmount value={n} />
+            ))}
+          </dd>
+        </div>
+        <div>
+          <dt>ظرفیت قابل استفاده</dt>
+          <dd>
+            {showNa(side.usableCapacityUsdt, (n) => (
+              <>
+                <Bidi>{toFaDigits(n.toFixed(4))}</Bidi> USDT
+                {side.usableCapacityToman !== null ? (
+                  <>
+                    {" "}
+                    · <TomanAmount value={side.usableCapacityToman} />
+                  </>
+                ) : null}
+              </>
+            ))}
+          </dd>
+        </div>
+        <div className="sa-depth-side-full">
+          <dt>محدودکننده</dt>
+          <dd className="sa-sub">
+            {side.limitingLabelFa ?? side.reasonFa ?? DASH}
+          </dd>
+        </div>
+      </dl>
+    </div>
+  );
+}
+
+export function AccountsSection({
+  accounting,
+  venueDepthCards,
+  session,
+  loading,
+  serverNow
+}: Props) {
   const [feeWindow, setFeeWindow] = useState<"today" | "7d" | "30d" | "lifetime">("lifetime");
+  const depthById = useMemo(() => {
+    const m = new Map<string, VenueDepthCardView>();
+    for (const c of venueDepthCards ?? []) m.set(c.sourceId, c);
+    return m;
+  }, [venueDepthCards]);
 
   const feeTrades = useMemo(() => {
     if (!accounting) return [];
@@ -144,11 +283,41 @@ export function AccountsSection({ accounting, session, loading, serverNow }: Pro
           <div className="panel-body">
             <p className="sa-sub">
               هنوز نشست کاغذی فعالی نیست. ایجاد و شروع نشست از «تنظیمات ← سرمایه و
-              تخصیص» انجام می‌شود.
+              تخصیص» انجام می‌شود. عمق بازار زیر، از همان چرخهٔ جمع‌آوری خوانده می‌شود.
             </p>
             <PaperSimple parts={{ session: true, summary: false, ledger: false }} />
           </div>
         </section>
+        {(venueDepthCards?.length ?? 0) > 0 ? (
+          <section className="panel sa-panel" aria-label="عمق بازار بدون نشست">
+            <div className="panel-header sa-panel-header">
+              <h3 className="panel-title">عمق و ظرفیت بازار (بدون نشست)</h3>
+              <div className="sa-panel-note">موجودی صفر است تا نشست باز شود</div>
+            </div>
+            <div className="panel-body sa-acct-venues">
+              {(venueDepthCards ?? []).map((depth) => (
+                <article key={depth.sourceId} className="panel sa-panel sa-acct-venue">
+                  <header className="sa-acct-venue-head panel-header sa-panel-header">
+                    <div>
+                      <strong className="panel-title">{depth.nameFa ?? depth.sourceId}</strong>
+                      <span className="sa-ps-key">{depth.sourceId}</span>
+                    </div>
+                    <span className="sa-chip sa-chip-sm sa-chip-muted">بدون موجودی نشست</span>
+                  </header>
+                  <div className="panel-body sa-acct-venue-body">
+                    <div className="sa-depth-block" aria-label="عمق و ظرفیت بازار">
+                      <div className="sa-depth-block-title">عمق و ظرفیت بازار</div>
+                      <div className="sa-depth-sides">
+                        <DepthSide title="خرید از صرافی" side={depth.buy} />
+                        <DepthSide title="فروش به صرافی" side={depth.sell} />
+                      </div>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        ) : null}
       </div>
     );
   }
@@ -243,56 +412,142 @@ export function AccountsSection({ accounting, session, loading, serverNow }: Pro
       <section className="panel sa-panel" aria-label="موجودی مجازی صرافی‌ها">
         <div className="panel-header sa-panel-header">
           <h3 className="panel-title">موجودی مجازی هر صرافی</h3>
-          <div className="sa-panel-note">آزاد / رزرو / درگیر — کارگزار فعلی رزرو سفارش ندارد</div>
+          <div className="sa-panel-note">
+            موجودی کاغذی ≠ عمق بازار · ظرفیت = min(عمق، موجودی، سیاست‌ها)
+          </div>
         </div>
         <div className="panel-body sa-acct-venues">
-          {(a?.venues ?? []).map((v) => (
-            <article key={v.sourceId} className="sa-acct-venue glass-control">
-              <header className="sa-acct-venue-head">
-                <strong>{v.sourceId}</strong>
-                <span className="sa-chip sa-chip-sm sa-chip-muted">کاغذی</span>
-              </header>
-              <dl className="sa-acct-venue-grid">
-                <div>
-                  <dt>IRT</dt>
-                  <dd>
-                    <TomanAmount value={v.irtToman} />
-                  </dd>
-                </div>
-                <div>
-                  <dt>USDT</dt>
-                  <dd>
-                    <Bidi>{toFaDigits(v.usdt.toFixed(4))}</Bidi>
-                  </dd>
-                </div>
-                <div>
-                  <dt>ارزش</dt>
-                  <dd>
-                    {v.valuationToman !== null ? (
-                      <TomanAmount value={v.valuationToman} />
-                    ) : (
-                      DASH
-                    )}
-                  </dd>
-                </div>
-                <div>
-                  <dt>آزاد IRT / USDT</dt>
-                  <dd className="sa-sub">
-                    <TomanAmount value={v.freeIrtToman} /> ·{" "}
-                    <Bidi>{toFaDigits((v.freeUsdtMicros / 1e6).toFixed(4))}</Bidi>
-                  </dd>
-                </div>
-                <div>
-                  <dt>رزرو / درگیر</dt>
-                  <dd className="sa-sub">
-                    <Bidi>{toFaDigits(v.reservedIrtToman)}</Bidi> ·{" "}
-                    <Bidi>{toFaDigits(v.committedIrtToman)}</Bidi>
-                  </dd>
-                </div>
-              </dl>
-            </article>
-          ))}
-          {!a?.venues?.length ? <p className="sa-sub">موجودی ثبت نشده است.</p> : null}
+          {(() => {
+            /*
+             * Prefer accounting venues (with balances). If the session has none
+             * yet, still render depth cards so market depth is never hidden
+             * behind an empty balance state.
+             */
+            const balRows =
+              a?.venues?.length
+                ? a.venues
+                : (venueDepthCards ?? []).map((d) => ({
+                    sourceId: d.sourceId,
+                    irtToman: 0,
+                    usdt: 0,
+                    valuationToman: null as number | null,
+                    freeIrtToman: 0,
+                    freeUsdtMicros: 0,
+                    reservedIrtToman: 0,
+                    reservedUsdtMicros: 0,
+                    committedIrtToman: 0,
+                    committedUsdtMicros: 0,
+                    openingIrtToman: 0,
+                    openingUsdtMicros: 0
+                  }));
+            if (!balRows.length) {
+              return <p className="sa-sub">موجودی و عمق این چرخه در دسترس نیست.</p>;
+            }
+            return balRows.map((v) => {
+              const depth = depthById.get(v.sourceId);
+              return (
+                <article key={v.sourceId} className="panel sa-panel sa-acct-venue">
+                  <header className="sa-acct-venue-head panel-header sa-panel-header">
+                    <div>
+                      <strong className="panel-title">
+                        {depth?.nameFa ?? v.sourceId}
+                      </strong>
+                      <span className="sa-ps-key">{v.sourceId}</span>
+                    </div>
+                    <div className="sa-acct-venue-chips">
+                      <span className="sa-chip sa-chip-sm sa-chip-muted">موجودی کاغذی</span>
+                      {depth?.snapshotAgeMs !== null && depth?.snapshotAgeMs !== undefined ? (
+                        <span className="sa-chip sa-chip-sm sa-chip-muted">
+                          سن: <Bidi>{toFaDigits(Math.round(depth.snapshotAgeMs / 1000))}</Bidi>s
+                        </span>
+                      ) : null}
+                    </div>
+                  </header>
+                  <div className="panel-body sa-acct-venue-body">
+                    <dl className="sa-acct-venue-grid" aria-label="موجودی">
+                      <div>
+                        <dt>موجودی IRT</dt>
+                        <dd>
+                          <TomanAmount value={v.irtToman} />
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>موجودی USDT</dt>
+                        <dd>
+                          <Bidi>{toFaDigits(v.usdt.toFixed(4))}</Bidi>
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>ارزش کل</dt>
+                        <dd>
+                          {v.valuationToman !== null ? (
+                            <TomanAmount value={v.valuationToman} />
+                          ) : (
+                            DASH
+                          )}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>آزاد IRT · USDT</dt>
+                        <dd className="sa-sub">
+                          <TomanAmount value={v.freeIrtToman} /> ·{" "}
+                          <Bidi>{toFaDigits((v.freeUsdtMicros / 1e6).toFixed(4))}</Bidi>
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>رزرو · درگیر</dt>
+                        <dd className="sa-sub">
+                          <Bidi>{toFaDigits(v.reservedIrtToman)}</Bidi> ·{" "}
+                          <Bidi>{toFaDigits(v.committedIrtToman)}</Bidi>
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>حجم پیشنهادی (SMART)</dt>
+                        <dd>
+                          {depth?.smartRecommendedUsdt !== null &&
+                          depth?.smartRecommendedUsdt !== undefined ? (
+                            <Bidi>{toFaDigits(depth.smartRecommendedUsdt.toFixed(4))} USDT</Bidi>
+                          ) : (
+                            <span className="sa-unknown">—</span>
+                          )}
+                          {depth?.smartBindingConstraint ? (
+                            <span className="sa-reason">{depth.smartBindingConstraint}</span>
+                          ) : null}
+                        </dd>
+                      </div>
+                    </dl>
+
+                    <div className="sa-depth-block" aria-label="عمق و ظرفیت بازار">
+                      <div className="sa-depth-block-title">عمق و ظرفیت بازار</div>
+                      <p className="sa-sub sa-depth-legend">
+                        عمق = نقدینگی دفتر در پنجرهٔ لغزش · ظرفیت = پس از موجودی و سقف‌های سیاست
+                      </p>
+                      {depth ? (
+                        <div className="sa-depth-sides">
+                          <DepthSide title="خرید از صرافی" side={depth.buy} />
+                          <DepthSide title="فروش به صرافی" side={depth.sell} />
+                        </div>
+                      ) : (
+                        <p className="sa-sub">
+                          عمق این چرخه در دسترس نیست — موجودی بالا موجودی کاغذی است، نه نقدینگی
+                          بازار.
+                        </p>
+                      )}
+                      {depth ? (
+                        <details className="sa-advanced-details sa-depth-details">
+                          <summary className="sa-panel-note">شواهد فنی این کارت</summary>
+                          <p className="sa-sub">
+                            مدل: {depth.marketModel} · as-of: {formatTehran(depth.asOf)}
+                            {depth.smartRouteKey ? ` · مسیر: ${depth.smartRouteKey}` : ""}
+                          </p>
+                        </details>
+                      ) : null}
+                    </div>
+                  </div>
+                </article>
+              );
+            });
+          })()}
         </div>
       </section>
 

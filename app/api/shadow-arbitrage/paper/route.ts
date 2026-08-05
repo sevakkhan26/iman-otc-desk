@@ -32,6 +32,7 @@ import {
   tehranDayStartMs,
   type AccountingFill
 } from "@/lib/shadowArbitrage/paper/accounting";
+import { buildVenueDepthCard } from "@/lib/shadowArbitrage/paper/venueDepthView";
 import {
   DEFAULT_CAPITAL_TOMAN,
   buildOptimizedPlan,
@@ -740,8 +741,8 @@ export async function GET(request: Request) {
             sellFeeValueToman: t.sellFeeValueToman,
             grossSpreadToman: t.grossSpreadToman,
             cashPnlIrtToman: t.cashPnlIrtToman,
-            economicNetPnlToman: t.economicNetPnlToman,
             riskAdjustedPnlToman: t.riskAdjustedPnlToman,
+            economicNetPnlToman: t.economicNetPnlToman,
             slippageBufferToman: t.slippageBufferToman,
             markPriceToman: t.markPriceToman,
             occurredAt: t.occurredAt,
@@ -752,11 +753,77 @@ export async function GET(request: Request) {
       })
     : null;
 
+  /*
+   * Per-venue market depth for the capital cards — same cycle as sizing and
+   * venueCapacities. One snapshot map; no extra network fetch.
+   */
+  const maxSlippagePolicy = policies.find((p) => p.definition.key === "max_slippage_bps");
+  const maxSlippageBps = maxSlippagePolicy?.configured
+    ? ((maxSlippagePolicy.value as number) ?? null)
+    : null;
+  const smartByVenue = new Map<
+    string,
+    { sizeUsdt: number; routeKey: string; binding: string | null }
+  >();
+  for (const r of sizingRoutes) {
+    if (r.sizing.status !== "SIZED" || r.sizing.sizeUsdt === null) continue;
+    for (const sid of [r.buySourceId, r.sellSourceId]) {
+      const prev = smartByVenue.get(sid);
+      if (!prev || r.sizing.sizeUsdt > prev.sizeUsdt) {
+        smartByVenue.set(sid, {
+          sizeUsdt: r.sizing.sizeUsdt,
+          routeKey: r.routeKey,
+          binding: r.sizing.bindingConstraint ?? null
+        });
+      }
+    }
+  }
+  const venueDepthCards = wizard.eligibleVenues.map((v) => {
+    const sn = snapshotById.get(v.sourceId);
+    const balance = sizingBalances.find((b) => (b.sourceId as string) === v.sourceId);
+    const smart = smartByVenue.get(v.sourceId);
+    return buildVenueDepthCard({
+      sourceId: v.sourceId,
+      nameFa: v.nameFa,
+      marketModel: sn?.marketModel ?? "ORDER_BOOK",
+      bookBids: sn?.bookBids ?? null,
+      bookAsks: sn?.bookAsks ?? null,
+      irtToman: balance?.irtToman ?? null,
+      usdtMicros: balance?.usdtMicros ?? null,
+      feeBps: feeBpsById.get(v.sourceId) ?? null,
+      buyFeeAsset: settlementFor(v.sourceId as ShadowSourceId, "buy").feeAsset,
+      sellFeeAsset: settlementFor(v.sourceId as ShadowSourceId, "sell").feeAsset,
+      capitalShareToman: allocationTomanBySource.get(v.sourceId) ?? null,
+      policyOrderSizeMicros,
+      policyExposureMicros: null,
+      maxSlippageBps,
+      markPriceToman: markForAccounting,
+      sourceFailureFa: sn?.errorReason ?? sn?.degradedReason ?? null,
+      quote:
+        sn?.marketModel === "OTC_QUOTE"
+          ? {
+              userBuyPriceToman: sn.userBuyPriceToman,
+              userSellPriceToman: sn.userSellPriceToman,
+              maxExecutableUsdt: sn.maxExecutableUsdt,
+              ageMs: sn.ageMs,
+              stale: sn.stale,
+              maxQuoteAgeMs: maxQuoteAgeMsPolicy
+            }
+          : undefined,
+      smartRecommendedUsdt: smart?.sizeUsdt ?? null,
+      smartRouteKey: smart?.routeKey ?? null,
+      smartBindingConstraint: smart?.binding ?? null,
+      asOf,
+      snapshotAgeMs: sn?.ageMs ?? null
+    });
+  });
+
   return new NextResponse(
     JSON.stringify(
       envelope({
         ...snap,
         accounting,
+        venueDepthCards,
         history,
         wizard,
         sizing,

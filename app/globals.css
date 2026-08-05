@@ -8362,3 +8362,230 @@ table th {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ── Settings & Safety: three views ───────────────────────────────────────── */
+
+/*
+ * Layout only, like every Shadow section: material, blur, shadow and colour all
+ * come from the shared iOS27 primitives, and every selector stays inside .sa-.
+ */
+.sa-settings-seg {
+  margin-bottom: 4px;
+}
+
+/* ── Paper settings: one reviewed set ─────────────────────────────────────── */
+.sa-ps-body {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+.sa-ps-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.sa-ps-identity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.sa-ps-setkey {
+  letter-spacing: 0.02em;
+}
+.sa-ps-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+}
+.sa-ps-meta dt {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.sa-ps-meta dd {
+  margin: 0;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.sa-ps-fingerprint {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+/* The raw policy key, kept visible but subordinate to the human label. */
+.sa-ps-key {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.sa-ps-apply {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.sa-ps-action {
+  min-height: 36px;
+}
+.sa-ps-confirm {
+  display: grid;
+  gap: 8px;
+}
+.sa-ps-confirm-line {
+  margin: 0;
+  line-height: 1.85;
+}
+.sa-ps-confirm-list {
+  margin: 0;
+  padding-inline-start: 18px;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 1.8;
+}
+.sa-ps-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sa-ps-cards,
+.sa-ad-cards {
+  display: none;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  gap: 8px;
+}
+.sa-ps-card,
+.sa-ad-card {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md, 14px);
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.sa-ps-card-head,
+.sa-ad-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 36px;
+}
+.sa-ps-card-title,
+.sa-ad-card-title {
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.sa-ps-card-grid,
+.sa-ad-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin: 0;
+}
+.sa-ps-card-grid dt,
+.sa-ad-card-grid dt {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.sa-ps-card-grid dd,
+.sa-ad-card-grid dd {
+  margin: 0;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.sa-ps-card-note,
+.sa-ad-card-note {
+  margin: 0;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+
+/* ── Activity and decisions ───────────────────────────────────────────────── */
+.sa-ad-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 16px;
+  margin: 0;
+}
+.sa-ad-summary dt {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.sa-ad-summary dd {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.sa-ad-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.sa-ad-foot {
+  margin: 0;
+  line-height: 1.9;
+}
+
+:root[data-theme="dark"] .sa-ps-meta dt,
+:root[data-theme="dark"] .sa-ps-key,
+:root[data-theme="dark"] .sa-ps-card-grid dt,
+:root[data-theme="dark"] .sa-ad-card-grid dt,
+:root[data-theme="dark"] .sa-ad-summary dt {
+  color: color-mix(in srgb, var(--text) 72%, var(--muted));
+}
+
+@media (max-width: 1024px) {
+  .sa-ad-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .sa-ad-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .sa-ps-desktop,
+  .sa-ad-desktop {
+    display: none;
+  }
+  .sa-ps-cards,
+  .sa-ad-cards {
+    display: grid;
+  }
+  .sa-ps-meta {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sa-ad-filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sa-ad-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 380px) {
+  .sa-ps-card-grid,
+  .sa-ad-card-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

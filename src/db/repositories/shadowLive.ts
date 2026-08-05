@@ -172,6 +172,100 @@ export async function recordRiskPolicy(input: {
   }
 }
 
+export type PolicySetApplyEntry = { policyKey: string; value: number };
+
+export type PolicySetApplyResult = {
+  setKey: string;
+  fingerprint: string;
+  appliedAt: string;
+  /** Keys this call actually wrote. */
+  applied: string[];
+  /** Keys left alone because a newer admin value is already in force. */
+  preserved: string[];
+};
+
+/**
+ * Apply a whole policy set in ONE transaction, or apply none of it.
+ *
+ * Six independent writes were the wrong shape: a failure on the fifth left the
+ * desk in a configuration nobody reviewed — four new numbers and two old ones —
+ * and the audit trail recorded it as though someone had chosen that mixture.
+ *
+ * Here every value is validated first, then all of them are written inside a
+ * single transaction. A rejection anywhere rolls the whole set back, so the
+ * stored state is always either the previous set or the new one.
+ *
+ * Append-only: nothing is updated or deleted. The previous values stay in the
+ * history exactly as they were, and `loadRiskPolicyValues` resolves the latest
+ * by `setAt` then `seq`.
+ *
+ * `preserveKeys` names values the caller must not overwrite — used by the
+ * startup bootstrap, which is allowed to fill a gap but never to overrule an
+ * administrator who has already decided.
+ */
+export async function applyRiskPolicySet(input: {
+  setKey: string;
+  fingerprint: string;
+  entries: PolicySetApplyEntry[];
+  setBy: string;
+  validForDays: number | null;
+  note?: string | null;
+  /** Keys to leave untouched, even though they belong to the set. */
+  preserveKeys?: string[];
+  /**
+   * Runs inside the SAME transaction, after every policy row is written. The
+   * bootstrap uses it to insert its marker, so the marker cannot exist unless
+   * all six rows do — and a losing race on the marker rolls the rows back too.
+   */
+  afterAll?: (tx: Parameters<Parameters<Awaited<ReturnType<typeof getDbAsync>>["transaction"]>[0]>[0]) => Promise<void>;
+}): Promise<PolicySetApplyResult> {
+  const preserve = new Set(input.preserveKeys ?? []);
+  const toWrite = input.entries.filter((e) => !preserve.has(e.policyKey));
+
+  // Validate BEFORE opening the transaction: a rejection here has written
+  // nothing at all, which is a cheaper and clearer failure than a rollback.
+  for (const e of toWrite) {
+    if (!Number.isFinite(e.value)) {
+      throw new Error(`مقدار نامعتبر برای ${e.policyKey}`);
+    }
+  }
+
+  try {
+    const db = await getDbAsync();
+    const appliedAt = new Date().toISOString();
+    const note = input.note ?? `مجموعهٔ ${input.setKey} (${input.fingerprint})`;
+
+    await serial(async () =>
+      db.transaction(async (tx) => {
+        for (const e of toWrite) {
+          await tx.insert(shadowLiveRiskPolicies).values({
+            id: randomUUID(),
+            policyKey: e.policyKey,
+            value: String(e.value),
+            provenance: "ADMIN_APPROVED",
+            validForDays: input.validForDays,
+            setBy: input.setBy,
+            setAt: appliedAt,
+            note,
+            createdAt: appliedAt
+          });
+        }
+        if (input.afterAll) await input.afterAll(tx);
+      })
+    );
+
+    return {
+      setKey: input.setKey,
+      fingerprint: input.fingerprint,
+      appliedAt,
+      applied: toWrite.map((e) => e.policyKey),
+      preserved: [...preserve]
+    };
+  } catch (error) {
+    throw asDbError(error, "applyRiskPolicySet");
+  }
+}
+
 export type ReadinessReviewRow = {
   id: string;
   reviewedBy: string;

@@ -91,6 +91,26 @@ export type PaperLedgerRow = {
   economicNetPnlToman: number | null;
   riskAdjustedPnlToman: number | null;
   balancesAfter: Array<{ sourceId: string; irtToman: number; usdtMicros: number }>;
+  /**
+   * SMART_CAPITAL_DEPTH decision evidence, from migration 0015. Null on any row
+   * written before smart sizing — a null means "not recorded", never a value
+   * invented to fill the gap.
+   */
+  sizingPolicy: string | null;
+  sizingReason: string | null;
+  limitingSide: string | null;
+  limitingSourceId: string | null;
+  limitingUsableUsdtMicros: number | null;
+  capitalCapUsdtMicros: number | null;
+  depthCapUsdtMicros: number | null;
+  bindingConstraint: string | null;
+  riskAdjustedReturnBps: number | null;
+  selectedPercentOfUsable: number | null;
+  inventoryImpactPoints: number | null;
+  nextLargerSizeUsdt: number | null;
+  nextLargerRejectionCode: string | null;
+  nextLargerRejectionReason: string | null;
+  nextLargerMarginalPnlToman: number | null;
   occurredAt: string;
 };
 
@@ -913,6 +933,21 @@ export async function loadPaperLedger(
       sellFeeProvenance: r.sellFeeProvenance,
       feeTomanTotal: numOrNull(r.feeTomanTotal),
       feeUsdtMicrosTotal: numOrNull(r.feeUsdtMicrosTotal),
+      sizingPolicy: r.sizingPolicy,
+      sizingReason: r.sizingReason,
+      limitingSide: r.limitingSide,
+      limitingSourceId: r.limitingSourceId,
+      limitingUsableUsdtMicros: numOrNull(r.limitingUsableUsdtMicros),
+      capitalCapUsdtMicros: numOrNull(r.capitalCapUsdtMicros),
+      depthCapUsdtMicros: numOrNull(r.depthCapUsdtMicros),
+      bindingConstraint: r.bindingConstraint,
+      riskAdjustedReturnBps: numOrNull(r.riskAdjustedReturnBps),
+      selectedPercentOfUsable: numOrNull(r.selectedPercentOfUsable),
+      inventoryImpactPoints: numOrNull(r.inventoryImpactPoints),
+      nextLargerSizeUsdt: numOrNull(r.nextLargerSizeUsdt),
+      nextLargerRejectionCode: r.nextLargerRejectionCode,
+      nextLargerRejectionReason: r.nextLargerRejectionReason,
+      nextLargerMarginalPnlToman: numOrNull(r.nextLargerMarginalPnlToman),
       slippageBufferToman: numOrNull(r.slippageBufferToman),
       grossSpreadToman: numOrNull(r.grossSpreadToman),
       markPriceToman: numOrNull(r.markPriceToman),

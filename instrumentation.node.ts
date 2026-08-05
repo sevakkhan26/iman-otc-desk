@@ -88,6 +88,22 @@ async function reconcileRelease(): Promise<void> {
   } catch (e) {
     log("release bootstrap failed — will retry next start", e instanceof Error ? e.message : e);
   }
+  /*
+   * The approved Paper policy set, applied once and never refreshed. It is a
+   * separate marker from the evidence bootstrap above on purpose: the two are
+   * different decisions with different lifetimes, and this one carries a
+   * thirty-day expiry that a redeploy must not extend.
+   */
+  try {
+    const { runPaperPolicyBootstrap } = await import(
+      "@/lib/shadowArbitrage/live/paperPolicyBootstrap"
+    );
+    const outcome = await runPaperPolicyBootstrap(log);
+    if (outcome.ran) log("paper policy set applied", outcome);
+    else log(`paper policy set skipped (${outcome.reason})`);
+  } catch (e) {
+    log("paper policy bootstrap failed — will retry next start", e instanceof Error ? e.message : e);
+  }
 }
 
 /**

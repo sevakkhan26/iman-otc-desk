@@ -1747,12 +1747,12 @@ await test("release version: one authoritative public field, valid package metad
   const pkg = JSON.parse(read("package.json")) as { version: string; private?: boolean };
 
   // The product's version is exactly what this release is called.
-  assert.equal(version.appVersion, "4.1.7.0");
+  assert.equal(version.appVersion, "4.1.8.0");
 
   // Four-part numbers are not SemVer, which is why they cannot live in
   // package.json: the production image validates it during `pnpm install`.
   const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?$/;
-  assert.equal(semver.test(version.appVersion), false, "4.1.7.0 is deliberately not SemVer");
+  assert.equal(semver.test(version.appVersion), false, "4.1.8.0 is deliberately not SemVer");
   assert.ok(semver.test(pkg.version), `package.json keeps valid SemVer, found ${pkg.version}`);
   assert.equal(pkg.version, version.packageMetadataVersion, "and the two stay in step");
   assert.equal(pkg.private, true, "the package is never published, so its version is metadata only");
@@ -2149,7 +2149,18 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
       "src/lib/shadowArbitrage/paper/inventory.ts",
       "src/lib/shadowArbitrage/paper/reservations.ts",
       "src/db/repositories/shadowPaper.ts",
-      "drizzle/0015_shadow_smart_sizing.sql"
+      "drizzle/0015_shadow_smart_sizing.sql",
+      /*
+       * `PAPER_BALANCED_10B_V1`: the six Paper sizing policies as one reviewed,
+       * versioned, atomically-applied set, plus the startup bootstrap that
+       * carries it into a deployment once. Numbers and an append-only audit
+       * trail — no order, credential, transfer or exchange call, and no Live
+       * Readiness policy is touched.
+       */
+      "src/lib/shadowArbitrage/live/paperPolicySet.ts",
+      "src/lib/shadowArbitrage/live/paperPolicySetHash.ts",
+      "src/lib/shadowArbitrage/live/paperPolicyBootstrap.ts",
+      "src/db/repositories/shadowLive.ts"
     ]);
     const changed = execFileSync("git", ["diff", "--name-only", baseline, "--", ...paths], {
       encoding: "utf8"
@@ -2279,28 +2290,103 @@ await test("8C session create, start, pause and stop live in the Command Center"
   assert.ok(paper.includes("export type PaperParts"), "the split is a declared contract");
 });
 
-await test("8C diagnostics, gates, policies and evidence sit behind one fold", () => {
-  const view = read("src/components/ShadowArbitrageView.tsx");
-  // LiveReadiness — gates, policies and evidence — is inside a <details>.
-  const live = view.indexOf("<LiveReadiness");
-  const fold = view.lastIndexOf("sa-advanced-details", live);
-  assert.ok(fold > 0 && fold < live, "readiness gates must be inside the advanced disclosure");
+await test("8C Settings & Safety is three URL-backed views, not one long table", () => {
+  const tabs = read("src/components/shadowArbitrage/tabs.ts");
+  assert.ok(tabs.includes('id: "paper"'));
+  assert.ok(tabs.includes('id: "activity"'));
+  assert.ok(tabs.includes('id: "live"'));
+  assert.ok(tabs.includes("تنظیمات Paper"));
+  assert.ok(tabs.includes("فعالیت و تصمیم‌ها"));
+  assert.ok(tabs.includes("آمادگی اجرای واقعی"));
+  assert.ok(tabs.includes("parseShadowSettingsView"));
 
-  // So are the collector diagnostics and the raw paper-execution panel.
-  const advancedSlot = view.slice(view.indexOf("advanced={"), view.indexOf("/>\n        ) : null}\n\n        {/* ── 2."));
+  const view = read("src/components/ShadowArbitrageView.tsx");
+  assert.ok(view.includes('parseShadowSettingsView(searchParams.get("sv"))'));
+  assert.ok(view.includes('params.set("sv", next)'));
+  assert.ok(view.includes("<PaperSettings"));
+  assert.ok(view.includes("<ActivityDecisions"));
+  assert.ok(view.includes('settingsView === "paper"'));
+  assert.ok(view.includes('settingsView === "activity"'));
+  assert.ok(view.includes('settingsView === "live"'));
+
+  // Sources + LiveReadiness live under the live settings view, still on settings tab.
+  const live = view.indexOf("<LiveReadiness");
+  const liveViewGuard = view.lastIndexOf('settingsView === "live"', live);
+  assert.ok(liveViewGuard > 0 && liveViewGuard < live, "LiveReadiness sits under آمادگی اجرای واقعی");
+  const sources = view.indexOf("<SourcesPanel");
+  const sourcesGuard = view.lastIndexOf('settingsView === "live"', sources);
+  assert.ok(sourcesGuard > 0 && sourcesGuard < sources, "SourcesPanel sits under live readiness");
+
+  // Command Center still folds diagnostics that are not daily work.
+  const advancedSlot = view.slice(
+    view.indexOf("advanced={"),
+    view.indexOf("/>\n        ) : null}\n\n        {/* ── 2.")
+  );
   for (const panel of ["ObservationHeader", "OverviewPanel", "PaperExecution"]) {
-    assert.ok(advancedSlot.includes(`<${panel}`), `${panel} belongs behind the fold`);
+    assert.ok(advancedSlot.includes(`<${panel}`), `${panel} belongs behind the command fold`);
   }
-  assert.ok(view.includes("تشخیص‌های پیشرفته"), "the fold is labelled in Persian");
+  assert.ok(view.includes("تشخیص‌های پیشرفته"), "the trades fold is still labelled in Persian");
 
   // Nothing on the primary surface can arm or execute anything.
   const cc = read("src/components/shadowArbitrage/CommandCenter.tsx");
   for (const term of ["arm", "enable_live", "execute", "go_live", "placeOrder"]) {
     assert.equal(cc.includes(`"${term}"`), false, `the Command Center must not offer ${term}`);
   }
-  // And it states the boundary in Persian on the landing screen itself.
   assert.ok(cc.includes("غیرمسلح"));
   assert.ok(cc.includes("اجرای واقعی پیاده‌سازی نشده است"));
+});
+
+await test("4.1.8.0 Paper policy set is one atomic, fingerprinted decision", () => {
+  const set = read("src/lib/shadowArbitrage/live/paperPolicySet.ts");
+  assert.ok(set.includes('PAPER_POLICY_SET_KEY = "PAPER_BALANCED_10B_V1"'));
+  assert.ok(set.includes("PAPER_POLICY_SET_VALID_DAYS = 30"));
+  for (const [key, value] of [
+    ["max_order_size_usdt", "500"],
+    ["max_venue_exposure_percent", "20"],
+    ["min_risk_adjusted_edge_percent", "0.05"],
+    ["max_quote_age_ms", "30_000"],
+    ["max_slippage_bps", "10"],
+    ["max_inventory_deviation_percent", "20"]
+  ] as Array<[string, string]>) {
+    assert.ok(set.includes(`key: "${key}"`), `set must name ${key}`);
+    assert.ok(set.includes(`value: ${value}`), `${key} must be ${value}`);
+  }
+  assert.ok(set.includes("@/db/") === false, "the pure set module must not touch the database");
+  assert.ok(set.includes("node:crypto") === false, "client-safe: no crypto");
+
+  const boot = read("src/lib/shadowArbitrage/live/paperPolicyBootstrap.ts");
+  assert.ok(boot.includes("runPaperPolicyBootstrap"));
+  assert.ok(boot.includes("shadow_release_bootstrap"));
+  assert.ok(boot.includes("preserveKeys"));
+  assert.ok(boot.includes("afterAll"));
+  assert.ok(boot.includes("release-bootstrap"));
+
+  const instr = read("instrumentation.node.ts");
+  assert.ok(instr.includes("runPaperPolicyBootstrap"));
+  assert.ok(instr.includes("paperPolicyBootstrap"));
+
+  const route = read("app/api/shadow-arbitrage/live-readiness/route.ts");
+  assert.ok(route.includes("apply_paper_policy_set"));
+  assert.ok(route.includes("fingerprint_mismatch"));
+  assert.ok(route.includes("confirmation_required"));
+  assert.ok(route.includes("requireAdminSession"));
+
+  const paperUi = read("src/components/shadowArbitrage/PaperSettings.tsx");
+  assert.ok(paperUi.includes("اعمال مجموعه تنظیمات Paper"));
+  assert.ok(paperUi.includes("ویرایش تکی پیشرفته"));
+  assert.ok(paperUi.includes("apply_paper_policy_set"));
+
+  const activity = read("src/components/shadowArbitrage/ActivityDecisions.tsx");
+  assert.ok(activity.includes("فقط خواندنی"));
+  assert.ok(activity.includes("method: \"POST\"") === false, "Activity must never POST");
+  assert.ok(activity.includes("bindingConstraint"));
+  assert.ok(activity.includes("riskAdjustedPnlToman"));
+  assert.ok(activity.includes("sa-ad-cards"));
+
+  const lr = read("src/components/shadowArbitrage/LiveReadiness.tsx");
+  assert.ok(lr.includes("PAPER_POLICY_SET_KEYS"));
+  assert.ok(lr.includes("liveOnlyPolicies"));
+  assert.ok(lr.includes("LIVE EXECUTION IS NOT IMPLEMENTED — NO REAL ORDERS"));
 });
 
 await test("8C-3 the recommendation is the calculated size, not the fixed probe", () => {

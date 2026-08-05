@@ -1,8 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatTehran } from "@/components/format";
 import { formatCountFa, toFaDigits } from "@/components/shadowArbitrage/labels";
+import {
+  PAPER_POLICY_SET_KEY,
+  PAPER_POLICY_SET_KEYS
+} from "@/lib/shadowArbitrage/live/paperPolicySet";
 
 /** Permanent, never hidden, never conditional. */
 export const LIVE_BANNER_EN = "LIVE EXECUTION IS NOT IMPLEMENTED — NO REAL ORDERS";
@@ -234,7 +238,12 @@ const ATTESTATION_FORMS: Array<{
 
 export function LiveReadiness() {
   const [data, setData] = useState<Payload | null>(null);
-  const [open, setOpen] = useState(false);
+  /*
+   * This panel now lives under the dedicated «آمادگی اجرای واقعی» settings view,
+   * so it opens itself on mount. The fold toggle remains for operators who want
+   * a quieter page once they have read the gates.
+   */
+  const [open, setOpen] = useState(true);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [draft, setDraft] = useState<Record<string, string>>({});
@@ -255,6 +264,13 @@ export function LiveReadiness() {
   useEffect(() => {
     if (open) void load();
   }, [open, load]);
+
+  /** Paper sizing policies belong on «تنظیمات Paper», not in this live-only table. */
+  const paperKeySet = useMemo(() => new Set<string>(PAPER_POLICY_SET_KEYS), []);
+  const liveOnlyPolicies = useMemo(
+    () => (data?.policies ?? []).filter((p) => !paperKeySet.has(p.definition.key)),
+    [data?.policies, paperKeySet]
+  );
 
   const post = useCallback(
     async (payload: Record<string, unknown>, okMessage: string) => {
@@ -507,7 +523,13 @@ export function LiveReadiness() {
           {data?.policies?.length ? (
             <div className="panel-body sa-table-wrap">
               <div className="sa-subpanel-title">
-                سیاست‌های اجباری — هیچ مقدار پیش‌فرضی در کد وجود ندارد
+                سیاست‌های آمادگی اجرای واقعی — هیچ مقدار پیش‌فرضی در کد وجود ندارد
+              </div>
+              <div className="sa-callout sa-callout-muted" role="note">
+                شش سیاست حجم‌دهی Paper در مجموعهٔ{" "}
+                <span className="sa-strong">{PAPER_POLICY_SET_KEY}</span> مدیریت می‌شوند — از
+                «تنظیمات Paper» در همین بخش. اینجا فقط سیاست‌ها و شواهدی که به اجرای واقعی مربوط
+                می‌شوند دیده می‌شوند؛ اجرای واقعی همچنان پیاده‌سازی نشده است.
               </div>
               <table className="sa-table sa-readiness-table">
                 <colgroup>
@@ -531,7 +553,7 @@ export function LiveReadiness() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.policies.map((p) => (
+                  {liveOnlyPolicies.map((p) => (
                     <tr key={p.definition.key}>
                       <td data-label="سیاست">
                         <strong>{p.definition.labelFa}</strong>

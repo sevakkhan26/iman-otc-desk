@@ -7768,7 +7768,10 @@ table th {
 }
 
 
-/* ── 4.1.9.0 five-section capital / venues / book ───────────────────────── */
+/* ── 4.1.9.0 / 4.1.10.1 five-section capital / venues / book ─────────────
+ * LAYOUT ONLY. Material stays on shared .panel / glass tokens.
+ * No brown/beige, no parallel glass-card, no business logic.
+ */
 .sa-acct-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -7794,13 +7797,193 @@ table th {
 .sa-acct-recon {
   margin-top: 12px;
 }
+
+/* Inner cards inside a panel — layout only; material from parent .panel */
+.sa-inner-card {
+  min-width: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md, 14px);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sa-inner-card-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0;
+}
+.sa-inner-card-body {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+.sa-inner-metrics {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px 12px;
+  margin: 0;
+}
+.sa-inner-metrics-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* Experiment panel */
+.sa-exp-header {
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+.sa-exp-header-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-start;
+}
+.sa-exp-remain-chip {
+  font-variant-numeric: tabular-nums;
+}
+.sa-exp-body {
+  display: grid;
+  gap: 14px;
+}
+.sa-exp-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+.sa-exp-countdown {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+.sa-exp-countdown-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.sa-exp-countdown-value {
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.sa-exp-progress {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+}
+.sa-exp-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.sa-exp-tech {
+  margin-top: 2px;
+}
+.sa-exp-tech-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin: 10px 0 0;
+}
+.sa-exp-tech-grid dt {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.sa-exp-tech-grid dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+.sa-copyable {
+  user-select: all;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+/* Utilization bars — layout chrome using token colours only */
+.sa-util-row {
+  display: grid;
+  gap: 4px;
+}
+.sa-util-row-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+.sa-util-label {
+  color: var(--muted);
+}
+.sa-util-value {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.sa-util-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+.sa-util-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--line);
+  max-width: 100%;
+}
+.sa-util-row--target .sa-util-fill {
+  background: var(--green);
+}
+.sa-util-row--warn .sa-util-fill {
+  background: var(--yellow);
+}
+.sa-util-row--reserve .sa-util-fill {
+  background: var(--green);
+}
+
+/* Portfolio summary */
+.sa-port-body {
+  display: grid;
+  gap: 12px;
+}
+.sa-port-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+.sa-recon-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.sa-pnl-pos {
+  color: var(--green);
+  font-weight: 700;
+}
+.sa-pnl-neg {
+  color: var(--red);
+  font-weight: 700;
+}
+.sa-pnl-zero {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Venue cards */
 .sa-acct-venues {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   align-items: stretch;
 }
-/* Venue cards reuse the shared .panel glass surface — no warm/opaque fills. */
 .sa-acct-venue.panel {
   margin: 0;
   min-width: 0;
@@ -7812,6 +7995,12 @@ table th {
 }
 .sa-acct-venue-head.panel-header {
   flex-wrap: wrap;
+  gap: 8px;
+}
+.sa-acct-venue-id {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
 }
 .sa-acct-venue-chips {
   display: flex;
@@ -7843,15 +8032,61 @@ table th {
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
+
+/* Balance metric tiles — structural border only */
+.sa-bal-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.sa-bal-metric {
+  min-width: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md, 14px);
+  padding: 8px 10px;
+  display: grid;
+  gap: 4px;
+}
+.sa-bal-metric-label {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.sa-bal-metric-value {
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
 .sa-depth-block {
   border-top: 1px solid var(--line-soft);
   padding-top: 10px;
   display: grid;
   gap: 8px;
 }
+.sa-depth-block-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 .sa-depth-block-title {
   font-size: 13px;
   font-weight: 700;
+}
+.sa-depth-help {
+  margin: 0;
+}
+.sa-depth-help-sum {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+  list-style: none;
+}
+.sa-depth-help-sum::-webkit-details-marker {
+  display: none;
 }
 .sa-depth-legend {
   margin: 0;
@@ -7863,10 +8098,28 @@ table th {
   gap: 10px;
 }
 .sa-depth-side {
+  position: relative;
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-md, 14px);
-  padding: 10px;
+  padding: 10px 10px 10px 14px;
   min-width: 0;
+}
+/* Semantic rails — same pattern as overview KPI cards (token colours only) */
+.sa-depth-side--buy::before,
+.sa-depth-side--sell::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 999px;
+}
+.sa-depth-side--buy::before {
+  background: var(--green);
+}
+.sa-depth-side--sell::before {
+  background: var(--red);
 }
 .sa-depth-side-title {
   margin: 0 0 8px;
@@ -7898,6 +8151,42 @@ table th {
 }
 .sa-depth-details {
   margin-top: 4px;
+}
+
+@media (max-width: 1440px) {
+  .sa-exp-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 1024px) {
+  .sa-acct-grid,
+  .sa-acct-venues,
+  .sa-venue-grid,
+  .sa-port-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .sa-exp-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 768px) {
+  .sa-acct-grid,
+  .sa-acct-grid-sm,
+  .sa-acct-venues,
+  .sa-venue-grid,
+  .sa-acct-venue-grid,
+  .sa-venue-card-grid,
+  .sa-depth-sides,
+  .sa-port-grid,
+  .sa-exp-grid,
+  .sa-exp-tech-grid,
+  .sa-inner-metrics-2,
+  .sa-bal-metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sa-exp-countdown-value {
+    font-size: 20px;
+  }
 }
 .sa-venue-grid {
   display: grid;

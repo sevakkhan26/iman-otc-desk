@@ -40,7 +40,8 @@
     ".next-verify/types/**/*.ts",
     ".next/types/**/*.ts",
     "next-env.d.ts",
-    ".next-rc/types/**/*.ts"
+    ".next-rc/types/**/*.ts",
+    ".next-rc-4180/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

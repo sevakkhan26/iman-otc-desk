@@ -83,3 +83,51 @@ export function isLegacyShadowTab(value: string | null | undefined): boolean {
 export function shadowTabLabel(id: ShadowTabId): string {
   return SHADOW_TABS.find((t) => t.id === id)?.labelFa ?? id;
 }
+
+/* ── Settings & Safety: three views, not one long table ────────────────────
+ *
+ * The section used to stack Paper sizing settings, future live-execution
+ * policies, evidence thresholds and activity into a single scrolling table.
+ * They are read at different times by people asking different questions, and
+ * mixing them invited exactly the failure this split removes: configuring one
+ * number at a time because the page offered no other shape.
+ *
+ * Each view is addressable through `?sv=`, so a link, a bookmark and the back
+ * button all land where they were pointed.
+ */
+export type ShadowSettingsViewId = "paper" | "activity" | "live";
+
+export type ShadowSettingsView = {
+  id: ShadowSettingsViewId;
+  labelFa: string;
+  hintFa: string;
+};
+
+export const SHADOW_SETTINGS_VIEWS: ShadowSettingsView[] = [
+  {
+    id: "paper",
+    labelFa: "تنظیمات Paper",
+    hintFa: "مجموعهٔ تأییدشدهٔ شش سیاست حجم‌دهی که کارگزار کاغذی با آن کار می‌کند"
+  },
+  {
+    id: "activity",
+    labelFa: "فعالیت و تصمیم‌ها",
+    hintFa: "چه چیزی اجرا شد، چه چیزی رد شد و دقیقاً چرا — فقط خواندنی"
+  },
+  {
+    id: "live",
+    labelFa: "آمادگی اجرای واقعی",
+    hintFa: "سیاست‌ها، شواهد و دروازه‌های اجرای واقعی — پیاده‌سازی نشده است"
+  }
+];
+
+export const DEFAULT_SHADOW_SETTINGS_VIEW: ShadowSettingsViewId = "paper";
+
+const SETTINGS_VIEW_IDS = new Set<string>(SHADOW_SETTINGS_VIEWS.map((v) => v.id));
+
+export function parseShadowSettingsView(
+  value: string | null | undefined
+): ShadowSettingsViewId {
+  if (value && SETTINGS_VIEW_IDS.has(value)) return value as ShadowSettingsViewId;
+  return DEFAULT_SHADOW_SETTINGS_VIEW;
+}

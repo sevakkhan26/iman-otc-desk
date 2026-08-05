@@ -14,6 +14,8 @@ import {
 } from "@/components/shadowArbitrage/CommandCenter";
 import { ObservationHeader } from "@/components/shadowArbitrage/ObservationHeader";
 import { LiveReadiness } from "@/components/shadowArbitrage/LiveReadiness";
+import { PaperSettings } from "@/components/shadowArbitrage/PaperSettings";
+import { ActivityDecisions } from "@/components/shadowArbitrage/ActivityDecisions";
 import { OpportunitiesPanel } from "@/components/shadowArbitrage/OpportunitiesPanel";
 import { OpportunityDrawer } from "@/components/shadowArbitrage/OpportunityDrawer";
 import { OverviewPanel } from "@/components/shadowArbitrage/OverviewPanel";
@@ -36,7 +38,10 @@ import {
   isLegacyShadowTab,
   parseShadowTab,
   shadowTabLabel,
-  type ShadowTabId
+  type ShadowTabId,
+  SHADOW_SETTINGS_VIEWS,
+  parseShadowSettingsView,
+  type ShadowSettingsViewId
 } from "@/components/shadowArbitrage/tabs";
 import type {
   ObservationPayload,
@@ -58,6 +63,15 @@ type PaperPayload = {
   balances?: CommandBalance[];
   trades?: PaperLedgerRow[];
   transitions?: PaperLedgerRow[];
+  /** One compact row per evaluated cycle — the Activity view's own history. */
+  cycleSummaries?: Array<{
+    occurredAt: string;
+    candidatesEvaluated: number;
+    filled: number;
+    skipped: number;
+    detailedEventsWritten: number;
+    reasonCounts: Record<string, number>;
+  }>;
   wizard?: { markPriceToman: number | null };
   sizing?: SizingView;
   allocation?: {
@@ -98,6 +112,16 @@ export function ShadowArbitrageView() {
   const searchParams = useSearchParams();
   const tab = parseShadowTab(searchParams.get("tab"));
   const rawTab = searchParams.get("tab");
+  /* Settings & Safety is three views, addressable through ?sv=. */
+  const settingsView = parseShadowSettingsView(searchParams.get("sv"));
+  const selectSettingsView = useCallback(
+    (next: ShadowSettingsViewId) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("sv", next);
+      router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+    },
+    [pathname, router, searchParams]
+  );
 
   const [matrix, setMatrix] = useState<ShadowMatrixResponse | null>(null);
   const [history, setHistory] = useState<ShadowOpportunity[]>([]);
@@ -540,35 +564,70 @@ export function ShadowArbitrageView() {
         {/* ── 4. Settings & Safety ──────────────────────────────────────── */}
         {tab === "settings" ? (
           <div className="sa-stack">
-            <SourcesPanel
-              certifications={obs?.certifications ?? []}
-              health={obs?.sourceHealth ?? []}
-              snapshots={sources}
-              venues={accounts?.venues ?? []}
-              feeEvidence={accounts?.feeEvidence ?? []}
-              auditHistory={accounts?.auditHistory ?? []}
-              feeReverifyDays={accounts?.feeReverifyDays ?? null}
-              pollIntervalMs={pollIntervalMs}
-              loading={loading}
-              error={error}
-              onReload={() => void load(false)}
-            />
             {/*
-              Readiness gates, risk policies and evidence are diagnostics, not
-              daily work — and the red live banner lives inside this panel, so
-              it is still mounted exactly once on the page.
+              Three views, not one long table. They are read at different times
+              by people asking different questions: what the Paper Broker is
+              configured with, what it actually decided, and what would have to
+              be true before real execution could ever exist. Mixing them was
+              what made configuring the desk feel like six unrelated chores.
             */}
-            <details className="panel sa-panel sa-advanced-details">
-              <summary className="panel-header sa-panel-header">
-                <span className="panel-title">تشخیص‌های پیشرفته</span>
-                <span className="sa-panel-note">
-                  دروازه‌های آمادگی اجرای واقعی، سیاست‌های ریسک و شواهد
-                </span>
-              </summary>
-              <div className="panel-body">
+            <nav
+              className="sa-segmented sa-segmented-lg glass-tabbar sa-settings-seg"
+              aria-label="نمای تنظیمات و ایمنی"
+            >
+              {SHADOW_SETTINGS_VIEWS.map((v) => (
+                <button
+                  key={v.id}
+                  type="button"
+                  className={`sa-seg sa-seg-lg${
+                    settingsView === v.id ? " is-active glass-control" : ""
+                  }`}
+                  aria-pressed={settingsView === v.id}
+                  title={v.hintFa}
+                  onClick={() => selectSettingsView(v.id)}
+                >
+                  {v.labelFa}
+                </button>
+              ))}
+            </nav>
+
+            {settingsView === "paper" ? <PaperSettings /> : null}
+
+            {settingsView === "activity" ? (
+              <ActivityDecisions
+                session={paper?.session ?? null}
+                ledger={(paper?.trades ?? []) as never}
+                cycleSummaries={(paper?.cycleSummaries ?? []) as never}
+                routes={paper?.sizing?.routes ?? []}
+                sizingPolicy={paper?.sizing?.policy ?? null}
+                sources={sources}
+                serverNow={matrix?.serverNow ?? null}
+                loading={loading}
+              />
+            ) : null}
+
+            {settingsView === "live" ? (
+              <div className="sa-stack">
+                {/*
+                  Source health, accounts and fee evidence belong with the live
+                  gates: they are the evidence those gates are waiting on.
+                */}
+                <SourcesPanel
+                  certifications={obs?.certifications ?? []}
+                  health={obs?.sourceHealth ?? []}
+                  snapshots={sources}
+                  venues={accounts?.venues ?? []}
+                  feeEvidence={accounts?.feeEvidence ?? []}
+                  auditHistory={accounts?.auditHistory ?? []}
+                  feeReverifyDays={accounts?.feeReverifyDays ?? null}
+                  pollIntervalMs={pollIntervalMs}
+                  loading={loading}
+                  error={error}
+                  onReload={() => void load(false)}
+                />
                 <LiveReadiness />
               </div>
-            </details>
+            ) : null}
           </div>
         ) : null}
       </div>

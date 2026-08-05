@@ -3410,8 +3410,13 @@ await test("7A the readiness API exposes no arming action at all", () => {
     new URL("../app/api/shadow-arbitrage/live-readiness/route.ts", import.meta.url),
     "utf8"
   );
-  // The only accepted actions are audit-shaped.
-  assert.ok(route.includes('["review", "set_policy", "attest"]'));
+  // Accepted actions are audit-shaped, plus the atomic Paper policy-set apply.
+  // Live arming is still absent — not disabled, not present.
+  assert.ok(
+    route.includes('["review", "set_policy", "attest", "apply_paper_policy_set"]'),
+    "accepted actions must stay audit/policy only"
+  );
+  assert.ok(route.includes("apply_paper_policy_set"));
   // Arming verbs are explicitly answered with 501, never executed.
   assert.ok(route.includes('["arm", "enable_live", "execute", "go_live"]'));
   assert.ok(route.includes("501"));

@@ -16,6 +16,7 @@ import {
   loadPaperStats
 } from "@/db/repositories/shadowPaper";
 import {
+  applyRiskPolicySet,
   loadAttestations,
   loadReadinessReviews,
   loadRiskPolicyHistory,
@@ -24,6 +25,13 @@ import {
   recordReadinessReview,
   recordRiskPolicy
 } from "@/db/repositories/shadowLive";
+import {
+  buildPaperPolicySetView,
+  PAPER_POLICY_SET,
+  PAPER_POLICY_SET_KEY,
+  PAPER_POLICY_SET_VALID_DAYS
+} from "@/lib/shadowArbitrage/live/paperPolicySet";
+import { paperPolicySetFingerprint } from "@/lib/shadowArbitrage/live/paperPolicySetHash";
 import { buildAllReadiness } from "@/lib/shadowArbitrage/accounts";
 import { classifyAllVenues, evaluateRecommendation } from "@/lib/shadowArbitrage/capital";
 import { SHADOW_BANNER } from "@/lib/shadowArbitrage/config";
@@ -265,6 +273,17 @@ export async function GET() {
       evidenceEnvironment,
       report,
       policies,
+      /*
+       * The six Paper policies as ONE reviewed set: current versus proposed,
+       * per-row status, and the fingerprint of exactly which numbers were
+       * approved. The client renders this instead of deriving it, so the screen
+       * and the apply action can never disagree about what is in force.
+       */
+      paperPolicySet: {
+        ...buildPaperPolicySetView(policies),
+        fingerprint: paperPolicySetFingerprint(),
+        entries: PAPER_POLICY_SET
+      },
       policyDefinitions: REQUIRED_RISK_POLICIES,
       attestations,
       policyHistory,
@@ -309,8 +328,44 @@ export async function POST(request: Request) {
       { status: 501, headers: SHADOW_NO_STORE }
     );
   }
-  if (!["review", "set_policy", "attest"].includes(action)) {
+  if (!["review", "set_policy", "attest", "apply_paper_policy_set"].includes(action)) {
     return bad("عملیات نامعتبر است");
+  }
+
+  /*
+   * The whole Paper set, applied atomically.
+   *
+   * The client must send the fingerprint it reviewed. If the approved set has
+   * changed since that screen was rendered, the request is refused rather than
+   * applying numbers the operator never saw — a stale tab is the one way an
+   * "explicit confirmation" stops being explicit.
+   */
+  if (action === "apply_paper_policy_set") {
+    const expected = paperPolicySetFingerprint();
+    const sent = typeof body.fingerprint === "string" ? body.fingerprint : "";
+    if (sent !== expected) {
+      return bad(
+        "اثر انگشت مجموعه با نسخهٔ فعلی یکی نیست؛ صفحه را تازه کنید و دوباره بررسی کنید.",
+        "fingerprint_mismatch"
+      );
+    }
+    if (body.confirm !== true) {
+      return bad("برای اعمال مجموعه باید مرحلهٔ تأیید صریح انجام شود.", "confirmation_required");
+    }
+    // Every value is validated against its own definition BEFORE anything is
+    // written, so an invalid entry cannot produce a partial application.
+    for (const entry of PAPER_POLICY_SET) {
+      const check = validatePolicyValue(entry.key, entry.value);
+      if (!check.ok) return bad(`${entry.labelFa}: ${check.messageFa}`);
+    }
+    await applyRiskPolicySet({
+      setKey: PAPER_POLICY_SET_KEY,
+      fingerprint: expected,
+      entries: PAPER_POLICY_SET.map((e) => ({ policyKey: e.key, value: e.value })),
+      setBy: session.u ?? "admin",
+      validForDays: PAPER_POLICY_SET_VALID_DAYS,
+      note: `اعمال مجموعهٔ ${PAPER_POLICY_SET_KEY} توسط مدیر (${expected})`
+    });
   }
 
   if (action === "set_policy") {
@@ -391,6 +446,17 @@ export async function POST(request: Request) {
       serverNow: new Date().toISOString(),
       report,
       policies,
+      /*
+       * The six Paper policies as ONE reviewed set: current versus proposed,
+       * per-row status, and the fingerprint of exactly which numbers were
+       * approved. The client renders this instead of deriving it, so the screen
+       * and the apply action can never disagree about what is in force.
+       */
+      paperPolicySet: {
+        ...buildPaperPolicySetView(policies),
+        fingerprint: paperPolicySetFingerprint(),
+        entries: PAPER_POLICY_SET
+      },
       policyDefinitions: REQUIRED_RISK_POLICIES,
       attestations,
       policyHistory,

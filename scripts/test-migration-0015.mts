@@ -192,11 +192,11 @@ await test("migrating a database with existing fills applies 0015 and nothing el
   afterStatus = await migrationStatus();
   assert.ok(afterStatus.applied.includes(MIGRATION), "0015 is applied");
   assert.equal(afterStatus.pending.length, 0, "nothing is left pending");
-  assert.deepEqual(
-    afterStatus.applied.filter((m) => !preStatus.applied.includes(m)),
-    [MIGRATION],
-    "exactly one new migration ran"
-  );
+  // Later migrations (e.g. 0016 four-day experiment) may also apply; 0015 must
+  // be the first new one and every pre-0015 fill must survive (next test).
+  const newly = afterStatus.applied.filter((m) => !preStatus.applied.includes(m));
+  assert.ok(newly.includes(MIGRATION), "0015 is among newly applied migrations");
+  assert.equal(newly[0], MIGRATION, "0015 is applied before any later migration");
 });
 
 await test("every pre-existing fill survives byte-identical, with the new columns null", async () => {

@@ -44,6 +44,7 @@ export type PaperSessionRow = {
   tradesExecuted: number;
   candidatesSkipped: number;
   note: string | null;
+  experimentRunId: string | null;
   createdAt: string;
 };
 
@@ -111,6 +112,7 @@ export type PaperLedgerRow = {
   nextLargerRejectionCode: string | null;
   nextLargerRejectionReason: string | null;
   nextLargerMarginalPnlToman: number | null;
+  experimentRunId: string | null;
   occurredAt: string;
 };
 
@@ -184,6 +186,7 @@ function toSession(r: typeof shadowPaperSessions.$inferSelect): PaperSessionRow 
     tradesExecuted: r.tradesExecuted,
     candidatesSkipped: r.candidatesSkipped,
     note: r.note,
+    experimentRunId: r.experimentRunId ?? null,
     createdAt: r.createdAt
   };
 }
@@ -886,13 +889,42 @@ async function bumpSessionCounters(sessionId: string, filled: number, skipped: n
   }
 }
 
+/** Total ledger rows for a session (pagination total, no row cap). */
+export async function countPaperLedger(
+  sessionId: string,
+  options: { outcome?: "FILLED" | "SKIPPED" } = {}
+): Promise<number> {
+  try {
+    const db = await getDbAsync();
+    const rows = await serial(async () => {
+      const where = options.outcome
+        ? and(eq(shadowPaperLedger.sessionId, sessionId), eq(shadowPaperLedger.outcome, options.outcome))
+        : eq(shadowPaperLedger.sessionId, sessionId);
+      return db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(shadowPaperLedger)
+        .where(where);
+    });
+    return Number(rows[0]?.n ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
 export async function loadPaperLedger(
   sessionId: string,
-  options: { outcome?: "FILLED" | "SKIPPED"; limit?: number } = {}
+  options: {
+    outcome?: "FILLED" | "SKIPPED";
+    limit?: number;
+    /** Server-side offset for pagination (no silent 2,000-row UI cap). */
+    offset?: number;
+  } = {}
 ): Promise<PaperLedgerRow[]> {
   try {
     const db = await getDbAsync();
-    const limit = Math.min(500, Math.max(1, options.limit ?? 200));
+    // Financial history is permanent: allow large pages for export; default stays modest.
+    const limit = Math.min(50_000, Math.max(1, options.limit ?? 200));
+    const offset = Math.max(0, options.offset ?? 0);
     const rows = await serial(async () => {
       const where = options.outcome
         ? and(eq(shadowPaperLedger.sessionId, sessionId), eq(shadowPaperLedger.outcome, options.outcome))
@@ -902,7 +934,8 @@ export async function loadPaperLedger(
         .from(shadowPaperLedger)
         .where(where)
         .orderBy(desc(shadowPaperLedger.occurredAt))
-        .limit(limit);
+        .limit(limit)
+        .offset(offset);
     });
     return rows.map((r) => ({
       id: r.id,
@@ -957,6 +990,7 @@ export async function loadPaperLedger(
       economicNetPnlToman: numOrNull(r.economicNetPnlToman),
       riskAdjustedPnlToman: numOrNull(r.riskAdjustedPnlToman),
       balancesAfter: Array.isArray(r.balancesAfter) ? r.balancesAfter : [],
+      experimentRunId: r.experimentRunId ?? null,
       occurredAt: r.occurredAt
     }));
   } catch {

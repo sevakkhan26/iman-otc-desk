@@ -778,6 +778,7 @@ export const shadowPaperSessions = pgTable(
     tradesExecuted: integer("trades_executed").notNull().default(0),
     candidatesSkipped: integer("candidates_skipped").notNull().default(0),
     note: text("note"),
+    experimentRunId: uuid("experiment_run_id"),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow()
   },
@@ -879,6 +880,7 @@ export const shadowPaperLedger = pgTable(
       .default([])
       .notNull(),
     occurredAt: ts("occurred_at").notNull(),
+    experimentRunId: uuid("experiment_run_id"),
     createdAt: ts("created_at").notNull().defaultNow()
   },
   (t) => [
@@ -946,6 +948,61 @@ export const shadowPaperCycleSummaries = pgTable(
     createdAt: ts("created_at").notNull().defaultNow()
   },
   (t) => [index("shadow_paper_cycle_summary_idx").on(t.sessionId, t.occurredAt)]
+);
+
+/**
+ * Four-day Paper experiment runs — permanent, append-oriented status machine.
+ * endsAt is frozen at activation; restarts never extend the deadline.
+ * At most one ACTIVE row (enforced by partial unique index in migration).
+ */
+export const shadowPaperExperiments = pgTable(
+  "shadow_paper_experiments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    runKey: text("run_key").notNull(),
+    status: text("status").notNull(),
+    policySetKey: text("policy_set_key").notNull(),
+    policyFingerprint: text("policy_fingerprint").notNull(),
+    releaseVersion: text("release_version").notNull(),
+    startedAt: ts("started_at").notNull(),
+    endsAt: ts("ends_at").notNull(),
+    completedAt: ts("completed_at"),
+    sessionId: uuid("session_id"),
+    initialCapitalToman: bigint("initial_capital_toman", { mode: "number" }).notNull(),
+    targetUtilizationPercent: numeric("target_utilization_percent", {
+      precision: 8,
+      scale: 4
+    }).notNull(),
+    maxUtilizationPercent: numeric("max_utilization_percent", {
+      precision: 8,
+      scale: 4
+    }).notNull(),
+    minReservePercent: numeric("min_reserve_percent", { precision: 8, scale: 4 }).notNull(),
+    maxRouteCapitalPercent: numeric("max_route_capital_percent", {
+      precision: 8,
+      scale: 4
+    }).notNull(),
+    maxVenueExposurePercent: numeric("max_venue_exposure_percent", {
+      precision: 8,
+      scale: 4
+    }).notNull(),
+    derivedMaxOrderUsdt: numeric("derived_max_order_usdt", { precision: 18, scale: 4 }),
+    derivedMaxOrderReferencePrice: integer("derived_max_order_reference_price"),
+    derivedMaxOrderAt: ts("derived_max_order_at"),
+    config: jsonb("config").$type<Record<string, unknown>>().notNull().default({}),
+    summary: jsonb("summary").$type<Record<string, unknown> | null>(),
+    peakUtilizationPercent: numeric("peak_utilization_percent", { precision: 8, scale: 4 }),
+    utilizationStats: jsonb("utilization_stats")
+      .$type<{ sum: number; n: number }>()
+      .notNull()
+      .default({ sum: 0, n: 0 }),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow()
+  },
+  (t) => [
+    uniqueIndex("shadow_paper_experiments_run_key_uidx").on(t.runKey),
+    index("shadow_paper_experiments_status_idx").on(t.status, t.startedAt)
+  ]
 );
 
 /* ── Phase 7A — guarded live-execution readiness (no live trading) ────────── */

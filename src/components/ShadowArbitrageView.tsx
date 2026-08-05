@@ -17,6 +17,7 @@ import { ActivityDecisions } from "@/components/shadowArbitrage/ActivityDecision
 import {
   AccountsSection,
   type AccountsAccounting,
+  type ExperimentView,
   type VenueDepthCardView
 } from "@/components/shadowArbitrage/AccountsSection";
 import { BookSection } from "@/components/shadowArbitrage/BookSection";
@@ -67,6 +68,8 @@ type PaperPayload = {
   accounting?: AccountsAccounting | null;
   /** Same-cycle market depth for capital venue cards. */
   venueDepthCards?: VenueDepthCardView[] | null;
+  experiment?: ExperimentView | null;
+  ledgerPage?: { rows: PaperLedgerRow[]; total: number; limit: number; offset: number } | null;
   /** One compact row per evaluated cycle — the Activity view's own history. */
   cycleSummaries?: Array<{
     occurredAt: string;
@@ -494,6 +497,7 @@ export function ShadowArbitrageView() {
           <AccountsSection
             accounting={paper?.accounting ?? null}
             venueDepthCards={paper?.venueDepthCards ?? null}
+            experiment={paper?.experiment ?? null}
             session={paper?.session ?? null}
             loading={loading}
             serverNow={matrix?.serverNow ?? serverNow}

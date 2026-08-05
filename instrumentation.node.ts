@@ -104,6 +104,23 @@ async function reconcileRelease(): Promise<void> {
   } catch (e) {
     log("paper policy bootstrap failed — will retry next start", e instanceof Error ? e.message : e);
   }
+  /*
+   * Four-day Paper experiment activation. Separate marker from policy bootstrap:
+   * endsAt is frozen once; restarts complete expired runs and never extend them.
+   */
+  try {
+    const { runPaperExperimentBootstrap } = await import(
+      "@/lib/shadowArbitrage/paper/experimentBootstrap"
+    );
+    const outcome = await runPaperExperimentBootstrap(log);
+    if (outcome.ran) log("paper 4d experiment bootstrap", outcome);
+    else log(`paper 4d experiment skipped (${outcome.reason})`);
+  } catch (e) {
+    log(
+      "paper 4d experiment bootstrap failed — will retry next start",
+      e instanceof Error ? e.message : e
+    );
+  }
 }
 
 /**

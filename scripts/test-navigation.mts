@@ -1753,12 +1753,12 @@ await test("release version: one authoritative public field, valid package metad
   const pkg = JSON.parse(read("package.json")) as { version: string; private?: boolean };
 
   // The product's version is exactly what this release is called.
-  assert.equal(version.appVersion, "4.1.9.1");
+  assert.equal(version.appVersion, "4.1.10.0");
 
   // Four-part numbers are not SemVer, which is why they cannot live in
   // package.json: the production image validates it during `pnpm install`.
   const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?$/;
-  assert.equal(semver.test(version.appVersion), false, "4.1.9.1 is deliberately not SemVer");
+  assert.equal(semver.test(version.appVersion), false, "4.1.10.0 is deliberately not SemVer");
   assert.ok(semver.test(pkg.version), `package.json keeps valid SemVer, found ${pkg.version}`);
   assert.equal(pkg.version, version.packageMetadataVersion, "and the two stay in step");
   assert.equal(pkg.private, true, "the package is never published, so its version is metadata only");
@@ -2173,7 +2173,13 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
        * No credentials, orders, transfers or exchange clients.
        */
       "src/lib/shadowArbitrage/paper/accounting.ts",
-      "src/lib/shadowArbitrage/paper/venueDepthView.ts"
+      "src/lib/shadowArbitrage/paper/venueDepthView.ts",
+      "src/lib/shadowArbitrage/paper/experimentPolicy.ts",
+      "src/lib/shadowArbitrage/paper/utilization.ts",
+      "src/lib/shadowArbitrage/paper/portfolioAllocator.ts",
+      "src/lib/shadowArbitrage/paper/experimentBootstrap.ts",
+      "src/db/repositories/shadowExperiments.ts",
+      "drizzle/0016_shadow_paper_experiments.sql"
     ]);
     const changed = execFileSync("git", ["diff", "--name-only", baseline, "--", ...paths], {
       encoding: "utf8"
@@ -2297,7 +2303,7 @@ await test("8C session create, start, pause and stop live under Accounts", () =>
   assert.ok(paper.includes("export type PaperParts"), "the split is a declared contract");
 });
 
-await test("4.1.9.1 five sections and Settings configuration only", () => {
+await test("4.1.10.0 five sections and Settings configuration only", () => {
   const tabs = read("src/components/shadowArbitrage/tabs.ts");
   assert.ok(tabs.includes("سرمایه و حساب"));
   assert.ok(tabs.includes("وضعیت صرافی‌ها"));

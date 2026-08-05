@@ -37,7 +37,11 @@ export type PaperReasonCode =
   | "lifecycle_already_processed"
   | "size_not_selected"
   | "sizing_blocked"
-  | "venue_not_executable";
+  | "venue_not_executable"
+  | "portfolio_utilization_cap"
+  | "route_capital_cap"
+  | "venue_exposure_cap"
+  | "experiment_closed";
 
 export const PAPER_REASON_FA: Record<PaperReasonCode, string> = {
   account_not_ready: "حساب کاربری صرافی آماده نیست",
@@ -62,7 +66,11 @@ export const PAPER_REASON_FA: Record<PaperReasonCode, string> = {
   lifecycle_already_processed: "این فرصت قبلاً در همین نشست پردازش شده است",
   size_not_selected: "حجم بهتری برای همین مسیر انتخاب شد",
   sizing_blocked: "حجم پویا محاسبه نشد — سیاست ریسک یا شواهد لازم کامل نیست",
-  venue_not_executable: "صرافی اجراپذیر نیست"
+  venue_not_executable: "صرافی اجراپذیر نیست",
+  portfolio_utilization_cap: "تخصیص از سقف استفادهٔ پرتفوی یا کف نقدینگی آزاد عبور می‌کند",
+  route_capital_cap: "سرمایهٔ ترکیبی مسیر از سقف نسبی سهام تجاوز می‌کند",
+  venue_exposure_cap: "تمرکز سرمایه روی یک صرافی از سقف نسبی سهام تجاوز می‌کند",
+  experiment_closed: "مهلت آزمایش Paper به پایان رسیده — معاملهٔ جدید باز نمی‌شود"
 };
 
 /**
@@ -118,6 +126,10 @@ const PRIORITY: PaperReasonCode[] = [
   "negative_balance_guard",
   "no_balance_record",
   "lifecycle_already_processed",
+  "experiment_closed",
+  "portfolio_utilization_cap",
+  "route_capital_cap",
+  "venue_exposure_cap",
   "sizing_blocked",
   "size_not_selected"
 ];

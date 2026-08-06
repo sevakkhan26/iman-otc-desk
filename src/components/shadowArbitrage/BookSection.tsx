@@ -5,34 +5,24 @@
  *
  * Open orders/positions are empty when the broker completes fills immediately.
  * Closed trades come only from immutable FILLED ledger rows.
+ * Trade details are read-only presentation of already-persisted ledger fields.
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { TomanAmount } from "@/components/TomanAmount";
 import { formatTehran } from "@/components/format";
 import { Bidi } from "@/components/shadowArbitrage/Bidi";
 import { toFaDigits } from "@/components/shadowArbitrage/labels";
+import { TradeDetailsPanel } from "@/components/shadowArbitrage/TradeDetailsPanel";
 import { readInt, useShadowViewState } from "@/components/shadowArbitrage/urlState";
+import type { ClosedTradeEvidence } from "@/lib/shadowArbitrage/paper/tradeDetailsView";
 
-export type ClosedTradeRow = {
-  id: string;
-  lifecycleId: string;
-  routeKey: string;
-  buySourceId: string;
-  sellSourceId: string;
-  sizeUsdt: number;
-  buyVwapToman: number | null;
-  sellVwapToman: number | null;
-  feeTomanTotal: number | null;
-  feeUsdtMicrosTotal: number | null;
-  sellFeeValueToman: number | null;
-  grossSpreadToman: number | null;
-  cashPnlIrtToman: number | null;
-  economicNetPnlToman: number | null;
-  riskAdjustedPnlToman: number | null;
-  slippageBufferToman: number | null;
-  occurredAt: string;
-  bindingConstraint?: string | null;
-  sizingPolicy?: string | null;
+/** Closed trade row — subset of the paper ledger API payload (no client inventing). */
+export type ClosedTradeRow = ClosedTradeEvidence;
+
+export type BookExperimentContext = {
+  experimentId?: string | null;
+  policyFingerprint?: string | null;
+  releaseVersion?: string | null;
 };
 
 type Props = {
@@ -40,6 +30,8 @@ type Props = {
   openPositionsNoteFa: string;
   closedTrades: ClosedTradeRow[];
   loading: boolean;
+  /** Optional experiment identity for technical evidence only. */
+  experimentContext?: BookExperimentContext | null;
 };
 
 const DASH = <span className="sa-unknown">—</span>;
@@ -48,12 +40,14 @@ export function BookSection({
   openOrdersNoteFa,
   openPositionsNoteFa,
   closedTrades,
-  loading
+  loading,
+  experimentContext
 }: Props) {
   const { read, write } = useShadowViewState();
   const venue = read("bv", "all");
   const page = readInt(read("bp", "1"), 1, 1, 10_000);
   const perPage = 20;
+  const [openId, setOpenId] = useState<string | null>(null);
 
   const venues = useMemo(() => {
     const s = new Set<string>();
@@ -67,8 +61,7 @@ export function BookSection({
   const filtered = useMemo(
     () =>
       closedTrades.filter(
-        (t) =>
-          venue === "all" || t.buySourceId === venue || t.sellSourceId === venue
+        (t) => venue === "all" || t.buySourceId === venue || t.sellSourceId === venue
       ),
     [closedTrades, venue]
   );
@@ -76,6 +69,11 @@ export function BookSection({
   const totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
   const safePage = Math.min(page, totalPages);
   const shown = filtered.slice((safePage - 1) * perPage, safePage * perPage);
+  const openTrade = openId ? closedTrades.find((t) => t.id === openId) ?? null : null;
+
+  const toggleDetails = (id: string) => {
+    setOpenId((cur) => (cur === id ? null : id));
+  };
 
   return (
     <div className="sa-stack">
@@ -151,6 +149,7 @@ export function BookSection({
                       <th className="num">کارمزد</th>
                       <th className="num">خالص اقتصادی</th>
                       <th>زمان</th>
+                      <th>جزئیات</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -206,6 +205,16 @@ export function BookSection({
                           )}
                         </td>
                         <td className="sa-sub">{formatTehran(t.occurredAt)}</td>
+                        <td>
+                          <button
+                            type="button"
+                            className="sa-btn sa-btn-ghost sa-td-open-btn"
+                            aria-expanded={openId === t.id}
+                            onClick={() => toggleDetails(t.id)}
+                          >
+                            جزئیات معامله
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -228,9 +237,31 @@ export function BookSection({
                       <Bidi>{toFaDigits(t.sizeUsdt.toFixed(4))}</Bidi> تتر ·{" "}
                       {formatTehran(t.occurredAt)}
                     </p>
+                    <button
+                      type="button"
+                      className="sa-btn sa-btn-ghost sa-td-open-btn"
+                      aria-expanded={openId === t.id}
+                      onClick={() => toggleDetails(t.id)}
+                    >
+                      جزئیات معامله
+                    </button>
                   </li>
                 ))}
               </ul>
+
+              {openTrade ? (
+                <TradeDetailsPanel
+                  trade={openTrade}
+                  context={{
+                    experimentId: experimentContext?.experimentId ?? null,
+                    policyFingerprint: experimentContext?.policyFingerprint ?? null,
+                    releaseVersion: experimentContext?.releaseVersion ?? null
+                  }}
+                  open
+                  onClose={() => setOpenId(null)}
+                />
+              ) : null}
+
               <div className="sa-ad-filters">
                 <button
                   type="button"

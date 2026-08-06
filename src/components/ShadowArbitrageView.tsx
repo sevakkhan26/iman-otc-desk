@@ -537,6 +537,15 @@ export function ShadowArbitrageView() {
               }
               closedTrades={(paper?.trades ?? []) as never}
               loading={loading}
+              experimentContext={
+                paper?.experiment
+                  ? {
+                      experimentId: paper.experiment.id,
+                      policyFingerprint: paper.experiment.policyFingerprint,
+                      releaseVersion: paper.experiment.releaseVersion
+                    }
+                  : null
+              }
             />
             <details className="panel sa-panel sa-advanced-details">
               <summary className="panel-header sa-panel-header">

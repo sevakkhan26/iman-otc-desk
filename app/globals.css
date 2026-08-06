@@ -8334,8 +8334,31 @@ table th {
 .sa-td-tech-grid {
   margin-top: 10px;
 }
+.sa-td-profit-note {
+  margin: 0 0 10px;
+}
+.sa-td-row-highlight dt {
+  font-weight: 700;
+  color: var(--text);
+}
+.sa-td-summary-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+.sa-td-summary {
+  margin: 0;
+  min-width: 0;
+}
+.sa-td-summary-grid {
+  margin-top: 0;
+}
 @media (max-width: 768px) {
   .sa-td-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sa-td-summary-row {
     grid-template-columns: minmax(0, 1fr);
   }
 }

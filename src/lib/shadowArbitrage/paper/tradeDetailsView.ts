@@ -5,6 +5,11 @@
  * Never invents timestamps, prices, fees, sizes or utilization. A missing
  * historical field is reported as `missing` so the UI shows «ثبت نشده».
  */
+import {
+  buildTradeProfitability,
+  type TradeProfitabilityView
+} from "@/lib/shadowArbitrage/paper/tradeProfitability";
+
 export const MISSING_FA = "ثبت نشده" as const;
 export const MISSING_HIST_FA = "در دادهٔ تاریخی موجود نیست" as const;
 
@@ -186,6 +191,11 @@ export type TradeDetailsView = {
     releaseVersion: TradeDetailField<string>;
     idempotencyKey: TradeDetailField<string>;
   };
+  /**
+   * Profitability presentation (economic net is primary).
+   * Rial is display-only conversion from toman.
+   */
+  profitability: TradeProfitabilityView;
   /** Exact field keys that are not present in persisted evidence. */
   missingFieldKeys: string[];
 };
@@ -222,6 +232,15 @@ export function buildTradeDetailsView(
 
   // Gross profit: only use the persisted grossSpreadToman; do not recompute.
   const grossProfit = fromNullable(trade.grossSpreadToman);
+  const profitability = buildTradeProfitability({
+    sizeUsdt: trade.sizeUsdt,
+    grossSpreadToman: trade.grossSpreadToman,
+    feeTomanTotal: trade.feeTomanTotal,
+    feeUsdtMicrosTotal: trade.feeUsdtMicrosTotal,
+    sellFeeValueToman: trade.sellFeeValueToman,
+    economicNetPnlToman: trade.economicNetPnlToman,
+    buyNotionalToman: trade.buyNotionalToman
+  });
 
   const view: TradeDetailsView = {
     timeline: {
@@ -395,6 +414,7 @@ export function buildTradeDetailsView(
           : missing()
       )
     },
+    profitability,
     technical: {
       runId: track("technical.runId", fromNullable(trade.runId ?? null)),
       sessionId: track("technical.sessionId", fromNullable(trade.sessionId ?? null)),

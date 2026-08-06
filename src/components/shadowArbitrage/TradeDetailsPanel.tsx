@@ -15,6 +15,7 @@ import {
   type TradeDetailField,
   type TradeDetailsContext
 } from "@/lib/shadowArbitrage/paper/tradeDetailsView";
+import { UNCOMPUTABLE_FA } from "@/lib/shadowArbitrage/paper/tradeProfitability";
 
 type Props = {
   trade: ClosedTradeEvidence;
@@ -67,9 +68,29 @@ function pnlClass(n: number | null | undefined): string {
   return n > 0 ? "sa-pnl-pos" : "sa-pnl-neg";
 }
 
+function MoneyTR({
+  toman,
+  emphasize
+}: {
+  toman: number;
+  emphasize?: boolean;
+}) {
+  const rial = toman * 10;
+  return (
+    <span className={emphasize ? pnlClass(toman) : undefined}>
+      <TomanAmount value={toman} />
+      <span className="sa-sub">
+        {" "}
+        · <Bidi>{toFaDigits(Math.round(rial).toLocaleString("en-US"))}</Bidi> ریال
+      </span>
+    </span>
+  );
+}
+
 export function TradeDetailsPanel({ trade, context, open, onClose }: Props) {
   if (!open) return null;
   const v = buildTradeDetailsView(trade, context);
+  const p = v.profitability;
 
   return (
     <div className="sa-td-panel panel sa-panel" role="region" aria-label="جزئیات معامله">
@@ -80,6 +101,90 @@ export function TradeDetailsPanel({ trade, context, open, onClose }: Props) {
         </button>
       </div>
       <div className="panel-body sa-td-body">
+        <section className="sa-td-block sa-td-profit" aria-label="سودآوری">
+          <h5 className="sa-td-block-title">سودآوری (اقتصادی پس از کارمزد)</h5>
+          <p className="sa-sub sa-td-profit-note">
+            رقم اصلی سود اقتصادی خالص پس از کارمزد دو سمت است — نه جابه‌جایی نقدی. حجم هر معامله
+            اتمیک یک‌بار شمرده می‌شود. ریال = تومان × ۱۰ (فقط نمایش).
+          </p>
+          <dl className="sa-td-grid">
+            <div className="sa-td-row">
+              <dt>حجم معامله</dt>
+              <dd>
+                {p.sizeUsdt !== null && p.sizeUsdt > 0 ? (
+                  <Bidi>{toFaDigits(p.sizeUsdt.toFixed(4))} USDT</Bidi>
+                ) : (
+                  <span className="sa-unknown">{UNCOMPUTABLE_FA}</span>
+                )}
+              </dd>
+            </div>
+            <div className="sa-td-row">
+              <dt>سود ناخالص</dt>
+              <dd>
+                {p.grossProfit.ok ? (
+                  <MoneyTR toman={p.grossProfit.money.toman} emphasize />
+                ) : (
+                  <span className="sa-unknown" title={p.grossProfit.reasonFa}>
+                    {UNCOMPUTABLE_FA}
+                  </span>
+                )}
+              </dd>
+            </div>
+            <div className="sa-td-row">
+              <dt>مجموع کارمزد</dt>
+              <dd>
+                {p.totalFees.ok ? (
+                  <MoneyTR toman={p.totalFees.money.toman} />
+                ) : (
+                  <span className="sa-unknown" title={p.totalFees.reasonFa}>
+                    {UNCOMPUTABLE_FA}
+                  </span>
+                )}
+              </dd>
+            </div>
+            <div className="sa-td-row sa-td-row-highlight">
+              <dt>سود اقتصادی خالص</dt>
+              <dd>
+                {p.economicNet.ok ? (
+                  <MoneyTR toman={p.economicNet.money.toman} emphasize />
+                ) : (
+                  <span className="sa-unknown" title={p.economicNet.reasonFa}>
+                    {UNCOMPUTABLE_FA}
+                  </span>
+                )}
+              </dd>
+            </div>
+            <div className="sa-td-row">
+              <dt>سود به‌ازای هر ۱ تتر</dt>
+              <dd>
+                {p.profitPerUsdt.ok ? (
+                  <MoneyTR toman={p.profitPerUsdt.money.toman} emphasize />
+                ) : (
+                  <span className="sa-unknown" title={p.profitPerUsdt.reasonFa}>
+                    {UNCOMPUTABLE_FA}
+                  </span>
+                )}
+              </dd>
+            </div>
+            <div className="sa-td-row">
+              <dt>بازده خالص</dt>
+              <dd>
+                {p.netReturn.ok ? (
+                  <span className={pnlClass(p.netReturn.percent)}>
+                    <Bidi>{toFaDigits(p.netReturn.percent.toFixed(4))}٪</Bidi>
+                    {" · "}
+                    <Bidi>{toFaDigits(p.netReturn.bps.toFixed(2))}</Bidi> bps
+                  </span>
+                ) : (
+                  <span className="sa-unknown" title={p.netReturn.reasonFa}>
+                    {UNCOMPUTABLE_FA}
+                  </span>
+                )}
+              </dd>
+            </div>
+          </dl>
+        </section>
+
         <section className="sa-td-block" aria-label="زمان‌بندی">
           <h5 className="sa-td-block-title">زمان‌بندی</h5>
           <dl className="sa-td-grid">

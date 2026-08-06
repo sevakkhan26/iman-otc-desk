@@ -2179,7 +2179,13 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
       "src/lib/shadowArbitrage/paper/portfolioAllocator.ts",
       "src/lib/shadowArbitrage/paper/experimentBootstrap.ts",
       "src/db/repositories/shadowExperiments.ts",
-      "drizzle/0016_shadow_paper_experiments.sql"
+      "drizzle/0016_shadow_paper_experiments.sql",
+      /*
+       * Local trade-details observability: pure presentation models over the
+       * immutable paper ledger. No orders, credentials, migrations or engine.
+       */
+      "src/lib/shadowArbitrage/paper/tradeDetailsView.ts",
+      "src/lib/shadowArbitrage/paper/tradeProfitability.ts"
     ]);
     const changed = execFileSync("git", ["diff", "--name-only", baseline, "--", ...paths], {
       encoding: "utf8"

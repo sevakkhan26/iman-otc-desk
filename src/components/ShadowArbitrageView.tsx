@@ -537,6 +537,11 @@ export function ShadowArbitrageView() {
               }
               closedTrades={(paper?.trades ?? []) as never}
               loading={loading}
+              serverFilledCount={
+                paper?.ledgerPage?.total ??
+                paper?.stats?.filled ??
+                null
+              }
               experimentContext={
                 paper?.experiment
                   ? {

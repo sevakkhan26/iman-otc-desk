@@ -10,6 +10,16 @@ import {
   listMissingTradeEvidenceKeys,
   type ClosedTradeEvidence
 } from "../src/lib/shadowArbitrage/paper/tradeDetailsView.ts";
+import {
+  TOMAN_TO_RIAL,
+  UNCOMPUTABLE_FA,
+  experimentTotalsCoverage,
+  netProfitPerUsdt,
+  netReturnOnCapital,
+  summarizeTradeSet,
+  tomanToRial,
+  totalModeledFeeToman
+} from "../src/lib/shadowArbitrage/paper/tradeProfitability.ts";
 
 let passed = 0;
 let failed = 0;
@@ -167,6 +177,135 @@ test("does not invent buy price when VWAP null", () => {
   assert.equal(v.transaction.buyVwap.status, "missing");
   assert.equal(v.transaction.sellVwap.status, "missing");
   assert.equal(v.transaction.buyPrice.status, "missing");
+});
+
+test("toman-to-rial is ×10 presentation only", () => {
+  assert.equal(TOMAN_TO_RIAL, 10);
+  assert.equal(tomanToRial(1), 10);
+  assert.equal(tomanToRial(60_000), 600_000);
+  assert.equal(tomanToRial(-1.5), -15);
+});
+
+test("profit per USDT uses size once", () => {
+  assert.equal(netProfitPerUsdt(60_000, 100), 600);
+  assert.equal(netProfitPerUsdt(60_000, 0), null);
+  assert.equal(netProfitPerUsdt(null, 100), null);
+});
+
+test("net return percent and bps on buy notional", () => {
+  const r = netReturnOnCapital(60_000, 20_000_000);
+  assert.ok(r);
+  assert.equal(r!.percent, 0.3);
+  assert.equal(r!.bps, 30);
+  assert.equal(netReturnOnCapital(60_000, null), null);
+  assert.equal(netReturnOnCapital(60_000, 0), null);
+});
+
+test("no double-counting of two-leg volume in set summary", () => {
+  const s = summarizeTradeSet([
+    {
+      sizeUsdt: 100,
+      grossSpreadToman: 100_000,
+      feeTomanTotal: 20_000,
+      feeUsdtMicrosTotal: 0,
+      sellFeeValueToman: 0,
+      economicNetPnlToman: 60_000,
+      buyNotionalToman: 20_000_000
+    },
+    {
+      sizeUsdt: 50,
+      grossSpreadToman: 40_000,
+      feeTomanTotal: 5_000,
+      feeUsdtMicrosTotal: 0,
+      sellFeeValueToman: 0,
+      economicNetPnlToman: 30_000,
+      buyNotionalToman: 10_000_000
+    }
+  ]);
+  // 100 + 50, not 100*2 + 50*2
+  assert.equal(s.volumeUsdt, 150);
+  assert.equal(s.tradeCount, 2);
+  assert.equal(s.economicNet.ok && s.economicNet.money.toman, 90_000);
+  assert.equal(s.profitableCount, 2);
+});
+
+test("zero volume and missing fee handling", () => {
+  assert.equal(netProfitPerUsdt(10, 0), null);
+  const feeMissing = totalModeledFeeToman({
+    feeTomanTotal: 1000,
+    feeUsdtMicrosTotal: 50_000,
+    sellFeeValueToman: null
+  });
+  assert.equal(feeMissing.ok, false);
+  if (!feeMissing.ok) assert.ok(feeMissing.reasonFa.includes(UNCOMPUTABLE_FA));
+
+  const feeOk = totalModeledFeeToman({
+    feeTomanTotal: 1000,
+    feeUsdtMicrosTotal: 50_000,
+    sellFeeValueToman: 2000
+  });
+  assert.equal(feeOk.ok, true);
+  if (feeOk.ok) assert.equal(feeOk.toman, 3000);
+
+  const s = summarizeTradeSet([
+    {
+      sizeUsdt: 10,
+      grossSpreadToman: 100,
+      feeTomanTotal: 1,
+      feeUsdtMicrosTotal: 1000,
+      sellFeeValueToman: null,
+      economicNetPnlToman: -5,
+      buyNotionalToman: 1000
+    }
+  ]);
+  assert.equal(s.totalFees.ok, false);
+  assert.equal(s.losingCount, 1);
+});
+
+test("complete-run totals vs page: coverage gap when loaded < server", () => {
+  const gap = experimentTotalsCoverage({ loadedFilledCount: 20, serverFilledCount: 100 });
+  assert.equal(gap.complete, false);
+  assert.ok(gap.gapFa && gap.gapFa.includes("20"));
+  assert.ok(gap.gapFa && gap.gapFa.includes("100"));
+
+  const ok = experimentTotalsCoverage({ loadedFilledCount: 100, serverFilledCount: 100 });
+  assert.equal(ok.complete, true);
+  assert.equal(ok.gapFa, null);
+
+  const unknown = experimentTotalsCoverage({ loadedFilledCount: 50, serverFilledCount: null });
+  assert.equal(unknown.complete, false);
+});
+
+test("profitability on detail view prefers economic net", () => {
+  const v = buildTradeDetailsView(sample);
+  assert.ok(v.profitability.economicNet.ok);
+  if (v.profitability.economicNet.ok) {
+    assert.equal(v.profitability.economicNet.money.toman, 60_000);
+    assert.equal(v.profitability.economicNet.money.rial, 600_000);
+  }
+  assert.ok(v.profitability.profitPerUsdt.ok);
+  if (v.profitability.profitPerUsdt.ok) {
+    assert.equal(v.profitability.profitPerUsdt.money.toman, 600);
+  }
+});
+
+test("filter summary is independent of page slice size", () => {
+  const trades = Array.from({ length: 25 }, (_, i) => ({
+    sizeUsdt: 10,
+    grossSpreadToman: 1000,
+    feeTomanTotal: 100,
+    feeUsdtMicrosTotal: 0,
+    sellFeeValueToman: 0,
+    economicNetPnlToman: i % 2 === 0 ? 500 : -200,
+    buyNotionalToman: 100_000
+  }));
+  const full = summarizeTradeSet(trades);
+  const page = summarizeTradeSet(trades.slice(0, 20));
+  assert.equal(full.tradeCount, 25);
+  assert.equal(page.tradeCount, 20);
+  assert.notEqual(full.volumeUsdt, page.volumeUsdt);
+  assert.equal(full.volumeUsdt, 250);
+  assert.equal(page.volumeUsdt, 200);
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

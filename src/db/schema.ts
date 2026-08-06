@@ -951,6 +951,46 @@ export const shadowPaperCycleSummaries = pgTable(
 );
 
 /**
+ * Append-only per-cycle decision traces for the live decision monitor.
+ * Written after evaluation when SHADOW_DECISION_TRACE is enabled; never
+ * influences ranking or fills. Historical cycles before this table have only
+ * cycle summaries without full candidate arrays.
+ */
+export const shadowPaperDecisionTraces = pgTable(
+  "shadow_paper_decision_traces",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: uuid("session_id").notNull(),
+    runId: uuid("run_id"),
+    occurredAt: ts("occurred_at").notNull(),
+    venuesAvailable: integer("venues_available").notNull().default(0),
+    routesEvaluated: integer("routes_evaluated").notNull().default(0),
+    sizesEvaluated: integer("sizes_evaluated").notNull().default(0),
+    candidatesEvaluated: integer("candidates_evaluated").notNull().default(0),
+    rejectedCount: integer("rejected_count").notNull().default(0),
+    validCount: integer("valid_count").notNull().default(0),
+    selectedCount: integer("selected_count").notNull().default(0),
+    filledCount: integer("filled_count").notNull().default(0),
+    outcome: text("outcome").notNull(),
+    outcomeReasonFa: text("outcome_reason_fa"),
+    selectedLifecycleId: text("selected_lifecycle_id"),
+    snapshotRef: text("snapshot_ref"),
+    releaseVersion: text("release_version"),
+    policyFingerprint: text("policy_fingerprint"),
+    candidates: jsonb("candidates")
+      .$type<Array<Record<string, unknown>>>()
+      .notNull()
+      .default([]),
+    traceComplete: boolean("trace_complete").notNull().default(false),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [
+    index("shadow_paper_decision_traces_session_time_idx").on(t.sessionId, t.occurredAt),
+    index("shadow_paper_decision_traces_run_idx").on(t.runId)
+  ]
+);
+
+/**
  * Four-day Paper experiment runs — permanent, append-oriented status machine.
  * endsAt is frozen at activation; restarts never extend the deadline.
  * At most one ACTIVE row (enforced by partial unique index in migration).

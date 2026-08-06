@@ -55,7 +55,9 @@
     "test:venue-depth": "npx --yes tsx scripts/test-venue-depth-view.mts",
     "test:paper-4d": "npx --yes tsx scripts/test-paper-4d-experiment.mts",
     "test:trade-details": "npx --yes tsx scripts/test-trade-details.mts",
-    "report:paper-experiment-audit": "npx --yes tsx scripts/report-paper-experiment-audit.mts"
+    "report:paper-experiment-audit": "npx --yes tsx scripts/report-paper-experiment-audit.mts",
+    "test:decision-monitor": "npx --yes tsx scripts/test-decision-monitor.mts",
+    "seed:local-paper-100m": "npx --yes tsx scripts/seed-local-paper-100m.mts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.4",

@@ -18,6 +18,7 @@ import { useMemo } from "react";
 import { TomanAmount } from "@/components/TomanAmount";
 import { formatTehran } from "@/components/format";
 import { Bidi } from "@/components/shadowArbitrage/Bidi";
+import { DecisionMonitor } from "@/components/shadowArbitrage/DecisionMonitor";
 import { toFaDigits } from "@/components/shadowArbitrage/labels";
 import { reasonLabel } from "@/lib/shadowArbitrage/paper/reasons";
 import { readInt, useShadowViewState } from "@/components/shadowArbitrage/urlState";
@@ -115,6 +116,7 @@ export function ActivityDecisions({
   loading
 }: Props) {
   const { read, write } = useShadowViewState();
+  const showMonitor = read("adm", "1") !== "0";
 
   const venue = read("av", "all");
   const outcome = read("ao", "all");
@@ -170,6 +172,16 @@ export function ActivityDecisions({
 
   return (
     <div className="sa-stack">
+      {showMonitor ? <DecisionMonitor /> : null}
+      <div className="sa-ad-filters">
+        <button
+          type="button"
+          className={`sa-seg${showMonitor ? " is-active glass-control" : ""}`}
+          onClick={() => write({ adm: showMonitor ? "0" : "1" })}
+        >
+          {showMonitor ? "پنهان‌کردن مانیتور زنده" : "مانیتور زنده تصمیم‌گیری"}
+        </button>
+      </div>
       {/* ── session and headline counts ──────────────────────────────────── */}
       <section className="panel sa-panel" aria-label="وضعیت نشست کاغذی">
         <div className="panel-header sa-panel-header">

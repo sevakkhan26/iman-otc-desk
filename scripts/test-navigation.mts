@@ -2185,7 +2185,10 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
        * immutable paper ledger. No orders, credentials, migrations or engine.
        */
       "src/lib/shadowArbitrage/paper/tradeDetailsView.ts",
-      "src/lib/shadowArbitrage/paper/tradeProfitability.ts"
+      "src/lib/shadowArbitrage/paper/tradeProfitability.ts",
+      "src/lib/shadowArbitrage/paper/decisionTraceCapture.ts",
+      "src/db/repositories/shadowDecisionTraces.ts",
+      "drizzle/0017_shadow_paper_decision_traces.sql"
     ]);
     const changed = execFileSync("git", ["diff", "--name-only", baseline, "--", ...paths], {
       encoding: "utf8"

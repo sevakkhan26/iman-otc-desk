@@ -1,0 +1,112 @@
+/* ── Decision monitor terminal (layout + terminal palette only) ─────────── */
+.sa-term-toolbar {
+  display: grid;
+  gap: 10px;
+}
+.sa-term-counters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.sa-term-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.sa-term-search {
+  min-width: 160px;
+  flex: 1 1 160px;
+}
+.sa-term {
+  background: #0b0f0c;
+  color: #c8d0c8;
+  border: 1px solid #1e2a22;
+  border-radius: var(--radius-md, 14px);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  height: 420px;
+  overflow: auto;
+  direction: ltr;
+  text-align: left;
+  padding: 8px 0;
+}
+.sa-term-row {
+  border-bottom: 1px solid #152018;
+}
+.sa-term-line {
+  display: grid;
+  grid-template-columns: 150px 72px minmax(0, 1fr) 120px;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.sa-term-row--neutral .sa-term-line {
+  color: #9aa89a;
+}
+.sa-term-row--amber .sa-term-line {
+  color: #e0b15a;
+}
+.sa-term-row--reject .sa-term-line {
+  color: #e07a7a;
+}
+.sa-term-row--valid .sa-term-line {
+  color: #6ecf8e;
+}
+.sa-term-row--traded .sa-term-line {
+  color: #3dff8a;
+  font-weight: 700;
+}
+.sa-term-check {
+  color: #3dff8a;
+  font-weight: 800;
+}
+.sa-term-expand {
+  padding: 8px 12px 12px;
+  background: #080c09;
+  border-top: 1px solid #1a241c;
+  direction: rtl;
+  text-align: right;
+  font-family: var(--font-persian, "IRANYekan", system-ui, sans-serif);
+  font-size: 12px;
+  color: #b8c4b8;
+}
+.sa-term-missing {
+  color: #e0b15a;
+  margin: 0 0 8px;
+}
+.sa-term-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  direction: ltr;
+  text-align: left;
+}
+.sa-term-table th,
+.sa-term-table td {
+  border-bottom: 1px solid #1a241c;
+  padding: 4px 6px;
+  vertical-align: top;
+}
+.sa-term-reason {
+  max-width: 280px;
+  overflow-wrap: anywhere;
+}
+.sa-term-empty {
+  padding: 16px;
+  color: #6a7a6a;
+}
+@media (max-width: 768px) {
+  .sa-term-line {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+

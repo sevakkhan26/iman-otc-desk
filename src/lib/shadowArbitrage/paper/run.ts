@@ -352,6 +352,77 @@ export async function runPaperExecutionForCycle(input: {
     }
   }
 
+  /*
+   * Append-only decision trace (observability). Written AFTER evaluation and
+   * commit so it cannot influence ranking, sizing or fills. Failures are
+   * swallowed and must never alter the paper outcome. Gated by
+   * SHADOW_DECISION_TRACE / non-production default.
+   */
+  try {
+    const { decisionTraceEnabled, appendDecisionTrace } = await import(
+      "@/db/repositories/shadowDecisionTraces"
+    );
+    if (decisionTraceEnabled()) {
+      const { buildCandidateTraces, cycleOutcomeFromTraces } = await import(
+        "@/lib/shadowArbitrage/paper/decisionTraceCapture"
+      );
+      const filledIds = new Set(fills.map((f) => f.lifecycleId));
+      const candidates = buildCandidateTraces({
+        decisions: evaluation.decisions,
+        evaluation,
+        filledLifecycleIds: filledIds,
+        venueCount: input.sources.length
+      });
+      const { outcome, reasonFa } = cycleOutcomeFromTraces(candidates, committed.filled);
+      const selected = candidates.find((c) => c.selected);
+      const routes = new Set(candidates.map((c) => c.routeKey)).size;
+      const sizes = new Set(candidates.map((c) => c.sizeUsdt)).size;
+      let releaseVersion: string | null = null;
+      let policyFingerprint: string | null = null;
+      try {
+        const appVersion = (await import("../../../../version.json")).default as {
+          appVersion: string;
+        };
+        releaseVersion = appVersion.appVersion;
+      } catch {
+        /* optional */
+      }
+      if (activeExperimentId) {
+        try {
+          const { getActiveExperiment } = await import("@/db/repositories/shadowExperiments");
+          const exp = await getActiveExperiment();
+          policyFingerprint = exp?.policyFingerprint ?? null;
+          if (exp?.releaseVersion) releaseVersion = exp.releaseVersion;
+        } catch {
+          /* optional */
+        }
+      }
+      const written = await appendDecisionTrace({
+        sessionId: session.id,
+        runId: input.runId,
+        occurredAt: input.occurredAt,
+        venuesAvailable: input.sources.length,
+        routesEvaluated: routes,
+        sizesEvaluated: sizes,
+        candidates,
+        selectedLifecycleId: selected?.lifecycleId ?? null,
+        filledCount: committed.filled,
+        outcome,
+        outcomeReasonFa: reasonFa,
+        snapshotRef: input.runId,
+        releaseVersion,
+        policyFingerprint,
+        traceComplete: true
+      });
+      if ("error" in written) {
+        // Visible only in logs — never mutates the decision.
+        console.warn("[shadow-paper] decision trace append failed", written.error);
+      }
+    }
+  } catch {
+    /* never take down paper execution */
+  }
+
   return {
     ran: true,
     sessionId: session.id,

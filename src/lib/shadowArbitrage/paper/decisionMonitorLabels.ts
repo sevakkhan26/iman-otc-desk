@@ -171,3 +171,271 @@ export function formatAgeFa(ms: number): string {
   const h = Math.floor(m / 60);
   return `${toFaDigits(h)} ساعت پیش`;
 }
+
+/** HH:mm:ss in Asia/Tehran with Persian digits (for terminal lines). */
+export function formatTerminalClockFa(iso: string): string {
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return "——:——:——";
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Tehran",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).formatToParts(d);
+  const h = parts.find((p) => p.type === "hour")?.value ?? "00";
+  const m = parts.find((p) => p.type === "minute")?.value ?? "00";
+  const s = parts.find((p) => p.type === "second")?.value ?? "00";
+  return toFaDigits(`${h}:${m}:${s}`);
+}
+
+function fmtAmt(n: number): string {
+  return toFaDigits(Math.round(n).toLocaleString("en-US"));
+}
+
+export type TerminalLineTone = "normal" | "reject" | "valid" | "trade" | "warn";
+
+export type TerminalLineModel = {
+  id: string;
+  kind: "candidate" | "summary" | "trade" | "missing";
+  tone: TerminalLineTone;
+  /** Primary compact line text (Persian, no cryptic eng counters). */
+  text: string;
+  /** Collapsed technical dump when the line is opened. */
+  tech: string | null;
+};
+
+/**
+ * One compact terminal line for a candidate evaluation.
+ * Example:
+ * `۱۸:۴۲:۱۱ | خرید از ارزینجا → فروش در تبدیل | ۷۰٫۸۳ USDT | ناخالص ۵۳,۱۲۷ | کارمزد ۳۶,۹۸۱ | خالص +۱۶,۱۴۶ تومان | معتبر`
+ */
+export function candidateTerminalLine(input: {
+  occurredAt: string;
+  buySourceId: string;
+  sellSourceId: string;
+  sizeUsdt: number;
+  grossSpreadToman: number | null;
+  feeTomanTotal: number | null;
+  economicNetPnlToman: number | null;
+  status: string;
+  reasonFa: string | null;
+  ledgerId: string | null;
+}): { text: string; tone: TerminalLineTone } {
+  const clock = formatTerminalClockFa(input.occurredAt);
+  const buy = venueNameFa(input.buySourceId);
+  const sell = venueNameFa(input.sellSourceId);
+  const vol = toFaDigits(
+    Number.isInteger(input.sizeUsdt)
+      ? String(input.sizeUsdt)
+      : input.sizeUsdt.toFixed(2)
+  );
+  const route = `خرید از ${buy} → فروش در ${sell}`;
+
+  // Bright checkmark only for linked completed Paper trades.
+  if (input.status === "traded" && input.ledgerId) {
+    const net =
+      input.economicNetPnlToman != null
+        ? `سود خالص ${fmtAmt(input.economicNetPnlToman)} تومان`
+        : "سود خالص ثبت نشده";
+    return {
+      tone: "trade",
+      text: `✓ معامله شد | ${route} | حجم ${vol} USDT | ${net}`
+    };
+  }
+
+  if (input.status === "traded" && !input.ledgerId) {
+    return {
+      tone: "valid",
+      text: `${clock} | ${route} | ${vol} USDT | انتخاب شد؛ اجرا تکمیل نشد`
+    };
+  }
+
+  if (input.status === "rejected") {
+    const reason = input.reasonFa?.trim() || "دلیل ثبت نشده";
+    const netPart =
+      input.economicNetPnlToman != null && input.economicNetPnlToman <= 0
+        ? "خالص منفی"
+        : input.economicNetPnlToman != null
+          ? `خالص ${fmtAmt(input.economicNetPnlToman)}`
+          : input.grossSpreadToman != null
+            ? `ناخالص ${fmtAmt(input.grossSpreadToman)}`
+            : "خالص ثبت نشده";
+    return {
+      tone: "reject",
+      text: `${clock} | ${route} | ${vol} USDT | ${netPart} | رد شد: ${reason}`
+    };
+  }
+
+  const gross =
+    input.grossSpreadToman != null ? `ناخالص ${fmtAmt(input.grossSpreadToman)}` : "ناخالص —";
+  const fee =
+    input.feeTomanTotal != null ? `کارمزد ${fmtAmt(input.feeTomanTotal)}` : "کارمزد —";
+  let net: string;
+  if (input.economicNetPnlToman == null) net = "خالص —";
+  else if (input.economicNetPnlToman > 0)
+    net = `خالص +${fmtAmt(input.economicNetPnlToman)} تومان`;
+  else if (input.economicNetPnlToman < 0)
+    net = `خالص ${fmtAmt(input.economicNetPnlToman)} تومان`;
+  else net = "خالص ۰ تومان";
+
+  const statusFa = candidateStatusLabelFa(input.status);
+  const tone: TerminalLineTone =
+    input.status === "valid" || input.status === "selected" ? "valid" : "normal";
+
+  return {
+    tone,
+    text: `${clock} | ${route} | ${vol} USDT | ${gross} | ${fee} | ${net} | ${statusFa}`
+  };
+}
+
+/** Final cycle summary line for the terminal. */
+export function cycleSummaryTerminalLine(input: {
+  cycleId: string;
+  candidatesEvaluated: number;
+  rejectedCount: number;
+  validCount: number;
+  selectedCount: number;
+  filledCount: number;
+  traceComplete: boolean;
+  source: string;
+}): { text: string; tone: TerminalLineTone } {
+  const shortId = input.cycleId.slice(0, 8);
+  if (!input.traceComplete || input.source === "cycle_summary_only") {
+    return {
+      tone: "warn",
+      text: `چرخه ${shortId} تمام شد | جزئیات کامل این چرخه ثبت نشده است | ${toFaDigits(input.candidatesEvaluated)} شمارندهٔ خلاصه`
+    };
+  }
+  const tradePart =
+    input.filledCount > 0
+      ? `${toFaDigits(input.filledCount)} معامله انجام شد`
+      : "معامله‌ای انجام نشد";
+  const selectedPart =
+    input.selectedCount > 0
+      ? ` | ${toFaDigits(input.selectedCount)} انتخاب‌شده`
+      : "";
+  return {
+    tone: input.filledCount > 0 ? "trade" : "normal",
+    text: `چرخه ${shortId} تمام شد | ${toFaDigits(input.candidatesEvaluated)} مسیر بررسی شد | ${toFaDigits(input.rejectedCount)} رد شد | ${toFaDigits(input.validCount)} معتبر${selectedPart} | ${tradePart}`
+  };
+}
+
+/** Expand API cycle rows (newest-first) into chronological terminal lines. */
+export function cyclesToTerminalLines(
+  cycles: Array<{
+    id: string;
+    occurredAt: string;
+    candidatesEvaluated: number;
+    rejectedCount: number;
+    validCount: number;
+    selectedCount: number;
+    filledCount: number;
+    traceComplete: boolean;
+    source: string;
+    candidates: Array<{
+      rank: number;
+      lifecycleId: string;
+      buySourceId: string;
+      sellSourceId: string;
+      sizeUsdt: number;
+      grossSpreadToman: number | null;
+      feeTomanTotal: number | null;
+      economicNetPnlToman: number | null;
+      status: string;
+      reasonFa: string | null;
+      ledgerId: string | null;
+      routeKey: string;
+      reasonCodes: string[];
+      buyVwapToman: number | null;
+      sellVwapToman: number | null;
+      buyFeeBps: number | null;
+      sellFeeBps: number | null;
+      capitalCapUsdt: number | null;
+      depthCapUsdt: number | null;
+      bindingConstraint: string | null;
+    }>;
+  }>
+): TerminalLineModel[] {
+  // Chronological: oldest first so newest is at the bottom of the terminal.
+  const ordered = [...cycles].sort(
+    (a, b) => Date.parse(a.occurredAt) - Date.parse(b.occurredAt)
+  );
+  const out: TerminalLineModel[] = [];
+  for (const cyc of ordered) {
+    if (!cyc.traceComplete || cyc.source === "cycle_summary_only" || !cyc.candidates.length) {
+      const sum = cycleSummaryTerminalLine({
+        cycleId: cyc.id,
+        candidatesEvaluated: cyc.candidatesEvaluated,
+        rejectedCount: cyc.rejectedCount,
+        validCount: cyc.validCount,
+        selectedCount: cyc.selectedCount,
+        filledCount: cyc.filledCount,
+        traceComplete: cyc.traceComplete,
+        source: cyc.source
+      });
+      out.push({
+        id: `${cyc.id}:summary`,
+        kind: "missing",
+        tone: sum.tone,
+        text: sum.text,
+        tech: `cycle=${cyc.id} occurredAt=${cyc.occurredAt} source=${cyc.source}`
+      });
+      continue;
+    }
+    const sorted = [...cyc.candidates].sort((a, b) => a.rank - b.rank);
+    for (const c of sorted) {
+      const line = candidateTerminalLine({
+        occurredAt: cyc.occurredAt,
+        buySourceId: c.buySourceId,
+        sellSourceId: c.sellSourceId,
+        sizeUsdt: c.sizeUsdt,
+        grossSpreadToman: c.grossSpreadToman,
+        feeTomanTotal: c.feeTomanTotal,
+        economicNetPnlToman: c.economicNetPnlToman,
+        status: c.status,
+        reasonFa: c.reasonFa,
+        ledgerId: c.ledgerId
+      });
+      out.push({
+        id: `${cyc.id}:c${c.rank}:${c.lifecycleId}`,
+        kind: c.status === "traded" && c.ledgerId ? "trade" : "candidate",
+        tone: line.tone,
+        text: line.text,
+        tech: [
+          `lifecycle=${c.lifecycleId}`,
+          `route=${c.routeKey}`,
+          c.reasonCodes?.length ? `codes=${c.reasonCodes.join(",")}` : null,
+          c.buyVwapToman != null ? `buyVwap=${c.buyVwapToman}` : null,
+          c.sellVwapToman != null ? `sellVwap=${c.sellVwapToman}` : null,
+          c.buyFeeBps != null ? `buyFeeBps=${c.buyFeeBps}` : null,
+          c.sellFeeBps != null ? `sellFeeBps=${c.sellFeeBps}` : null,
+          c.capitalCapUsdt != null ? `capitalCap=${c.capitalCapUsdt}` : null,
+          c.depthCapUsdt != null ? `depthCap=${c.depthCapUsdt}` : null,
+          c.bindingConstraint ? `binding=${c.bindingConstraint}` : null,
+          c.ledgerId ? `ledger=${c.ledgerId}` : null
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      });
+    }
+    const sum = cycleSummaryTerminalLine({
+      cycleId: cyc.id,
+      candidatesEvaluated: cyc.candidatesEvaluated,
+      rejectedCount: cyc.rejectedCount,
+      validCount: cyc.validCount,
+      selectedCount: cyc.selectedCount,
+      filledCount: cyc.filledCount,
+      traceComplete: cyc.traceComplete,
+      source: cyc.source
+    });
+    out.push({
+      id: `${cyc.id}:summary`,
+      kind: "summary",
+      tone: sum.tone,
+      text: sum.text,
+      tech: `cycle=${cyc.id} occurredAt=${cyc.occurredAt}`
+    });
+  }
+  return out;
+}

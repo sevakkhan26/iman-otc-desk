@@ -13,7 +13,10 @@ import {
 } from "../src/lib/shadowArbitrage/paper/decisionTraceCapture.ts";
 import type { PaperDecision } from "../src/lib/shadowArbitrage/paper/engine.ts";
 import {
+  candidateTerminalLine,
   cycleCountsSentenceFa,
+  cycleSummaryTerminalLine,
+  cyclesToTerminalLines,
   outcomeLabelFa
 } from "../src/lib/shadowArbitrage/paper/decisionMonitorLabels.ts";
 
@@ -56,6 +59,150 @@ await test("Persian outcome and cycle sentence are readable", () => {
   assert.ok(s.includes("معامله‌ای انجام نشد"));
   assert.equal(s.includes("cand="), false);
   assert.equal(s.includes("all_rejected"), false);
+});
+
+await test("terminal candidate and cycle lines are compact Persian", () => {
+  const rejected = candidateTerminalLine({
+    occurredAt: "2026-08-06T15:12:00.000Z",
+    buySourceId: "bitpin",
+    sellSourceId: "wallex",
+    sizeUsdt: 50,
+    grossSpreadToman: 100,
+    feeTomanTotal: 200,
+    economicNetPnlToman: -50,
+    status: "rejected",
+    reasonFa: "کارمزد بیشتر از سود",
+    ledgerId: null
+  });
+  assert.equal(rejected.tone, "reject");
+  assert.ok(rejected.text.includes("رد شد"));
+  assert.ok(rejected.text.includes("خرید از"));
+  assert.equal(rejected.text.includes("cand="), false);
+  assert.equal(rejected.text.includes("all_rejected"), false);
+
+  const valid = candidateTerminalLine({
+    occurredAt: "2026-08-06T15:12:01.000Z",
+    buySourceId: "arzinja",
+    sellSourceId: "tabdeal",
+    sizeUsdt: 70.83,
+    grossSpreadToman: 53127,
+    feeTomanTotal: 36981,
+    economicNetPnlToman: 16146,
+    status: "valid",
+    reasonFa: null,
+    ledgerId: null
+  });
+  assert.equal(valid.tone, "valid");
+  assert.ok(valid.text.includes("معتبر"));
+  assert.ok(valid.text.includes("ناخالص"));
+
+  const traded = candidateTerminalLine({
+    occurredAt: "2026-08-06T15:12:02.000Z",
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    sizeUsdt: 25,
+    grossSpreadToman: 5000,
+    feeTomanTotal: 1000,
+    economicNetPnlToman: 4000,
+    status: "traded",
+    reasonFa: null,
+    ledgerId: "ledger-1"
+  });
+  assert.equal(traded.tone, "trade");
+  assert.ok(traded.text.startsWith("✓ معامله شد"));
+
+  // No ledger → never claim completed trade checkmark line.
+  const fakeTrade = candidateTerminalLine({
+    occurredAt: "2026-08-06T15:12:02.000Z",
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    sizeUsdt: 25,
+    grossSpreadToman: 5000,
+    feeTomanTotal: 1000,
+    economicNetPnlToman: 4000,
+    status: "traded",
+    reasonFa: null,
+    ledgerId: null
+  });
+  assert.equal(fakeTrade.text.startsWith("✓ معامله شد"), false);
+
+  const sum = cycleSummaryTerminalLine({
+    cycleId: "8d9dde5a-ffff-1111-2222-333333333333",
+    candidatesEvaluated: 76,
+    rejectedCount: 75,
+    validCount: 1,
+    selectedCount: 0,
+    filledCount: 0,
+    traceComplete: true,
+    source: "decision_trace"
+  });
+  assert.ok(sum.text.includes("چرخه 8d9dde5a تمام شد"));
+  assert.ok(sum.text.includes("مسیر بررسی شد"));
+  assert.ok(sum.text.includes("معامله‌ای انجام نشد"));
+  assert.equal(sum.text.includes("all_rejected"), false);
+
+  const lines = cyclesToTerminalLines([
+    {
+      id: "cyc-1",
+      occurredAt: "2026-08-06T15:00:00.000Z",
+      candidatesEvaluated: 2,
+      rejectedCount: 1,
+      validCount: 1,
+      selectedCount: 0,
+      filledCount: 0,
+      traceComplete: true,
+      source: "decision_trace",
+      candidates: [
+        {
+          rank: 1,
+          lifecycleId: "L1",
+          buySourceId: "bitpin",
+          sellSourceId: "wallex",
+          sizeUsdt: 50,
+          grossSpreadToman: null,
+          feeTomanTotal: null,
+          economicNetPnlToman: -1,
+          status: "rejected",
+          reasonFa: "کارمزد تأییدنشده",
+          ledgerId: null,
+          routeKey: "bitpin->wallex@50",
+          reasonCodes: ["fee_unknown"],
+          buyVwapToman: 100,
+          sellVwapToman: 101,
+          buyFeeBps: null,
+          sellFeeBps: null,
+          capitalCapUsdt: null,
+          depthCapUsdt: null,
+          bindingConstraint: null
+        },
+        {
+          rank: 2,
+          lifecycleId: "L2",
+          buySourceId: "arzinja",
+          sellSourceId: "tabdeal",
+          sizeUsdt: 10,
+          grossSpreadToman: 1000,
+          feeTomanTotal: 100,
+          economicNetPnlToman: 900,
+          status: "valid",
+          reasonFa: null,
+          ledgerId: null,
+          routeKey: "arzinja->tabdeal@10",
+          reasonCodes: [],
+          buyVwapToman: 100,
+          sellVwapToman: 110,
+          buyFeeBps: 10,
+          sellFeeBps: 10,
+          capitalCapUsdt: 50,
+          depthCapUsdt: 20,
+          bindingConstraint: null
+        }
+      ]
+    }
+  ]);
+  assert.equal(lines.length, 3); // 2 candidates + 1 summary
+  assert.equal(lines[2]!.kind, "summary");
+  assert.ok(lines.every((l) => !l.text.includes("cand=") && !l.text.includes("all_rejected")));
 });
 
 await test("candidate ranks and statuses map without inventing trades", () => {

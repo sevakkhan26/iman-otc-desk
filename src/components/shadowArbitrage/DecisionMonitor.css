@@ -1,414 +1,246 @@
-/* Full-page decision console — local observability only.
- * Black canvas for the feed; rest of app keeps shared tokens in Shell. */
+/* Minimal live decision terminal — macOS-style black console. */
 
-.sa-dm-page {
+.sa-term-page {
   display: flex;
   flex-direction: column;
   min-height: calc(100vh - 72px);
   min-height: calc(100dvh - 72px);
-  background: #0a0d0b;
-  color: #e6ebe6;
+  height: calc(100dvh - 72px);
+  max-height: calc(100dvh - 72px);
+  background: #000000;
+  color: #d4d4d4;
   margin: -12px -16px 0;
   padding: 0;
   min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-persian, "IRANYekan", system-ui, sans-serif);
 }
 
-.sa-dm-sticky-bar {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  background: #0e1310;
-  border-bottom: 1px solid #1c2820;
-  padding: 10px 16px 12px;
-  display: grid;
-  gap: 10px;
-}
-
-.sa-dm-title-row {
+.sa-term-bar {
+  flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 8px 12px;
+  padding: 6px 12px;
+  background: #0a0a0a;
+  border-bottom: 1px solid #1a1a1a;
+  z-index: 5;
 }
 
-.sa-dm-title {
-  margin: 0;
-  font-family: var(--font-persian, "IRANYekan", system-ui, sans-serif);
-  font-size: 18px;
-  font-weight: 800;
-  color: #f2f7f2;
+.sa-term-bar-left,
+.sa-term-bar-right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
 }
 
-.sa-dm-live {
+.sa-term-back {
+  color: #6e6e6e;
+  text-decoration: none;
+  font-size: 12px;
+}
+
+.sa-term-back:hover {
+  color: #b0b0b0;
+}
+
+.sa-term-live {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-family: var(--font-persian, "IRANYekan", system-ui, sans-serif);
   font-size: 12px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid #2a3a30;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
-.sa-dm-live--on {
+.sa-term-live--on {
   color: #3dff8a;
-  border-color: #1a5c38;
 }
 
-.sa-dm-live--stale {
+.sa-term-live--stale {
   color: #e0b15a;
-  border-color: #5c4a1a;
 }
 
-.sa-dm-live--off {
+.sa-term-live--off {
   color: #e07a7a;
-  border-color: #5c1a1a;
 }
 
-.sa-dm-dot {
+.sa-term-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: currentColor;
-  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 25%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 30%, transparent);
 }
 
-.sa-dm-latest {
-  font-family: var(--font-persian, "IRANYekan", system-ui, sans-serif);
-  background: #121a15;
-  border: 1px solid #243028;
-  border-radius: 12px;
-  padding: 12px 14px;
-  display: grid;
-  gap: 8px;
+.sa-term-session {
+  font-size: 11px;
+  color: #6e6e6e;
 }
 
-.sa-dm-latest-head {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 16px;
-  align-items: baseline;
-  justify-content: space-between;
-}
-
-.sa-dm-latest-label {
-  font-size: 12px;
-  color: #8fa090;
-}
-
-.sa-dm-latest-time {
-  font-size: 16px;
-  font-weight: 700;
-  color: #f2f7f2;
-}
-
-.sa-dm-latest-stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 14px;
-  font-size: 13px;
-  line-height: 1.7;
-  color: #c8d4c8;
-}
-
-.sa-dm-latest-reason {
-  font-size: 13px;
-  color: #e0b15a;
-  line-height: 1.7;
-}
-
-.sa-dm-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  font-family: var(--font-persian, "IRANYekan", system-ui, sans-serif);
-}
-
-.sa-dm-toolbar .sa-control,
-.sa-dm-toolbar input,
-.sa-dm-toolbar select,
-.sa-dm-toolbar button {
+.sa-term-btn {
   font-family: inherit;
   font-size: 12px;
-  min-height: 34px;
-}
-
-.sa-dm-seg {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 2px;
-  border: 1px solid #243028;
-  border-radius: 10px;
-  background: #0c100e;
-}
-
-.sa-dm-seg button {
-  border: 0;
-  background: transparent;
-  color: #9aab9a;
-  padding: 6px 10px;
-  border-radius: 8px;
+  font-weight: 600;
+  color: #c8c8c8;
+  background: #141414;
+  border: 1px solid #2a2a2a;
+  border-radius: 6px;
+  padding: 4px 12px;
+  min-height: 28px;
   cursor: pointer;
 }
 
-.sa-dm-seg button.is-active {
-  background: #1a2e22;
-  color: #e8f5e8;
+.sa-term-btn:hover {
+  background: #1c1c1c;
+  color: #fff;
 }
 
-.sa-dm-new-badge {
-  position: sticky;
-  top: 4px;
-  z-index: 15;
-  margin: 8px auto;
-  display: inline-flex;
-  align-self: center;
-  font-family: var(--font-persian, "IRANYekan", system-ui, sans-serif);
-  font-size: 13px;
+.sa-term-badge {
+  font-family: inherit;
+  font-size: 12px;
   font-weight: 700;
-  color: #0a0d0b;
+  color: #0a0a0a;
   background: #3dff8a;
   border: 0;
   border-radius: 999px;
-  padding: 8px 16px;
+  padding: 5px 12px;
   cursor: pointer;
-  box-shadow: 0 4px 20px rgba(61, 255, 138, 0.25);
+  white-space: nowrap;
 }
 
-.sa-dm-feed {
-  flex: 1;
+.sa-term-scroll {
+  flex: 1 1 auto;
   min-height: 0;
-  padding: 8px 12px 32px;
-  font-family: var(--font-persian, "IRANYekan", system-ui, sans-serif);
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 8px 12px 24px;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
-.sa-dm-cycle {
-  border: 1px solid #1c2820;
-  border-radius: 12px;
-  margin-bottom: 10px;
-  background: #0f1411;
-  overflow: hidden;
+.sa-term-row {
+  display: block;
 }
 
-.sa-dm-cycle-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
+.sa-term-line {
+  display: block;
   width: 100%;
-  padding: 12px 14px;
+  margin: 0;
+  padding: 4px 0;
   border: 0;
   background: transparent;
-  color: #e6ebe6;
-  text-align: right;
-  cursor: pointer;
+  color: inherit;
   font-family: inherit;
   font-size: 14px;
-  line-height: 1.75;
-}
-
-.sa-dm-cycle-head:hover {
-  background: #141b16;
-}
-
-.sa-dm-cycle-primary {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-
-.sa-dm-cycle-time {
-  font-size: 13px;
-  color: #a8b8a8;
-}
-
-.sa-dm-cycle-sentence {
-  font-size: 14px;
-  font-weight: 600;
-  color: #f0f5f0;
-  overflow-wrap: anywhere;
-}
-
-.sa-dm-cycle-result {
-  font-size: 13px;
-  font-weight: 700;
-  white-space: nowrap;
-  padding: 4px 0;
-}
-
-.sa-dm-cycle-result--traded {
-  color: #3dff8a;
-}
-
-.sa-dm-cycle-result--ok {
-  color: #6ecf8e;
-}
-
-.sa-dm-cycle-result--warn {
-  color: #e0b15a;
-}
-
-.sa-dm-cycle-result--reject {
-  color: #e07a7a;
-}
-
-.sa-dm-cycle-reject {
-  font-size: 12px;
-  color: #c4a46a;
-  font-weight: 400;
-}
-
-.sa-dm-cycle-body {
-  border-top: 1px solid #1c2820;
-  padding: 12px 14px 16px;
-  background: #0c100e;
-  display: grid;
-  gap: 12px;
-}
-
-.sa-dm-path {
-  font-size: 13px;
-  line-height: 1.85;
-  color: #c8d4c8;
-  background: #121a15;
-  border-radius: 10px;
-  padding: 10px 12px;
-  border: 1px solid #1e2a22;
-}
-
-.sa-dm-missing {
-  color: #e0b15a;
-  font-size: 13px;
-  margin: 0;
-}
-
-.sa-dm-cands {
-  display: grid;
-  gap: 8px;
-}
-
-.sa-dm-cand {
-  border: 1px solid #1e2a22;
-  border-radius: 10px;
-  padding: 10px 12px;
-  background: #101612;
-  display: grid;
-  gap: 6px;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.sa-dm-cand--traded {
-  border-color: #1a5c38;
-}
-
-.sa-dm-cand-top {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.sa-dm-cand-route {
-  font-weight: 700;
-  color: #f2f7f2;
-}
-
-.sa-dm-cand-status {
-  font-weight: 700;
-  font-size: 12px;
-}
-
-.sa-dm-cand-status--traded {
-  color: #3dff8a;
-}
-
-.sa-dm-cand-status--selected {
-  color: #6ecf8e;
-}
-
-.sa-dm-cand-status--reject {
-  color: #e07a7a;
-}
-
-.sa-dm-cand-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px 12px;
-  font-size: 12px;
-  color: #b8c4b8;
-}
-
-.sa-dm-cand-grid dt {
-  margin: 0;
-  color: #7a8a7a;
-  font-size: 11px;
-}
-
-.sa-dm-cand-grid dd {
-  margin: 0;
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-
-.sa-dm-pos {
-  color: #6ecf8e;
-}
-
-.sa-dm-neg {
-  color: #e07a7a;
-}
-
-.sa-dm-tech {
-  font-size: 12px;
-  color: #8fa090;
-}
-
-.sa-dm-tech summary {
+  line-height: 1.55;
+  text-align: right;
   cursor: pointer;
-  color: #9aab9a;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
-.sa-dm-tech code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+.sa-term-line:hover {
+  background: #0c0c0c;
+}
+
+.sa-term-line--normal {
+  color: #d0d0d0;
+}
+
+.sa-term-line--reject {
+  color: #c8c8c8;
+}
+
+.sa-term-status-reject {
+  color: #ff6b6b;
+  font-weight: 600;
+}
+
+.sa-term-line--valid {
+  color: #6ecf8e;
+}
+
+.sa-term-line--trade {
+  color: #3dff8a;
+  font-weight: 700;
+}
+
+.sa-term-status-trade {
+  color: #3dff8a;
+  font-weight: 700;
+}
+
+.sa-term-line--warn {
+  color: #e0b15a;
+}
+
+.sa-term-line--summary {
+  color: #a8b0a8;
+  font-weight: 600;
+  margin-top: 2px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid #141414;
+  padding-bottom: 6px;
+}
+
+.sa-term-text {
+  display: inline;
+}
+
+.sa-term-tech {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 11px;
+  line-height: 1.5;
+  color: #7a8a7a;
+  background: #0a0f0c;
+  border: 1px solid #1a221c;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   direction: ltr;
+  text-align: left;
+}
+
+.sa-term-end {
+  height: 1px;
+}
+
+/* Bidi isolation inside terminal (shared utility class). */
+.sa-term-page .sa-bidi {
   unicode-bidi: isolate;
-  word-break: break-all;
+  direction: ltr;
+  display: inline-block;
 }
 
-.sa-dm-empty {
-  text-align: center;
-  padding: 48px 16px;
-  color: #6a7a6a;
-  font-size: 14px;
-}
-
-.sa-dm-link-back {
-  font-family: var(--font-persian, "IRANYekan", system-ui, sans-serif);
-  font-size: 13px;
-  color: #8fbf9a;
-  text-decoration: none;
-}
-
-.sa-dm-link-back:hover {
-  color: #b8e0c0;
-}
-
-@media (max-width: 768px) {
-  .sa-dm-page {
+@media (max-width: 640px) {
+  .sa-term-page {
     margin: -8px -10px 0;
+    height: calc(100dvh - 64px);
+    max-height: calc(100dvh - 64px);
   }
-  .sa-dm-cand-grid {
-    grid-template-columns: minmax(0, 1fr);
+
+  .sa-term-line {
+    font-size: 13px;
+    line-height: 1.6;
   }
-  .sa-dm-cycle-head {
-    grid-template-columns: minmax(0, 1fr);
+
+  .sa-term-bar {
+    padding: 6px 10px;
   }
-  .sa-dm-title {
-    font-size: 16px;
+
+  .sa-term-session {
+    display: none;
   }
+}
+
+/* Legacy sa-dm-* kept minimal so hot reloads of old CSS refs do not blank. */
+.sa-dm-page {
+  display: none;
 }

@@ -18,7 +18,7 @@ import { useMemo } from "react";
 import { TomanAmount } from "@/components/TomanAmount";
 import { formatTehran } from "@/components/format";
 import { Bidi } from "@/components/shadowArbitrage/Bidi";
-import { DecisionMonitor } from "@/components/shadowArbitrage/DecisionMonitor";
+import Link from "next/link";
 import { toFaDigits } from "@/components/shadowArbitrage/labels";
 import { reasonLabel } from "@/lib/shadowArbitrage/paper/reasons";
 import { readInt, useShadowViewState } from "@/components/shadowArbitrage/urlState";
@@ -170,8 +170,24 @@ export function ActivityDecisions({
 
   return (
     <div className="sa-stack">
-      {/* Always visible — no hidden query flag required */}
-      <DecisionMonitor />
+      <section className="panel sa-panel" aria-label="مانیتور زنده تصمیم‌گیری">
+        <div className="panel-header sa-panel-header">
+          <h3 className="panel-title">مانیتور زندهٔ تصمیم‌گیری</h3>
+          <div className="sa-panel-note">صفحهٔ تمام‌صفحه — کنسول عملیات</div>
+        </div>
+        <div className="panel-body">
+          <p className="sa-sub">
+            نمایش کامل چرخه‌های ارزیابی، کاندیدها و دلایل رد/قبول — نه ویجت خلاصه.
+          </p>
+          <Link
+            href="/shadow-arbitrage/decision-monitor"
+            className="sa-btn sa-btn-primary"
+            style={{ display: "inline-flex", marginTop: 8 }}
+          >
+            باز کردن مانیتور زندهٔ چرخه‌های تصمیم‌گیری
+          </Link>
+        </div>
+      </section>
       {/* ── session and headline counts ──────────────────────────────────── */}
       <section className="panel sa-panel" aria-label="وضعیت نشست کاغذی">
         <div className="panel-header sa-panel-header">

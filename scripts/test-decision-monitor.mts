@@ -12,6 +12,10 @@ import {
   cycleOutcomeFromTraces
 } from "../src/lib/shadowArbitrage/paper/decisionTraceCapture.ts";
 import type { PaperDecision } from "../src/lib/shadowArbitrage/paper/engine.ts";
+import {
+  cycleCountsSentenceFa,
+  outcomeLabelFa
+} from "../src/lib/shadowArbitrage/paper/decisionMonitorLabels.ts";
 
 let passed = 0;
 let failed = 0;
@@ -37,6 +41,22 @@ const skip = (partial: Partial<PaperDecision> & { candidate: PaperDecision exten
     requiredRebalance: null,
     ...partial
   }) as PaperDecision;
+
+await test("Persian outcome and cycle sentence are readable", () => {
+  assert.equal(outcomeLabelFa("all_rejected"), "همهٔ مسیرها رد شدند");
+  assert.equal(outcomeLabelFa("filled"), "✓ معامله انجام شد");
+  const s = cycleCountsSentenceFa({
+    candidatesEvaluated: 56,
+    rejectedCount: 56,
+    validCount: 0,
+    selectedCount: 0,
+    filledCount: 0
+  });
+  assert.ok(s.includes("مسیر بررسی شد"));
+  assert.ok(s.includes("معامله‌ای انجام نشد"));
+  assert.equal(s.includes("cand="), false);
+  assert.equal(s.includes("all_rejected"), false);
+});
 
 await test("candidate ranks and statuses map without inventing trades", () => {
   const decisions: PaperDecision[] = [

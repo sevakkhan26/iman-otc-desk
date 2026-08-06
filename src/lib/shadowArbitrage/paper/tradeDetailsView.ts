@@ -9,6 +9,10 @@ import {
   buildTradeProfitability,
   type TradeProfitabilityView
 } from "@/lib/shadowArbitrage/paper/tradeProfitability";
+import {
+  buildFeeAttribution,
+  type FeeAttributionView
+} from "@/lib/shadowArbitrage/paper/feeAttribution";
 
 export const MISSING_FA = "ثبت نشده" as const;
 export const MISSING_HIST_FA = "در دادهٔ تاریخی موجود نیست" as const;
@@ -196,6 +200,8 @@ export type TradeDetailsView = {
    * Rial is display-only conversion from toman.
    */
   profitability: TradeProfitabilityView;
+  /** Per-venue fee attribution from execution-time ledger fields only. */
+  feeAttribution: FeeAttributionView;
   /** Exact field keys that are not present in persisted evidence. */
   missingFieldKeys: string[];
 };
@@ -240,6 +246,24 @@ export function buildTradeDetailsView(
     sellFeeValueToman: trade.sellFeeValueToman,
     economicNetPnlToman: trade.economicNetPnlToman,
     buyNotionalToman: trade.buyNotionalToman
+  });
+  const feeAttribution = buildFeeAttribution({
+    buySourceId: trade.buySourceId,
+    sellSourceId: trade.sellSourceId,
+    sizeUsdt: trade.sizeUsdt,
+    buyNotionalToman: trade.buyNotionalToman ?? null,
+    sellNotionalToman: trade.sellNotionalToman ?? null,
+    buyFeeBps: trade.buyFeeBps ?? null,
+    sellFeeBps: trade.sellFeeBps ?? null,
+    buyFeeAsset: trade.buyFeeAsset ?? null,
+    sellFeeAsset: trade.sellFeeAsset ?? null,
+    feeTomanTotal: trade.feeTomanTotal,
+    feeUsdtMicrosTotal: trade.feeUsdtMicrosTotal,
+    sellFeeValueToman: trade.sellFeeValueToman,
+    grossSpreadToman: trade.grossSpreadToman,
+    economicNetPnlToman: trade.economicNetPnlToman,
+    markPriceToman: trade.markPriceToman ?? null,
+    slippageBufferToman: trade.slippageBufferToman
   });
 
   const view: TradeDetailsView = {
@@ -415,6 +439,7 @@ export function buildTradeDetailsView(
       )
     },
     profitability,
+    feeAttribution,
     technical: {
       runId: track("technical.runId", fromNullable(trade.runId ?? null)),
       sessionId: track("technical.sessionId", fromNullable(trade.sessionId ?? null)),

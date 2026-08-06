@@ -57,7 +57,8 @@
     "test:trade-details": "npx --yes tsx scripts/test-trade-details.mts",
     "report:paper-experiment-audit": "npx --yes tsx scripts/report-paper-experiment-audit.mts",
     "test:decision-monitor": "npx --yes tsx scripts/test-decision-monitor.mts",
-    "seed:local-paper-100m": "npx --yes tsx scripts/seed-local-paper-100m.mts"
+    "seed:local-paper-100m": "npx --yes tsx scripts/seed-local-paper-100m.mts",
+    "start:local-trade-rc": "npx --yes tsx scripts/start-local-trade-rc.mts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.4",

@@ -104,6 +104,38 @@
   padding: 16px;
   color: #6a7a6a;
 }
+.sa-td-fee-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.sa-td-fee-card {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md, 14px);
+  padding: 10px 12px;
+  min-width: 0;
+}
+.sa-td-fee-card h6 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.sa-td-grid-1 {
+  grid-template-columns: minmax(0, 1fr);
+}
+.sa-td-recon {
+  border-top: 1px solid var(--line-soft);
+  padding-top: 10px;
+}
+.sa-td-recon h6 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+@media (max-width: 768px) {
+  .sa-td-fee-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 @media (max-width: 768px) {
   .sa-term-line {
     grid-template-columns: minmax(0, 1fr);

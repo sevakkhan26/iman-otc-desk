@@ -116,8 +116,6 @@ export function ActivityDecisions({
   loading
 }: Props) {
   const { read, write } = useShadowViewState();
-  const showMonitor = read("adm", "1") !== "0";
-
   const venue = read("av", "all");
   const outcome = read("ao", "all");
   const reason = read("ar", "all");
@@ -172,16 +170,8 @@ export function ActivityDecisions({
 
   return (
     <div className="sa-stack">
-      {showMonitor ? <DecisionMonitor /> : null}
-      <div className="sa-ad-filters">
-        <button
-          type="button"
-          className={`sa-seg${showMonitor ? " is-active glass-control" : ""}`}
-          onClick={() => write({ adm: showMonitor ? "0" : "1" })}
-        >
-          {showMonitor ? "پنهان‌کردن مانیتور زنده" : "مانیتور زنده تصمیم‌گیری"}
-        </button>
-      </div>
+      {/* Always visible — no hidden query flag required */}
+      <DecisionMonitor />
       {/* ── session and headline counts ──────────────────────────────────── */}
       <section className="panel sa-panel" aria-label="وضعیت نشست کاغذی">
         <div className="panel-header sa-panel-header">

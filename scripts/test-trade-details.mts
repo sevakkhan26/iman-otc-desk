@@ -308,5 +308,39 @@ test("filter summary is independent of page slice size", () => {
   assert.equal(page.volumeUsdt, 200);
 });
 
+
+await test("fee attribution per venue and reconciliation", async () => {
+  const { buildFeeAttribution, historicalUsdtRateFromFee } = await import(
+    "../src/lib/shadowArbitrage/paper/feeAttribution.ts"
+  );
+  assert.equal(historicalUsdtRateFromFee(18600, 100_000), 186000);
+  assert.equal(historicalUsdtRateFromFee(null, 100_000), null);
+  const v = buildFeeAttribution({
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    sizeUsdt: 100,
+    buyNotionalToman: 18_600_000,
+    sellNotionalToman: 18_650_000,
+    buyFeeBps: 10,
+    sellFeeBps: 10,
+    buyFeeAsset: "IRT",
+    sellFeeAsset: "USDT",
+    feeTomanTotal: 18_600,
+    feeUsdtMicrosTotal: 100_000,
+    sellFeeValueToman: 18_600,
+    grossSpreadToman: 50_000,
+    economicNetPnlToman: 12_800,
+    markPriceToman: 186_000,
+    slippageBufferToman: 0
+  });
+  assert.equal(v.buy.venueId, "nobitex");
+  assert.equal(v.sell.venueId, "wallex");
+  assert.equal(v.buy.currency, "IRT");
+  assert.equal(v.sell.currency, "USDT");
+  assert.equal(v.sell.conversionRateTomanPerUsdt, 186_000);
+  assert.equal(v.total.ok, true);
+  assert.equal(v.reconciliation.matches, true);
+});
+
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

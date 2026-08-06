@@ -16,6 +16,7 @@ import {
   type TradeDetailsContext
 } from "@/lib/shadowArbitrage/paper/tradeDetailsView";
 import { UNCOMPUTABLE_FA } from "@/lib/shadowArbitrage/paper/tradeProfitability";
+import "./DecisionMonitor.css";
 
 type Props = {
   trade: ClosedTradeEvidence;
@@ -133,10 +134,17 @@ export function TradeDetailsPanel({ trade, context, open, onClose }: Props) {
             <div className="sa-td-row">
               <dt>مجموع کارمزد</dt>
               <dd>
-                {p.totalFees.ok ? (
+                {v.feeAttribution.total.ok && v.feeAttribution.total.money ? (
+                  <>
+                    <span className="sa-sub">{v.feeAttribution.total.compactFa}</span>
+                    <div>
+                      <MoneyTR toman={v.feeAttribution.total.money.toman} />
+                    </div>
+                  </>
+                ) : p.totalFees.ok ? (
                   <MoneyTR toman={p.totalFees.money.toman} />
                 ) : (
-                  <span className="sa-unknown" title={p.totalFees.reasonFa}>
+                  <span className="sa-unknown" title={v.feeAttribution.total.reasonFa ?? p.totalFees.reasonFa}>
                     {UNCOMPUTABLE_FA}
                   </span>
                 )}
@@ -213,6 +221,142 @@ export function TradeDetailsPanel({ trade, context, open, onClose }: Props) {
               </dd>
             </div>
           </dl>
+        </section>
+
+        <section className="sa-td-block" aria-label="کارمزد هر صرافی">
+          <h5 className="sa-td-block-title">کارمزد هر صرافی (شواهد اجرا)</h5>
+          {v.feeAttribution.unsplitNoteFa ? (
+            <p className="sa-callout sa-callout-warn">{v.feeAttribution.unsplitNoteFa}</p>
+          ) : null}
+          <div className="sa-td-fee-cards">
+            {(["buy", "sell"] as const).map((side) => {
+              const f = v.feeAttribution[side];
+              return (
+                <div key={side} className="sa-td-fee-card">
+                  <h6>
+                    {f.sideFa} · {f.venueId ?? "—"}
+                  </h6>
+                  <dl className="sa-td-grid sa-td-grid-1">
+                    <div className="sa-td-row">
+                      <dt>مبلغ اصلی</dt>
+                      <dd>
+                        {f.amountNative !== null && f.currency ? (
+                          <Bidi>
+                            {toFaDigits(
+                              f.currency === "USDT"
+                                ? f.amountNative.toFixed(6)
+                                : Math.round(f.amountNative).toLocaleString("en-US")
+                            )}{" "}
+                            {f.currency === "IRT" ? "تومان" : "USDT"}
+                          </Bidi>
+                        ) : (
+                          <span className="sa-unknown">{f.missingReasonFa ?? MISSING_FA}</span>
+                        )}
+                      </dd>
+                    </div>
+                    <div className="sa-td-row">
+                      <dt>ارز کارمزد</dt>
+                      <dd>{f.currency ?? <span className="sa-unknown">{MISSING_FA}</span>}</dd>
+                    </div>
+                    <div className="sa-td-row">
+                      <dt>نرخ / پله (bps)</dt>
+                      <dd>
+                        {f.feeBps !== null ? (
+                          <Bidi>{toFaDigits(f.feeBps)}</Bidi>
+                        ) : (
+                          <span className="sa-unknown">{MISSING_FA}</span>
+                        )}
+                      </dd>
+                    </div>
+                    <div className="sa-td-row">
+                      <dt>نرخ تبدیل تاریخی USDT→تومان</dt>
+                      <dd>
+                        {f.conversionRateTomanPerUsdt !== null ? (
+                          <TomanAmount value={Math.round(f.conversionRateTomanPerUsdt)} />
+                        ) : side === "sell" ? (
+                          <span className="sa-unknown">
+                            {f.missingReasonFa ?? MISSING_FA}
+                          </span>
+                        ) : (
+                          <span className="sa-sub">—</span>
+                        )}
+                      </dd>
+                    </div>
+                    <div className="sa-td-row">
+                      <dt>معادل تومان / ریال</dt>
+                      <dd>
+                        {f.equivalentToman !== null ? (
+                          <MoneyTR toman={f.equivalentToman} />
+                        ) : (
+                          <span className="sa-unknown">{f.missingReasonFa ?? MISSING_FA}</span>
+                        )}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+              );
+            })}
+          </div>
+          <div className="sa-td-recon">
+            <h6>تطبیق ناخالص → خالص اقتصادی</h6>
+            <p className="sa-sub">{v.feeAttribution.reconciliation.noteFa}</p>
+            <dl className="sa-td-grid">
+              <div className="sa-td-row">
+                <dt>سود ناخالص</dt>
+                <dd>
+                  {v.feeAttribution.reconciliation.grossToman !== null ? (
+                    <MoneyTR toman={v.feeAttribution.reconciliation.grossToman} />
+                  ) : (
+                    <span className="sa-unknown">{MISSING_FA}</span>
+                  )}
+                </dd>
+              </div>
+              <div className="sa-td-row">
+                <dt>− کارمزد تومانی</dt>
+                <dd>
+                  {v.feeAttribution.reconciliation.feeIrtToman !== null ? (
+                    <MoneyTR toman={v.feeAttribution.reconciliation.feeIrtToman} />
+                  ) : (
+                    <span className="sa-unknown">{MISSING_FA}</span>
+                  )}
+                </dd>
+              </div>
+              <div className="sa-td-row">
+                <dt>− معادل تومانی کارمزد USDT</dt>
+                <dd>
+                  {v.feeAttribution.reconciliation.feeUsdtAsToman !== null ? (
+                    <MoneyTR toman={v.feeAttribution.reconciliation.feeUsdtAsToman} />
+                  ) : (
+                    <span className="sa-unknown">{MISSING_FA}</span>
+                  )}
+                </dd>
+              </div>
+              <div className="sa-td-row">
+                <dt>= ضمنی / اقتصادی ثبت‌شده</dt>
+                <dd>
+                  {v.feeAttribution.reconciliation.impliedNetToman !== null ? (
+                    <MoneyTR toman={v.feeAttribution.reconciliation.impliedNetToman} emphasize />
+                  ) : (
+                    <span className="sa-unknown">{MISSING_FA}</span>
+                  )}
+                  {v.feeAttribution.reconciliation.economicNetToman !== null ? (
+                    <>
+                      {" / "}
+                      <MoneyTR
+                        toman={v.feeAttribution.reconciliation.economicNetToman}
+                        emphasize
+                      />
+                    </>
+                  ) : null}
+                  {v.feeAttribution.reconciliation.matches === true ? (
+                    <span className="sa-chip sa-chip-sm sa-chip-good">تطبیق</span>
+                  ) : v.feeAttribution.reconciliation.matches === false ? (
+                    <span className="sa-chip sa-chip-sm sa-chip-warn">عدم تطبیق دقیق</span>
+                  ) : null}
+                </dd>
+              </div>
+            </dl>
+          </div>
         </section>
 
         <section className="sa-td-block" aria-label="تراکنش">

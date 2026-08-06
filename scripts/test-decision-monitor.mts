@@ -61,7 +61,7 @@ await test("Persian outcome and cycle sentence are readable", () => {
   assert.equal(s.includes("all_rejected"), false);
 });
 
-await test("terminal candidate and cycle lines are compact Persian", () => {
+await test("terminal candidate and cycle lines are compact Persian columns", () => {
   const rejected = candidateTerminalLine({
     occurredAt: "2026-08-06T15:12:00.000Z",
     buySourceId: "bitpin",
@@ -75,8 +75,9 @@ await test("terminal candidate and cycle lines are compact Persian", () => {
     ledgerId: null
   });
   assert.equal(rejected.tone, "reject");
-  assert.ok(rejected.text.includes("رد شد"));
-  assert.ok(rejected.text.includes("خرید از"));
+  assert.ok(rejected.result.includes("رد شد"));
+  assert.ok(rejected.route.includes("←"));
+  assert.equal(rejected.text.includes("خرید از"), false);
   assert.equal(rejected.text.includes("cand="), false);
   assert.equal(rejected.text.includes("all_rejected"), false);
 
@@ -93,8 +94,8 @@ await test("terminal candidate and cycle lines are compact Persian", () => {
     ledgerId: null
   });
   assert.equal(valid.tone, "valid");
-  assert.ok(valid.text.includes("معتبر"));
-  assert.ok(valid.text.includes("ناخالص"));
+  assert.ok(valid.result.includes("معتبر"));
+  assert.ok(valid.net.includes("خالص"));
 
   const traded = candidateTerminalLine({
     occurredAt: "2026-08-06T15:12:02.000Z",
@@ -109,9 +110,8 @@ await test("terminal candidate and cycle lines are compact Persian", () => {
     ledgerId: "ledger-1"
   });
   assert.equal(traded.tone, "trade");
-  assert.ok(traded.text.startsWith("✓ معامله شد"));
+  assert.ok(traded.result.startsWith("✓ معامله شد"));
 
-  // No ledger → never claim completed trade checkmark line.
   const fakeTrade = candidateTerminalLine({
     occurredAt: "2026-08-06T15:12:02.000Z",
     buySourceId: "nobitex",
@@ -124,7 +124,7 @@ await test("terminal candidate and cycle lines are compact Persian", () => {
     reasonFa: null,
     ledgerId: null
   });
-  assert.equal(fakeTrade.text.startsWith("✓ معامله شد"), false);
+  assert.equal(fakeTrade.result.startsWith("✓ معامله شد"), false);
 
   const sum = cycleSummaryTerminalLine({
     cycleId: "8d9dde5a-ffff-1111-2222-333333333333",
@@ -134,17 +134,17 @@ await test("terminal candidate and cycle lines are compact Persian", () => {
     selectedCount: 0,
     filledCount: 0,
     traceComplete: true,
-    source: "decision_trace"
+    source: "decision_trace",
+    occurredAt: "2026-08-06T15:12:03.000Z"
   });
-  assert.ok(sum.text.includes("چرخه 8d9dde5a تمام شد"));
-  assert.ok(sum.text.includes("مسیر بررسی شد"));
-  assert.ok(sum.text.includes("معامله‌ای انجام نشد"));
+  assert.ok(sum.route.includes("8d9dde5a"));
+  assert.ok(sum.size.includes("مسیر"));
   assert.equal(sum.text.includes("all_rejected"), false);
 
   const lines = cyclesToTerminalLines([
     {
       id: "cyc-1",
-      occurredAt: "2026-08-06T15:00:00.000Z",
+      occurredAt: "2026-08-06 18:00:00.000+03",
       candidatesEvaluated: 2,
       rejectedCount: 1,
       validCount: 1,
@@ -200,9 +200,12 @@ await test("terminal candidate and cycle lines are compact Persian", () => {
       ]
     }
   ]);
-  assert.equal(lines.length, 3); // 2 candidates + 1 summary
+  assert.equal(lines.length, 3);
   assert.equal(lines[2]!.kind, "summary");
   assert.ok(lines.every((l) => !l.text.includes("cand=") && !l.text.includes("all_rejected")));
+  // stable ids, columns present
+  assert.ok(lines[0]!.clock);
+  assert.ok(lines[0]!.route.includes("←"));
 });
 
 await test("candidate ranks and statuses map without inventing trades", () => {

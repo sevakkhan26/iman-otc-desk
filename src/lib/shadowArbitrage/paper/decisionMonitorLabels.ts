@@ -172,10 +172,32 @@ export function formatAgeFa(ms: number): string {
   return `${toFaDigits(h)} ساعت پیش`;
 }
 
+/**
+ * Parse API/Postgres timestamps reliably (incl. Safari).
+ * Accepts `2026-08-06 19:03:39.093+03` and ISO forms.
+ */
+export function parseOccurredAtMs(raw: string | null | undefined): number {
+  if (!raw) return 0;
+  const s = String(raw).trim();
+  let t = Date.parse(s);
+  if (Number.isFinite(t)) return t;
+  // space → T; +03 → +03:00; drop trailing junk
+  let norm = s.replace(" ", "T");
+  norm = norm.replace(/([+-]\d{2})(?::?(\d{2}))?$/, (_m, hh: string, mm?: string) =>
+    mm ? `${hh}:${mm}` : `${hh}:00`
+  );
+  t = Date.parse(norm);
+  if (Number.isFinite(t)) return t;
+  // last resort: strip tz
+  t = Date.parse(norm.replace(/[+-]\d{2}:\d{2}$/, "Z"));
+  return Number.isFinite(t) ? t : 0;
+}
+
 /** HH:mm:ss in Asia/Tehran with Persian digits (for terminal lines). */
 export function formatTerminalClockFa(iso: string): string {
-  const d = new Date(iso);
-  if (!Number.isFinite(d.getTime())) return "——:——:——";
+  const ms = parseOccurredAtMs(iso);
+  if (!ms) return "——:——:——";
+  const d = new Date(ms);
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Tehran",
     hour: "2-digit",
@@ -195,20 +217,27 @@ function fmtAmt(n: number): string {
 
 export type TerminalLineTone = "normal" | "reject" | "valid" | "trade" | "warn";
 
+/** Columnar terminal row — never a free-form wrapping sentence. */
 export type TerminalLineModel = {
   id: string;
   kind: "candidate" | "summary" | "trade" | "missing";
   tone: TerminalLineTone;
-  /** Primary compact line text (Persian, no cryptic eng counters). */
+  /** Epoch ms for stable append order (not for display). */
+  atMs: number;
+  clock: string;
+  route: string;
+  size: string;
+  net: string;
+  result: string;
+  /** Full single-line text for tests / a11y. */
   text: string;
-  /** Collapsed technical dump when the line is opened. */
   tech: string | null;
 };
 
 /**
- * One compact terminal line for a candidate evaluation.
- * Example:
- * `۱۸:۴۲:۱۱ | خرید از ارزینجا → فروش در تبدیل | ۷۰٫۸۳ USDT | ناخالص ۵۳,۱۲۷ | کارمزد ۳۶,۹۸۱ | خالص +۱۶,۱۴۶ تومان | معتبر`
+ * Compact candidate columns:
+ * `زمان | مسیر | حجم | سود خالص | نتیجه`
+ * Example: `۱۹:۲۳:۰۹ | رمزینکس ← والکس | ۱۰ USDT | خالص: ثبت نشده | رد شد: کارمزد تأییدنشده`
  */
 export function candidateTerminalLine(input: {
   occurredAt: string;
@@ -221,75 +250,85 @@ export function candidateTerminalLine(input: {
   status: string;
   reasonFa: string | null;
   ledgerId: string | null;
-}): { text: string; tone: TerminalLineTone } {
+}): Omit<TerminalLineModel, "id" | "kind" | "atMs" | "tech"> {
   const clock = formatTerminalClockFa(input.occurredAt);
   const buy = venueNameFa(input.buySourceId);
   const sell = venueNameFa(input.sellSourceId);
-  const vol = toFaDigits(
-    Number.isInteger(input.sizeUsdt)
-      ? String(input.sizeUsdt)
-      : input.sizeUsdt.toFixed(2)
-  );
-  const route = `خرید از ${buy} → فروش در ${sell}`;
+  const volNum = Number.isInteger(input.sizeUsdt)
+    ? String(input.sizeUsdt)
+    : input.sizeUsdt.toFixed(2);
+  const size = `${toFaDigits(volNum)} USDT`;
+  // Compact route — no repeated «خرید از / فروش در»
+  const route = `${buy} ← ${sell}`;
 
-  // Bright checkmark only for linked completed Paper trades.
   if (input.status === "traded" && input.ledgerId) {
     const net =
       input.economicNetPnlToman != null
-        ? `سود خالص ${fmtAmt(input.economicNetPnlToman)} تومان`
-        : "سود خالص ثبت نشده";
-    return {
-      tone: "trade",
-      text: `✓ معامله شد | ${route} | حجم ${vol} USDT | ${net}`
-    };
+        ? `خالص: ${fmtAmt(input.economicNetPnlToman)}`
+        : "خالص: ثبت نشده";
+    const result = "✓ معامله شد";
+    const text = `${clock} | ${route} | ${size} | ${net} | ${result}`;
+    return { tone: "trade", clock, route, size, net, result, text };
   }
 
   if (input.status === "traded" && !input.ledgerId) {
+    const net =
+      input.economicNetPnlToman != null
+        ? `خالص: ${fmtAmt(input.economicNetPnlToman)}`
+        : "خالص: ثبت نشده";
+    const result = "انتخاب شد؛ اجرا تکمیل نشد";
     return {
       tone: "valid",
-      text: `${clock} | ${route} | ${vol} USDT | انتخاب شد؛ اجرا تکمیل نشد`
+      clock,
+      route,
+      size,
+      net,
+      result,
+      text: `${clock} | ${route} | ${size} | ${net} | ${result}`
     };
   }
 
   if (input.status === "rejected") {
     const reason = input.reasonFa?.trim() || "دلیل ثبت نشده";
-    const netPart =
-      input.economicNetPnlToman != null && input.economicNetPnlToman <= 0
-        ? "خالص منفی"
-        : input.economicNetPnlToman != null
-          ? `خالص ${fmtAmt(input.economicNetPnlToman)}`
-          : input.grossSpreadToman != null
-            ? `ناخالص ${fmtAmt(input.grossSpreadToman)}`
-            : "خالص ثبت نشده";
+    const net =
+      input.economicNetPnlToman != null
+        ? input.economicNetPnlToman <= 0
+          ? "خالص: منفی"
+          : `خالص: ${fmtAmt(input.economicNetPnlToman)}`
+        : "خالص: ثبت نشده";
+    const result = `رد شد: ${reason}`;
     return {
       tone: "reject",
-      text: `${clock} | ${route} | ${vol} USDT | ${netPart} | رد شد: ${reason}`
+      clock,
+      route,
+      size,
+      net,
+      result,
+      text: `${clock} | ${route} | ${size} | ${net} | ${result}`
     };
   }
 
-  const gross =
-    input.grossSpreadToman != null ? `ناخالص ${fmtAmt(input.grossSpreadToman)}` : "ناخالص —";
-  const fee =
-    input.feeTomanTotal != null ? `کارمزد ${fmtAmt(input.feeTomanTotal)}` : "کارمزد —";
   let net: string;
-  if (input.economicNetPnlToman == null) net = "خالص —";
-  else if (input.economicNetPnlToman > 0)
-    net = `خالص +${fmtAmt(input.economicNetPnlToman)} تومان`;
-  else if (input.economicNetPnlToman < 0)
-    net = `خالص ${fmtAmt(input.economicNetPnlToman)} تومان`;
-  else net = "خالص ۰ تومان";
+  if (input.economicNetPnlToman == null) net = "خالص: ثبت نشده";
+  else if (input.economicNetPnlToman > 0) net = `خالص: +${fmtAmt(input.economicNetPnlToman)}`;
+  else if (input.economicNetPnlToman < 0) net = `خالص: ${fmtAmt(input.economicNetPnlToman)}`;
+  else net = "خالص: ۰";
 
   const statusFa = candidateStatusLabelFa(input.status);
   const tone: TerminalLineTone =
     input.status === "valid" || input.status === "selected" ? "valid" : "normal";
-
   return {
     tone,
-    text: `${clock} | ${route} | ${vol} USDT | ${gross} | ${fee} | ${net} | ${statusFa}`
+    clock,
+    route,
+    size,
+    net,
+    result: statusFa,
+    text: `${clock} | ${route} | ${size} | ${net} | ${statusFa}`
   };
 }
 
-/** Final cycle summary line for the terminal. */
+/** Final cycle summary — still exactly one grid row. */
 export function cycleSummaryTerminalLine(input: {
   cycleId: string;
   candidatesEvaluated: number;
@@ -299,70 +338,85 @@ export function cycleSummaryTerminalLine(input: {
   filledCount: number;
   traceComplete: boolean;
   source: string;
-}): { text: string; tone: TerminalLineTone } {
+  occurredAt?: string;
+}): Omit<TerminalLineModel, "id" | "kind" | "atMs" | "tech"> {
   const shortId = input.cycleId.slice(0, 8);
+  const clock = input.occurredAt ? formatTerminalClockFa(input.occurredAt) : "——:——:——";
   if (!input.traceComplete || input.source === "cycle_summary_only") {
+    const result = "جزئیات کامل ثبت نشده";
+    const text = `چرخه ${shortId} | ${toFaDigits(input.candidatesEvaluated)} خلاصه | — | — | ${result}`;
     return {
       tone: "warn",
-      text: `چرخه ${shortId} تمام شد | جزئیات کامل این چرخه ثبت نشده است | ${toFaDigits(input.candidatesEvaluated)} شمارندهٔ خلاصه`
+      clock,
+      route: `چرخه ${shortId}`,
+      size: `${toFaDigits(input.candidatesEvaluated)} مسیر`,
+      net: "—",
+      result,
+      text
     };
   }
   const tradePart =
     input.filledCount > 0
-      ? `${toFaDigits(input.filledCount)} معامله انجام شد`
-      : "معامله‌ای انجام نشد";
-  const selectedPart =
-    input.selectedCount > 0
-      ? ` | ${toFaDigits(input.selectedCount)} انتخاب‌شده`
-      : "";
+      ? `${toFaDigits(input.filledCount)} معامله`
+      : "بدون معامله";
+  const result = tradePart;
+  const route = `چرخه ${shortId}`;
+  const size = `${toFaDigits(input.candidatesEvaluated)} مسیر`;
+  const net = `${toFaDigits(input.rejectedCount)} رد · ${toFaDigits(input.validCount)} معتبر`;
+  const text = `${clock} | ${route} | ${size} | ${net} | ${result}`;
   return {
     tone: input.filledCount > 0 ? "trade" : "normal",
-    text: `چرخه ${shortId} تمام شد | ${toFaDigits(input.candidatesEvaluated)} مسیر بررسی شد | ${toFaDigits(input.rejectedCount)} رد شد | ${toFaDigits(input.validCount)} معتبر${selectedPart} | ${tradePart}`
+    clock,
+    route,
+    size,
+    net,
+    result,
+    text
   };
 }
 
-/** Expand API cycle rows (newest-first) into chronological terminal lines. */
-export function cyclesToTerminalLines(
-  cycles: Array<{
-    id: string;
-    occurredAt: string;
-    candidatesEvaluated: number;
-    rejectedCount: number;
-    validCount: number;
-    selectedCount: number;
-    filledCount: number;
-    traceComplete: boolean;
-    source: string;
-    candidates: Array<{
-      rank: number;
-      lifecycleId: string;
-      buySourceId: string;
-      sellSourceId: string;
-      sizeUsdt: number;
-      grossSpreadToman: number | null;
-      feeTomanTotal: number | null;
-      economicNetPnlToman: number | null;
-      status: string;
-      reasonFa: string | null;
-      ledgerId: string | null;
-      routeKey: string;
-      reasonCodes: string[];
-      buyVwapToman: number | null;
-      sellVwapToman: number | null;
-      buyFeeBps: number | null;
-      sellFeeBps: number | null;
-      capitalCapUsdt: number | null;
-      depthCapUsdt: number | null;
-      bindingConstraint: string | null;
-    }>;
-  }>
-): TerminalLineModel[] {
-  // Chronological: oldest first so newest is at the bottom of the terminal.
+type CycleLike = {
+  id: string;
+  occurredAt: string;
+  candidatesEvaluated: number;
+  rejectedCount: number;
+  validCount: number;
+  selectedCount: number;
+  filledCount: number;
+  traceComplete: boolean;
+  source: string;
+  candidates: Array<{
+    rank: number;
+    lifecycleId: string;
+    buySourceId: string;
+    sellSourceId: string;
+    sizeUsdt: number;
+    grossSpreadToman: number | null;
+    feeTomanTotal: number | null;
+    economicNetPnlToman: number | null;
+    status: string;
+    reasonFa: string | null;
+    ledgerId: string | null;
+    routeKey: string;
+    reasonCodes: string[];
+    buyVwapToman: number | null;
+    sellVwapToman: number | null;
+    buyFeeBps: number | null;
+    sellFeeBps: number | null;
+    capitalCapUsdt: number | null;
+    depthCapUsdt: number | null;
+    bindingConstraint: string | null;
+  }>;
+};
+
+/** Expand cycles (any order) into chronological terminal lines — stable ids. */
+export function cyclesToTerminalLines(cycles: CycleLike[]): TerminalLineModel[] {
   const ordered = [...cycles].sort(
-    (a, b) => Date.parse(a.occurredAt) - Date.parse(b.occurredAt)
+    (a, b) => parseOccurredAtMs(a.occurredAt) - parseOccurredAtMs(b.occurredAt)
   );
   const out: TerminalLineModel[] = [];
   for (const cyc of ordered) {
+    const atMs = parseOccurredAtMs(cyc.occurredAt);
     if (!cyc.traceComplete || cyc.source === "cycle_summary_only" || !cyc.candidates.length) {
       const sum = cycleSummaryTerminalLine({
         cycleId: cyc.id,
@@ -372,13 +426,14 @@ export function cyclesToTerminalLines(
         selectedCount: cyc.selectedCount,
         filledCount: cyc.filledCount,
         traceComplete: cyc.traceComplete,
-        source: cyc.source
+        source: cyc.source,
+        occurredAt: cyc.occurredAt
       });
       out.push({
         id: `${cyc.id}:summary`,
         kind: "missing",
-        tone: sum.tone,
-        text: sum.text,
+        atMs,
+        ...sum,
         tech: `cycle=${cyc.id} occurredAt=${cyc.occurredAt} source=${cyc.source}`
       });
       continue;
@@ -400,8 +455,8 @@ export function cyclesToTerminalLines(
       out.push({
         id: `${cyc.id}:c${c.rank}:${c.lifecycleId}`,
         kind: c.status === "traded" && c.ledgerId ? "trade" : "candidate",
-        tone: line.tone,
-        text: line.text,
+        atMs,
+        ...line,
         tech: [
           `lifecycle=${c.lifecycleId}`,
           `route=${c.routeKey}`,
@@ -427,13 +482,14 @@ export function cyclesToTerminalLines(
       selectedCount: cyc.selectedCount,
       filledCount: cyc.filledCount,
       traceComplete: cyc.traceComplete,
-      source: cyc.source
+      source: cyc.source,
+      occurredAt: cyc.occurredAt
     });
     out.push({
       id: `${cyc.id}:summary`,
       kind: "summary",
-      tone: sum.tone,
-      text: sum.text,
+      atMs,
+      ...sum,
       tech: `cycle=${cyc.id} occurredAt=${cyc.occurredAt}`
     });
   }

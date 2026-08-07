@@ -208,7 +208,7 @@ await test("live OMPFinex parses depth market 9 rial→toman buy<=sell-ish", asy
   assert.ok(q!.midPrice! > 20_000 && q!.midPrice! < 1_000_000);
 });
 
-await test("live Exir orderbook (may 403 under WAF — then mark unavailable without crash)", async () => {
+await test("live Exir v2 orderbook is available with valid bid/ask", async () => {
   clearDomesticQuotesCache();
   clearProviderSlot("exir");
   const enabledSources = { ...defaultSettings.enabledSources };
@@ -216,17 +216,10 @@ await test("live Exir orderbook (may 403 under WAF — then mark unavailable wit
   const quotes = await getDomesticQuotes({ ...defaultSettings, enabledSources });
   const q = quotes.find((x) => x.exchangeId === "exir");
   assert.ok(q);
-  if (q!.sourceStatus === "available") {
-    assert.ok(q!.buyPrice !== null && q!.sellPrice !== null);
-    assert.ok(q!.buyPrice! <= q!.sellPrice! * 1.05);
-  } else {
-    assert.ok(
-      (q!.errorMessage || "").includes("403") ||
-        (q!.errorMessage || "").includes("HTTP") ||
-        (q!.errorMessage || "").includes("تمام"),
-      `unexpected error: ${q!.errorMessage}`
-    );
-  }
+  assert.equal(q!.sourceStatus, "available", q!.errorMessage ?? "exir unavailable");
+  assert.ok(q!.buyPrice !== null && q!.sellPrice !== null);
+  assert.ok(q!.buyPrice! <= q!.sellPrice! * 1.05);
+  assert.ok(q!.buyPrice! > 20_000 && q!.buyPrice! < 1_000_000);
 });
 
 await test("other LPs unaffected when one fails", async () => {

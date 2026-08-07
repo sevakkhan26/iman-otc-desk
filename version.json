@@ -1,5 +1,5 @@
 {
-  "appVersion": "4.1.10.1",
+  "appVersion": "4.1.10.2",
   "note": "Single authoritative public application version. The build injects it as NEXT_PUBLIC_APP_VERSION and the UI shows it verbatim. It is deliberately NOT package.json's version: this release uses a four-part number, which is not valid SemVer, and pnpm validates package.json before install in the production image. package.json therefore keeps a valid SemVer for package metadata only; this field is what the product is.",
-  "packageMetadataVersion": "4.12.1"
+  "packageMetadataVersion": "4.12.2"
 }

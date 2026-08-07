@@ -8,6 +8,14 @@ import {
   type DomesticProviderHealth,
   type IsolatedProviderDef
 } from "@/lib/providers/domesticRunner";
+import {
+  classifyExirHttp,
+  EXIR_USDT_IRT_SYMBOL,
+  exirOrderbookUrl,
+  exirPersianError,
+  parseExirBestBidAsk,
+  type ExirOrderbookPayload
+} from "@/lib/providers/exir";
 import type { DeskSettings, DomesticQuote, SourceStatus } from "@/lib/types";
 
 const DESK_UA = "TraderBot/OTCDesk";
@@ -537,53 +545,68 @@ async function liveTetherland(): Promise<DomesticQuote> {
 }
 
 /**
- * Exir public orderbook (official API):
- *   GET https://api.exir.io/v1/orderbook?symbol=usdt-irt
- * Response: { "usdt-irt": { bids:[[price,size],...], asks:[...] } } prices in Toman.
- * Behind CloudFront — short/bot-like UA or double-requests after 403 worsen WAF blocks.
+ * Exir public orderbook (official API v2):
+ *   GET https://api.exir.io/v2/orderbook?symbol=usdt-irt
+ * Response: { "usdt-irt": { bids:[[price,size],...], asks:[...] }, ... } prices in Toman.
+ *
+ * v1 `/v1/orderbook` is obsolete and returns HTTP 403 (nginx HTML via CloudFront)
+ * for every User-Agent — do not retry thrash or invent prices.
  */
-const EXIR_ORDERBOOK_URL = "https://api.exir.io/v1/orderbook?symbol=usdt-irt";
+const EXIR_ORDERBOOK_URL = exirOrderbookUrl(EXIR_USDT_IRT_SYMBOL);
 const EXIR_HEADERS = {
   accept: "application/json",
   "user-agent": BROWSER_UA,
   "accept-language": "en-US,en;q=0.9,fa;q=0.8"
-  // Do NOT send Origin/Referer — CloudFront returns 403 for some Origin values
+  // No Origin/Referer — unnecessary for public GET and historically noisy on CF.
 } as const;
 
 async function liveExir(): Promise<DomesticQuote> {
   const id = "exir";
   const name = "اکسیر";
-  const data = await fetchJson<{
-    "usdt-irt"?: {
-      bids?: Array<[number | string, number | string]>;
-      asks?: Array<[number | string, number | string]>;
-    };
-    bids?: Array<[number | string, number | string]>;
-    asks?: Array<[number | string, number | string]>;
-  }>(EXIR_ORDERBOOK_URL, 10_000, {
-    headers: { ...EXIR_HEADERS }
-  });
-  const book = data["usdt-irt"] ?? data;
-  const bids = book.bids ?? [];
-  const asks = book.asks ?? [];
-  // Best bid = max price, best ask = min price (do not assume sort)
-  let bestBid: number | null = null;
-  let bestAsk: number | null = null;
-  for (const row of bids) {
-    const p = toToman(row?.[0]);
-    if (p !== null && (bestBid === null || p > bestBid)) bestBid = p;
+  const collectedAt = nowIso();
+  let data: ExirOrderbookPayload;
+  try {
+    data = await fetchJson<ExirOrderbookPayload>(EXIR_ORDERBOOK_URL, 10_000, {
+      headers: { ...EXIR_HEADERS }
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    const statusMatch = msg.match(/\bHTTP (\d{3})\b/);
+    const status = statusMatch ? Number(statusMatch[1]) : null;
+    const kind = classifyExirHttp(status, msg);
+    if (kind === "rate_limited") {
+      throw new ProviderError(exirPersianError("rate_limited"));
+    }
+    if (kind === "forbidden_obsolete_or_waf") {
+      throw new ProviderError(exirPersianError("forbidden_obsolete_or_waf"));
+    }
+    throw error instanceof ProviderError ? error : new ProviderError(msg || "اکسیر در دسترس نیست");
   }
-  for (const row of asks) {
-    const p = toToman(row?.[0]);
-    if (p !== null && (bestAsk === null || p < bestAsk)) bestAsk = p;
+
+  let parsed;
+  try {
+    parsed = parseExirBestBidAsk(data, EXIR_USDT_IRT_SYMBOL);
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "EXIR_PARSE";
+    if (code === "EXIR_BOOK_EMPTY" || code === "EXIR_BOOK_MISSING") {
+      throw new ProviderError("دفتر سفارش اکسیر خالی یا بدون نماد usdt-irt است");
+    }
+    if (code === "EXIR_BOOK_CROSSED") {
+      throw new ProviderError("دفتر سفارش اکسیر نامعتبر است (bid > ask)");
+    }
+    if (code === "EXIR_BOOK_ZERO") {
+      throw new ProviderError("دفتر سفارش اکسیر قیمت صفر دارد");
+    }
+    throw new ProviderError("دفتر سفارش اکسیر خرید/فروش معتبر ندارد");
   }
-  const buyPrice = bestBid;
-  const sellPrice = bestAsk;
+
+  const buyPrice = toToman(parsed.bestBid);
+  const sellPrice = toToman(parsed.bestAsk);
   if (buyPrice === null || sellPrice === null) {
     throw new ProviderError("دفتر سفارش اکسیر خرید/فروش معتبر ندارد");
   }
   assertRealisticUsdtIrt(buyPrice, sellPrice, null);
-  return buildQuote(id, name, buyPrice, sellPrice);
+  return buildQuote(id, name, buyPrice, sellPrice, { lastUpdated: collectedAt });
 }
 
 const BIT24_ORDERBOOK_URL = "https://pro.bit24.cash/api/v3/markets/USDT-IRT/order-books";

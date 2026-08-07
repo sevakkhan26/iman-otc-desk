@@ -6,7 +6,7 @@ Run on the **Ubuntu host** and **inside the app container**. Do not claim produc
 
 | LP | Host | Path |
 |----|------|------|
-| Exir | `api.exir.io` | `/v1/orderbook?symbol=usdt-irt` |
+| Exir | `api.exir.io` | `/v2/orderbook?symbol=usdt-irt` (v1 is obsolete → HTTP 403) |
 | OMPFinex | `api.ompfinex.com` | `/v1/market/9/depth?limit=10` |
 | Ramzinex | `publicapi.ramzinex.com` | `/exchange/api/v1.0/exchange/pairs/11` |
 
@@ -29,7 +29,7 @@ env | grep -iE 'http_proxy|https_proxy|no_proxy|ALL_PROXY' || echo none
 curl -4 -v --connect-timeout 5 --max-time 15 \
   -H "user-agent: $UA" -H 'accept: application/json' \
   -w '\ncode=%{http_code} ttfb=%{time_starttransfer} total=%{time_total} size=%{size_download}\n' \
-  'https://api.exir.io/v1/orderbook?symbol=usdt-irt' -o /tmp/exir.json
+  'https://api.exir.io/v2/orderbook?symbol=usdt-irt' -o /tmp/exir.json
 
 curl -4 -v --connect-timeout 5 --max-time 15 \
   -H "user-agent: $UA" -H 'accept: application/json' \
@@ -44,7 +44,7 @@ curl -4 -v --connect-timeout 5 --max-time 15 \
 # IPv6 (if available)
 curl -6 --connect-timeout 5 --max-time 15 -H "user-agent: $UA" -H 'accept: application/json' \
   -w 'exir6 code=%{http_code} total=%{time_total}\n' -o /dev/null \
-  'https://api.exir.io/v1/orderbook?symbol=usdt-irt' || echo 'exir ipv6 fail'
+  'https://api.exir.io/v2/orderbook?symbol=usdt-irt' || echo 'exir ipv6 fail'
 
 # Safe body samples
 head -c 200 /tmp/exir.json; echo
@@ -63,7 +63,7 @@ docker exec -it iman-otc-desk sh -c '
   echo
   wget -qO- --timeout=15 "https://api.ompfinex.com/v1/market/9/depth?limit=10" | head -c 200
   echo
-  wget -qO- --timeout=15 -U "Mozilla/5.0" "https://api.exir.io/v1/orderbook?symbol=usdt-irt" | head -c 200
+  wget -qO- --timeout=15 -U "Mozilla/5.0" "https://api.exir.io/v2/orderbook?symbol=usdt-irt" | head -c 200
   echo
 '
 
@@ -87,7 +87,7 @@ App changes:
 
 - No retry on 403/401/404
 - No double HTTP request after 403 in `fetchJson`
-- Exir: no Origin header thrash; timeout 12s; maxRetries 0
+- Exir: public **v2** orderbook (`usdt-irt`); v1 always 403; no Origin thrash; maxRetries 0
 - OMP: `depth?limit=10`, browser UA, one transient retry
 - Ramzinex: single-pair `/pairs/11` (not full list)
 

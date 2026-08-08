@@ -11,6 +11,7 @@ import { TomanAmount } from "@/components/TomanAmount";
 import { formatTehran } from "@/components/format";
 import { Bidi } from "@/components/shadowArbitrage/Bidi";
 import { toFaDigits } from "@/components/shadowArbitrage/labels";
+import { PaperSessionCapitalControl } from "@/components/shadowArbitrage/PaperSessionCapitalControl";
 import { PaperSimple } from "@/components/shadowArbitrage/PaperSimple";
 
 export type AccountsAccounting = {
@@ -412,9 +413,10 @@ export function AccountsSection({
           </div>
           <div className="panel-body">
             <p className="sa-sub">
-              هنوز نشست کاغذی فعالی نیست. ایجاد و شروع نشست از «تنظیمات ← سرمایه و
-              تخصیص» انجام می‌شود. عمق بازار زیر، از همان چرخهٔ جمع‌آوری خوانده می‌شود.
+              هنوز نشست کاغذی فعالی نیست. می‌توانید سرمایه را از کنترل زیر تنظیم کنید
+              یا از «تنظیمات ← سرمایه و تخصیص» نشست بسازید.
             </p>
+            <PaperSessionCapitalControl />
             <PaperSimple parts={{ session: true, summary: false, ledger: false }} />
           </div>
         </section>
@@ -481,6 +483,7 @@ export function AccountsSection({
 
   return (
     <div className="sa-stack">
+      <PaperSessionCapitalControl />
       {experiment ? (
         <section className="panel sa-panel sa-exp-panel" aria-label="آزمایش چهارروزه">
           <div className="panel-header sa-panel-header sa-exp-header">

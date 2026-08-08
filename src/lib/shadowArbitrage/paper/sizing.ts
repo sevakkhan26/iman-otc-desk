@@ -1,31 +1,21 @@
 /**
- * `SMART_CAPITAL_DEPTH` — deterministic position sizing for PAPER execution.
+ * Capital-aware position sizing for PAPER execution.
  *
- * The fixed 5/10/20/25 USDT ladder is a DIAGNOSTIC PROBE of the order book, not
- * a trade size. This module turns the evidence a cycle actually produced into
- * one calculated size per route, and reports every constraint it considered so
- * the number can be argued with rather than trusted.
+ * finalSize = min(capital/balance limits, full slippage-bounded depth, order
+ * cap, venue exposure, allocation share) then validated for positive risk-
+ * adjusted net after both-leg fees and slippage. Analysis probes are fractions
+ * of that max only. The fixed 5/10/20/25 ladder is never an execution cap.
  *
  * The decision flow, in order:
  *
- *   1. POLICIES — every required risk policy must be set and unexpired. There
- *      is no default for any of them.
- *   2. EVIDENCE — both venues must be healthy, fresh, two-sided, with confirmed
- *      fees and confirmed settlement, and a walkable ladder on each leg.
- *   3. USABLE BALANCE — fee-inclusive capacity on each side, measured against
- *      the balance NET OF anything another candidate already reserved.
- *   4. CANDIDATES — 1/2/4/6/8/10 percent of the limiting usable side balance,
- *      capped by 10% of that balance, by 10% of each leg's slippage-bounded
- *      depth, by the capital plan share and by the risk policies, floored at
- *      25 USDT and quantized to the ledger's precision.
- *   5. EVALUATION — every candidate is priced by walking BOTH books, settled
- *      exactly, and checked against the inventory band. Each one is either
- *      eligible or carries one exact rejection code.
- *   6. SELECTION — the eligible candidate with the highest risk-adjusted PnL.
- *      Ties break on return in bps, then on inventory impact, then on the
- *      SMALLER size. The winner is not the largest size; it is the best one.
- *   7. EXPLANATION — why the winner won, and why the next larger candidate did
- *      not, in the same vocabulary the ledger persists.
+ *   1. POLICIES — every required risk policy must be set and unexpired.
+ *   2. EVIDENCE — healthy, fresh, two-sided books; confirmed fees/settlement.
+ *   3. USABLE BALANCE — fee-inclusive capacity net of reservations this cycle.
+ *   4. SAFE MAX — min of balance, full depth, order/venue/allocation caps.
+ *   5. CANDIDATES — analysis fractions of the safe max + the max itself.
+ *   6. EVALUATION — walk BOTH books (multi-level VWAP); inventory; edge floor.
+ *   7. SELECTION — largest eligible (profitable) size; never force utilization.
+ *   8. EXPLANATION — exact winning limiter and full evidence for the desk.
  *
  * Two rules make the result trustworthy rather than merely plausible:
  *
@@ -123,8 +113,8 @@ export type SizingConstraintKey =
   | "venue_concentration";
 
 export const SIZING_CONSTRAINT_FA: Record<SizingConstraintKey, string> = {
-  capital_cap: `سقف سرمایه — ${CAPITAL_CAP_PERCENT}٪ موجودی قابل استفادهٔ سمت محدودکننده`,
-  depth_cap: `سقف عمق — ${DEPTH_CAP_PERCENT}٪ عمق اجراپذیر هر پا در محدودهٔ لغزش مجاز`,
+  capital_cap: "سقف سرمایه/ظرفیت قابل استفادهٔ سمت محدودکننده (پس از کارمزد)",
+  depth_cap: "عمق اجراپذیر هر پا در محدودهٔ لغزش مجاز (چندسطحی VWAP)",
   depth_evidence: "عمق اثبات‌شدهٔ دفتر در همین چرخه",
   buy_irt_balance: "موجودی تومانی صرافی خرید (با احتساب کارمزد)",
   sell_usdt_balance: "موجودی تتری صرافی فروش (با احتساب کارمزد)",
@@ -1210,20 +1200,22 @@ export function computeRouteSize(input: SizingInput): SizingResult {
   }
 
   /*
-   * 8a. Risk policies gate approval, not analysis. Everything above — caps,
-   * the candidate ladder, walks, the whole profit curve — is already computed
-   * and is returned with the block, so capacity stays inspectable while the
-   * limits are still being decided.
+   * 8a. Final size = maximum safe size that is still economically profitable.
+   *
+   * Among eligible candidates (passed balance, full book walk, inventory,
+   * positive risk-adjusted PnL, edge floor), pick the LARGEST size. Profit
+   * ranking only breaks ties at equal size. Utilization targets never force a
+   * larger size past safety or positive net edge.
    */
   const rank = (a: Evaluated, b: Evaluated) =>
-    // 1. the most risk-adjusted profit in toman;
+    // 1. maximum safe size that cleared all gates;
+    b.q - a.q ||
+    // 2. better risk-adjusted profit at that size;
     b.econ.riskAdjustedPnlToman - a.econ.riskAdjustedPnlToman ||
-    // 2. the better return on the capital it ties up;
+    // 3. better return on capital;
     b.econ.riskAdjustedReturnBps - a.econ.riskAdjustedReturnBps ||
-    // 3. the trade that leaves inventory closer to target (lower is better);
-    a.inventory.impactPoints - b.inventory.impactPoints ||
-    // 4. the smaller size — same result for less capital and less footprint.
-    a.q - b.q;
+    // 4. lower inventory impact.
+    a.inventory.impactPoints - b.inventory.impactPoints;
 
   const ordered = [...eligible].sort(rank);
   const best = ordered[0];
@@ -1258,13 +1250,13 @@ export function computeRouteSize(input: SizingInput): SizingResult {
   /* ── 8b. why this size, and why not the next one up ─────────────────────── */
   const runnerUp = ordered[1] ?? null;
   let tieBreakFa: string | null = null;
-  if (runnerUp && runnerUp.econ.riskAdjustedPnlToman === best.econ.riskAdjustedPnlToman) {
-    if (runnerUp.econ.riskAdjustedReturnBps !== best.econ.riskAdjustedReturnBps) {
-      tieBreakFa = `سود برابر بود؛ بازده تعدیل‌شدهٔ بالاتر (${best.econ.riskAdjustedReturnBps} در برابر ${runnerUp.econ.riskAdjustedReturnBps} bps) تعیین‌کننده شد.`;
+  if (runnerUp && runnerUp.q === best.q) {
+    if (runnerUp.econ.riskAdjustedPnlToman !== best.econ.riskAdjustedPnlToman) {
+      tieBreakFa = `حجم برابر؛ سود تعدیل‌شدهٔ بالاتر تعیین‌کننده شد.`;
+    } else if (runnerUp.econ.riskAdjustedReturnBps !== best.econ.riskAdjustedReturnBps) {
+      tieBreakFa = `حجم و سود برابر؛ بازده تعدیل‌شدهٔ بالاتر تعیین‌کننده شد.`;
     } else if (runnerUp.inventory.impactPoints !== best.inventory.impactPoints) {
-      tieBreakFa = `سود و بازده برابر بود؛ اثر بهتر بر موجودی (${best.inventory.impactPoints} در برابر ${runnerUp.inventory.impactPoints} واحد) تعیین‌کننده شد.`;
-    } else {
-      tieBreakFa = "سود، بازده و اثر موجودی برابر بود؛ حجم کوچک‌تر انتخاب شد.";
+      tieBreakFa = `حجم/سود/بازده برابر؛ اثر بهتر بر موجودی تعیین‌کننده شد.`;
     }
   }
 
@@ -1307,14 +1299,13 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     selectedSizeUsdtMicros: best.q,
     selectedPercentOfUsable: percentFor(best.q),
     reasonFa:
-      `بیشترین سود تعدیل‌شده میان ${eligible.length} حجم واجد شرایط از ${evaluated.length} نامزد بررسی‌شده: ` +
-      `${best.econ.riskAdjustedPnlToman.toLocaleString("en-US")} تومان (${best.econ.riskAdjustedReturnBps} bps) ` +
-      `در ${usdtFa(best.q)} تتر؛ ${
+      `حداکثر حجم امن و سودده: ${usdtFa(best.q)} تتر ` +
+      `(${eligible.length} حجم واجد شرایط از ${evaluated.length} نامزد؛ ` +
+      `سود تعدیل‌شده ${best.econ.riskAdjustedPnlToman.toLocaleString("en-US")} تومان / ${best.econ.riskAdjustedReturnBps} bps)؛ ` +
+      `${
         bindingFor(best.q)
-          ? `سقف محدودکننده «${SIZING_CONSTRAINT_FA[bindingFor(best.q) as SizingConstraintKey]}»`
-          : `هیچ سقفی محدودکننده نبود — منحنی سود این حجم را انتخاب کرد (بیشترین حجم ممکن ${usdtFa(
-              quantizedCeiling
-            )} تتر بود)`
+          ? `محدودکنندهٔ برنده: «${SIZING_CONSTRAINT_FA[bindingFor(best.q) as SizingConstraintKey]}»`
+          : `سقف محاسبه‌شده ${usdtFa(quantizedCeiling)} تتر — سودآوری این حجم را تأیید کرد`
       }؛ اثر موجودی ${best.inventory.impactPoints} واحد.`,
     tieBreakFa,
     nextLarger
@@ -1335,13 +1326,7 @@ export function computeRouteSize(input: SizingInput): SizingResult {
 }
 
 /**
- * The fixed 5/10/20/25 ladder, priced on the same books and the same fees.
- *
- * This is a COMPARISON, never a decision. No caller may execute a baseline row,
- * and `executable` is hard-coded false so the shape itself cannot be mistaken
- * for a plan. Rows that the books or balances cannot support say so instead of
- * being omitted, because "the fixed size would not have filled" is the most
- * interesting comparison of all.
+ * Analysis-only fixed probe ladder (historical 5/10/20/25), never executable.
  */
 function buildBaseline(input: {
   buyAsks: BookLevel[];
@@ -1426,7 +1411,7 @@ function buildBaseline(input: {
     policy: BASELINE_POLICY,
     executable: false,
     noteFa:
-      "نردبان ثابت ۵/۱۰/۲۰/۲۵ تتر فقط مبنای مقایسه است و هرگز اجرا نمی‌شود؛ کارگزار کاغذی حجم محاسبه‌شدهٔ SMART_CAPITAL_DEPTH را اجرا می‌کند.",
+      "نردبان ثابت ۵/۱۰/۲۰/۲۵ تتر فقط تحلیل است و هرگز سقف اجرا نیست؛ حجم نهایی از min(سرمایه، موجودی، عمق VWAP، سیاست) با سود خالص مثبت است.",
     rows,
     bestRiskAdjustedPnlToman: bestPnl,
     bestSizeUsdt: bestSize

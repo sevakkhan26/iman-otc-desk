@@ -58,8 +58,8 @@ function usdtFa(micros: number): string {
  * server also sends them in `policyParameters`, and a test pins the two
  * together so a change on one side cannot drift from the other.
  */
-export const CAPITAL_CAP_PERCENT_FA = 10;
-export const DEPTH_CAP_PERCENT_FA = 10;
+export const CAPITAL_CAP_PERCENT_FA = 100;
+export const DEPTH_CAP_PERCENT_FA = 100;
 
 /** One leg's child-fill ladder, as the API returns it. */
 export type BookWalkView = {
@@ -725,19 +725,17 @@ export function CommandCenter({
       {sizing && !sizing.missingPolicies.length ? (
         <div className="sa-callout sa-callout-muted" role="status">
           <span className="sa-chip sa-chip-sm sa-chip-good sa-sz-policy-chip">
-            {sizing.policy ?? "SMART_CAPITAL_DEPTH"}
+            {sizing.policy ?? "CAPITAL_AWARE_MAX_SAFE"}
           </span>{" "}
-          حجم هوشمند فعال است — {toFaDigits(sizedCount)} مسیر از{" "}
+          حجم سرمایه‌آگاه فعال است — {toFaDigits(sizedCount)} مسیر از{" "}
           {toFaDigits(sizing.routes.length)} مسیر بررسی‌شده حجم گرفت.
           {sizing.policyParameters ? (
             <span className="sa-sub">
               {" "}
-              نامزدها {toFaDigits(sizing.policyParameters.candidatePercents.join("، "))}٪ از موجودی
-              قابل استفادهٔ سمت محدودکننده، با سقف سرمایهٔ{" "}
-              {toFaDigits(sizing.policyParameters.capitalCapPercent)}٪، سقف عمق{" "}
-              {toFaDigits(sizing.policyParameters.depthCapPercent)}٪ هر پا و حداقل اجراپذیر{" "}
-              {toFaDigits(sizing.policyParameters.minExecutableUsdt)} تتر. نردبان ثابت
-              ۵/۱۰/۲۰/۲۵ فقط مبنای مقایسه است و اجرا نمی‌شود.
+              حجم نهایی = min(موجودی، عمق VWAP، سقف سفارش، تمرکز، سهم سرمایه) با سود خالص
+              مثبت. پروب‌های تحلیلی {toFaDigits(sizing.policyParameters.candidatePercents.join("، "))}٪
+              از سقف امن — نردبان ۵/۱۰/۲۰/۲۵ فقط تحلیل است و سقف اجرا نیست. حداقل اجراپذیر{" "}
+              {toFaDigits(sizing.policyParameters.minExecutableUsdt)} تتر.
             </span>
           ) : null}
         </div>
@@ -961,7 +959,7 @@ export function CommandCenter({
                   </dd>
                 </div>
                 <div>
-                  <dt>سقف سرمایه ({toFaDigits(CAPITAL_CAP_PERCENT_FA)}٪)</dt>
+                  <dt>ظرفیت سرمایه / موجودی</dt>
                   <dd>
                     {bestSizing?.sizing.capacity ? (
                       <>
@@ -976,7 +974,7 @@ export function CommandCenter({
                   </dd>
                 </div>
                 <div>
-                  <dt>سقف عمق ({toFaDigits(DEPTH_CAP_PERCENT_FA)}٪)</dt>
+                  <dt>عمق اجراپذیر (VWAP چندسطحی)</dt>
                   <dd>
                     {bestSizing?.sizing.capacity ? (
                       <>

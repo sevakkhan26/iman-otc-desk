@@ -10,7 +10,7 @@
  * cycle, their VWAP depth for the traded size, fees that are known and fresh,
  * the slippage buffer, account readiness and the virtual balances.
  */
-import { SHADOW_STALE_MS, SHADOW_TRADE_SIZES } from "@/lib/shadowArbitrage/config";
+import { SHADOW_STALE_MS } from "@/lib/shadowArbitrage/config";
 import type { RiskPolicyState } from "@/lib/shadowArbitrage/live/policy";
 import { computeRouteSize, type SizingResult } from "@/lib/shadowArbitrage/paper/sizing";
 import type { InventoryModel } from "@/lib/shadowArbitrage/paper/inventory";
@@ -179,16 +179,28 @@ export function resolveMarkPriceToman(
 }
 
 /** The venue must actually have walkable depth for the size being traded. */
+/**
+ * Soft depth gate before capital-aware sizing.
+ * Prefer real books; fall back to any fillable sizeExecutable entry.
+ * Never requires the obsolete fixed ladder size to match.
+ */
 function depthUsable(
   s: NormalizedSourceSnapshot | undefined,
-  sizeUsdt: number,
+  _sizeUsdt: number,
   side: "buy" | "sell"
 ): boolean {
-  const ex = s?.sizeExecutables.find((x) => x.sizeUsdt === sizeUsdt);
-  if (!ex) return false;
-  return side === "buy"
-    ? ex.buyFillable && ex.userBuyVwapToman !== null
-    : ex.sellFillable && ex.userSellVwapToman !== null;
+  if (!s) return false;
+  const book = side === "buy" ? s.bookAsks : s.bookBids;
+  if (book && book.length > 0) {
+    const total = book.reduce((a, l) => a + (l.amountUsdt ?? 0), 0);
+    if (total > 0) return true;
+  }
+  const any = s.sizeExecutables?.find((x) =>
+    side === "buy"
+      ? x.buyFillable && x.userBuyVwapToman !== null
+      : x.sellFillable && x.userSellVwapToman !== null
+  );
+  return Boolean(any);
 }
 
 /**
@@ -348,11 +360,13 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       skip(c, unhealthy ? ["source_unhealthy"] : ["stale_market_data"]);
       continue;
     }
-    if (
-      !depthUsable(buySnap, c.sizeUsdt, "buy") ||
-      !depthUsable(sellSnap, c.sizeUsdt, "sell") ||
-      !SHADOW_TRADE_SIZES.includes(c.sizeUsdt as (typeof SHADOW_TRADE_SIZES)[number])
-    ) {
+    /*
+     * Probe size on the opportunity is only a discovery hint. Depth is re-checked
+     * by capital-aware sizing (full walk) — do not refuse the route because the
+     * obsolete 5/10/20/25 ladder probe did not match. Soft depth gate: at least
+     * one side must show some walkable liquidity at a minimal size.
+     */
+    if (!depthUsable(buySnap, 1, "buy") || !depthUsable(sellSnap, 1, "sell")) {
       skip(c, ["insufficient_depth"]);
       continue;
     }

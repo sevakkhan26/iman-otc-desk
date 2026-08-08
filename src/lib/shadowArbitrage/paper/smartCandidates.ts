@@ -1,36 +1,20 @@
 /**
- * `SMART_CAPITAL_DEPTH` — candidate generation for paper sizing.
+ * Capital-aware candidate generation for paper sizing.
  *
- * The fixed 5/10/20/25 USDT ladder answers "can this book fill a probe?", which
- * is a data-quality question. It cannot answer "how much should this desk
- * trade?", because it knows nothing about the desk: the same four numbers come
- * back whether the session holds ten million toman or ten billion. On a 10B
- * session a 25 USDT fill is not conservative, it is noise — it proves the
- * plumbing works and nothing about whether the capital is being used.
+ * Safe maximum (execution ceiling):
  *
- * So candidates are generated from what the desk can actually commit, and then
- * cut down by what the market can actually absorb:
+ *   finalSafe = min(
+ *     capitalLimit,      // usable balances after fees + capital plan share
+ *     buyBalanceLimit,
+ *     sellBalanceLimit,
+ *     buyDepthLimit,     // full slippage-bounded depth (not a fixed ladder)
+ *     sellDepthLimit,
+ *     orderCap, venueCap, inventoryCap (extra hard ceilings from caller)
+ *   )
  *
- *   1. LIMITING USABLE BALANCE — the smaller of the two sides after fees and
- *      after any capacity already reserved by another candidate this cycle.
- *      Both sides matter: toman that cannot be matched by USDT on the other
- *      venue buys nothing an arbitrage can sell.
- *   2. PERCENTAGE LADDER — 1, 2, 4, 6, 8 and 10 percent of that balance. Six
- *      points, geometric at the bottom where the profit curve bends and linear
- *      at the top where it flattens. They are quantities to EVALUATE, not a
- *      preference ordering: the winner is chosen on measured profit.
- *   3. CAPITAL CAP — 10% of the limiting balance. No single fill may commit
- *      more than a tenth of the side that binds it, whatever the book offers.
- *   4. DEPTH CAP — 10% of the executable depth on EACH leg, where "executable"
- *      means the levels reachable without exceeding the administrator's own
- *      slippage ceiling. Depth beyond that ceiling exists but is not depth this
- *      desk is allowed to take.
- *   5. FLOOR — 25 USDT. Below it the trade is not worth the two legs, and the
- *      answer is "do not trade", never "trade a smaller amount".
- *
- * Every number above is a stated policy, not a tuned constant: no score, no
- * model, no learned weights, and nothing that changes between two runs on the
- * same inputs.
+ * That ceiling is always evaluated. Analysis-only probes are derived FROM the
+ * ceiling (fractions of it) so they never cap the final trade. The obsolete
+ * 5/10/20/25 USDT ladder is not used for execution ranking or capping.
  *
  * Pure module: no database, no network, no clock, no exchange client.
  */
@@ -38,30 +22,41 @@ import { orderedLevels, usdtToMicros, type BookSide } from "@/lib/shadowArbitrag
 import type { BookLevel } from "@/lib/shadowArbitrage/types";
 
 /** The name this sizing policy is recorded and displayed under. */
-export const SMART_SIZING_POLICY = "SMART_CAPITAL_DEPTH" as const;
-
-/** Nothing smaller than this trades. Not a floor to round to — a refusal. */
-export const MIN_EXECUTABLE_USDT_MICROS = 25_000_000;
-
-/** Percentages of the limiting usable side balance that get evaluated. */
-export const CANDIDATE_PERCENTS = [1, 2, 4, 6, 8, 10] as const;
-
-/** Hard ceiling as a percentage of the limiting usable side balance. */
-export const CAPITAL_CAP_PERCENT = 10;
-
-/** Hard ceiling as a percentage of each leg's slippage-bounded depth. */
-export const DEPTH_CAP_PERCENT = 10;
+export const SMART_SIZING_POLICY = "CAPITAL_AWARE_MAX_SAFE" as const;
 
 /**
- * The fixed probe ladder, kept ONLY as a comparison baseline.
- *
- * It is never executable. It exists so an operator can see, side by side, what
- * the old fixed sizing would have produced on the same evidence — which is the
- * only honest way to argue that the smart size is better rather than merely
- * different.
+ * Dust floor — not a ladder rung. Below this the two legs are not worth trading.
+ * Never used as an upper cap on finalSize.
+ */
+export const MIN_EXECUTABLE_USDT_MICROS = 25_000_000;
+
+/**
+ * Analysis-only fractions of the safe maximum.
+ * Never execution caps — labeled probes for the profit curve only.
+ */
+export const ANALYSIS_PROBE_FRACTIONS = [0.1, 0.25, 0.5, 0.75, 1.0] as const;
+
+/** @deprecated Use ANALYSIS_PROBE_FRACTIONS — kept for UI comparison labels. */
+export const CANDIDATE_PERCENTS = [10, 25, 50, 75, 100] as const;
+
+/**
+ * Usable-balance participation: 100% of fee-inclusive capacity may be considered.
+ * (Portfolio utilization targets are applied elsewhere and never force size.)
+ */
+export const CAPITAL_CAP_PERCENT = 100;
+
+/**
+ * Depth participation: 100% of slippage-bounded executable depth may be used
+ * so multi-level VWAP can consume deep books when balances allow.
+ */
+export const DEPTH_CAP_PERCENT = 100;
+
+/**
+ * Historical fixed probe ladder — analysis-only baseline.
+ * Never executable; never a cap on finalSize.
  */
 export const BASELINE_FIXED_SIZES_USDT = [5, 10, 20, 25] as const;
-export const BASELINE_POLICY = "FIXED_PROBE_LADDER" as const;
+export const BASELINE_POLICY = "ANALYSIS_ONLY_FIXED_PROBE" as const;
 
 export type SlippageBoundedDepth = {
   /** Quantity reachable inside the slippage ceiling, in micros. */
@@ -166,10 +161,9 @@ export type SmartCandidateSet = {
 /**
  * Build the candidate set for one route.
  *
- * Quantization floors to the ledger's own storable precision. Flooring rather
- * than rounding keeps every candidate on the safe side of every cap: a rung
- * rounded UP could exceed the cap it was derived from by a fraction of a USDT,
- * and a size the caps do not permit is not a candidate at all.
+ * Safe maximum = min of balance, depth, and hard policy caps. Analysis probes
+ * are fractions of that maximum only — they never raise or lower the ceiling.
+ * Quantization floors to the ledger precision (safe side of every cap).
  */
 export function buildSmartCandidates(input: {
   /** Fee-inclusive usable quantity on the buy venue, in micros. */
@@ -178,11 +172,11 @@ export function buildSmartCandidates(input: {
   sellUsableMicros: number;
   buySourceId: string;
   sellSourceId: string;
-  /** Slippage-bounded depth of the buy leg's ask ladder. */
+  /** Slippage-bounded depth of the buy leg's ask ladder (full usable depth). */
   buyDepthMicros: number;
-  /** Slippage-bounded depth of the sell leg's bid ladder. */
+  /** Slippage-bounded depth of the sell leg's bid ladder (full usable depth). */
   sellDepthMicros: number;
-  /** Further hard ceilings: the capital plan share, the risk policies. */
+  /** Further hard ceilings: capital plan share, order cap, venue exposure. */
   extraCapsMicros: number[];
   granularityMicros: number;
   minMicros?: number;
@@ -192,19 +186,27 @@ export function buildSmartCandidates(input: {
   const sellUsable = Math.max(0, Math.floor(input.sellUsableMicros));
 
   const limitingUsableMicros = Math.min(buyUsable, sellUsable);
-  // Ties resolve to the buy side deterministically; both are equal, so the
-  // choice cannot change a number — only the label the UI prints.
   const limitingSide: "buy" | "sell" = buyUsable <= sellUsable ? "buy" : "sell";
   const limitingSourceId = limitingSide === "buy" ? input.buySourceId : input.sellSourceId;
 
+  // Full usable capacity (CAPITAL_CAP_PERCENT=100): capital-aware, not fixed ladder.
   const capitalCapMicros = Math.floor((limitingUsableMicros * CAPITAL_CAP_PERCENT) / 100);
 
+  // Full slippage-bounded depth (DEPTH_CAP_PERCENT=100): multi-level VWAP may consume it.
   const buyDepthCap = Math.floor((Math.max(0, input.buyDepthMicros) * DEPTH_CAP_PERCENT) / 100);
   const sellDepthCap = Math.floor((Math.max(0, input.sellDepthMicros) * DEPTH_CAP_PERCENT) / 100);
   const depthCapMicros = Math.min(buyDepthCap, sellDepthCap);
   const depthCapSide: "buy" | "sell" = buyDepthCap <= sellDepthCap ? "buy" : "sell";
 
-  const caps = [capitalCapMicros, depthCapMicros, ...input.extraCapsMicros.filter((c) => c >= 0)];
+  const caps = [
+    capitalCapMicros,
+    depthCapMicros,
+    buyUsable,
+    sellUsable,
+    buyDepthCap,
+    sellDepthCap,
+    ...input.extraCapsMicros.filter((c) => c >= 0)
+  ];
   const ceilingMicros = caps.length ? Math.min(...caps) : 0;
 
   const quantize = (micros: number) =>
@@ -213,27 +215,19 @@ export function buildSmartCandidates(input: {
   const kept = new Set<number>();
   const ladder: SmartCandidateSet["ladder"] = [];
 
-  for (const percent of CANDIDATE_PERCENTS) {
-    const rawMicros = Math.floor((limitingUsableMicros * percent) / 100);
+  const ceilingQuantized = quantize(ceilingMicros);
+
+  // Analysis probes derived FROM the safe maximum — never independent fixed sizes.
+  for (const frac of ANALYSIS_PROBE_FRACTIONS) {
+    const percent = Math.round(frac * 100);
+    const rawMicros = Math.floor(ceilingMicros * frac);
     const quantizedMicros = quantize(rawMicros);
-    /*
-     * A rung above the ceiling is DROPPED, not clipped down to it. Clipping
-     * would report several different percentages as though they had all
-     * produced the ceiling quantity, which reads like agreement between
-     * independent measurements when it is really one cap repeated.
-     */
-    const keep = quantizedMicros >= minMicros && quantizedMicros <= ceilingMicros;
+    const keep = quantizedMicros >= minMicros && quantizedMicros <= ceilingQuantized;
     if (keep) kept.add(quantizedMicros);
     ladder.push({ percent, rawMicros, quantizedMicros, kept: keep });
   }
 
-  /*
-   * The ceiling itself is always evaluated when it clears the floor. A cap that
-   * lands between two rungs is a real quantity the desk could trade, and
-   * leaving it out would mean the largest evaluated size is arbitrarily below
-   * what every constraint actually permits.
-   */
-  const ceilingQuantized = quantize(ceilingMicros);
+  // Always evaluate the full safe maximum when above floor.
   if (ceilingQuantized >= minMicros) kept.add(ceilingQuantized);
 
   return {

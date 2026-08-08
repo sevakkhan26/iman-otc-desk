@@ -114,6 +114,8 @@ export type PaperLedgerRow = {
   nextLargerRejectionCode: string | null;
   nextLargerRejectionReason: string | null;
   nextLargerMarginalPnlToman: number | null;
+  /** Complete final sizing audit when recorded (migration 0018). */
+  sizingAudit: Record<string, unknown> | null;
   experimentRunId: string | null;
   occurredAt: string;
 };
@@ -646,6 +648,8 @@ export type PaperFillRecord = {
     nextLargerRejectionCode: string | null;
     nextLargerRejectionReason: string | null;
     nextLargerMarginalPnlToman: number | null;
+    /** Complete final sizing audit (restart-stable). Optional; write failures must not alter fill. */
+    audit?: Record<string, unknown> | null;
   };
 };
 
@@ -867,6 +871,7 @@ export async function commitPaperCycle(input: {
               nextLargerRejectionCode: f.sizing?.nextLargerRejectionCode ?? null,
               nextLargerRejectionReason: f.sizing?.nextLargerRejectionReason ?? null,
               nextLargerMarginalPnlToman: f.sizing?.nextLargerMarginalPnlToman ?? null,
+              sizingAudit: f.sizing?.audit ?? null,
               occurredAt: input.occurredAt,
               createdAt: input.occurredAt
             });
@@ -1212,6 +1217,10 @@ export async function loadPaperLedger(
       nextLargerRejectionCode: r.nextLargerRejectionCode,
       nextLargerRejectionReason: r.nextLargerRejectionReason,
       nextLargerMarginalPnlToman: numOrNull(r.nextLargerMarginalPnlToman),
+      sizingAudit:
+        r.sizingAudit && typeof r.sizingAudit === "object"
+          ? (r.sizingAudit as Record<string, unknown>)
+          : null,
       slippageBufferToman: numOrNull(r.slippageBufferToman),
       grossSpreadToman: numOrNull(r.grossSpreadToman),
       markPriceToman: numOrNull(r.markPriceToman),

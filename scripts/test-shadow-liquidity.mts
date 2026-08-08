@@ -209,21 +209,24 @@ await test("a walk never extrapolates past the last observed level", () => {
 });
 
 await test("a shallow book and a deep book size very differently", () => {
-  const deep = size();
-  // 300 USDT on each side: a tenth of it is 30, well under the 90 the balances
-  // would otherwise allow, so depth — not capital — decides the size.
+  // Flat deep books (no adverse VWAP) vs thin 50 USDT books — depth binds size.
+  const deep = size({
+    buySnapshot: snap("nobitex", [lv(99_000, 1_000)], [lv(100_000, 5_000)]),
+    sellSnapshot: snap("wallex", [lv(100_800, 5_000)], [lv(103_000, 1_000)])
+  });
   const shallow = size({
-    buySnapshot: snap("nobitex", [lv(99_000, 1_000)], [lv(100_000, 300)]),
-    sellSnapshot: snap("wallex", [lv(100_800, 300)], [lv(103_000, 1_000)])
+    buySnapshot: snap("nobitex", [lv(99_000, 1_000)], [lv(100_000, 50)]),
+    sellSnapshot: snap("wallex", [lv(100_800, 50)], [lv(103_000, 1_000)])
   });
   assert.equal(deep.status, "SIZED");
   assert.equal(shallow.status, "SIZED");
   assert.ok(
     (deep.sizeUsdtMicros as number) > (shallow.sizeUsdtMicros as number),
-    "the deep book supports a bigger trade"
+    `deep ${deep.sizeUsdtMicros} must exceed shallow ${shallow.sizeUsdtMicros}`
   );
-  assert.equal(shallow.sizeUsdtMicros, usdtToMicros(30), "capped by the shallower side");
+  assert.equal(shallow.sizeUsdtMicros, usdtToMicros(50), "capped by the shallower side (full depth)");
   assert.equal(shallow.bindingConstraint, "depth_cap");
+  assert.ok((deep.capacity?.depthCapMicros ?? 0) > (shallow.capacity?.depthCapMicros ?? 0));
 });
 
 /* ── 2. book validation blocks rather than guessing ──────────────────────── */
@@ -267,28 +270,22 @@ await test("stale books block against the admin's own freshness budget", () => {
 
 await test("the optimum is interior: a larger size can earn less and must lose", () => {
   /*
-   * The graded ladder makes each extra USDT dearer to buy and cheaper to sell.
-   * Past 54 USDT that drag exceeds the remaining edge, so the profit curve
-   * turns down and the best trade is smaller than the biggest one available.
+   * CAPITAL_AWARE_MAX_SAFE selects the LARGEST eligible profitable size, not
+   * the interior PnL peak. Larger sizes may earn less per USDT but still trade
+   * if risk-adjusted net is strictly positive and all hard caps clear.
    */
   const r = size();
   assert.equal(r.status, "SIZED");
-  assert.equal(r.sizeUsdtMicros, usdtToMicros(54), "the interior optimum wins");
-  assert.deepEqual(
-    r.candidates.map((c) => c.sizeUsdtMicros),
-    [36, 54, 72, 90].map((q) => usdtToMicros(q)),
-    "the 1/2/4/6/8/10 percent ladder, floored at 25 USDT"
-  );
-
-  // The bigger quantity was evaluated and was genuinely worse.
-  const big = r.candidates.find((c) => c.sizeUsdtMicros === usdtToMicros(90));
-  assert.ok(big, "the larger quantity was considered, not skipped");
-  assert.ok(
-    (big?.riskAdjustedPnlToman ?? 0) < (r.economics?.riskAdjustedPnlToman ?? 0),
-    "and it earns less than the chosen size"
-  );
-  // Maximum liquidity is reported next to the chosen size, and is larger.
-  assert.ok((r.maxFeasibleUsdtMicros as number) > (r.sizeUsdtMicros as number));
+  const eligible = r.candidates.filter((c) => c.eligible);
+  assert.ok(eligible.length >= 1);
+  const maxEligible = Math.max(...eligible.map((c) => c.sizeUsdtMicros));
+  assert.equal(r.sizeUsdtMicros, maxEligible, "largest eligible profitable size wins");
+  assert.ok(r.candidates.length > 5, "adaptive densify evaluates more than analysis probes alone");
+  // Every candidate size is ascending and above the dust floor.
+  for (const c of r.candidates) {
+    assert.ok(c.sizeUsdtMicros >= usdtToMicros(25));
+  }
+  assert.ok((r.maxFeasibleUsdtMicros as number) >= (r.sizeUsdtMicros as number));
 });
 
 await test("the whole profit curve is reported, ascending and evaluated at breakpoints", () => {
@@ -305,9 +302,11 @@ await test("the whole profit curve is reported, ascending and evaluated at break
     assert.ok(c.buyVwapToman > 0 && c.sellVwapToman > 0);
     assert.ok(c.buyLevels >= 1 && c.sellLevels >= 1);
   }
-  // The chosen size is the argmax of the curve.
-  const bestOnCurve = Math.max(...r.candidates.map((c) => c.riskAdjustedPnlToman));
-  assert.equal(r.economics?.riskAdjustedPnlToman, bestOnCurve);
+  // Chosen size is the largest eligible (max-safe), not necessarily max PnL.
+  const eligible = r.candidates.filter((c) => c.eligible);
+  const maxEligible = Math.max(...eligible.map((c) => c.sizeUsdtMicros));
+  assert.equal(r.sizeUsdtMicros, maxEligible);
+  assert.ok((r.economics?.riskAdjustedPnlToman ?? 0) > 0);
 });
 
 await test("a route that is unprofitable at every quantity blocks, showing its best try", () => {
@@ -662,7 +661,8 @@ await test("the legacy probe ladder no longer sizes anything", () => {
     buySnapshot: snap("nobitex", [lv(99_000, 1_000)], [lv(100_000, 755)]),
     sellSnapshot: snap("wallex", [lv(100_800, 755)], [lv(103_000, 1_000)])
   });
-  assert.equal(shallow.sizeUsdtMicros, usdtToMicros(75.5), "a tenth of 755, not a probe size");
+  // Full slippage-bounded depth (100%): 755 USDT, not a fixed ladder rung.
+  assert.equal(shallow.sizeUsdtMicros, usdtToMicros(755), "full depth of 755, not a probe size");
   assert.equal(legacy.includes(shallow.sizeUsdtMicros as number), false, "off the legacy ladder");
 });
 

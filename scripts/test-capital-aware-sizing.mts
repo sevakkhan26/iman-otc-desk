@@ -278,5 +278,143 @@ await test("missing fee fails closed", () => {
   assert.ok(r.blockers.some((b) => b.code === "fee_unconfirmed"));
 });
 
+await test("10B with order cap 500: final ≤500 and order_cap binds", () => {
+  const bals = sessionBalances(10_000_000_000);
+  const buy = bals.find((b) => b.sourceId === "nobitex")!;
+  const sell = bals.find((b) => b.sourceId === "wallex")!;
+  const r = computeRouteSize({
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    buySnapshot: snap(
+      "nobitex",
+      [lv(190_000, 50_000)],
+      ladder(192_000, 20, 40, 5_000)
+    ) as never,
+    sellSnapshot: snap(
+      "wallex",
+      ladder(194_000, -20, 40, 5_000),
+      [lv(196_000, 50_000)]
+    ) as never,
+    buyFeeBps: 10,
+    sellFeeBps: 10,
+    buySettlement: settlementFor("nobitex" as never, "buy"),
+    sellSettlement: settlementFor("wallex" as never, "sell"),
+    balances: [buy, sell],
+    buyVenueAllocationToman: 2_000_000_000,
+    portfolioValueToman: 10_000_000_000,
+    buyVenueExposureToman: 0,
+    policies: policies({
+      max_order_size_usdt: 500,
+      max_venue_exposure_percent: 100
+    }),
+    slippageBufferBps: 5,
+    inventoryModel: {
+      valuationPriceToman: MARK,
+      targets: targetsFromAllocations(
+        bals.map((b) => ({
+          sourceId: b.sourceId as string,
+          irtToman: b.irtToman,
+          usdtUnits: microsToUsdt(b.usdtMicros)
+        })),
+        MARK
+      ),
+      maxDeviationPoints: 50
+    }
+  });
+  assert.equal(r.status, "SIZED", JSON.stringify(r.blockers));
+  assert.ok(r.sizeUsdtMicros! <= usdtToMicros(500) + 100, `size ${microsToUsdt(r.sizeUsdtMicros!)}`);
+  assert.equal(r.bindingConstraint, "policy_max_order_size");
+  assert.ok(r.audit);
+  assert.equal(r.audit!.bindingConstraint, "policy_max_order_size");
+  assert.ok((r.audit!.limits.orderCapUsdtMicros ?? 0) <= usdtToMicros(500) + 1);
+  console.log(
+    `        order_cap500 size=${microsToUsdt(r.sizeUsdtMicros!)} binding=${r.bindingConstraint}`
+  );
+});
+
+await test("tight inventory selects largest smaller valid size (adaptive)", () => {
+  const bals = sessionBalances(10_000_000_000);
+  const buy = bals.find((b) => b.sourceId === "nobitex")!;
+  const sell = bals.find((b) => b.sourceId === "wallex")!;
+  const base = {
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    buySnapshot: snap(
+      "nobitex",
+      [lv(190_000, 50_000)],
+      ladder(192_000, 5, 200, 50)
+    ) as never,
+    sellSnapshot: snap(
+      "wallex",
+      ladder(194_000, -5, 200, 50),
+      [lv(196_000, 50_000)]
+    ) as never,
+    buyFeeBps: 10,
+    sellFeeBps: 10,
+    buySettlement: settlementFor("nobitex" as never, "buy"),
+    sellSettlement: settlementFor("wallex" as never, "sell"),
+    balances: [buy, sell],
+    buyVenueAllocationToman: 2_000_000_000,
+    portfolioValueToman: 10_000_000_000,
+    buyVenueExposureToman: 0,
+    policies: policies({ max_order_size_usdt: 1_000_000, max_venue_exposure_percent: 100 }),
+    slippageBufferBps: 5
+  };
+  const targets = targetsFromAllocations(
+    bals.map((b) => ({
+      sourceId: b.sourceId as string,
+      irtToman: b.irtToman,
+      usdtUnits: microsToUsdt(b.usdtMicros)
+    })),
+    MARK
+  );
+  const wide = computeRouteSize({
+    ...base,
+    inventoryModel: { valuationPriceToman: MARK, targets, maxDeviationPoints: 50 }
+  });
+  const tight = computeRouteSize({
+    ...base,
+    inventoryModel: { valuationPriceToman: MARK, targets, maxDeviationPoints: 1 }
+  });
+  assert.equal(wide.status, "SIZED");
+  assert.equal(tight.status, "SIZED", JSON.stringify(tight.blockers));
+  assert.ok(tight.sizeUsdtMicros! < wide.sizeUsdtMicros!);
+  assert.ok(tight.sizeUsdtMicros! >= MIN_EXECUTABLE_USDT_MICROS);
+  assert.ok((tight.audit?.adaptive.candidateCount ?? 0) > 5, "adaptive densify");
+  console.log(
+    `        tight inventory size=${microsToUsdt(tight.sizeUsdtMicros!)} vs wide=${microsToUsdt(wide.sizeUsdtMicros!)}`
+  );
+});
+
+await test("adaptive densify: more execution points than analysis probes alone", () => {
+  const set = buildSmartCandidates({
+    buyUsableMicros: usdtToMicros(5_000),
+    sellUsableMicros: usdtToMicros(5_000),
+    buySourceId: "a",
+    sellSourceId: "b",
+    buyDepthMicros: usdtToMicros(5_000),
+    sellDepthMicros: usdtToMicros(5_000),
+    extraCapsMicros: [],
+    granularityMicros: 100,
+    buyLevels: ladder(192_000, 10, 20, 250),
+    sellLevels: ladder(194_000, -10, 20, 250)
+  });
+  assert.ok(set.quantities.length > set.ladder.filter((l) => l.kept).length);
+  assert.ok(set.adaptive.executionPointCount >= 2);
+  assert.equal(set.adaptive.analysisPointCount, 5);
+});
+
+await test("complete sizing audit is present on SIZED results", () => {
+  const r = sizeAtCapital(100_000_000, 1_000, 20);
+  assert.equal(r.status, "SIZED");
+  assert.ok(r.audit);
+  assert.equal(r.audit!.status, "SIZED");
+  assert.equal(r.audit!.finalSizeUsdtMicros, r.sizeUsdtMicros);
+  assert.ok(r.audit!.safeCeilingUsdtMicros !== null);
+  assert.ok(r.audit!.limits.minExecutableUsdtMicros === MIN_EXECUTABLE_USDT_MICROS);
+  assert.ok(r.audit!.buyVwapToman && r.audit!.sellVwapToman);
+  assert.ok((r.audit!.predictedRiskAdjustedNetToman ?? 0) > 0);
+});
+
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

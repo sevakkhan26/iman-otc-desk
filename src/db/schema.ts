@@ -870,6 +870,12 @@ export const shadowPaperLedger = pgTable(
     nextLargerRejectionCode: text("next_larger_rejection_code"),
     nextLargerRejectionReason: text("next_larger_rejection_reason"),
     nextLargerMarginalPnlToman: bigint("next_larger_marginal_pnl_toman", { mode: "number" }),
+    /**
+     * Complete final sizing audit (CAPITAL_AWARE_MAX_SAFE). Restart-stable:
+     * limits, ceiling, final size, binding constraint, depth/VWAP, fees,
+     * predicted risk-adjusted net, inventory effect, rejection reason.
+     */
+    sizingAudit: jsonb("sizing_audit").$type<Record<string, unknown> | null>(),
     /** FIRST_SEEN | CHANGED | FILLED | CLOSED — why this row exists at all. */
     eventType: text("event_type"),
     /** Every exact cause that applied, canonically ordered. */

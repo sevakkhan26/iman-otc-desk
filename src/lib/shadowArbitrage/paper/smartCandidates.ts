@@ -12,14 +12,19 @@
  *     orderCap, venueCap, inventoryCap (extra hard ceilings from caller)
  *   )
  *
- * That ceiling is always evaluated. Analysis-only probes are derived FROM the
- * ceiling (fractions of it) so they never cap the final trade. The obsolete
- * 5/10/20/25 USDT ladder is not used for execution ranking or capping.
+ * Execution quantities come from the adaptive densified solver (integer micros +
+ * book breakpoints + midpoints). Percentage probes and fixed 5/10/20/25 are
+ * analysis-only: they never determine or cap execution size.
  *
  * Pure module: no database, no network, no clock, no exchange client.
  */
 import { orderedLevels, usdtToMicros, type BookSide } from "@/lib/shadowArbitrage/paper/liquidity";
 import type { BookLevel } from "@/lib/shadowArbitrage/types";
+import {
+  buildAdaptiveExecutionPoints,
+  quantizeMicros,
+  SIZE_GRANULARITY_MICROS
+} from "@/lib/shadowArbitrage/paper/adaptiveSizeSolver";
 
 /** The name this sizing policy is recorded and displayed under. */
 export const SMART_SIZING_POLICY = "CAPITAL_AWARE_MAX_SAFE" as const;
@@ -42,6 +47,8 @@ export const CANDIDATE_PERCENTS = [10, 25, 50, 75, 100] as const;
 /**
  * Usable-balance participation: 100% of fee-inclusive capacity may be considered.
  * (Portfolio utilization targets are applied elsewhere and never force size.)
+ * 100% always means 100% of the final constrained safe maximum, never of total
+ * session capital or unconstrained venue balance.
  */
 export const CAPITAL_CAP_PERCENT = 100;
 
@@ -137,7 +144,11 @@ export function slippageBoundedDepth(
 }
 
 export type SmartCandidateSet = {
-  /** Quantities to evaluate, ascending, deduplicated and quantized. */
+  /**
+   * Execution quantities to evaluate, ascending, densified adaptive points
+   * (not percentage probes alone). Analysis fractions are included only when
+   * they land on a quantized micros value inside [min, ceiling].
+   */
   quantities: number[];
   /** min(usable buy side, usable sell side), before any cap. */
   limitingUsableMicros: number;
@@ -154,16 +165,27 @@ export type SmartCandidateSet = {
   ceilingMicros: number;
   /** True when the ceiling itself is below the 25 USDT floor. */
   belowFloor: boolean;
-  /** Every percentage rung before deduplication, for the explanation table. */
+  /**
+   * Analysis-only percentage rungs (display / profit curve labels).
+   * Never the sole execution set.
+   */
   ladder: Array<{ percent: number; rawMicros: number; quantizedMicros: number; kept: boolean }>;
+  /** Adaptive solver metadata for the audit trail. */
+  adaptive: {
+    minMicros: number;
+    ceilingMicros: number;
+    executionPointCount: number;
+    analysisPointCount: number;
+  };
 };
 
 /**
  * Build the candidate set for one route.
  *
- * Safe maximum = min of balance, depth, and hard policy caps. Analysis probes
- * are fractions of that maximum only — they never raise or lower the ceiling.
- * Quantization floors to the ledger precision (safe side of every cap).
+ * Safe maximum = min of balance, depth, and hard policy caps. Execution
+ * quantities are densified adaptive breakpoints so inventory-tight routes still
+ * find a smaller valid size when 10% of the ceiling would violate the band.
+ * Analysis probes remain labeled fractions of the ceiling only.
  */
 export function buildSmartCandidates(input: {
   /** Fee-inclusive usable quantity on the buy venue, in micros. */
@@ -180,8 +202,12 @@ export function buildSmartCandidates(input: {
   extraCapsMicros: number[];
   granularityMicros: number;
   minMicros?: number;
+  /** Order-book levels for breakpoint densification (optional but preferred). */
+  buyLevels?: BookLevel[];
+  sellLevels?: BookLevel[];
 }): SmartCandidateSet {
   const minMicros = input.minMicros ?? MIN_EXECUTABLE_USDT_MICROS;
+  const gran = input.granularityMicros > 0 ? input.granularityMicros : SIZE_GRANULARITY_MICROS;
   const buyUsable = Math.max(0, Math.floor(input.buyUsableMicros));
   const sellUsable = Math.max(0, Math.floor(input.sellUsableMicros));
 
@@ -207,39 +233,47 @@ export function buildSmartCandidates(input: {
     sellDepthCap,
     ...input.extraCapsMicros.filter((c) => c >= 0)
   ];
-  const ceilingMicros = caps.length ? Math.min(...caps) : 0;
+  const rawCeiling = caps.length ? Math.min(...caps) : 0;
+  const ceilingMicros = quantizeMicros(rawCeiling, gran);
 
-  const quantize = (micros: number) =>
-    Math.floor(micros / input.granularityMicros) * input.granularityMicros;
-
-  const kept = new Set<number>();
+  // Analysis-only ladder (display). Never the execution selector alone.
   const ladder: SmartCandidateSet["ladder"] = [];
-
-  const ceilingQuantized = quantize(ceilingMicros);
-
-  // Analysis probes derived FROM the safe maximum — never independent fixed sizes.
   for (const frac of ANALYSIS_PROBE_FRACTIONS) {
     const percent = Math.round(frac * 100);
-    const rawMicros = Math.floor(ceilingMicros * frac);
-    const quantizedMicros = quantize(rawMicros);
-    const keep = quantizedMicros >= minMicros && quantizedMicros <= ceilingQuantized;
-    if (keep) kept.add(quantizedMicros);
+    const rawMicros = Math.floor(rawCeiling * frac);
+    const quantizedMicros = quantizeMicros(rawMicros, gran);
+    const keep = quantizedMicros >= minMicros && quantizedMicros <= ceilingMicros;
     ladder.push({ percent, rawMicros, quantizedMicros, kept: keep });
   }
 
-  // Always evaluate the full safe maximum when above floor.
-  if (ceilingQuantized >= minMicros) kept.add(ceilingQuantized);
+  const adaptive = buildAdaptiveExecutionPoints({
+    ceilingMicros: rawCeiling,
+    minMicros,
+    granularityMicros: gran,
+    buyLevels: input.buyLevels ?? [],
+    sellLevels: input.sellLevels ?? [],
+    analysisFractions: ANALYSIS_PROBE_FRACTIONS
+  });
+
+  // Execution set = adaptive densified points (includes analysis points that land in range).
+  const quantities = adaptive.allPoints;
 
   return {
-    quantities: [...kept].sort((a, b) => a - b),
+    quantities,
     limitingUsableMicros,
     limitingSide,
     limitingSourceId,
     capitalCapMicros,
     depthCapMicros,
     depthCapSide,
-    ceilingMicros,
-    belowFloor: ceilingQuantized < minMicros,
-    ladder
+    ceilingMicros: rawCeiling,
+    belowFloor: ceilingMicros < minMicros,
+    ladder,
+    adaptive: {
+      minMicros: adaptive.minMicros,
+      ceilingMicros: adaptive.ceilingMicros,
+      executionPointCount: adaptive.executionPoints.length,
+      analysisPointCount: adaptive.analysisPoints.length
+    }
   };
 }

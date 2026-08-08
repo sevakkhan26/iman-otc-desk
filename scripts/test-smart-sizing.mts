@@ -231,11 +231,16 @@ await test("candidates are fractions of the safe max from limiting usable balanc
   assert.equal(set.limitingUsableMicros, usdtToMicros(1_000), "the smaller side limits");
   assert.equal(set.limitingSide, "sell");
   assert.equal(set.limitingSourceId, "b");
-  // Safe max = 1000; probes 10/25/50/75/100% of max
+  // Analysis ladder remains 10/25/50/75/100% of the safe max (display only).
   assert.deepEqual(
-    set.quantities.map((q) => microsToUsdt(q)),
+    set.ladder.filter((l) => l.kept).map((l) => microsToUsdt(l.quantizedMicros)),
     [100, 250, 500, 750, 1000]
   );
+  // Adaptive execution set includes those analysis points and denser midpoints.
+  const qs = set.quantities.map((q) => microsToUsdt(q));
+  assert.ok(qs.includes(100) && qs.includes(250) && qs.includes(1000));
+  assert.ok(qs.length > 5, "adaptive densify adds breakpoints between probes");
+  assert.equal(Math.max(...qs), 1000, "ceiling is always evaluated");
   assert.deepEqual([...CANDIDATE_PERCENTS], [10, 25, 50, 75, 100]);
   assert.equal(CAPITAL_CAP_PERCENT, 100);
   assert.equal(DEPTH_CAP_PERCENT, 100);
@@ -548,19 +553,26 @@ await test("the inventory band caps the size, and can refuse the route outright"
   assert.equal(wide.status, "SIZED");
   const widest = wide.sizeUsdtMicros as number;
 
+  // Adaptive solver must find a smaller valid size when 10% of ceiling violates inventory.
   const tight = deep({ inventoryModel: inventoryModel({ maxDeviationPoints: 1 }) });
-  if (tight.status === "SIZED") {
-    assert.ok((tight.sizeUsdtMicros as number) <= widest);
-  } else {
-    assert.equal(tight.status, "BLOCKED");
-  }
+  assert.equal(
+    tight.status,
+    "SIZED",
+    `tight inventory must size via adaptive solver, blockers=${JSON.stringify(tight.blockers)}`
+  );
+  assert.ok(
+    (tight.sizeUsdtMicros as number) < widest,
+    `tight size ${tight.sizeUsdtMicros} must be strictly below wide ${widest}`
+  );
+  assert.ok((tight.sizeUsdtMicros as number) >= MIN_EXECUTABLE_USDT_MICROS);
 
   const closed = deep({ inventoryModel: inventoryModel({ maxDeviationPoints: 0.01 }) });
   assert.equal(closed.status, "BLOCKED");
   assert.ok(
     closed.blockers.some(
       (b: Any) => b.code === "inventory_limit" || b.code === "depth_exhausted"
-    )
+    ),
+    `expected inventory_limit, got ${JSON.stringify(closed.blockers)}`
   );
 });
 

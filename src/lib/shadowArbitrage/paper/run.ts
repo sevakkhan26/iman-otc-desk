@@ -190,18 +190,36 @@ export async function runPaperExecutionForCycle(input: {
     });
   }
 
-  // Portfolio limits for the active four-day experiment (if any).
-  let portfolioLimits:
-    | {
-        enabled: boolean;
-        equityToman: number;
-        markPriceToman: number;
-        maxUtilizationPercent: number;
-        minReservePercent: number;
-        maxRouteCapitalPercent: number;
-        maxVenueExposurePercent: number;
-      }
-    | undefined;
+  /*
+   * Portfolio limits are ALWAYS attached on the Paper execution path.
+   * Defaults: util ≤80%, reserve ≥20%, route ≤10%, venue ≤20%.
+   * An open experiment may override the percents; it never removes the layer.
+   * Missing session capital / mark fails closed (enabled with zero equity is
+   * rejected inside evaluateCycle).
+   */
+  const {
+    PAPER_4D_MAX_UTILIZATION_PERCENT,
+    PAPER_4D_MIN_RESERVE_PERCENT,
+    PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT,
+    PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT
+  } = await import("@/lib/shadowArbitrage/paper/experimentPolicy");
+  let portfolioLimits: {
+    enabled: boolean;
+    equityToman: number;
+    markPriceToman: number;
+    maxUtilizationPercent: number;
+    minReservePercent: number;
+    maxRouteCapitalPercent: number;
+    maxVenueExposurePercent: number;
+  } = {
+    enabled: true,
+    equityToman: portfolioValueToman > 0 ? portfolioValueToman : 0,
+    markPriceToman: valuationPriceToman > 0 ? valuationPriceToman : 0,
+    maxUtilizationPercent: PAPER_4D_MAX_UTILIZATION_PERCENT,
+    minReservePercent: PAPER_4D_MIN_RESERVE_PERCENT,
+    maxRouteCapitalPercent: PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT,
+    maxVenueExposurePercent: PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT
+  };
   let activeExperimentId: string | null = null;
   try {
     const { getActiveExperiment, experimentIsOpen } = await import(
@@ -212,8 +230,9 @@ export async function runPaperExecutionForCycle(input: {
       activeExperimentId = exp.id;
       portfolioLimits = {
         enabled: true,
-        equityToman: portfolioValueToman > 0 ? portfolioValueToman : exp.initialCapitalToman,
-        markPriceToman: valuationPriceToman,
+        equityToman:
+          portfolioValueToman > 0 ? portfolioValueToman : exp.initialCapitalToman,
+        markPriceToman: valuationPriceToman > 0 ? valuationPriceToman : portfolioLimits.markPriceToman,
         maxUtilizationPercent: exp.maxUtilizationPercent,
         minReservePercent: exp.minReservePercent,
         maxRouteCapitalPercent: exp.maxRouteCapitalPercent,
@@ -221,7 +240,7 @@ export async function runPaperExecutionForCycle(input: {
       };
     }
   } catch {
-    /* migration not yet applied */
+    /* migration not yet applied — keep hard-coded defaults above */
   }
 
   const evaluation = evaluateCycle({
@@ -314,7 +333,9 @@ export async function runPaperExecutionForCycle(input: {
                 nextLargerRejectionCode: d.sizing.selection.nextLarger?.code ?? null,
                 nextLargerRejectionReason: d.sizing.selection.nextLarger?.detailFa ?? null,
                 nextLargerMarginalPnlToman:
-                  d.sizing.selection.nextLarger?.marginalPnlToman ?? null
+                  d.sizing.selection.nextLarger?.marginalPnlToman ?? null,
+                /** Complete restart-stable audit (never alters execution if write fails). */
+                audit: d.sizing.audit ?? null
               }
             : undefined
       });

@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "a": {
+    "capital": 100000000,
+    "derivedOrderCap": 50,
+    "status": "SIZED",
+    "sizeUsdt": 27.75,
+    "binding": "capital_cap",
+    "ceilingUsdt": 27.750024,
+    "paperPolicyMin": 5
+  },
+  "b": {
+    "capital": 10000000000,
+    "derivedOrderCap": 5000,
+    "status": "SIZED",
+    "sizeUsdt": 2775.0027,
+    "binding": "capital_cap",
+    "ceilingUsdt": 2775.002772,
+    "paperPolicyMin": 5
+  },
+  "sizeGrew": true,
+  "capGrew": true,
+  "ceilingGrewOrEqual": true
+}

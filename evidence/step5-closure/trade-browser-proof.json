@@ -1,0 +1,71 @@
+{
+  "ok": true,
+  "desktop": {
+    "file": "trade-desktop-1440.png",
+    "scrollWidth": 1430,
+    "clientWidth": 1430,
+    "overflow": false
+  },
+  "mobile": {
+    "file": "trade-mobile-390.png",
+    "scrollWidth": 390,
+    "clientWidth": 390,
+    "overflow": false
+  },
+  "uiScan": {
+    "href": "http://127.0.0.1:3210/shadow-arbitrage?tab=book&pv=fills&pout=FILLED&pper=10&ppage=1",
+    "clicked": null,
+    "fields": {
+      "venues": true,
+      "size": true,
+      "vwap": true,
+      "timestamps": true,
+      "duration": true,
+      "fees": true,
+      "pnlToman": true,
+      "pnlUsdt": true,
+      "sizingAudit": true,
+      "reconciliation": true
+    },
+    "snippet": "v4.1.10.1\nآربیتراژ آزمایشی\n16:07:39\nیکشنبه 1405/05/18\nآخرین به‌روزرسانی: یکشنبه 1405/05/18، 16:07:34\n⚠\nحالت آزمایشی — هیچ سفارش یا انتقال واقعی انجام نمی‌شود · فقط Paper · سفارش واقعی و انتقال وجه وجود ندارد · DISARMED\nسرمایه و حساب\nوضعیت صرافی‌ها\nسفارش‌ها و پوزیشن‌ها\nفعالیت و تصمیم‌ها\nتنظیمات\n10\nسفارش‌های باز کاغذی\nفقط از دفتر پایدار — بدون ساختن سفارش ساختگی\n۰ سفارش باز\n\nکارگزار کاغذی فعلی سفارش باز نگه نمی‌دارد: هر نامزد پذیرفته‌شده در همان چرخه به‌صورت اتمی دو پا پر می‌شود یا رد می‌شود. هیچ سفارش باز مجازی وجود ندارد.\n\nپوزیشن‌های باز کاغذی\nفقط وقتی در دفتر ثبت شده باشد\n۰ پوزیشن باز\n\nمدل فعلی آربیتراژ کاغذی پوزیشن باز دوطرفه نگه نمی‌دارد؛ موجودی مجازی فقط در تراز هر صرافی است. پوزیشن فقط وقتی نمایش داده می‌شود که در دفتر ثبت شده باشد.\n\nمعاملات و پوزیشن‌های بسته‌شده\n۱ از ۱ · تاریخچهٔ غیرقابل‌حذف\nخلاصه فیلتر فعلی\n\nهمهٔ 1 معاملهٔ بارگذاری‌شده (نه فقط صفحهٔ جاری).\n\nتعداد معاملات تکمیل‌شده\n۱\nحجم کل (USDT، یک‌بار به‌ازای هر معامله)\n۴۲.۰۰۰۰\nسود ناخالص کل\nتومان\n۳۳۶٬۰۰۰\n · ۳,۳۶۰,۰۰۰ ریال\nمجموع کارمزد\nتومان\n۴۵٬۳۶۰\n · ۴۵۳,۶۰۰ ریال\nسود اقتصادی خالص کل\nتومان\n۲۹۰٬۶۴۰\n · ۲,۹۰۶,۴۰۰ ریال\nسود به‌ازای هر ۱ تتر\nتومان\n۶٬۹۲۰\n · ۶۹,۲۰۰ ریال\nبازده خالص کل\n۳.۶۰۴۲٪ · ۳۶۰.۴۲ bps\nسودده / زیان‌ده / صفر\n۱ / "
+  },
+  "apiTrade": {
+    "filled": 1,
+    "trade": {
+      "buySourceId": "nobitex",
+      "sellSourceId": "wallex",
+      "sizeUsdt": 42,
+      "buyVwapToman": 192000,
+      "sellVwapToman": 200000,
+      "occurredAt": "2026-08-09 15:36:00.867+03",
+      "buyFeeAsset": "IRT",
+      "sellFeeAsset": "USDT",
+      "feeTomanTotal": 20160,
+      "feeUsdtMicrosTotal": 126000,
+      "grossSpreadToman": 336000,
+      "economicNetPnlToman": 290640,
+      "riskAdjustedPnlToman": 286608,
+      "cashPnlIrtToman": 315840,
+      "sellFeeValueToman": 25200,
+      "sizingPolicy": "CAPITAL_AWARE_MAX_SAFE",
+      "bindingConstraint": "capital_cap",
+      "hasSizingAudit": true,
+      "sizingAuditKeys": [
+        "limits",
+        "policy",
+        "status",
+        "buyFeeBps",
+        "sellFeeBps",
+        "buyVwapToman",
+        "sellVwapToman",
+        "bindingConstraint",
+        "finalSizeUsdtMicros",
+        "predictedRiskAdjustedNetToman"
+      ],
+      "accountingEquity": 9639292460,
+      "realizedEconomic": 290640
+    }
+  },
+  "passiveMutations": "none — login, navigate, open detail, screenshots",
+  "at": "2026-08-09T12:37:45.698Z"
+}

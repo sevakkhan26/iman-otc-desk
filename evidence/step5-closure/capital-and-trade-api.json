@@ -1,0 +1,408 @@
+{
+  "ok": true,
+  "notProduction": true,
+  "base": "http://127.0.0.1:3210",
+  "explicitAdmin": {
+    "mode": "explicit_admin",
+    "effectiveCapAfter100M": 500,
+    "effectiveCapAfter10B": 500,
+    "derivedWouldBeAt10B": 5000,
+    "capitalAfter": 10000000000,
+    "maxSmartSizeUsdt": 0,
+    "sampleSized": [],
+    "historyCount": 4
+  },
+  "capitalDerived": {
+    "mode": "capital_derived",
+    "orderCap100M": 50,
+    "orderCap10B": 5000,
+    "pure100": 50,
+    "pure10b": 5000,
+    "capGrew": true,
+    "capitalAfter": 10000000000,
+    "maxSmartSize100M": 0,
+    "maxSmartSize10B": 0,
+    "maxSafeCeiling10B": 0,
+    "sampleSized10B": [],
+    "allocationCount": 9,
+    "historyCount": 6
+  },
+  "tradeInject": {
+    "sessionId": "602fbe49-0856-48ac-a551-49b4aab8ecd2",
+    "fillId": "46dadf6c-1121-475e-b8d8-790f131dbbf4",
+    "sizeUsdt": 42,
+    "lifecycleId": "step5-closure-trade-1786278960868",
+    "openedAt": "2026-08-09T12:35:15.867Z",
+    "closedAt": "2026-08-09T12:36:00.867Z",
+    "durationMs": 45000
+  },
+  "tradeApi": {
+    "buySourceId": "nobitex",
+    "sellSourceId": "wallex",
+    "sizeUsdt": 42,
+    "buyVwapToman": 192000,
+    "sellVwapToman": 200000,
+    "occurredAt": "2026-08-09 15:36:00.867+03",
+    "buyFeeAsset": "IRT",
+    "sellFeeAsset": "USDT",
+    "feeTomanTotal": 20160,
+    "feeUsdtMicrosTotal": 126000,
+    "grossSpreadToman": 336000,
+    "economicNetPnlToman": 290640,
+    "riskAdjustedPnlToman": 286608,
+    "cashPnlIrtToman": 315840,
+    "sellFeeValueToman": 25200,
+    "sizingPolicy": "CAPITAL_AWARE_MAX_SAFE",
+    "bindingConstraint": "capital_cap",
+    "sizingAudit": {
+      "limits": {
+        "floorBinding": "paper_policy_min",
+        "safeCeilingUsdtMicros": 5000000000,
+        "minExecutableUsdtMicros": 5000000,
+        "paperPolicyMinUsdtMicros": 5000000,
+        "verifiedVenueMinUsdtMicros": null
+      },
+      "policy": "CAPITAL_AWARE_MAX_SAFE",
+      "status": "SIZED",
+      "buyFeeBps": 25,
+      "sellFeeBps": 30,
+      "buyVwapToman": 192000,
+      "sellVwapToman": 200000,
+      "bindingConstraint": "capital_cap",
+      "finalSizeUsdtMicros": 42000000,
+      "predictedRiskAdjustedNetToman": 286608
+    },
+    "inventoryDeltaUsdtMicros": -126000
+  },
+  "accounting": {
+    "asOf": "2026-08-09T12:36:05.123Z",
+    "initialCapitalToman": 10000000000,
+    "markPriceToman": 185565,
+    "markPriceProvisional": false,
+    "equityToman": 9639417459,
+    "freeCapitalToman": 9639417459,
+    "reservedInOrdersToman": 0,
+    "committedToPositionsToman": 0,
+    "availableIrtToman": 5000315844,
+    "availableUsdtMicros": 24999873980,
+    "availableUsdt": 24999.87398,
+    "realizedEconomicPnlToman": 290640,
+    "realizedRiskAdjustedPnlToman": 286608,
+    "realizedCashPnlToman": 315840,
+    "unrealizedPnlToman": -360873181,
+    "grossSpreadToman": 336000,
+    "fees": {
+      "feeToman": 20160,
+      "feeUsdtMicros": 126000,
+      "feeUsdtValueToman": 23381,
+      "totalFeeTomanEquivalent": 43541,
+      "byVenue": [
+        {
+          "sourceId": "nobitex",
+          "feeToman": 20160,
+          "feeUsdtMicros": 0,
+          "feeUsdtValueToman": 0,
+          "trades": 1
+        },
+        {
+          "sourceId": "wallex",
+          "feeToman": 0,
+          "feeUsdtMicros": 126000,
+          "feeUsdtValueToman": 23381,
+          "trades": 1
+        }
+      ],
+      "byTrade": [
+        {
+          "id": "46dadf6c-1121-475e-b8d8-790f131dbbf4",
+          "lifecycleId": "step5-closure-trade-1786278960868",
+          "routeKey": "nobitex->wallex",
+          "feeToman": 20160,
+          "feeUsdtMicros": 126000,
+          "feeUsdtValueToman": 23381,
+          "occurredAt": "2026-08-09 15:36:00.867+03"
+        }
+      ]
+    },
+    "todayRealizedPnlToman": 290640,
+    "returnPercent": -3.61,
+    "venues": [
+      {
+        "sourceId": "abantether",
+        "irtToman": 555555556,
+        "usdtMicros": 2777777775,
+        "usdt": 2777.777775,
+        "valuationToman": 1071013889,
+        "freeIrtToman": 555555556,
+        "freeUsdtMicros": 2777777775,
+        "reservedIrtToman": 0,
+        "reservedUsdtMicros": 0,
+        "committedIrtToman": 0,
+        "committedUsdtMicros": 0,
+        "openingIrtToman": 555555556,
+        "openingUsdtMicros": 2777777775,
+        "irtDelta": 0,
+        "usdtMicrosDelta": 0
+      },
+      {
+        "sourceId": "arzinja",
+        "irtToman": 555555556,
+        "usdtMicros": 2777777775,
+        "usdt": 2777.777775,
+        "valuationToman": 1071013889,
+        "freeIrtToman": 555555556,
+        "freeUsdtMicros": 2777777775,
+        "reservedIrtToman": 0,
+        "reservedUsdtMicros": 0,
+        "committedIrtToman": 0,
+        "committedUsdtMicros": 0,
+        "openingIrtToman": 555555556,
+        "openingUsdtMicros": 2777777775,
+        "irtDelta": 0,
+        "usdtMicrosDelta": 0
+      },
+      {
+        "sourceId": "bit24",
+        "irtToman": 555555556,
+        "usdtMicros": 2777777775,
+        "usdt": 2777.777775,
+        "valuationToman": 1071013889,
+        "freeIrtToman": 555555556,
+        "freeUsdtMicros": 2777777775,
+        "reservedIrtToman": 0,
+        "reservedUsdtMicros": 0,
+        "committedIrtToman": 0,
+        "committedUsdtMicros": 0,
+        "openingIrtToman": 555555556,
+        "openingUsdtMicros": 2777777775,
+        "irtDelta": 0,
+        "usdtMicrosDelta": 0
+      },
+      {
+        "sourceId": "bitpin",
+        "irtToman": 555555556,
+        "usdtMicros": 2777777775,
+        "usdt": 2777.777775,
+        "valuationToman": 1071013889,
+        "freeIrtToman": 555555556,
+        "freeUsdtMicros": 2777777775,
+        "reservedIrtToman": 0,
+        "reservedUsdtMicros": 0,
+        "committedIrtToman": 0,
+        "committedUsdtMicros": 0,
+        "openingIrtToman": 555555556,
+        "openingUsdtMicros": 2777777775,
+        "irtDelta": 0,
+        "usdtMicrosDelta": 0
+      },
+      {
+        "sourceId": "nobitex",
+        "irtToman": 547471396,
+        "usdtMicros": 2819777780,
+        "usdt": 2819.77778,
+        "valuationToman": 1070723460,
+        "freeIrtToman": 547471396,
+        "freeUsdtMicros": 2819777780,
+        "reservedIrtToman": 0,
+        "reservedUsdtMicros": 0,
+        "committedIrtToman": 0,
+        "committedUsdtMicros": 0,
+        "openingIrtToman": 555555556,
+        "openingUsdtMicros": 2777777780,
+        "irtDelta": -8084160,
+        "usdtMicrosDelta": 42000000
+      },
+      {
+        "sourceId": "ramzinex",
+        "irtToman": 555555556,
+        "usdtMicros": 2777777775,
+        "usdt": 2777.777775,
+        "valuationToman": 1071013889,
+        "freeIrtToman": 555555556,
+        "freeUsdtMicros": 2777777775,
+        "reservedIrtToman": 0,
+        "reservedUsdtMicros": 0,
+        "committedIrtToman": 0,
+        "committedUsdtMicros": 0,
+        "openingIrtToman": 555555556,
+        "openingUsdtMicros": 2777777775,
+        "irtDelta": 0,
+        "usdtMicrosDelta": 0
+      },
+      {
+        "sourceId": "tabdeal",
+        "irtToman": 555555556,
+        "usdtMicros": 2777777775,
+        "usdt": 2777.777775,
+        "valuationToman": 1071013889,
+        "freeIrtToman": 555555556,
+        "freeUsdtMicros": 2777777775,
+        "reservedIrtToman": 0,
+        "reservedUsdtMicros": 0,
+        "committedIrtToman": 0,
+        "committedUsdtMicros": 0,
+        "openingIrtToman": 555555556,
+        "openingUsdtMicros": 2777777775,
+        "irtDelta": 0,
+        "usdtMicrosDelta": 0
+      },
+      {
+        "sourceId": "tetherland",
+        "irtToman": 555555556,
+        "usdtMicros": 2777777775,
+        "usdt": 2777.777775,
+        "valuationToman": 1071013889,
+        "freeIrtToman": 555555556,
+        "freeUsdtMicros": 2777777775,
+        "reservedIrtToman": 0,
+        "reservedUsdtMicros": 0,
+        "committedIrtToman": 0,
+        "committedUsdtMicros": 0,
+        "openingIrtToman": 555555556,
+        "openingUsdtMicros": 2777777775,
+        "irtDelta": 0,
+        "usdtMicrosDelta": 0
+      },
+      {
+        "sourceId": "wallex",
+        "irtToman": 563955556,
+        "usdtMicros": 2735651775,
+        "usdt": 2735.651775,
+        "valuationToman": 1071596778,
+        "freeIrtToman": 563955556,
+        "freeUsdtMicros": 2735651775,
+        "reservedIrtToman": 0,
+        "reservedUsdtMicros": 0,
+        "committedIrtToman": 0,
+        "committedUsdtMicros": 0,
+        "openingIrtToman": 555555556,
+        "openingUsdtMicros": 2777777775,
+        "irtDelta": 8400000,
+        "usdtMicrosDelta": -42126000
+      }
+    ],
+    "openOrders": [],
+    "openPositions": [],
+    "openOrdersNoteFa": "کارگزار کاغذی فعلی سفارش باز نگه نمی‌دارد: هر نامزد پذیرفته‌شده در همان چرخه به‌صورت اتمی دو پا پر می‌شود یا رد می‌شود. هیچ سفارش باز مجازی وجود ندارد.",
+    "openPositionsNoteFa": "مدل فعلی آربیتراژ کاغذی پوزیشن باز دوطرفه نگه نمی‌دارد؛ موجودی مجازی فقط در تراز هر صرافی است. پوزیشن فقط وقتی نمایش داده می‌شود که در دفتر ثبت شده باشد.",
+    "reconciliation": {
+      "equityMatchesInitialPlusPnl": true,
+      "freePlusReservedPlusCommittedEqualsEquity": true,
+      "venueSumEqualsPortfolioEquity": false,
+      "feeLedgerSumMatchesBucket": true,
+      "residuals": {
+        "equityVsInitialPlusPnlToman": 0,
+        "capitalSplitVsEquityToman": 0,
+        "venueSumVsEquityToman": 2,
+        "feeTomanDiff": 0
+      }
+    }
+  },
+  "stats": {
+    "filled": 1,
+    "skipped": 87,
+    "cashPnlIrtToman": 315840,
+    "inventoryDeltaUsdtMicros": -126000,
+    "sellFeeValueToman": 25200,
+    "economicNetPnlToman": 290640,
+    "riskAdjustedPnlToman": 286608,
+    "feeTomanTotal": 20160,
+    "feeUsdtMicrosTotal": 126000,
+    "blockReasons": [
+      {
+        "code": "net_non_positive",
+        "reasonFa": "سود خالص اقتصادی پس از کارمزد و بافر مثبت نیست",
+        "count": 86
+      },
+      {
+        "code": "unknown",
+        "reasonFa": "فرصت از بازار خارج شد",
+        "count": 1
+      }
+    ],
+    "lastFillAt": "2026-08-09 15:36:00.867+03",
+    "feeUsdtTotal": 0.126,
+    "opportunityCaptureRatePercent": 1.14,
+    "drift": [
+      {
+        "sourceId": "abantether",
+        "irtTomanDelta": 0,
+        "usdtDelta": 0
+      },
+      {
+        "sourceId": "arzinja",
+        "irtTomanDelta": 0,
+        "usdtDelta": 0
+      },
+      {
+        "sourceId": "bit24",
+        "irtTomanDelta": 0,
+        "usdtDelta": 0
+      },
+      {
+        "sourceId": "bitpin",
+        "irtTomanDelta": 0,
+        "usdtDelta": 0
+      },
+      {
+        "sourceId": "nobitex",
+        "irtTomanDelta": -8084160,
+        "usdtDelta": 42
+      },
+      {
+        "sourceId": "ramzinex",
+        "irtTomanDelta": 0,
+        "usdtDelta": 0
+      },
+      {
+        "sourceId": "tabdeal",
+        "irtTomanDelta": 0,
+        "usdtDelta": 0
+      },
+      {
+        "sourceId": "tetherland",
+        "irtTomanDelta": 0,
+        "usdtDelta": 0
+      },
+      {
+        "sourceId": "wallex",
+        "irtTomanDelta": 8400000,
+        "usdtDelta": -42.126
+      }
+    ]
+  },
+  "history": [
+    {
+      "id": "602fbe49-0856-48ac-a551-49b4aab8ecd2",
+      "cap": 10000000000,
+      "status": "RUNNING"
+    },
+    {
+      "id": "b526b53c-98ff-4351-9b24-413d88eae415",
+      "cap": 100000000,
+      "status": "STOPPED"
+    },
+    {
+      "id": "09d269a7-4bc6-437b-ab9a-9249a8820f00",
+      "cap": 10000000000,
+      "status": "STOPPED"
+    },
+    {
+      "id": "bf0c85d5-8ebd-4cde-b8f0-7ee69dcfd340",
+      "cap": 100000000,
+      "status": "STOPPED"
+    },
+    {
+      "id": "6763093d-3140-4b32-a5c6-bf8a0baa34f4",
+      "cap": 10000000000,
+      "status": "STOPPED"
+    },
+    {
+      "id": "bfb71277-ec09-47db-9acf-1e23890f7be9",
+      "cap": 100000000,
+      "status": "STOPPED"
+    }
+  ],
+  "actorConstant": "capital-derived",
+  "at": "2026-08-09T12:36:05.147Z"
+}

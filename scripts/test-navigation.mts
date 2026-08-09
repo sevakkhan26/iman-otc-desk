@@ -2192,7 +2192,22 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
       "src/lib/shadowArbitrage/paper/tradeProfitability.ts",
       "src/lib/shadowArbitrage/paper/decisionTraceCapture.ts",
       "src/db/repositories/shadowDecisionTraces.ts",
-      "drizzle/0017_shadow_paper_decision_traces.sql"
+      "drizzle/0017_shadow_paper_decision_traces.sql",
+      /*
+       * Post-4.12.0 Paper observability and capital control (intentional surfaces).
+       * Not Phase 8B UI drift: decision-trace terminal data API, session capital
+       * replace, complete sizing audit persistence, adaptive densify solver,
+       * fee attribution, local fee parity seed, venue min registry + paper_policy_min.
+       */
+      "app/api/shadow-arbitrage/decision-monitor/route.ts",
+      "app/api/shadow-arbitrage/paper/session-capital/route.ts",
+      "drizzle/0018_shadow_sizing_audit.sql",
+      "src/lib/shadowArbitrage/localFeeEvidenceSeed.ts",
+      "src/lib/shadowArbitrage/paper/adaptiveSizeSolver.ts",
+      "src/lib/shadowArbitrage/paper/decisionMonitorLabels.ts",
+      "src/lib/shadowArbitrage/paper/feeAttribution.ts",
+      "src/lib/shadowArbitrage/paper/sessionCapital.ts",
+      "src/lib/shadowArbitrage/paper/venueExecutionLimits.ts"
     ]);
     const changed = execFileSync("git", ["diff", "--name-only", baseline, "--", ...paths], {
       encoding: "utf8"

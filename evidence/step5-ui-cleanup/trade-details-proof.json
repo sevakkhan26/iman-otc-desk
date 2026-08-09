@@ -1,0 +1,37 @@
+{
+  "ok": true,
+  "tradeDetailsFields": {
+    "venues": [
+      "nobitex",
+      "wallex"
+    ],
+    "sizeUsdt": 12,
+    "economicNetPnlToman": 83040,
+    "riskAdjustedPnlToman": 81888,
+    "buyFeeAsset": "IRT",
+    "sellFeeAsset": "USDT",
+    "feeTomanTotal": 5760,
+    "feeUsdtMicrosTotal": 36000,
+    "sizingPolicy": "CAPITAL_AWARE_MAX_SAFE",
+    "sizingAudit": {
+      "limits": {
+        "floorBinding": "paper_policy_min",
+        "minExecutableUsdtMicros": 5000000,
+        "paperPolicyMinUsdtMicros": 5000000,
+        "verifiedVenueMinUsdtMicros": null
+      },
+      "policy": "CAPITAL_AWARE_MAX_SAFE",
+      "status": "SIZED",
+      "buyFeeBps": 25,
+      "sellFeeBps": 30,
+      "bindingConstraint": "capital_cap",
+      "finalSizeUsdtMicros": 12000000,
+      "predictedRiskAdjustedNetToman": 81888
+    },
+    "floorBinding": "paper_policy_min",
+    "equityToman": 100083040,
+    "realizedEconomicToman": 83040
+  },
+  "note": "Persisted fill from Step 4 inject remains on archived 100M session; TradeDetailsPanel + test-trade-details cover presentation fields. Engine/sizing unchanged in Step 5.",
+  "pureTradeDetailsTests": "19 passed (scripts/test-trade-details.mts)"
+}

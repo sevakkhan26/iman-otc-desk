@@ -1,0 +1,52 @@
+{
+  "ok": true,
+  "notProduction": true,
+  "base": "http://127.0.0.1:3210",
+  "pure": {
+    "orderCap100M": 50,
+    "orderCap10B": 5000,
+    "orderCapGrows": true,
+    "explicitAdmin500": 500,
+    "explicitOverridesDerived": true,
+    "derive100M": 50,
+    "derive10B": 5000
+  },
+  "live": {
+    "capitalBefore": 100000000,
+    "capitalAfter": 10000000000,
+    "sessionIdBefore": "bfb71277-ec09-47db-9acf-1e23890f7be9",
+    "sessionIdAfter": "6763093d-3140-4b32-a5c6-bf8a0baa34f4",
+    "historyCountBefore": 1,
+    "historyCountAfter": 2,
+    "filledBefore": 1,
+    "tradesOnActiveAfter": 0,
+    "sizedRoutes": 0,
+    "maxSmartSizeUsdt": 0,
+    "orderCapPreview": {
+      "mode": "explicit_admin",
+      "currentMaxOrderUsdt": 500,
+      "currentSetBy": "local-fee-parity-seed",
+      "derivedMaxOrderUsdt": 5000,
+      "effectiveMaxOrderUsdt": 500,
+      "willWritePolicy": false
+    },
+    "allocationSample": [
+      {
+        "sourceId": "nobitex",
+        "irtToman": 555555556,
+        "usdtUnits": 2777.77778
+      },
+      {
+        "sourceId": "wallex",
+        "irtToman": 555555556,
+        "usdtUnits": 2777.777775
+      },
+      {
+        "sourceId": "tabdeal",
+        "irtToman": 555555556,
+        "usdtUnits": 2777.777775
+      }
+    ]
+  },
+  "at": "2026-08-09T12:06:38.464Z"
+}

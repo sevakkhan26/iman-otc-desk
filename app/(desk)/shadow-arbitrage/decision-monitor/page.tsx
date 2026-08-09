@@ -1,10 +1,10 @@
-import { Suspense } from "react";
-import { DecisionMonitorPage } from "@/components/shadowArbitrage/DecisionMonitorPage";
+import { redirect } from "next/navigation";
 
+/**
+ * Decision Monitor terminal UI removed (Step 5).
+ * Stored audit/decision data and GET /api/shadow-arbitrage/decision-monitor remain.
+ * Old bookmarks land on Activity.
+ */
 export default function DecisionMonitorRoute() {
-  return (
-    <Suspense fallback={<div className="sa-dm-page" aria-busy="true" />}>
-      <DecisionMonitorPage />
-    </Suspense>
-  );
+  redirect("/shadow-arbitrage?tab=activity");
 }

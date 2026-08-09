@@ -1409,7 +1409,7 @@ await test("8B both tabs reuse the shared glass primitives and add no material",
     ["pager size control", kit, 'className="sa-segmented glass-tabbar"'],
     ["filter panel", op, 'className="panel sa-panel" aria-label="فیلتر و جست‌وجو"'],
     ["filter input", op, 'className="sa-control glass-control"'],
-    ["size segmented control", op, 'className="sa-segmented glass-tabbar"'],
+    // Fixed 5/10/20/25 size ladder filter removed (Step 5) — not an executable choice.
     ["category control", op, 'className="sa-segmented sa-segmented-lg glass-tabbar"'],
     ["active segment", op, "is-active glass-control"],
     ["mobile card", op, 'className="sa-op-card glass-control"'],
@@ -1592,11 +1592,15 @@ await test("8B the tabs are keyboard reachable and labelled", () => {
 
   // Every action is a real button, so it is reachable and operable by keyboard.
   assert.equal(/tabIndex=\{0\}/.test(op), false, "no faux-interactive rows");
-  assert.ok((op.match(/type="button"/g) ?? []).length >= 6);
+  // Category segments + details actions (fixed size ladder filter removed in Step 5).
+  assert.ok((op.match(/type="button"/g) ?? []).length >= 4);
   assert.ok(op.includes("aria-label={`جزئیات محاسبهٔ خرید از"));
-  assert.ok(op.includes('role="group" aria-label="حجم معامله"'));
   assert.ok(op.includes('aria-label="فیلتر و جست‌وجو"'));
-  assert.ok(op.includes("aria-pressed="));
+  // Category segmented control still uses aria-pressed (size ladder chips removed).
+  assert.ok(
+    op.includes("aria-pressed=") || op.includes("aria-selected="),
+    "category/filter controls remain keyboard-accessible"
+  );
   assert.ok(kit.includes('aria-label="صفحه‌بندی نتایج"'));
   assert.ok(kit.includes("disabled={page <= 1}") && kit.includes("disabled={page >= pageCount}"));
   assert.ok((sr.match(/scope="col"/g) ?? []).length >= 6);

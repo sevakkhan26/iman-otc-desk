@@ -555,9 +555,7 @@ export function ShadowArbitrageView() {
             <details className="panel sa-panel sa-advanced-details">
               <summary className="panel-header sa-panel-header">
                 <span className="panel-title">فرصت‌های مشاهده‌شده</span>
-                <span className="sa-panel-note">
-                  مشاهده — نه سفارش؛ نردبان ثابت تاریخی فقط تشخیص است
-                </span>
+                <span className="sa-panel-note">مشاهده — نه سفارش</span>
               </summary>
               <div className="panel-body">
                 <OpportunitiesPanel

@@ -1,0 +1,60 @@
+{
+  "ok": true,
+  "decisionMonitor": {
+    "redirected": true,
+    "href": "http://127.0.0.1:3210/shadow-arbitrage?tab=activity",
+    "terminalUiGone": true,
+    "noDmLink": true
+  },
+  "activity": {
+    "href": "http://127.0.0.1:3210/shadow-arbitrage?tab=activity",
+    "hasFixedLadderTable": false,
+    "hasSmartSize": false,
+    "hasDmLink": false,
+    "snippet": "OTC Desk\nمانیتورینگ\nبازار تتر ایران\nبازار طلا\nحباب\nخبرهای اثرگذار\nاخبار فارکس\nv4.1.10.1"
+  },
+  "accounts": {
+    "has10B": true,
+    "hasCapitalControl": true,
+    "snippet": "OTC Desk\nمانیتورینگ\nبازار تتر ایران\nبازار طلا\nحباب\nخبرهای اثرگذار\nاخبار فارکس\nv4.1.10.1\nآربیتراژ آزمایشی\n15:40:44\nیکشنبه 1405/05/18\nآخرین به‌روزرسانی: یکشنبه 1405/05/18، 15:40:41\n⚠\nحالت آزمایشی — هیچ سفارش یا انتقال واقعی انجام نمی‌شود · فقط Paper · سفارش واقعی و انتقال وجه وجود ندارد · DISARMED\nسرمایه و حساب\nوضعیت صرافی‌ها\nسفارش‌ها و پوزیشن‌ها\nفعالیت و تصمیم‌ها\nتنظیمات\n10\nسرمایهٔ نشست کاغذی\nفقط ت"
+  },
+  "book": {
+    "hasTradeHistory": false,
+    "hasLadderAsChoice": false,
+    "snippet": "OTC Desk\nمانیتورینگ\nبازار تتر ایران\nبازار طلا\nحباب\nخبرهای اثرگذار\nاخبار فارکس\nv4.1.10.1"
+  },
+  "desktop": {
+    "file": "desktop-1440.png",
+    "scrollWidth": 1430,
+    "clientWidth": 1430,
+    "overflow": false
+  },
+  "mobile": {
+    "file": "mobile-390.png",
+    "scrollWidth": 390,
+    "clientWidth": 390,
+    "overflow": false
+  },
+  "api": {
+    "capitalToman": 10000000000,
+    "historySessions": 2,
+    "historyCapitals": [
+      {
+        "id": "6763093d-3140-4b32-a5c6-bf8a0baa34f4",
+        "cap": 10000000000,
+        "status": "RUNNING"
+      },
+      {
+        "id": "bfb71277-ec09-47db-9acf-1e23890f7be9",
+        "cap": 100000000,
+        "status": "STOPPED"
+      }
+    ],
+    "paperPolicyMinUsdt": 5,
+    "ledgerQuantum": 0.0001,
+    "accountingEquity": 9642450000,
+    "filled": 0
+  },
+  "passiveMutations": "none — login + navigate + screenshots only",
+  "at": "2026-08-09T12:11:10.384Z"
+}

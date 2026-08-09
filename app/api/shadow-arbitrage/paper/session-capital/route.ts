@@ -1,11 +1,11 @@
 /**
- * Admin-only Paper session capital replace (Step 1).
+ * Admin-only Paper session setup (Step 6).
  *
- * GET  — current active session + limits (read-only).
- * POST action=preview — allocation preview, residual must be 0 (no write).
- * POST action=apply   — archive active session, save capital plan, open one RUNNING session.
+ * GET  — active session + limits + last setup config (read-only).
+ * POST action=preview — capital, duration, order-cap choice; residual must be 0.
+ * POST action=apply   — confirm required; archive active; one new RUNNING session.
  *
- * Paper only. No credentials, real orders, or fund transfers.
+ * Never silently mutates or extends the current session. Paper only.
  */
 import { NextResponse } from "next/server";
 import { isSession } from "@/lib/requireApiAuth";
@@ -23,8 +23,16 @@ import {
   MAX_CAPITAL_TOMAN,
   MIN_CAPITAL_TOMAN,
   ORDER_CAP_DERIVED_ACTOR,
-  buildSessionCapitalPreview,
-  parseWholeTomanCapital
+  PAPER_POLICY_MIN_USDT,
+  PAPER_POLICY_MIN_KEY,
+  buildSessionSetupPreview,
+  formatSessionSetupNote,
+  parseDurationDays,
+  parseManualOrderCapUsdt,
+  parseSessionSetupNote,
+  parseWholeTomanCapital,
+  type SessionOrderCapChoice,
+  type SessionSetupConfig
 } from "@/lib/shadowArbitrage/paper/sessionCapital";
 import { portfolioValueToman } from "@/lib/shadowArbitrage/paper/portfolio";
 import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
@@ -70,23 +78,40 @@ function venueIds(): string[] {
   return SHADOW_SOURCES.map((s) => s.id);
 }
 
+function parseOrderCapChoice(raw: unknown): SessionOrderCapChoice | null {
+  const s = String(raw ?? "").trim().toUpperCase();
+  if (s === "AUTO_CAPITAL_DERIVED" || s === "AUTO" || s === "CAPITAL_DERIVED") {
+    return "AUTO_CAPITAL_DERIVED";
+  }
+  if (s === "MANUAL" || s === "EXPLICIT") return "MANUAL";
+  return null;
+}
+
 export async function GET() {
   const session = await requireAdminSession();
   if (!isSession(session)) return session;
 
-  const [active, actives, snapshots] = await Promise.all([
+  const [active, actives, snapshots, policyRows] = await Promise.all([
     getActivePaperSession(),
     listActivePaperSessions(),
-    loadLatestSourceSnapshots()
+    loadLatestSourceSnapshots(),
+    loadRiskPolicyValues()
   ]);
   const mark = deriveValuationPrice(snapshots);
+  const policyState = buildPolicyState(policyRows, Date.now());
+  const orderPol = policyState.find((p) => p.definition.key === "max_order_size_usdt");
+  const setup = active ? parseSessionSetupNote(active.note) : null;
 
   return new NextResponse(
     JSON.stringify({
       unit: "toman",
+      paperPolicyMinUsdt: PAPER_POLICY_MIN_USDT,
+      paperPolicyMinKey: PAPER_POLICY_MIN_KEY,
       limits: {
         minCapitalToman: MIN_CAPITAL_TOMAN,
-        maxCapitalToman: MAX_CAPITAL_TOMAN
+        maxCapitalToman: MAX_CAPITAL_TOMAN,
+        minDurationDays: 1,
+        maxDurationDays: 365
       },
       valuationPriceToman: mark,
       activeSession: active
@@ -97,7 +122,19 @@ export async function GET() {
             totalCapitalToman: active.totalCapitalToman,
             valuationPriceToman: active.valuationPriceToman,
             createdAt: active.createdAt,
-            startedAt: active.startedAt
+            startedAt: active.startedAt,
+            note: active.note,
+            setup
+          }
+        : null,
+      currentOrderCap: orderPol?.configured
+        ? {
+            valueUsdt: orderPol.value as number,
+            setBy: orderPol.setBy,
+            mode:
+              (orderPol.setBy ?? "").startsWith("capital-derived") || !orderPol.setBy
+                ? "AUTO_CAPITAL_DERIVED"
+                : "MANUAL"
           }
         : null,
       activeSessionCount: actives.length,
@@ -135,6 +172,23 @@ export async function POST(request: Request) {
     return bad(parsed.messageFa, parsed.code, 400);
   }
 
+  const durationParsed = parseDurationDays(
+    body.durationDays !== undefined && body.durationDays !== null ? body.durationDays : 4
+  );
+  if (!durationParsed.ok) {
+    return bad(durationParsed.messageFa, "bad_duration", 400);
+  }
+
+  const orderCapChoice =
+    parseOrderCapChoice(body.orderCapMode ?? body.orderCapChoice) ?? "AUTO_CAPITAL_DERIVED";
+
+  let manualOrderCapUsdt: number | null = null;
+  if (orderCapChoice === "MANUAL") {
+    const m = parseManualOrderCapUsdt(body.manualOrderCapUsdt ?? body.orderCapUsdt);
+    if (!m.ok) return bad(m.messageFa, "bad_order_cap", 400);
+    manualOrderCapUsdt = m.value;
+  }
+
   const snapshots = await loadLatestSourceSnapshots();
   const markFromMarket = deriveValuationPrice(snapshots);
   const markOverride = body.valuationPriceToman;
@@ -147,7 +201,6 @@ export async function POST(request: Request) {
     mark = m;
   }
   if (mark === null || mark <= 0) {
-    // Fail-closed without inventing a live market price: allow only explicit mark.
     return bad(
       "قیمت مبنای تتر در دسترس نیست؛ برای پیش‌نمایش/اعمال، valuationPriceToman را به تومان صحیح بفرستید",
       "mark_unavailable",
@@ -163,15 +216,20 @@ export async function POST(request: Request) {
       ? { value: orderPol.value as number, setBy: orderPol.setBy ?? null }
       : null;
 
+  const clockMs = Date.now();
   let preview;
   try {
-    preview = buildSessionCapitalPreview({
+    preview = buildSessionSetupPreview({
       totalCapitalToman: parsed.value,
       valuationPriceToman: mark,
       venueIds: venueIds(),
       activeSessionId: active?.id ?? null,
       oldCapitalToman: active?.totalCapitalToman ?? null,
-      currentOrderCap
+      currentOrderCap,
+      orderCapChoice,
+      manualOrderCapUsdt,
+      durationDays: durationParsed.value,
+      clockMs
     });
   } catch (e) {
     return bad(
@@ -190,6 +248,8 @@ export async function POST(request: Request) {
       JSON.stringify({
         unit: "toman",
         action: "preview",
+        paperPolicyMinUsdt: PAPER_POLICY_MIN_USDT,
+        paperPolicyMinKey: PAPER_POLICY_MIN_KEY,
         activeSession: active
           ? {
               id: active.id,
@@ -206,10 +266,22 @@ export async function POST(request: Request) {
           residualToman: preview.residualToman,
           perVenue: preview.perVenue,
           limits: preview.limits,
-          orderCap: preview.orderCap,
+          usableCapitalToman: preview.usableCapitalToman,
+          reserveCapitalToman: preview.reserveCapitalToman,
+          orderCap: {
+            ...preview.orderCap,
+            choice: preview.orderCapChoice
+          },
+          orderCapChoice: preview.orderCapChoice,
+          durationDays: preview.durationDays,
+          startedAt: preview.startedAt,
+          endsAt: preview.endsAt,
+          paperPolicyMinUsdt: preview.paperPolicyMinUsdt,
+          smartSizeCeilingUsdt: preview.smartSizeCeilingUsdt,
           previewToken: preview.previewToken
         },
-        requiresConfirmation: true
+        requiresConfirmation: true,
+        neverSilentExtend: true
       }),
       { status: 200, headers: SHADOW_NO_STORE }
     );
@@ -217,7 +289,7 @@ export async function POST(request: Request) {
 
   // apply
   if (body.confirm !== true) {
-    return bad("اعمال سرمایه نیازمند confirm: true است", "confirmation_required", 400);
+    return bad("اعمال نشست نیازمند confirm: true است", "confirmation_required", 400);
   }
   const token = typeof body.previewToken === "string" ? body.previewToken : "";
   if (!token || token !== preview.previewToken) {
@@ -228,51 +300,122 @@ export async function POST(request: Request) {
     );
   }
 
-  const result = await replaceActivePaperSessionCapital({
+  // Freeze endsAt at apply clock (must match preview window — re-validate duration).
+  const applyClock = Date.now();
+  // Token already binds durationDays + capital; use preview's endsAt relative duration
+  // but recompute from apply start so startedAt/endsAt are consistent on the new session.
+  const applyPreview = buildSessionSetupPreview({
     totalCapitalToman: preview.totalCapitalToman,
     valuationPriceToman: preview.valuationPriceToman,
-    openingAllocations: preview.allocations,
+    venueIds: venueIds(),
+    activeSessionId: active?.id ?? null,
+    oldCapitalToman: active?.totalCapitalToman ?? null,
+    currentOrderCap,
+    orderCapChoice,
+    manualOrderCapUsdt,
+    durationDays: preview.durationDays,
+    clockMs: applyClock
+  });
+  // Token must still match the capital/cap/duration inputs (not absolute clock).
+  if (applyPreview.previewToken !== preview.previewToken) {
+    return bad(
+      "پیش‌نمایش منقضی شده — دوباره پیش‌نمایش بگیرید",
+      "invalid_preview_token",
+      409
+    );
+  }
+
+  const setupConfig: SessionSetupConfig = {
+    version: 1,
+    durationDays: applyPreview.durationDays,
+    endsAt: applyPreview.endsAt,
+    startedAt: applyPreview.startedAt,
+    orderCapChoice: applyPreview.orderCapChoice,
+    orderCapUsdt: applyPreview.orderCap.effectiveMaxOrderUsdt,
+    paperPolicyMinUsdt: PAPER_POLICY_MIN_USDT,
+    totalCapitalToman: applyPreview.totalCapitalToman,
+    valuationPriceToman: applyPreview.valuationPriceToman,
+    previewToken: applyPreview.previewToken
+  };
+
+  const sessionNote = formatSessionSetupNote(setupConfig, [
+    `actor=${session.u ?? "admin"}`,
+    `previewToken=${token.slice(0, 16)}`,
+    `unit=toman`
+  ].join("; "));
+
+  const result = await replaceActivePaperSessionCapital({
+    totalCapitalToman: applyPreview.totalCapitalToman,
+    valuationPriceToman: applyPreview.valuationPriceToman,
+    openingAllocations: applyPreview.allocations,
     createdBy: session.u ?? "admin",
-    previewToken: preview.previewToken,
+    previewToken: applyPreview.previewToken,
     name:
       typeof body.name === "string" && body.name.trim()
         ? body.name.trim().slice(0, 80)
-        : undefined
+        : `نشست کاغذی ${applyPreview.totalCapitalToman.toLocaleString("en-US")} · ${applyPreview.durationDays}d`,
+    sessionNote
   });
 
   /*
-   * Immutable order-cap snapshot when capital-derived.
-   * Explicit admin caps (e.g. max_order_size_usdt=500) are never overwritten.
+   * Always write order-cap policy for setup choices:
+   * AUTO → capital-derived actor; MANUAL → admin actor with fixed USDT.
+   * Never skip silently when choice was provided.
    */
-  let orderCapPolicy: { written: boolean; mode: string; valueUsdt: number } | null = null;
-  if (preview.orderCap.willWritePolicy && !result.reused) {
-    await recordRiskPolicy({
-      policyKey: "max_order_size_usdt",
-      value: preview.orderCap.derivedMaxOrderUsdt,
-      setBy: ORDER_CAP_DERIVED_ACTOR,
-      validForDays: 30,
-      note: `capital-derived from equity=${preview.totalCapitalToman} mark=${preview.valuationPriceToman} util≤${preview.limits.maxUtilizationPercent}% reserve≥${preview.limits.minReservePercent}% route≤${preview.limits.maxRouteCapitalPercent}% venue≤${preview.limits.maxVenueExposurePercent}% session=${result.newSession.id}`
-    });
-    orderCapPolicy = {
-      written: true,
-      mode: preview.orderCap.mode,
-      valueUsdt: preview.orderCap.derivedMaxOrderUsdt
-    };
+  let orderCapPolicy: {
+    written: boolean;
+    mode: string;
+    choice: SessionOrderCapChoice;
+    valueUsdt: number;
+  } | null = null;
+
+  if (!result.reused) {
+    if (orderCapChoice === "AUTO_CAPITAL_DERIVED") {
+      await recordRiskPolicy({
+        policyKey: "max_order_size_usdt",
+        value: applyPreview.orderCap.derivedMaxOrderUsdt,
+        setBy: ORDER_CAP_DERIVED_ACTOR,
+        validForDays: 30,
+        note: `AUTO_CAPITAL_DERIVED equity=${applyPreview.totalCapitalToman} mark=${applyPreview.valuationPriceToman} session=${result.newSession.id}`
+      });
+      orderCapPolicy = {
+        written: true,
+        mode: "capital_derived",
+        choice: "AUTO_CAPITAL_DERIVED",
+        valueUsdt: applyPreview.orderCap.derivedMaxOrderUsdt
+      };
+    } else {
+      await recordRiskPolicy({
+        policyKey: "max_order_size_usdt",
+        value: applyPreview.orderCap.effectiveMaxOrderUsdt,
+        setBy: session.u ?? "admin",
+        validForDays: 30,
+        note: `MANUAL order cap ${applyPreview.orderCap.effectiveMaxOrderUsdt} USDT session=${result.newSession.id}`
+      });
+      orderCapPolicy = {
+        written: true,
+        mode: "explicit_admin",
+        choice: "MANUAL",
+        valueUsdt: applyPreview.orderCap.effectiveMaxOrderUsdt
+      };
+    }
   } else {
     orderCapPolicy = {
       written: false,
-      mode: preview.orderCap.mode,
-      valueUsdt: preview.orderCap.effectiveMaxOrderUsdt
+      mode: applyPreview.orderCap.mode,
+      choice: orderCapChoice,
+      valueUsdt: applyPreview.orderCap.effectiveMaxOrderUsdt
     };
   }
 
   const bals = await loadPaperBalances(result.newSession.id);
   const balanceMarked = bals.reduce(
-    (s, b) => s + b.irtToman + Math.round((b.usdtMicros / 1e6) * preview.valuationPriceToman),
+    (s, b) => s + b.irtToman + Math.round((b.usdtMicros / 1e6) * applyPreview.valuationPriceToman),
     0
   );
   const activesAfter = await listActivePaperSessions();
   const history = await listPaperSessions(10);
+  const persistedSetup = parseSessionSetupNote(result.newSession.note);
 
   return new NextResponse(
     JSON.stringify({
@@ -287,16 +430,26 @@ export async function POST(request: Request) {
         status: result.newSession.status,
         totalCapitalToman: result.newSession.totalCapitalToman,
         valuationPriceToman: result.newSession.valuationPriceToman,
-        openingAllocations: result.newSession.openingAllocations
+        openingAllocations: result.newSession.openingAllocations,
+        startedAt: result.newSession.startedAt,
+        note: result.newSession.note,
+        setup: persistedSetup
       },
+      setup: setupConfig,
+      endsAt: setupConfig.endsAt,
+      durationDays: setupConfig.durationDays,
       allocationSumToman: portfolioValueToman(
-        preview.allocations,
-        preview.valuationPriceToman
+        applyPreview.allocations,
+        applyPreview.valuationPriceToman
       ),
       residualToman: 0,
       balanceMarkedTotalToman: balanceMarked,
-      oldCapitalToman: preview.oldCapitalToman,
-      limits: preview.limits,
+      oldCapitalToman: applyPreview.oldCapitalToman,
+      limits: applyPreview.limits,
+      usableCapitalToman: applyPreview.usableCapitalToman,
+      reserveCapitalToman: applyPreview.reserveCapitalToman,
+      smartSizeCeilingUsdt: applyPreview.smartSizeCeilingUsdt,
+      paperPolicyMinUsdt: PAPER_POLICY_MIN_USDT,
       orderCap: orderCapPolicy,
       activeSessionCount: activesAfter.length,
       history: history.map((h) => ({
@@ -304,7 +457,8 @@ export async function POST(request: Request) {
         status: h.status,
         totalCapitalToman: h.totalCapitalToman,
         createdAt: h.createdAt,
-        stoppedAt: h.stoppedAt
+        stoppedAt: h.stoppedAt,
+        setup: parseSessionSetupNote(h.note)
       })),
       paperOnly: true,
       realOrders: false

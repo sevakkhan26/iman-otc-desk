@@ -72,6 +72,26 @@ export async function runPaperExecutionForCycle(input: {
   if (session.status !== "RUNNING") return { ran: false, reason: "not_running", sessionId: session.id };
 
   /*
+   * Session-setup duration gate: immutable endsAt from note (paper_session_setup_v1).
+   * Never extends endsAt on restart — only archives when elapsed.
+   */
+  try {
+    const { parseSessionSetupNote } = await import(
+      "@/lib/shadowArbitrage/paper/sessionCapital"
+    );
+    const setup = parseSessionSetupNote(session.note);
+    if (setup?.endsAt) {
+      const endsMs = Date.parse(setup.endsAt);
+      if (Number.isFinite(endsMs) && Date.now() >= endsMs) {
+        await setPaperSessionStatus(session.id, "STOPPED");
+        return { ran: false, reason: "not_running", sessionId: session.id };
+      }
+    }
+  } catch {
+    /* ignore parse errors — fail open to experiment gate below */
+  }
+
+  /*
    * Four-day experiment gate: while an ACTIVE experiment exists, new Paper
    * trades only open before endsAt. After endsAt, complete the experiment and
    * leave the collector running without new fills.

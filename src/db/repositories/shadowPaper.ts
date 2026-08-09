@@ -380,6 +380,11 @@ export async function replaceActivePaperSessionCapital(input: {
   /** Client/server preview token for audit trail. */
   previewToken: string;
   name?: string;
+  /**
+   * Optional structured session-setup note (includes endsAt / order-cap choice).
+   * Replaces the default capital-replace note body when provided.
+   */
+  sessionNote?: string | null;
 }): Promise<ReplacePaperCapitalResult> {
   try {
     const db = await getDbAsync();
@@ -472,7 +477,7 @@ export async function replaceActivePaperSessionCapital(input: {
       const newName =
         input.name?.trim().slice(0, 80) ||
         `نشست کاغذی ${capital.toLocaleString("en-US")} تومان`;
-      const newNote = [
+      const defaultNote = [
         `Paper capital replace`,
         `actor=${input.createdBy}`,
         `at=${now}`,
@@ -483,6 +488,7 @@ export async function replaceActivePaperSessionCapital(input: {
         tokenTag,
         `unit=toman`
       ].join("; ");
+      const newNote = (input.sessionNote?.trim() || defaultNote).slice(0, 2000);
 
       const newRow = {
         id: newId,
@@ -502,7 +508,7 @@ export async function replaceActivePaperSessionCapital(input: {
         cyclesEvaluated: 0,
         tradesExecuted: 0,
         candidatesSkipped: 0,
-        note: newNote.slice(0, 2000),
+        note: newNote,
         experimentRunId: null as string | null,
         createdAt: now,
         updatedAt: now

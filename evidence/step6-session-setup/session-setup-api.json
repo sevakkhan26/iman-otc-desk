@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "notProduction": true,
+  "auto": {
+    "cap100M": 50,
+    "ceil100M": 50,
+    "cap10B": 5000,
+    "endsAtSample": "2026-08-13T12:57:06.308Z"
+  },
+  "manual": {
+    "cap100M": 500,
+    "cap10B": 500,
+    "endsAt": "2026-08-14T12:57:06.482Z",
+    "durationDays": 5
+  },
+  "restart": {
+    "sessionId": "34c45792-530d-4a7e-aa83-fad54dd90658",
+    "endsAtUnchanged": true,
+    "orderCapUnchanged": true,
+    "historyCount": 10
+  },
+  "paperPolicyMinUsdt": 5,
+  "at": "2026-08-09T12:57:15.930Z"
+}

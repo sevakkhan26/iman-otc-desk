@@ -30,14 +30,16 @@ import {
 export const SMART_SIZING_POLICY = "CAPITAL_AWARE_MAX_SAFE" as const;
 
 /**
- * Ledger quantum only (numeric(12,4) → 1e-4 USDT). This is the sole executable
- * size floor: not a fixed 5/10/20/25 ladder rung, not a guessed exchange
- * minimum. Per-venue notional/step mins would attach only when admin-confirmed;
- * none are configured today and none are invented here.
- *
- * Never used as an upper cap on finalSize.
+ * Ledger accounting precision only (numeric(12,4) → 1e-4 USDT).
+ * Not an executable trade floor — see venueExecutionLimits.
  */
 export const LEDGER_SIZE_QUANTUM_MICROS = 100;
+
+/**
+ * @deprecated Do not use as a trade floor. Prefer resolveRouteExecutionFloor.
+ * Kept as a re-export alias of ledger quantum for display/quantize helpers that
+ * historically imported this name; sizing must pass the route min explicitly.
+ */
 export const MIN_EXECUTABLE_USDT_MICROS = LEDGER_SIZE_QUANTUM_MICROS;
 
 /**

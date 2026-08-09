@@ -45,7 +45,7 @@ const { PAPER_POLICY_SET } = await import("../src/lib/shadowArbitrage/live/paper
 const { SHADOW_SOURCES } = await import("../src/lib/shadowArbitrage/config.ts");
 const { tehranDayStartMs } = await import("../src/lib/shadowArbitrage/paper/accounting.ts");
 
-await seedLocalFeeEvidence();
+await seedLocalFeeEvidence(); // also seeds local paper execution limits (min 5 USDT)
 for (const e of PAPER_POLICY_SET) {
   await recordRiskPolicy({
     policyKey: e.key,
@@ -278,9 +278,128 @@ const evidence = {
   noOpenPosition: true
 };
 
+/* ── restart persistence: close DB, re-open same path, re-read everything ─ */
+const sessionId = session.id;
+const fillId = fill.id;
+const ledgerIdBefore = fill.id;
+const economicBefore = fill.economicNetPnlToman;
+const riskAdjBefore = fill.riskAdjustedPnlToman;
+const sizeBefore = Number(fill.sizeUsdt);
+const feeTomanBefore = fill.feeTomanTotal;
+const feeUsdtBefore = fill.feeUsdtMicrosTotal;
+const balsSnap = balsAfter
+  .map((b) => ({ sourceId: b.sourceId, irt: b.irtToman, usdt: b.usdtMicros }))
+  .sort((a, b) => a.sourceId.localeCompare(b.sourceId));
+assert.ok(fill.sizingAudit, "sizing audit written on fill");
+assert.equal(fill.sizingPolicy, "CAPITAL_AWARE_MAX_SAFE");
+assert.equal(fill.bindingConstraint, "capital_cap");
+
+await closeDb();
+
+// closeDb + re-open same pglite path — proves row survives process restart.
+const { getDbAsync } = await import("../src/db/client.ts");
+await getDbAsync();
+const {
+  loadPaperLedger: loadLedgerAfter,
+  loadPaperStats: loadStatsAfter,
+  loadPaperBalances: loadBalsAfter,
+  getPaperSession
+} = await import("../src/db/repositories/shadowPaper.ts");
+
+const sessionAfter = await getPaperSession(sessionId);
+assert.ok(sessionAfter, "session survives restart");
+assert.equal(sessionAfter!.status, "RUNNING");
+
+const ledgerAfter = await loadLedgerAfter(sessionId, { outcome: "FILLED", limit: 10 });
+assert.equal(ledgerAfter.length, 1, "filled lifecycle row survives restart");
+const fillAfter = ledgerAfter[0]!;
+assert.equal(fillAfter.id, ledgerIdBefore);
+assert.equal(fillAfter.lifecycleId, lifecycleId);
+assert.equal(Number(fillAfter.sizeUsdt), sizeBefore);
+assert.equal(fillAfter.economicNetPnlToman, economicBefore);
+assert.equal(fillAfter.riskAdjustedPnlToman, riskAdjBefore);
+assert.equal(fillAfter.feeTomanTotal, feeTomanBefore);
+assert.equal(fillAfter.feeUsdtMicrosTotal, feeUsdtBefore);
+assert.equal(fillAfter.buyFeeAsset, "IRT");
+assert.equal(fillAfter.sellFeeAsset, "USDT");
+assert.equal(fillAfter.sizingPolicy, "CAPITAL_AWARE_MAX_SAFE");
+assert.equal(fillAfter.bindingConstraint, "capital_cap");
+assert.ok(fillAfter.sizingAudit, "sizing audit survives restart for API/UI");
+assert.equal(
+  (fillAfter.sizingAudit as { finalSizeUsdtMicros?: number }).finalSizeUsdtMicros,
+  usdtToMicros(sizeUsdt)
+);
+
+const statsAfter = await loadStatsAfter(sessionId);
+assert.equal(statsAfter.filled, 1);
+
+const balsRestart = await loadBalsAfter(sessionId);
+const balsSnapAfter = balsRestart
+  .map((b) => ({ sourceId: b.sourceId, irt: b.irtToman, usdt: b.usdtMicros }))
+  .sort((a, b) => a.sourceId.localeCompare(b.sourceId));
+assert.deepEqual(balsSnapAfter, balsSnap, "balances survive restart");
+
+const accountingAfter = buildPortfolioAccounting({
+  asOf: now,
+  initialCapitalToman: CAPITAL,
+  markPriceToman: MARK,
+  balances: balsRestart.map((b) => ({
+    sourceId: b.sourceId,
+    irtToman: b.irtToman,
+    usdtMicros: b.usdtMicros
+  })),
+  opening: alloc,
+  fills: [
+    {
+      id: fillId,
+      lifecycleId,
+      routeKey: "nobitex->wallex",
+      buySourceId: "nobitex",
+      sellSourceId: "wallex",
+      sizeUsdt,
+      buyVwapToman: plan.buyLeg.vwapToman,
+      sellVwapToman: plan.sellLeg.vwapToman,
+      buyNotionalToman: plan.buyLeg.notionalToman,
+      sellNotionalToman: plan.sellLeg.notionalToman,
+      feeTomanTotal: plan.totalFeeToman,
+      feeUsdtMicrosTotal: plan.totalFeeUsdtMicros,
+      sellFeeValueToman: plan.sellFeeValueToman,
+      grossSpreadToman: plan.grossSpreadToman,
+      cashPnlIrtToman: plan.cashPnlIrtToman,
+      economicNetPnlToman: plan.economicNetPnlToman,
+      riskAdjustedPnlToman: plan.riskAdjustedPnlToman,
+      slippageBufferToman: plan.slippageBufferToman,
+      markPriceToman: plan.markPriceToman,
+      occurredAt: now,
+      outcome: "FILLED"
+    }
+  ],
+  todayStartMs: tehranDayStartMs(Date.parse(now))
+});
+assert.equal(accountingAfter.realizedEconomicPnlToman, accounting.realizedEconomicPnlToman);
+assert.equal(accountingAfter.equityToman, accounting.equityToman);
+
+const evidenceWithRestart = {
+  ...evidence,
+  restartProof: {
+    ok: true,
+    sessionId,
+    ledgerId: fillAfter.id,
+    filled: statsAfter.filled,
+    economicNetPnlToman: fillAfter.economicNetPnlToman,
+    riskAdjustedPnlToman: fillAfter.riskAdjustedPnlToman,
+    feeTomanTotal: fillAfter.feeTomanTotal,
+    feeUsdtMicrosTotal: fillAfter.feeUsdtMicrosTotal,
+    sizeUsdt: Number(fillAfter.sizeUsdt),
+    balancesMatch: true,
+    accountingEquityToman: accountingAfter.equityToman,
+    accountingRealizedEconomicToman: accountingAfter.realizedEconomicPnlToman
+  }
+};
+
 const outDir = path.join(process.cwd(), "evidence", "step4-lifecycle");
 mkdirSync(outDir, { recursive: true });
-const body = JSON.stringify(evidence, null, 2);
+const body = JSON.stringify(evidenceWithRestart, null, 2);
 writeFileSync(path.join(outDir, "lifecycle-fixture.json"), body);
 writeFileSync(
   path.join(outDir, "lifecycle-fixture.sha256"),
@@ -291,12 +410,13 @@ console.log(
   JSON.stringify(
     {
       ok: true,
-      sessionId: session.id,
-      filled: stats.filled,
+      sessionId,
+      filled: statsAfter.filled,
       economicNetPnlToman: plan.economicNetPnlToman,
       riskAdjustedPnlToman: plan.riskAdjustedPnlToman,
       buyFeeAsset: plan.buyLeg.settlement.feeAsset,
       sellFeeAsset: plan.sellLeg.settlement.feeAsset,
+      restartProof: true,
       evidence: path.join(outDir, "lifecycle-fixture.json")
     },
     null,

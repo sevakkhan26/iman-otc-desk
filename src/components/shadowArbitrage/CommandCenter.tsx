@@ -322,7 +322,13 @@ export type SizingView = {
     candidatePercents: number[];
     capitalCapPercent: number;
     depthCapPercent: number;
-    minExecutableUsdt: number;
+    /** Accounting precision only (e.g. 0.0001). Not a trade floor. */
+    ledgerSizeQuantumUsdt?: number;
+    /**
+     * Verified executable min when uniform across registered venues; null when
+     * per-route or unknown (never a guessed 25 USDT ladder).
+     */
+    minExecutableUsdt: number | null;
   };
   requiredPolicies: string[];
   venueSemantics?: VenueSemanticsView;
@@ -734,8 +740,23 @@ export function CommandCenter({
               {" "}
               حجم نهایی = min(موجودی، عمق VWAP، سقف سفارش، تمرکز، سهم سرمایه) با سود خالص
               مثبت. پروب‌های تحلیلی {toFaDigits(sizing.policyParameters.candidatePercents.join("، "))}٪
-              از سقف امن — نردبان ۵/۱۰/۲۰/۲۵ فقط تحلیل است و سقف اجرا نیست. حداقل اجراپذیر{" "}
-              {toFaDigits(sizing.policyParameters.minExecutableUsdt)} تتر.
+              از سقف امن — نردبان ۵/۱۰/۲۰/۲۵ فقط تحلیل است و سقف اجرا نیست.
+              {typeof sizing.policyParameters.ledgerSizeQuantumUsdt === "number" ? (
+                <>
+                  {" "}
+                  کوانتوم دفتر {toFaDigits(sizing.policyParameters.ledgerSizeQuantumUsdt)} تتر
+                  (دقت حسابداری، نه کف اجرا).
+                </>
+              ) : null}
+              {sizing.policyParameters.minExecutableUsdt != null ? (
+                <>
+                  {" "}
+                  حداقل اجراپذیر تأییدشده {toFaDigits(sizing.policyParameters.minExecutableUsdt)}{" "}
+                  تتر.
+                </>
+              ) : (
+                <> حداقل اجرا از حد تأییدشدهٔ هر صرافی (بدون حدس).</>
+              )}
             </span>
           ) : null}
         </div>

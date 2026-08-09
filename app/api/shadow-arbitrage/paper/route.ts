@@ -54,10 +54,14 @@ import {
   CANDIDATE_PERCENTS,
   CAPITAL_CAP_PERCENT,
   DEPTH_CAP_PERCENT,
-  MIN_EXECUTABLE_USDT_MICROS,
+  LEDGER_SIZE_QUANTUM_MICROS,
   SIZING_REQUIRED_POLICIES,
   SMART_SIZING_POLICY
 } from "@/lib/shadowArbitrage/paper/sizing";
+import {
+  listVenueExecutionLimits,
+  seedLocalPaperExecutionLimits
+} from "@/lib/shadowArbitrage/paper/venueExecutionLimits";
 import {
   targetsFromAllocations,
   type InventoryModel
@@ -81,6 +85,19 @@ import { PAPER_FEE_SETTLEMENT, microsToUsdt, settlementFor, usdtToMicros } from 
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+/**
+ * LOCAL Paper: ensure verified execution mins are in-process before sizing.
+ * Idempotent. Production never uses this fixture path.
+ */
+function ensureLocalExecutionLimitsSeeded(): void {
+  const isLocal =
+    process.env.NODE_ENV !== "production" ||
+    (process.env.DATABASE_URL ?? "").startsWith("pglite:");
+  if (!isLocal || process.env.SHADOW_RELEASE_BOOTSTRAP === "true") return;
+  if (listVenueExecutionLimits().length > 0) return;
+  seedLocalPaperExecutionLimits();
+}
 
 /**
  * Phase 6 — admin-only paper execution control surface.
@@ -378,6 +395,8 @@ export async function GET(request: Request) {
   const session = await requireAdminSession();
   if (!isSession(session)) return session;
 
+  ensureLocalExecutionLimitsSeeded();
+
   // Optional server-side filter so a large session never ships every candidate.
   const reason = new URL(request.url).searchParams.get("reason");
   const [snap, history] = await Promise.all([snapshot(reason), listPaperSessions(20)]);
@@ -643,7 +662,21 @@ export async function GET(request: Request) {
       candidatePercents: CANDIDATE_PERCENTS,
       capitalCapPercent: CAPITAL_CAP_PERCENT,
       depthCapPercent: DEPTH_CAP_PERCENT,
-      minExecutableUsdt: MIN_EXECUTABLE_USDT_MICROS / 1_000_000
+      /** Accounting precision only — not an executable trade floor. */
+      ledgerSizeQuantumUsdt: LEDGER_SIZE_QUANTUM_MICROS / 1_000_000,
+      /**
+       * Executable floor is per-route from verified venue limits.
+       * When every registered venue shares one min (local fixture), surface it;
+       * otherwise null — never invent a global 25 USDT ladder.
+       */
+      minExecutableUsdt: (() => {
+        const limits = listVenueExecutionLimits();
+        if (!limits.length) return null;
+        const mins = limits.map((l) => l.minNotionalUsdtMicros);
+        const lo = Math.min(...mins);
+        const hi = Math.max(...mins);
+        return lo === hi ? lo / 1_000_000 : null;
+      })()
     },
     requiredPolicies: SIZING_REQUIRED_POLICIES,
     venueSemantics,

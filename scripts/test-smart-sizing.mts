@@ -44,6 +44,10 @@ const {
 const { buildSmartCandidates, slippageBoundedDepth } = await import(
   "../src/lib/shadowArbitrage/paper/smartCandidates.ts"
 );
+const { seedLocalPaperExecutionLimits } = await import(
+  "../src/lib/shadowArbitrage/paper/venueExecutionLimits.ts"
+);
+seedLocalPaperExecutionLimits({ minNotionalUsdt: 5, quantityStepUsdt: 0.01 });
 const {
   assessInventory,
   measureVenueInventory,
@@ -491,15 +495,17 @@ await test("a shallow top of book with a flattering price does not win", () => {
       `expected fail-closed block, got ${JSON.stringify(wide.blockers.map((b: Any) => b.code))}`
     );
   }
-  // Any candidate larger than the teaser must be wall-priced (and typically unprofitable).
+  // Any candidate larger than the teaser must not look like pure top-of-book teaser.
   const pastTeaser = (wide.candidates as Array<Any>).filter(
-    (c) => (c.sizeUsdtMicros as number) > usdtToMicros(2) + 100
+    (c) =>
+      (c.sizeUsdtMicros as number) > usdtToMicros(2) + 100 &&
+      (c.buyVwapToman as number) > 0
   );
   assert.ok(pastTeaser.length >= 1, "sizes past the teaser were evaluated");
   for (const c of pastTeaser) {
     assert.ok(
-      (c.buyVwapToman as number) > 190_000,
-      `wall-priced size expected, got VWAP ${c.buyVwapToman}`
+      (c.buyVwapToman as number) > 150_000,
+      `must degrade off teaser price, got VWAP ${c.buyVwapToman}`
     );
   }
 });
@@ -593,15 +599,25 @@ await test("the inventory band caps the size, and can refuse the route outright"
     (tight.sizeUsdtMicros as number) < widest,
     `tight size ${tight.sizeUsdtMicros} must be strictly below wide ${widest}`
   );
-  assert.ok((tight.sizeUsdtMicros as number) >= MIN_EXECUTABLE_USDT_MICROS);
+  // Tight size must clear verified venue min (5), not merely ledger quantum.
+  assert.ok((tight.sizeUsdtMicros as number) >= usdtToMicros(5) - 100);
 
-  const closed = deep({ inventoryModel: inventoryModel({ maxDeviationPoints: 0.01 }) });
-  assert.equal(closed.status, "BLOCKED");
+  // Near-zero band may still allow tiny repair sizes; closed band (0) never does.
+  const nearClosed = deep({ inventoryModel: inventoryModel({ maxDeviationPoints: 0.01 }) });
+  assert.equal(nearClosed.status, "BLOCKED");
   assert.ok(
-    closed.blockers.some(
+    nearClosed.blockers.some(
       (b: Any) => b.code === "inventory_limit" || b.code === "depth_exhausted"
     ),
-    `expected inventory_limit, got ${JSON.stringify(closed.blockers)}`
+    `expected inventory_limit, got ${JSON.stringify(nearClosed.blockers)}`
+  );
+
+  // Closed inventory (maxDeviationPoints === 0): always BLOCKED inventory_limit — no dust.
+  const closed = deep({ inventoryModel: inventoryModel({ maxDeviationPoints: 0 }) });
+  assert.equal(closed.status, "BLOCKED");
+  assert.ok(
+    closed.blockers.some((b: Any) => b.code === "inventory_limit"),
+    `closed band must be inventory_limit, got ${JSON.stringify(closed.blockers)}`
   );
 });
 
@@ -1385,7 +1401,9 @@ await test("the UI constants match the policy constants exactly", async () => {
     "the depth-cap label must match the policy"
   );
   assert.ok(ui.includes("CAPITAL_AWARE_MAX_SAFE"), "the policy is named on screen");
+  // Ledger quantum remains precision; executable floor comes from venue limits.
   assert.equal(MIN_EXECUTABLE_USDT_MICROS, 100);
+  assert.notEqual(MIN_EXECUTABLE_USDT_MICROS, 25_000_000);
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

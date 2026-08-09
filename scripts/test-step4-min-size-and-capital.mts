@@ -4,10 +4,8 @@
  */
 import assert from "node:assert/strict";
 import {
-  MIN_EXECUTABLE_USDT_MICROS,
   LEDGER_SIZE_QUANTUM_MICROS,
-  computeRouteSize,
-  SMART_SIZING_POLICY
+  computeRouteSize
 } from "../src/lib/shadowArbitrage/paper/sizing.ts";
 import { buildSmartCandidates } from "../src/lib/shadowArbitrage/paper/smartCandidates.ts";
 import {
@@ -21,6 +19,15 @@ import { settlementFor, usdtToMicros, microsToUsdt } from "../src/lib/shadowArbi
 import { targetsFromAllocations } from "../src/lib/shadowArbitrage/paper/inventory.ts";
 import { defaultAllocation } from "../src/lib/shadowArbitrage/paper/portfolio.ts";
 import { balancesFromAllocations } from "../src/lib/shadowArbitrage/paper/engine.ts";
+import {
+  clearVenueExecutionLimitsRegistry,
+  seedLocalPaperExecutionLimits,
+  resolveRouteExecutionFloor,
+  getVenueExecutionLimit
+} from "../src/lib/shadowArbitrage/paper/venueExecutionLimits.ts";
+
+clearVenueExecutionLimitsRegistry();
+seedLocalPaperExecutionLimits({ minNotionalUsdt: 5, quantityStepUsdt: 0.01 });
 
 let passed = 0;
 let failed = 0;
@@ -86,29 +93,93 @@ function snap(id: string, bids: ReturnType<typeof lv>[], asks: ReturnType<typeof
   };
 }
 
-await test("min executable is ledger quantum only — not 25 USDT", () => {
-  assert.equal(MIN_EXECUTABLE_USDT_MICROS, LEDGER_SIZE_QUANTUM_MICROS);
-  assert.equal(MIN_EXECUTABLE_USDT_MICROS, 100);
-  assert.notEqual(MIN_EXECUTABLE_USDT_MICROS, 25_000_000);
+await test("ledger quantum is precision only; venue min is separate", () => {
+  assert.equal(LEDGER_SIZE_QUANTUM_MICROS, 100);
+  const floor = resolveRouteExecutionFloor("nobitex", "wallex");
+  assert.equal(floor.ok, true);
+  if (!floor.ok) return;
+  assert.equal(floor.minMicros, usdtToMicros(5));
+  assert.ok(floor.minMicros < usdtToMicros(25));
+  assert.ok(floor.minMicros > LEDGER_SIZE_QUANTUM_MICROS);
 });
 
-await test("candidates may exist below former 25 USDT ladder floor", () => {
-  const set = buildSmartCandidates({
-    buyUsableMicros: usdtToMicros(10),
-    sellUsableMicros: usdtToMicros(10),
-    buySourceId: "a",
-    sellSourceId: "b",
-    buyDepthMicros: usdtToMicros(100),
-    sellDepthMicros: usdtToMicros(100),
-    extraCapsMicros: [],
-    granularityMicros: 100
+await test("missing venue min fails closed with venue_min_unknown", () => {
+  clearVenueExecutionLimitsRegistry();
+  const r = computeRouteSize({
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    buySnapshot: snap("nobitex", [lv(190_000, 50_000)], ladder(192_000, 1, 5, 5_000)) as never,
+    sellSnapshot: snap("wallex", ladder(200_000, -1, 5, 5_000), [lv(202_000, 50_000)]) as never,
+    buyFeeBps: 10,
+    sellFeeBps: 10,
+    buySettlement: settlementFor("nobitex" as never, "buy"),
+    sellSettlement: settlementFor("wallex" as never, "sell"),
+    balances: [
+      { sourceId: "nobitex", irtToman: 1e9, usdtMicros: usdtToMicros(1000) },
+      { sourceId: "wallex", irtToman: 1e9, usdtMicros: usdtToMicros(1000) }
+    ],
+    buyVenueAllocationToman: 1e9,
+    portfolioValueToman: 2e9,
+    buyVenueExposureToman: 0,
+    policies: policies(),
+    slippageBufferBps: 5,
+    inventoryModel: { valuationPriceToman: MARK, targets: [], maxDeviationPoints: 100 }
   });
-  assert.ok(set.quantities.length > 0);
-  assert.ok(Math.max(...set.quantities) <= usdtToMicros(10));
-  assert.ok(Math.min(...set.quantities) >= MIN_EXECUTABLE_USDT_MICROS);
+  assert.equal(r.status, "BLOCKED");
+  assert.ok(r.blockers.some((b) => b.code === "venue_min_unknown"));
+  seedLocalPaperExecutionLimits({ minNotionalUsdt: 5, quantityStepUsdt: 0.01 });
 });
 
-await test("100M capital can size below 25 USDT when inventory/econ allow", () => {
+await test("legacy 25 floor gone: verified min 5 → size ≥5 and can be <25", () => {
+  seedLocalPaperExecutionLimits({ minNotionalUsdt: 5, quantityStepUsdt: 0.01 });
+  const lim = getVenueExecutionLimit("nobitex");
+  assert.ok(lim);
+  assert.equal(lim!.minNotionalUsdtMicros, usdtToMicros(5));
+  assert.ok(lim!.minNotionalUsdtMicros < usdtToMicros(25));
+
+  // Controlled books + order cap 12: final must land in [5, 25) — valid, not dust.
+  const bals = [
+    { sourceId: "nobitex", irtToman: 1e9, usdtMicros: usdtToMicros(1000) },
+    { sourceId: "wallex", irtToman: 1e9, usdtMicros: usdtToMicros(1000) }
+  ];
+  const r = computeRouteSize({
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    buySnapshot: snap("nobitex", [lv(190_000, 50_000)], ladder(192_000, 1, 5, 5_000)) as never,
+    sellSnapshot: snap("wallex", ladder(200_000, -1, 5, 5_000), [lv(202_000, 50_000)]) as never,
+    buyFeeBps: 10,
+    sellFeeBps: 10,
+    buySettlement: settlementFor("nobitex" as never, "buy"),
+    sellSettlement: settlementFor("wallex" as never, "sell"),
+    balances: bals,
+    buyVenueAllocationToman: 1e9,
+    portfolioValueToman: 2e9,
+    buyVenueExposureToman: 0,
+    policies: policies({ max_order_size_usdt: 12, max_inventory_deviation_percent: 100 }),
+    slippageBufferBps: 5,
+    inventoryModel: {
+      valuationPriceToman: MARK,
+      targets: targetsFromAllocations(
+        bals.map((b) => ({
+          sourceId: b.sourceId,
+          irtToman: b.irtToman,
+          usdtUnits: microsToUsdt(b.usdtMicros)
+        })),
+        MARK
+      ),
+      maxDeviationPoints: 100
+    }
+  });
+  assert.equal(r.status, "SIZED", JSON.stringify(r.blockers));
+  assert.ok(r.sizeUsdtMicros! >= usdtToMicros(5), "≥ verified venue min 5");
+  assert.ok(r.sizeUsdtMicros! < usdtToMicros(25), "legacy 25 ladder floor is gone");
+  assert.ok(r.sizeUsdtMicros! > LEDGER_SIZE_QUANTUM_MICROS, "not ledger dust");
+  assert.ok(r.sizeUsdtMicros! <= usdtToMicros(12) + 100, "respects order cap 12");
+  console.log(`        sub-25 size=${r.sizeUsdt} (venueMin=5, orderCap=12)`);
+});
+
+await test("100M capital can size with verified min below 25 when inventory/econ allow", () => {
+  seedLocalPaperExecutionLimits({ minNotionalUsdt: 5, quantityStepUsdt: 0.01 });
   const capital = 100_000_000;
   const venues = ["nobitex", "wallex", "tabdeal", "bitpin", "abantether", "ramzinex", "tetherland", "bit24", "arzinja"];
   const bals = balancesFromAllocations(defaultAllocation(capital, venues, MARK));
@@ -144,10 +215,10 @@ await test("100M capital can size below 25 USDT when inventory/econ allow", () =
     }
   });
   assert.equal(r.status, "SIZED", JSON.stringify(r.blockers));
+  assert.ok(r.sizeUsdtMicros! >= usdtToMicros(5), "respects verified venue min 5");
+  // Must not be forced to obsolete 25 ladder floor when capital/min allow smaller.
+  // (May still size ≥25 if capital cap is higher — assert not blocked by 25-only.)
   assert.ok(r.sizeUsdtMicros! > 0);
-  // Critical: may be below obsolete 25 USDT fixed floor.
-  assert.ok(r.sizeUsdtMicros! < usdtToMicros(25) || r.sizeUsdtMicros! >= usdtToMicros(25));
-  assert.ok(r.sizeUsdtMicros! >= MIN_EXECUTABLE_USDT_MICROS);
   console.log(`        100M size=${r.sizeUsdt} bind=${r.bindingConstraint}`);
 });
 
@@ -267,7 +338,7 @@ await test("tight inventory selects smaller size; closed stays blocked", () => {
     ...base,
     inventoryModel: { valuationPriceToman: MARK, targets, maxDeviationPoints: 1 }
   });
-  // Closed band: maxDeviation 0 rejects any nonzero inventory drift.
+  // Closed band: maxDeviation 0 → always BLOCKED inventory_limit (no dust).
   const closed = computeRouteSize({
     ...base,
     inventoryModel: { valuationPriceToman: MARK, targets, maxDeviationPoints: 0 }
@@ -275,20 +346,9 @@ await test("tight inventory selects smaller size; closed stays blocked", () => {
   assert.equal(wide.status, "SIZED");
   assert.equal(tight.status, "SIZED");
   assert.ok(tight.sizeUsdtMicros! < wide.sizeUsdtMicros!);
-  // On large books a quantum-sized improving residual can still clear; require
-  // either inventory_limit block or only ledger-quantum dust.
-  if (closed.status === "BLOCKED") {
-    assert.ok(closed.blockers.some((b) => b.code === "inventory_limit"));
-  } else {
-    assert.equal(closed.status, "SIZED");
-    assert.ok(
-      (closed.sizeUsdtMicros as number) <= MIN_EXECUTABLE_USDT_MICROS * 10,
-      "closed inventory must not admit material size"
-    );
-  }
-  console.log(
-    `        tight=${tight.sizeUsdt} wide=${wide.sizeUsdt} closed=${closed.status}/${closed.sizeUsdt}`
-  );
+  assert.equal(closed.status, "BLOCKED");
+  assert.ok(closed.blockers.some((b) => b.code === "inventory_limit"));
+  console.log(`        tight=${tight.sizeUsdt} wide=${wide.sizeUsdt} closed=${closed.status}`);
 });
 
 await test("order cap mode: explicit admin vs capital-derived", () => {

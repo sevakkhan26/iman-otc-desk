@@ -121,6 +121,32 @@ async function reconcileRelease(): Promise<void> {
       e instanceof Error ? e.message : e
     );
   }
+  /*
+   * LOCAL only: seed verified Paper execution mins + fee evidence when release
+   * bootstrap is off. Never invents mins — fixture is admin-confirmed local only.
+   * Production uses release bootstrap + real admin evidence, not this path.
+   */
+  const isLocalDev =
+    process.env.NODE_ENV !== "production" ||
+    (process.env.DATABASE_URL ?? "").startsWith("pglite:");
+  if (isLocalDev && process.env.SHADOW_RELEASE_BOOTSTRAP !== "true") {
+    try {
+      const { seedLocalFeeEvidence } = await import(
+        "@/lib/shadowArbitrage/localFeeEvidenceSeed"
+      );
+      const feeOutcome = await seedLocalFeeEvidence();
+      log("local fee + execution-limit seed", {
+        written: feeOutcome.written,
+        alreadyPresent: feeOutcome.alreadyPresent,
+        venues: feeOutcome.venues.length
+      });
+    } catch (e) {
+      log(
+        "local fee/execution-limit seed failed — sizing may block venue_min_unknown",
+        e instanceof Error ? e.message : e
+      );
+    }
+  }
 }
 
 /**

@@ -42,6 +42,10 @@ const {
 const { computeRouteSize, SIZING_REQUIRED_POLICIES } = await import(
   "../src/lib/shadowArbitrage/paper/sizing.ts"
 );
+const { seedLocalPaperExecutionLimits } = await import(
+  "../src/lib/shadowArbitrage/paper/venueExecutionLimits.ts"
+);
+seedLocalPaperExecutionLimits({ minNotionalUsdt: 5, quantityStepUsdt: 0.01 });
 const { buildLiquidityAwarePlan, deriveVenueDemand, DISCOVERY_FLOOR_PERCENT } = await import(
   "../src/lib/shadowArbitrage/paper/allocation.ts"
 );
@@ -281,9 +285,9 @@ await test("the optimum is interior: a larger size can earn less and must lose",
   const maxEligible = Math.max(...eligible.map((c) => c.sizeUsdtMicros));
   assert.equal(r.sizeUsdtMicros, maxEligible, "largest eligible profitable size wins");
   assert.ok(r.candidates.length > 5, "adaptive densify evaluates more than analysis probes alone");
-  // Every candidate size is ascending and above the dust floor.
+  // Every candidate size is ascending and clears the verified venue min (5), not the obsolete 25 ladder.
   for (const c of r.candidates) {
-    assert.ok(c.sizeUsdtMicros >= usdtToMicros(25));
+    assert.ok(c.sizeUsdtMicros >= usdtToMicros(5) - 100, `below venue min: ${c.sizeUsdtMicros}`);
   }
   assert.ok((r.maxFeasibleUsdtMicros as number) >= (r.sizeUsdtMicros as number));
 });

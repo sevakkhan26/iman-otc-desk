@@ -206,6 +206,29 @@ export function assessInventory(input: {
   const impactPoints = round4(sumAbs(after) - sumAbs(before));
 
   /*
+   * Closed band (maxDeviationPoints === 0): any balance movement is forbidden.
+   * Dust sizes must not slip through via floating-point share rounding.
+   */
+  if (input.model.maxDeviationPoints === 0) {
+    const moved = input.deltas.some((d) => d.deltaIrtToman !== 0 || d.deltaUsdtMicros !== 0);
+    if (moved) {
+      const src = input.deltas[0]?.sourceId ?? "unknown";
+      return {
+        measurable: true,
+        reason: "ok",
+        reasonFa: INVENTORY_REASON_FA.ok,
+        before,
+        after,
+        impactPoints,
+        withinBand: false,
+        breachedSourceId: src,
+        breachDetailFa:
+          "باند موجودی بسته است (انحراف مجاز ۰)؛ هیچ تغییری در موجودی — حتی در حد گرد — مجاز نیست."
+      };
+    }
+  }
+
+  /*
    * A breach is a venue that ends outside the band AND is worse than it started.
    * Ending outside a band it was already outside of, while moving back toward
    * target, is a repair — refusing it would trap the desk in the very imbalance

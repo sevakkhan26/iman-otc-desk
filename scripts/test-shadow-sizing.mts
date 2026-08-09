@@ -39,6 +39,10 @@ const { buildPolicyState } = await import("../src/lib/shadowArbitrage/live/polic
 const { planFill, applyFill, settlementFor, usdtToMicros } = await import(
   "../src/lib/shadowArbitrage/paper/broker.ts"
 );
+const { seedLocalPaperExecutionLimits } = await import(
+  "../src/lib/shadowArbitrage/paper/venueExecutionLimits.ts"
+);
+seedLocalPaperExecutionLimits({ minNotionalUsdt: 5, quantityStepUsdt: 0.01 });
 
 type Any = Record<string, unknown>;
 
@@ -462,29 +466,26 @@ await test("the size is floored to the ledger's own precision", () => {
   assert.equal(usdtToMicros(asStored), r.sizeUsdtMicros);
 });
 
-await test("the ledger-quantum minimum is enforced, not a fixed 25 USDT ladder", () => {
-  assert.equal(MIN_EXECUTABLE_USDT_MICROS, 100);
+await test("venue min (not 25 ladder) is the executable floor", () => {
   assert.equal(SMART_SIZING_POLICY, "CAPITAL_AWARE_MAX_SAFE");
+  // Ledger quantum is precision only.
+  assert.equal(MIN_EXECUTABLE_USDT_MICROS, 100);
 
-  // Ceiling below one ledger quantum: no trade.
-  const justUnder = run({ policies: policies({ max_order_size_usdt: 0.00005 }) });
+  // Ceiling below verified venue min (5 USDT): size_floor.
+  const justUnder = run({ policies: policies({ max_order_size_usdt: 4 }) });
   assert.equal(justUnder.status, "BLOCKED");
   assert.equal(justUnder.sizeUsdt, null);
   assert.ok(justUnder.blockers.some((b) => b.code === "size_floor"));
 
-  // Small but above quantum and profitable: may size (not forced to 25).
-  const small = run({ policies: policies({ max_order_size_usdt: 5 }) });
-  if (small.status === "SIZED") {
-    assert.ok((small.sizeUsdtMicros as number) >= MIN_EXECUTABLE_USDT_MICROS);
-    assert.ok((small.sizeUsdtMicros as number) <= usdtToMicros(5) + 100);
+  // Exactly at verified min 5: may size.
+  const atMin = run({ policies: policies({ max_order_size_usdt: 5 }) });
+  if (atMin.status === "SIZED") {
+    assert.ok((atMin.sizeUsdtMicros as number) >= usdtToMicros(5) - 100);
+    assert.ok((atMin.sizeUsdtMicros as number) < usdtToMicros(25));
   }
 
-  // Every candidate ever produced clears the quantum floor.
   for (const c of run().candidates) {
-    assert.ok(
-      c.sizeUsdtMicros >= MIN_EXECUTABLE_USDT_MICROS,
-      `candidate ${c.sizeUsdtMicros} is below the floor`
-    );
+    assert.ok(c.sizeUsdtMicros >= usdtToMicros(5) - 100, `below venue min: ${c.sizeUsdtMicros}`);
   }
 });
 

@@ -19,6 +19,9 @@ import { settlementFor, usdtToMicros, microsToUsdt } from "../src/lib/shadowArbi
 import { targetsFromAllocations } from "../src/lib/shadowArbitrage/paper/inventory.ts";
 import { defaultAllocation } from "../src/lib/shadowArbitrage/paper/portfolio.ts";
 import { SHADOW_SOURCES } from "../src/lib/shadowArbitrage/config.ts";
+import { seedLocalPaperExecutionLimits } from "../src/lib/shadowArbitrage/paper/venueExecutionLimits.ts";
+
+seedLocalPaperExecutionLimits({ minNotionalUsdt: 5, quantityStepUsdt: 0.01 });
 
 let passed = 0;
 let failed = 0;
@@ -150,6 +153,7 @@ await test("policy constants: full capital/depth, no 5/10/20/25 execution cap", 
   assert.equal(SMART_SIZING_POLICY, "CAPITAL_AWARE_MAX_SAFE");
   assert.equal(CAPITAL_CAP_PERCENT, 100);
   assert.equal(DEPTH_CAP_PERCENT, 100);
+  // Precision constant only — not the trade floor.
   assert.equal(MIN_EXECUTABLE_USDT_MICROS, 100);
   assert.deepEqual([...BASELINE_FIXED_SIZES_USDT], [5, 10, 20, 25]);
   assert.ok(BASELINE_POLICY.includes("ANALYSIS"));
@@ -411,7 +415,8 @@ await test("complete sizing audit is present on SIZED results", () => {
   assert.equal(r.audit!.status, "SIZED");
   assert.equal(r.audit!.finalSizeUsdtMicros, r.sizeUsdtMicros);
   assert.ok(r.audit!.safeCeilingUsdtMicros !== null);
-  assert.ok(r.audit!.limits.minExecutableUsdtMicros === MIN_EXECUTABLE_USDT_MICROS);
+  // minExecutable in audit is the route floor (venue min), not ledger dust.
+  assert.ok((r.audit!.limits.minExecutableUsdtMicros ?? 0) >= usdtToMicros(5) - 100);
   assert.ok(r.audit!.buyVwapToman && r.audit!.sellVwapToman);
   assert.ok((r.audit!.predictedRiskAdjustedNetToman ?? 0) > 0);
 });

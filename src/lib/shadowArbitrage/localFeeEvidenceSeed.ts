@@ -32,6 +32,7 @@ import {
   CONFIRMED_AT,
   RELEASE_KEY
 } from "@/lib/shadowArbitrage/releaseBootstrap";
+import { seedLocalPaperExecutionLimits } from "@/lib/shadowArbitrage/paper/venueExecutionLimits";
 
 /** Marker note only — not a second source of fee numbers. */
 export const LOCAL_FEE_SEED_NOTE =
@@ -67,6 +68,9 @@ export type LocalFeeSeedResult = {
  * Safe to call repeatedly. Does not touch paper sessions, balances, ledgers.
  */
 export async function seedLocalFeeEvidence(): Promise<LocalFeeSeedResult> {
+  // Verified local execution mins (not ledger dust) — required for sizing.
+  seedLocalPaperExecutionLimits();
+
   const latestFees = await loadLatestFeeConfirmations();
   const latestAccounts = await loadLatestAccountConfirmations();
   const allTiers = await listFeeTierEvidence();

@@ -61,6 +61,10 @@ import {
   type SmartCandidateSet
 } from "@/lib/shadowArbitrage/paper/smartCandidates";
 import {
+  resolveRouteExecutionFloor,
+  type VenueExecutionLimit
+} from "@/lib/shadowArbitrage/paper/venueExecutionLimits";
+import {
   buyIrtCapacityMicros,
   executableLadder,
   orderedLevels,
@@ -144,6 +148,7 @@ export type SizingBlockerCode =
   | "no_balance_record"
   | "slippage_over_limit"
   | "size_floor"
+  | "venue_min_unknown"
   | "edge_below_floor"
   | "not_net_positive"
   | "book_invalid"
@@ -161,7 +166,9 @@ export const SIZING_BLOCKER_FA: Record<SizingBlockerCode, string> = {
   settlement_unconfirmed: "نحوهٔ تسویهٔ کارمزد تأیید نشده است",
   no_balance_record: "برای یکی از دو صرافی موجودی مجازی ثبت نشده است",
   slippage_over_limit: "بافر لغزش مدل‌شده از سقف مجاز بیشتر است",
-  size_floor: `ظرفیت قابل استفاده به حداقل کوانتوم دفتر (${MIN_EXECUTABLE_USDT_MICROS / 1_000_000} تتر) نمی‌رسد`,
+  size_floor: "ظرفیت قابل استفاده به حداقل اجراپذیر صرافی‌ها نمی‌رسد",
+  venue_min_unknown:
+    "حداقل حجم/گام اجرا برای یکی از دو صرافی تأیید نشده است — بدون حدس بسته شد",
   edge_below_floor: "حاشیهٔ تعدیل‌شده از کف سیاست کمتر است",
   not_net_positive: "سود تعدیل‌شده اکیداً مثبت نیست",
   book_invalid: "دفتر سفارش قابل استفاده نیست",
@@ -211,7 +218,7 @@ export const CANDIDATE_REJECTION_FA: Record<CandidateRejectionCode, string> = {
   negative_marginal_profitability: "هر تتر اضافه در این حجم سود را کم می‌کند",
   not_net_positive: "سود تعدیل‌شده در این حجم مثبت نیست",
   edge_below_floor: "حاشیهٔ تعدیل‌شده در این حجم از کف سیاست کمتر است",
-  below_min_size: `کمتر از کوانتوم دفتر ${MIN_EXECUTABLE_USDT_MICROS / 1_000_000} تتر است`
+  below_min_size: "کمتر از حداقل اجراپذیر تأییدشدهٔ صرافی‌های مسیر است"
 };
 
 /** Every figure the detail view shows, all integers unless noted. */
@@ -456,6 +463,11 @@ export type SizingInput = {
   /** Present only when the corresponding venue is an OTC dealer. */
   buyQuote?: QuoteCapacityInput;
   sellQuote?: QuoteCapacityInput;
+  /**
+   * Optional override map of verified venue execution limits.
+   * When omitted, the process registry is used. Missing either leg → venue_min_unknown.
+   */
+  venueExecutionLimits?: Map<string, VenueExecutionLimit>;
 };
 
 function blocker(code: SizingBlockerCode, subject: string, extraFa?: string): SizingBlocker {
@@ -622,7 +634,7 @@ function blocked(blockers: SizingBlocker[], constraints: SizingConstraint[] = []
         orderCapUsdtMicros: null,
         venueAllocationUsdtMicros: null,
         venueConcentrationUsdtMicros: null,
-        minExecutableUsdtMicros: MIN_EXECUTABLE_USDT_MICROS,
+        minExecutableUsdtMicros: 0,
         safeCeilingUsdtMicros: null
       },
       safeCeilingUsdtMicros: null,
@@ -665,6 +677,8 @@ function buildAudit(partial: {
   adaptiveMeta: SmartCandidateSet["adaptive"] | null;
   buyFeeBps: number | null;
   sellFeeBps: number | null;
+  /** Verified route executable floor (venue mins). Not ledger quantum. */
+  minExecutableUsdtMicros?: number | null;
 }): SizingAudit {
   const capOf = (key: SizingConstraintKey) =>
     partial.constraints.find((c) => c.key === key)?.capUsdtMicros ?? null;
@@ -690,7 +704,12 @@ function buildAudit(partial: {
       orderCapUsdtMicros: capOf("policy_max_order_size"),
       venueAllocationUsdtMicros: capOf("venue_allocation"),
       venueConcentrationUsdtMicros: capOf("venue_concentration"),
-      minExecutableUsdtMicros: MIN_EXECUTABLE_USDT_MICROS,
+      minExecutableUsdtMicros:
+        partial.minExecutableUsdtMicros != null && partial.minExecutableUsdtMicros > 0
+          ? partial.minExecutableUsdtMicros
+          : partial.candidates.length > 0
+            ? Math.min(...partial.candidates.map((c) => c.sizeUsdtMicros))
+            : 0,
       safeCeilingUsdtMicros: partial.capacity?.ceilingMicros ?? null
     },
     safeCeilingUsdtMicros: partial.capacity?.ceilingMicros ?? null,
@@ -772,6 +791,24 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     blockers.push(blocker("no_balance_record", !buyBalance ? input.buySourceId : input.sellSourceId));
   }
 
+  /* ── 2b. verified venue min notional / step — never invent ─────────────── */
+  const routeFloor = resolveRouteExecutionFloor(
+    input.buySourceId,
+    input.sellSourceId,
+    input.venueExecutionLimits ?? null
+  );
+  if (!routeFloor.ok) {
+    blockers.push(
+      blocker(
+        "venue_min_unknown",
+        routeFloor.missingSourceIds.join(","),
+        `حداقل اجرا برای ${routeFloor.missingSourceIds.join(" و ")} تأیید نشده است؛ بدون حدس بسته شد.`
+      )
+    );
+  }
+  const minExecutableMicros = routeFloor.ok ? routeFloor.minMicros : null;
+  const sizeStepMicros = routeFloor.ok ? routeFloor.stepMicros : SIZE_GRANULARITY_MICROS;
+
   /* ── 3. freshness, measured against the admin's own budget ────────────── */
   const maxAgeMs = policy.max_quote_age_ms;
   if (maxAgeMs !== undefined) {
@@ -850,7 +887,15 @@ export function computeRouteSize(input: SizingInput): SizingResult {
   );
   const fatal = blockers.filter((b) => !policyBlockers.includes(b));
 
-  if (fatal.length || !buyBalance || !sellBalance || !buyLadder.ok || !sellLadder.ok) {
+  if (
+    fatal.length ||
+    !buyBalance ||
+    !sellBalance ||
+    !buyLadder.ok ||
+    !sellLadder.ok ||
+    !routeFloor.ok ||
+    minExecutableMicros === null
+  ) {
     return blocked(blockers);
   }
 
@@ -858,6 +903,7 @@ export function computeRouteSize(input: SizingInput): SizingResult {
   const sellFeeBps = input.sellFeeBps as number;
   const buyAsks = buyLadder.levels;
   const sellBids = sellLadder.levels;
+  const routeMinExecutableMicros = minExecutableMicros;
 
   /* ── 6. the capital basis ────────────────────────────────────────────────
    *
@@ -929,7 +975,9 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     buyDepthMicros: buyDepth.depthMicros,
     sellDepthMicros: sellDepth.depthMicros,
     extraCapsMicros: extraCaps,
-    granularityMicros: SIZE_GRANULARITY_MICROS,
+    // Step = max(venue steps, ledger quantum). Min = verified venue mins.
+    granularityMicros: Math.max(sizeStepMicros, SIZE_GRANULARITY_MICROS),
+    minMicros: routeMinExecutableMicros,
     // Book breakpoints densify the execution set so inventory-tight routes
     // still find a valid size below the coarse 10% analysis probe.
     buyLevels: buyAsks,
@@ -1074,9 +1122,9 @@ export function computeRouteSize(input: SizingInput): SizingResult {
       blocker(
         "size_floor",
         bindingFor(candidateSet.ceilingMicros) ?? "unknown",
-        `سقف‌ها به ${usdtFa(candidateSet.ceilingMicros)} تتر می‌رسند که کمتر از حداقل اجراپذیر ${
-          MIN_EXECUTABLE_USDT_MICROS / 1_000_000
-        } تتر است؛ محدودکننده: ${
+        `سقف‌ها به ${usdtFa(candidateSet.ceilingMicros)} تتر می‌رسند که کمتر از حداقل اجراپذیر صرافی‌ها (${
+          routeMinExecutableMicros / 1_000_000
+        } تتر) است؛ محدودکننده: ${
           bindingFor(candidateSet.ceilingMicros)
             ? SIZING_CONSTRAINT_FA[bindingFor(candidateSet.ceilingMicros) as SizingConstraintKey]
             : "—"
@@ -1110,7 +1158,8 @@ export function computeRouteSize(input: SizingInput): SizingResult {
         candidates: [],
         adaptiveMeta: candidateSet.adaptive,
         buyFeeBps,
-        sellFeeBps
+        sellFeeBps,
+        minExecutableUsdtMicros: routeMinExecutableMicros
       })
     };
   }
@@ -1384,7 +1433,8 @@ export function computeRouteSize(input: SizingInput): SizingResult {
         candidates,
         adaptiveMeta: candidateSet.adaptive,
         buyFeeBps,
-        sellFeeBps
+        sellFeeBps,
+        minExecutableUsdtMicros: routeMinExecutableMicros
       })
     };
   }
@@ -1448,7 +1498,8 @@ export function computeRouteSize(input: SizingInput): SizingResult {
         candidates,
         adaptiveMeta: candidateSet.adaptive,
         buyFeeBps,
-        sellFeeBps
+        sellFeeBps,
+        minExecutableUsdtMicros: routeMinExecutableMicros
       })
     };
   }
@@ -1544,7 +1595,8 @@ export function computeRouteSize(input: SizingInput): SizingResult {
       candidates,
       adaptiveMeta: candidateSet.adaptive,
       buyFeeBps,
-      sellFeeBps
+      sellFeeBps,
+      minExecutableUsdtMicros: routeMinExecutableMicros
     })
   };
 }

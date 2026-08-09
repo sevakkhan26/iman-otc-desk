@@ -115,7 +115,6 @@ export function ActivityDecisions({
   loading
 }: Props) {
   const { read, write } = useShadowViewState();
-
   const venue = read("av", "all");
   const outcome = read("ao", "all");
   const reason = read("ar", "all");
@@ -297,12 +296,12 @@ export function ActivityDecisions({
         </div>
       </section>
 
-      {/* ── the current cycle's sizing study, with the fixed baseline ────── */}
+      {/* ── current cycle smart size only (no fixed ladder) ──────────────── */}
       <section className="panel sa-panel" aria-label="تصمیم حجم در چرخهٔ فعلی">
         <div className="panel-header sa-panel-header">
           <h3 className="panel-title sa-panel-title">تصمیم حجم در چرخهٔ فعلی</h3>
           <div className="sa-panel-note">
-            حجم هوشمند در برابر نردبان ثابت — نردبان ثابت هرگز اجرا نمی‌شود
+            حجم هوشمند، سقف امن و محدودیت‌کننده — بدون نردبان ثابت
           </div>
         </div>
         <div className="panel-body">
@@ -314,8 +313,8 @@ export function ActivityDecisions({
                     <tr>
                       <th scope="col">مسیر</th>
                       <th scope="col" className="num">حجم هوشمند</th>
-                      <th scope="col" className="num">مبنای ثابت</th>
-                      <th scope="col">سقف محدودکننده</th>
+                      <th scope="col" className="num">سقف امن</th>
+                      <th scope="col">محدودیت‌کننده</th>
                       <th scope="col" className="num">VWAP دو پا</th>
                       <th scope="col" className="num">سود · بازده</th>
                       <th scope="col" className="num">اثر موجودی</th>
@@ -331,18 +330,24 @@ export function ActivityDecisions({
                         <td data-label="حجم هوشمند" className="num">
                           <Bidi>{toFaDigits((r.sizing.sizeUsdt ?? 0).toFixed(4))}</Bidi>
                         </td>
-                        <td data-label="مبنای ثابت" className="num">
-                          {r.sizing.baseline?.bestRiskAdjustedPnlToman === null ||
-                          r.sizing.baseline?.bestRiskAdjustedPnlToman === undefined ? (
-                            DASH
+                        <td data-label="سقف امن" className="num">
+                          {r.sizing.capacity?.ceilingMicros != null ? (
+                            <Bidi>
+                              {toFaDigits(
+                                (r.sizing.capacity.ceilingMicros / 1_000_000).toFixed(4)
+                              )}
+                            </Bidi>
+                          ) : r.sizing.maxFeasibleUsdtMicros != null ? (
+                            <Bidi>
+                              {toFaDigits(
+                                (r.sizing.maxFeasibleUsdtMicros / 1_000_000).toFixed(4)
+                              )}
+                            </Bidi>
                           ) : (
-                            <>
-                              <Bidi>{toFaDigits(r.sizing.baseline.bestSizeUsdt ?? 0)}</Bidi> تتر ·{" "}
-                              <TomanAmount value={r.sizing.baseline.bestRiskAdjustedPnlToman} />
-                            </>
+                            DASH
                           )}
                         </td>
-                        <td data-label="سقف محدودکننده" className="sa-sub">
+                        <td data-label="محدودیت‌کننده" className="sa-sub">
                           {r.sizing.bindingConstraint ?? "منحنی سود، نه یک سقف"}
                         </td>
                         <td data-label="VWAP دو پا" className="num">
@@ -424,14 +429,29 @@ export function ActivityDecisions({
                         </dd>
                       </div>
                       <div>
-                        <dt>مبنای ثابت</dt>
+                        <dt>سقف امن</dt>
                         <dd>
-                          {r.sizing.baseline?.bestRiskAdjustedPnlToman === null ||
-                          r.sizing.baseline?.bestRiskAdjustedPnlToman === undefined ? (
-                            DASH
+                          {r.sizing.capacity?.ceilingMicros != null ? (
+                            <Bidi>
+                              {toFaDigits(
+                                (r.sizing.capacity.ceilingMicros / 1_000_000).toFixed(4)
+                              )}
+                            </Bidi>
+                          ) : r.sizing.maxFeasibleUsdtMicros != null ? (
+                            <Bidi>
+                              {toFaDigits(
+                                (r.sizing.maxFeasibleUsdtMicros / 1_000_000).toFixed(4)
+                              )}
+                            </Bidi>
                           ) : (
-                            <TomanAmount value={r.sizing.baseline.bestRiskAdjustedPnlToman} />
+                            DASH
                           )}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>محدودیت‌کننده</dt>
+                        <dd className="sa-sub">
+                          {r.sizing.bindingConstraint ?? "—"}
                         </dd>
                       </div>
                       <div>

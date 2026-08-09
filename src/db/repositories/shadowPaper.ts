@@ -15,6 +15,8 @@ import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { asDbError, getDbAsync } from "@/db/client";
 import { runSerialized } from "@/db/repositories/shadowArbitrage";
 import {
+  auditLogs,
+  shadowCapitalPlans,
   shadowPaperBalances,
   shadowPaperCandidateState,
   shadowPaperCycleSummaries,
@@ -112,6 +114,8 @@ export type PaperLedgerRow = {
   nextLargerRejectionCode: string | null;
   nextLargerRejectionReason: string | null;
   nextLargerMarginalPnlToman: number | null;
+  /** Complete final sizing audit when recorded (migration 0018). */
+  sizingAudit: Record<string, unknown> | null;
   experimentRunId: string | null;
   occurredAt: string;
 };
@@ -329,6 +333,241 @@ export async function setPaperSessionStatus(
   }
 }
 
+/** All non-stopped sessions (should normally be zero or one). */
+export async function listActivePaperSessions(): Promise<PaperSessionRow[]> {
+  try {
+    const db = await getDbAsync();
+    const rows = await serial(async () =>
+      db
+        .select()
+        .from(shadowPaperSessions)
+        .where(inArray(shadowPaperSessions.status, ["NOT_STARTED", "RUNNING", "PAUSED"]))
+        .orderBy(desc(shadowPaperSessions.createdAt))
+    );
+    return rows.map(toSession);
+  } catch {
+    return [];
+  }
+}
+
+export type ReplacePaperCapitalResult = {
+  reused: boolean;
+  oldSessionId: string | null;
+  newSession: PaperSessionRow;
+  capitalPlanId: string;
+  audit: {
+    actor: string;
+    at: string;
+    oldCapitalToman: number | null;
+    newCapitalToman: number;
+    oldSessionId: string | null;
+    newSessionId: string;
+  };
+};
+
+/**
+ * Archive every active Paper session (history preserved) and open exactly one
+ * new RUNNING session at the given capital. Never mutates initial capital in place.
+ *
+ * Idempotent: if the sole active RUNNING session already has this capital and
+ * matching opening book fingerprint in its note, returns that session.
+ */
+export async function replaceActivePaperSessionCapital(input: {
+  totalCapitalToman: number;
+  valuationPriceToman: number;
+  openingAllocations: Array<{ sourceId: string; irtToman: number; usdtUnits: number }>;
+  createdBy: string;
+  /** Client/server preview token for audit trail. */
+  previewToken: string;
+  name?: string;
+  /**
+   * Optional structured session-setup note (includes endsAt / order-cap choice).
+   * Replaces the default capital-replace note body when provided.
+   */
+  sessionNote?: string | null;
+}): Promise<ReplacePaperCapitalResult> {
+  try {
+    const db = await getDbAsync();
+    const now = new Date().toISOString();
+    const capital = Math.round(input.totalCapitalToman);
+    const mark = Math.round(input.valuationPriceToman);
+    const tokenTag = `previewToken=${input.previewToken.slice(0, 16)}`;
+
+    return await serial(async () => {
+      const actives = await db
+        .select()
+        .from(shadowPaperSessions)
+        .where(inArray(shadowPaperSessions.status, ["NOT_STARTED", "RUNNING", "PAUSED"]))
+        .orderBy(desc(shadowPaperSessions.createdAt));
+
+      // Idempotent retry: same capital already RUNNING with this preview token.
+      const match = actives.find(
+        (r) =>
+          r.status === "RUNNING" &&
+          num(r.totalCapitalToman) === capital &&
+          typeof r.note === "string" &&
+          r.note.includes(tokenTag)
+      );
+      if (match && actives.length === 1) {
+        const session = toSession(match);
+        return {
+          reused: true,
+          oldSessionId: null,
+          newSession: session,
+          capitalPlanId: "reused",
+          audit: {
+            actor: input.createdBy,
+            at: now,
+            oldCapitalToman: capital,
+            newCapitalToman: capital,
+            oldSessionId: null,
+            newSessionId: session.id
+          }
+        };
+      }
+
+      const primaryOld = actives[0] ? toSession(actives[0]) : null;
+      const oldIds = actives.map((r) => r.id);
+
+      // Archive — status only; ledger/balances/history rows stay.
+      for (const row of actives) {
+        const archiveNote = [
+          row.note ?? "",
+          `[archived ${now}] capital replace → new session; oldCapital=${num(row.totalCapitalToman)}; actor=${input.createdBy}; ${tokenTag}`
+        ]
+          .filter(Boolean)
+          .join("\n")
+          .slice(0, 2000);
+        await db
+          .update(shadowPaperSessions)
+          .set({
+            status: "STOPPED",
+            stoppedAt: now,
+            updatedAt: now,
+            note: archiveNote
+          })
+          .where(eq(shadowPaperSessions.id, row.id));
+      }
+
+      // Capital plan snapshot (append-only).
+      const planId = randomUUID();
+      await db.insert(shadowCapitalPlans).values({
+        id: planId,
+        name: `Paper capital ${capital.toLocaleString("en-US")} toman`,
+        mode: "MANUAL",
+        totalCapitalToman: capital,
+        valuationPriceToman: mark,
+        reservePercent: 0,
+        allocations: input.openingAllocations,
+        createdBy: input.createdBy,
+        note: JSON.stringify({
+          kind: "paper_session_capital_replace",
+          actor: input.createdBy,
+          at: now,
+          oldSessionIds: oldIds,
+          oldCapitalToman: primaryOld?.totalCapitalToman ?? null,
+          newCapitalToman: capital,
+          previewToken: input.previewToken,
+          unit: "toman"
+        }),
+        createdAt: now
+      });
+
+      const newId = randomUUID();
+      const newName =
+        input.name?.trim().slice(0, 80) ||
+        `نشست کاغذی ${capital.toLocaleString("en-US")} تومان`;
+      const defaultNote = [
+        `Paper capital replace`,
+        `actor=${input.createdBy}`,
+        `at=${now}`,
+        `oldSessionId=${primaryOld?.id ?? "none"}`,
+        `oldCapital=${primaryOld?.totalCapitalToman ?? "none"}`,
+        `newCapital=${capital}`,
+        `planId=${planId}`,
+        tokenTag,
+        `unit=toman`
+      ].join("; ");
+      const newNote = (input.sessionNote?.trim() || defaultNote).slice(0, 2000);
+
+      const newRow = {
+        id: newId,
+        observationId: primaryOld?.observationId ?? null,
+        name: newName,
+        mode: "APPROVED_PLAN" as const,
+        status: "RUNNING" as const,
+        totalCapitalToman: capital,
+        valuationPriceToman: mark,
+        openingAllocations: input.openingAllocations,
+        approvalFingerprint: `session-capital|${input.previewToken.slice(0, 32)}`,
+        createdBy: input.createdBy,
+        startedAt: now,
+        pausedAt: null,
+        stoppedAt: null,
+        lastCycleAt: null,
+        cyclesEvaluated: 0,
+        tradesExecuted: 0,
+        candidatesSkipped: 0,
+        note: newNote,
+        experimentRunId: null as string | null,
+        createdAt: now,
+        updatedAt: now
+      };
+
+      await db.insert(shadowPaperSessions).values(newRow);
+      for (const a of input.openingAllocations) {
+        await db.insert(shadowPaperBalances).values({
+          id: `${newId}|${a.sourceId}`,
+          sessionId: newId,
+          sourceId: a.sourceId,
+          irtToman: Math.max(0, Math.round(a.irtToman)),
+          usdtMicros: Math.max(0, Math.round(a.usdtUnits * 1_000_000)),
+          updatedAt: now
+        });
+      }
+
+      // Best-effort desk audit log (actor ids optional).
+      try {
+        await db.insert(auditLogs).values({
+          action: "paper_session_capital_replace",
+          entityType: "shadow_paper_session",
+          entityId: newId,
+          metadata: {
+            actor: input.createdBy,
+            at: now,
+            oldSessionId: primaryOld?.id ?? null,
+            newSessionId: newId,
+            oldCapitalToman: primaryOld?.totalCapitalToman ?? null,
+            newCapitalToman: capital,
+            capitalPlanId: planId,
+            previewToken: input.previewToken,
+            unit: "toman"
+          }
+        });
+      } catch {
+        /* audit table may be unavailable in some local fixtures */
+      }
+
+      return {
+        reused: false,
+        oldSessionId: primaryOld?.id ?? null,
+        newSession: toSession(newRow as typeof shadowPaperSessions.$inferSelect),
+        capitalPlanId: planId,
+        audit: {
+          actor: input.createdBy,
+          at: now,
+          oldCapitalToman: primaryOld?.totalCapitalToman ?? null,
+          newCapitalToman: capital,
+          oldSessionId: primaryOld?.id ?? null,
+          newSessionId: newId
+        }
+      };
+    });
+  } catch (error) {
+    throw asDbError(error, "replaceActivePaperSessionCapital");
+  }
+}
+
 export async function loadPaperBalances(sessionId: string): Promise<PaperBalanceRow[]> {
   try {
     const db = await getDbAsync();
@@ -415,6 +654,8 @@ export type PaperFillRecord = {
     nextLargerRejectionCode: string | null;
     nextLargerRejectionReason: string | null;
     nextLargerMarginalPnlToman: number | null;
+    /** Complete final sizing audit (restart-stable). Optional; write failures must not alter fill. */
+    audit?: Record<string, unknown> | null;
   };
 };
 
@@ -636,6 +877,7 @@ export async function commitPaperCycle(input: {
               nextLargerRejectionCode: f.sizing?.nextLargerRejectionCode ?? null,
               nextLargerRejectionReason: f.sizing?.nextLargerRejectionReason ?? null,
               nextLargerMarginalPnlToman: f.sizing?.nextLargerMarginalPnlToman ?? null,
+              sizingAudit: f.sizing?.audit ?? null,
               occurredAt: input.occurredAt,
               createdAt: input.occurredAt
             });
@@ -981,6 +1223,10 @@ export async function loadPaperLedger(
       nextLargerRejectionCode: r.nextLargerRejectionCode,
       nextLargerRejectionReason: r.nextLargerRejectionReason,
       nextLargerMarginalPnlToman: numOrNull(r.nextLargerMarginalPnlToman),
+      sizingAudit:
+        r.sizingAudit && typeof r.sizingAudit === "object"
+          ? (r.sizingAudit as Record<string, unknown>)
+          : null,
       slippageBufferToman: numOrNull(r.slippageBufferToman),
       grossSpreadToman: numOrNull(r.grossSpreadToman),
       markPriceToman: numOrNull(r.markPriceToman),

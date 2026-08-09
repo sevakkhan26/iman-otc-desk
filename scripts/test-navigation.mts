@@ -1409,7 +1409,7 @@ await test("8B both tabs reuse the shared glass primitives and add no material",
     ["pager size control", kit, 'className="sa-segmented glass-tabbar"'],
     ["filter panel", op, 'className="panel sa-panel" aria-label="فیلتر و جست‌وجو"'],
     ["filter input", op, 'className="sa-control glass-control"'],
-    ["size segmented control", op, 'className="sa-segmented glass-tabbar"'],
+    // Fixed 5/10/20/25 size ladder filter removed (Step 5) — not an executable choice.
     ["category control", op, 'className="sa-segmented sa-segmented-lg glass-tabbar"'],
     ["active segment", op, "is-active glass-control"],
     ["mobile card", op, 'className="sa-op-card glass-control"'],
@@ -1592,11 +1592,15 @@ await test("8B the tabs are keyboard reachable and labelled", () => {
 
   // Every action is a real button, so it is reachable and operable by keyboard.
   assert.equal(/tabIndex=\{0\}/.test(op), false, "no faux-interactive rows");
-  assert.ok((op.match(/type="button"/g) ?? []).length >= 6);
+  // Category segments + details actions (fixed size ladder filter removed in Step 5).
+  assert.ok((op.match(/type="button"/g) ?? []).length >= 4);
   assert.ok(op.includes("aria-label={`جزئیات محاسبهٔ خرید از"));
-  assert.ok(op.includes('role="group" aria-label="حجم معامله"'));
   assert.ok(op.includes('aria-label="فیلتر و جست‌وجو"'));
-  assert.ok(op.includes("aria-pressed="));
+  // Category segmented control still uses aria-pressed (size ladder chips removed).
+  assert.ok(
+    op.includes("aria-pressed=") || op.includes("aria-selected="),
+    "category/filter controls remain keyboard-accessible"
+  );
   assert.ok(kit.includes('aria-label="صفحه‌بندی نتایج"'));
   assert.ok(kit.includes("disabled={page <= 1}") && kit.includes("disabled={page >= pageCount}"));
   assert.ok((sr.match(/scope="col"/g) ?? []).length >= 6);
@@ -1753,13 +1757,13 @@ await test("release version: one authoritative public field, valid package metad
   const pkg = JSON.parse(read("package.json")) as { version: string; private?: boolean };
 
   // The product's version is exactly what this release is called.
-  assert.equal(version.appVersion, "4.1.10.1");
+  assert.equal(version.appVersion, "4.2.0");
 
-  // Four-part numbers are not SemVer, which is why they cannot live in
-  // package.json: the production image validates it during `pnpm install`.
+  // 4.2.0 is valid SemVer; appVersion and package.json stay aligned.
   const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?$/;
-  assert.equal(semver.test(version.appVersion), false, "4.1.10.1 is deliberately not SemVer");
+  assert.equal(semver.test(version.appVersion), true, "4.2.0 is valid SemVer");
   assert.ok(semver.test(pkg.version), `package.json keeps valid SemVer, found ${pkg.version}`);
+  assert.equal(pkg.version, "4.2.0");
   assert.equal(pkg.version, version.packageMetadataVersion, "and the two stay in step");
   assert.equal(pkg.private, true, "the package is never published, so its version is metadata only");
 
@@ -2179,7 +2183,31 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
       "src/lib/shadowArbitrage/paper/portfolioAllocator.ts",
       "src/lib/shadowArbitrage/paper/experimentBootstrap.ts",
       "src/db/repositories/shadowExperiments.ts",
-      "drizzle/0016_shadow_paper_experiments.sql"
+      "drizzle/0016_shadow_paper_experiments.sql",
+      /*
+       * Local trade-details observability: pure presentation models over the
+       * immutable paper ledger. No orders, credentials, migrations or engine.
+       */
+      "src/lib/shadowArbitrage/paper/tradeDetailsView.ts",
+      "src/lib/shadowArbitrage/paper/tradeProfitability.ts",
+      "src/lib/shadowArbitrage/paper/decisionTraceCapture.ts",
+      "src/db/repositories/shadowDecisionTraces.ts",
+      "drizzle/0017_shadow_paper_decision_traces.sql",
+      /*
+       * Post-4.12.0 Paper observability and capital control (intentional surfaces).
+       * Not Phase 8B UI drift: decision-trace terminal data API, session capital
+       * replace, complete sizing audit persistence, adaptive densify solver,
+       * fee attribution, local fee parity seed, venue min registry + paper_policy_min.
+       */
+      "app/api/shadow-arbitrage/decision-monitor/route.ts",
+      "app/api/shadow-arbitrage/paper/session-capital/route.ts",
+      "drizzle/0018_shadow_sizing_audit.sql",
+      "src/lib/shadowArbitrage/localFeeEvidenceSeed.ts",
+      "src/lib/shadowArbitrage/paper/adaptiveSizeSolver.ts",
+      "src/lib/shadowArbitrage/paper/decisionMonitorLabels.ts",
+      "src/lib/shadowArbitrage/paper/feeAttribution.ts",
+      "src/lib/shadowArbitrage/paper/sessionCapital.ts",
+      "src/lib/shadowArbitrage/paper/venueExecutionLimits.ts"
     ]);
     const changed = execFileSync("git", ["diff", "--name-only", baseline, "--", ...paths], {
       encoding: "utf8"
@@ -2303,7 +2331,7 @@ await test("8C session create, start, pause and stop live under Accounts", () =>
   assert.ok(paper.includes("export type PaperParts"), "the split is a declared contract");
 });
 
-await test("4.1.10.1 five sections and Settings configuration only", () => {
+await test("4.2.0 five sections and Settings configuration only", () => {
   const tabs = read("src/components/shadowArbitrage/tabs.ts");
   assert.ok(tabs.includes("سرمایه و حساب"));
   assert.ok(tabs.includes("وضعیت صرافی‌ها"));

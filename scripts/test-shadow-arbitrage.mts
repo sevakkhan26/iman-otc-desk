@@ -2458,16 +2458,24 @@ await test("Phase 6 skips stale data, thin depth and ineligible venues with a re
     "SKIP"
   );
 
-  // mockSource always builds a full depth ladder, so thin the sell side directly.
+  /*
+   * Capital-aware sizing walks the real book (not the obsolete sizeExecutables
+   * probe ladder). Thin depth must empty sell-side bookBids so depthUsable /
+   * book walks fail closed — marking only sizeUsdt===25 on sizeExecutables is
+   * no longer a depth gate.
+   */
   const thinSources = paperSources().map((src) =>
     src.sourceId === "wallex"
       ? {
           ...src,
-          sizeExecutables: src.sizeExecutables.map((x) =>
-            x.sizeUsdt === 25
-              ? { ...x, sellFillable: false, userSellVwapToman: null, sellFilledUsdt: 0 }
-              : x
-          )
+          bookBids: [],
+          depthUsdtBid: 0,
+          sizeExecutables: src.sizeExecutables.map((x) => ({
+            ...x,
+            sellFillable: false,
+            userSellVwapToman: null,
+            sellFilledUsdt: 0
+          }))
         }
       : src
   );
@@ -2478,8 +2486,11 @@ await test("Phase 6 skips stale data, thin depth and ineligible venues with a re
     executedLifecycleIds: new Set(),
     balances: book
   });
-  assert.equal(thin.executedCount, 0);
-  assert.ok(thin.decisions.some((d) => d.kind === "SKIP" && d.code === "insufficient_depth"));
+  assert.equal(thin.executedCount, 0, JSON.stringify(thin.decisions.map((d) => d.kind === "SKIP" ? d.code : d.kind)));
+  assert.ok(
+    thin.decisions.some((d) => d.kind === "SKIP" && d.code === "insufficient_depth"),
+    `expected insufficient_depth after emptying sell book, got ${JSON.stringify(thin.decisions)}`
+  );
 
   // A venue with no usable account can never be traded, even with a live book.
   const ineligible = evaluateCycle({ sizing: paperSizing(),

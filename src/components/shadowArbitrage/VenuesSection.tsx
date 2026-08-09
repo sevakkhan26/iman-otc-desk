@@ -314,20 +314,6 @@ export function VenuesSection({
         </div>
       </details>
 
-      <details className="panel sa-panel sa-advanced-details">
-        <summary className="panel-header sa-panel-header">
-          <span className="panel-title">تشخیص حجم ثابت تاریخی (۵/۱۰/۲۰/۲۵)</span>
-          <span className="sa-panel-note">
-            فقط مبنا — اجرا نمی‌شود؛ SMART_CAPITAL_DEPTH مرجع است
-          </span>
-        </summary>
-        <div className="panel-body">
-          <p className="sa-sub">
-            نردبان ثابت تاریخی فقط برای مقایسهٔ عمق دفتر است و هیچ‌گاه به‌عنوان حجم
-            اجرا استفاده نمی‌شود.
-          </p>
-        </div>
-      </details>
     </div>
   );
 }

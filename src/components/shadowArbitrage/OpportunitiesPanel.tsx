@@ -84,7 +84,7 @@ function parseCategory(value: string): OppClass {
 export function OpportunitiesPanel({
   opportunities,
   sources,
-  sizes,
+  sizes: _sizes,
   venues,
   paperLedger,
   paperSessionPresent,
@@ -94,6 +94,7 @@ export function OpportunitiesPanel({
   error,
   onSelect,
 }: Props) {
+  void _sizes;
   const { read, write } = useShadowViewState();
   const category = parseCategory(read("cat", "valid"));
   const perPage = OPPORTUNITY_PAGE_SIZES.includes(
@@ -249,30 +250,8 @@ export function OpportunitiesPanel({
           </button>
 
           <div className={`sa-advanced${advancedOpen ? " is-open" : ""}`}>
-            <div className="sa-field" role="group" aria-label="حجم معامله">
-              <span className="sa-field-label">حجم (تتر)</span>
-              <div className="sa-segmented glass-tabbar">
-                <button
-                  type="button"
-                  className={`sa-seg${filters.size === "all" ? " is-active glass-control" : ""}`}
-                  aria-pressed={filters.size === "all"}
-                  onClick={() => set("size", "all")}
-                >
-                  همه
-                </button>
-                {sizes.map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    className={`sa-seg${filters.size === String(s) ? " is-active glass-control" : ""}`}
-                    aria-pressed={filters.size === String(s)}
-                    onClick={() => set("size", String(s))}
-                  >
-                    {toFaDigits(s)}
-                  </button>
-                ))}
-              </div>
-            </div>
+            {/* Fixed 5/10/20/25 ladder filters removed — not executable choices.
+                Observation matrix may still carry probe sizes in rows; filter is "all". */}
 
             <label className="sa-field">
               <span className="sa-field-label">صرافی</span>

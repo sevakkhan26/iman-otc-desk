@@ -10,7 +10,7 @@
  * cycle, their VWAP depth for the traded size, fees that are known and fresh,
  * the slippage buffer, account readiness and the virtual balances.
  */
-import { SHADOW_STALE_MS, SHADOW_TRADE_SIZES } from "@/lib/shadowArbitrage/config";
+import { SHADOW_STALE_MS } from "@/lib/shadowArbitrage/config";
 import type { RiskPolicyState } from "@/lib/shadowArbitrage/live/policy";
 import { computeRouteSize, type SizingResult } from "@/lib/shadowArbitrage/paper/sizing";
 import type { InventoryModel } from "@/lib/shadowArbitrage/paper/inventory";
@@ -179,16 +179,28 @@ export function resolveMarkPriceToman(
 }
 
 /** The venue must actually have walkable depth for the size being traded. */
+/**
+ * Soft depth gate before capital-aware sizing.
+ * Prefer real books; fall back to any fillable sizeExecutable entry.
+ * Never requires the obsolete fixed ladder size to match.
+ */
 function depthUsable(
   s: NormalizedSourceSnapshot | undefined,
-  sizeUsdt: number,
+  _sizeUsdt: number,
   side: "buy" | "sell"
 ): boolean {
-  const ex = s?.sizeExecutables.find((x) => x.sizeUsdt === sizeUsdt);
-  if (!ex) return false;
-  return side === "buy"
-    ? ex.buyFillable && ex.userBuyVwapToman !== null
-    : ex.sellFillable && ex.userSellVwapToman !== null;
+  if (!s) return false;
+  const book = side === "buy" ? s.bookAsks : s.bookBids;
+  if (book && book.length > 0) {
+    const total = book.reduce((a, l) => a + (l.amountUsdt ?? 0), 0);
+    if (total > 0) return true;
+  }
+  const any = s.sizeExecutables?.find((x) =>
+    side === "buy"
+      ? x.buyFillable && x.userBuyVwapToman !== null
+      : x.sellFillable && x.userSellVwapToman !== null
+  );
+  return Boolean(any);
 }
 
 /**
@@ -218,9 +230,15 @@ export type SizingContext = {
 };
 
 /**
- * Portfolio-level capital limits for the four-day experiment.
- * When omitted, utilization/route/venue caps are not enforced beyond existing
- * risk policies (backward compatible for unit tests of the pre-4D engine).
+ * Portfolio-level capital limits (aggregate util, reserve, route, venue).
+ *
+ * Always required on the Paper execution path (run.ts attaches defaults).
+ * evaluateCycle applies them whenever equity and mark are known; unit tests
+ * that pass neither portfolioLimits nor portfolioValueToman skip only the
+ * portfolio-layer checks (risk policies still bind).
+ *
+ * Defaults: max util 80%, min reserve 20%, max route 10%, max venue 20%.
+ * Missing limits on the live Paper path fail closed — never permissive.
  */
 export type PortfolioLimits = {
   enabled: boolean;
@@ -348,11 +366,13 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       skip(c, unhealthy ? ["source_unhealthy"] : ["stale_market_data"]);
       continue;
     }
-    if (
-      !depthUsable(buySnap, c.sizeUsdt, "buy") ||
-      !depthUsable(sellSnap, c.sizeUsdt, "sell") ||
-      !SHADOW_TRADE_SIZES.includes(c.sizeUsdt as (typeof SHADOW_TRADE_SIZES)[number])
-    ) {
+    /*
+     * Probe size on the opportunity is only a discovery hint. Depth is re-checked
+     * by capital-aware sizing (full walk) — do not refuse the route because the
+     * obsolete 5/10/20/25 ladder probe did not match. Soft depth gate: at least
+     * one side must show some walkable liquidity at a minimal size.
+     */
+    if (!depthUsable(buySnap, 1, "buy") || !depthUsable(sellSnap, 1, "sell")) {
       skip(c, ["insufficient_depth"]);
       continue;
     }
@@ -451,7 +471,59 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
    */
   let executedCount = 0;
   let eligibleCandidates = 0;
-  const limits = input.portfolioLimits?.enabled ? input.portfolioLimits : null;
+  /*
+   * Portfolio limits are mandatory when a capital basis exists. Defaults from
+   * PAPER_4D_* attach whenever the caller did not supply explicit percents —
+   * never an optional experiment-only wrapper. Without equity/mark we cannot
+   * measure util/route/venue and skip only that layer (pure unit tests).
+   */
+  const equityToman =
+    input.portfolioLimits?.equityToman ??
+    (input.sizing.portfolioValueToman !== null && input.sizing.portfolioValueToman > 0
+      ? input.sizing.portfolioValueToman
+      : null);
+  const invMark = input.sizing.inventoryModel.valuationPriceToman;
+  const markPriceToman =
+    input.portfolioLimits?.markPriceToman ??
+    (typeof invMark === "number" && invMark > 0 ? invMark : null);
+  const wantLimits =
+    input.portfolioLimits?.enabled !== false &&
+    equityToman !== null &&
+    markPriceToman !== null &&
+    equityToman > 0 &&
+    markPriceToman > 0;
+  const limits = wantLimits
+    ? {
+        enabled: true as const,
+        equityToman: equityToman as number,
+        markPriceToman: markPriceToman as number,
+        maxUtilizationPercent:
+          input.portfolioLimits?.maxUtilizationPercent ?? PAPER_4D_MAX_UTILIZATION_PERCENT,
+        minReservePercent:
+          input.portfolioLimits?.minReservePercent ?? PAPER_4D_MIN_RESERVE_PERCENT,
+        maxRouteCapitalPercent:
+          input.portfolioLimits?.maxRouteCapitalPercent ?? PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT,
+        maxVenueExposurePercent:
+          input.portfolioLimits?.maxVenueExposurePercent ?? PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT
+      }
+    : null;
+  // Fail closed when the caller required portfolio limits but capital is missing.
+  if (input.portfolioLimits?.enabled === true && !limits) {
+    for (const { c } of rankedRoutes) {
+      skip(c, ["sizing_blocked"]);
+    }
+    return {
+      decisions,
+      balancesAfter: settledBalances(ledger),
+      eligibleCandidates: 0,
+      executedCount: 0,
+      sizing: [...sizingByRoute.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([routeKey, result]) => ({ routeKey, result })),
+      reservations: totalReserved(ledger),
+      peakUtilizationPercent: null
+    };
+  }
   const maxUtil = limits?.maxUtilizationPercent ?? PAPER_4D_MAX_UTILIZATION_PERCENT;
   const minReserve = limits?.minReservePercent ?? PAPER_4D_MIN_RESERVE_PERCENT;
   const maxRoute = limits?.maxRouteCapitalPercent ?? PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT;

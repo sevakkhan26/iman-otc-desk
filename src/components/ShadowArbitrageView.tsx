@@ -537,13 +537,25 @@ export function ShadowArbitrageView() {
               }
               closedTrades={(paper?.trades ?? []) as never}
               loading={loading}
+              serverFilledCount={
+                paper?.ledgerPage?.total ??
+                paper?.stats?.filled ??
+                null
+              }
+              experimentContext={
+                paper?.experiment
+                  ? {
+                      experimentId: paper.experiment.id,
+                      policyFingerprint: paper.experiment.policyFingerprint,
+                      releaseVersion: paper.experiment.releaseVersion
+                    }
+                  : null
+              }
             />
             <details className="panel sa-panel sa-advanced-details">
               <summary className="panel-header sa-panel-header">
                 <span className="panel-title">فرصت‌های مشاهده‌شده</span>
-                <span className="sa-panel-note">
-                  مشاهده — نه سفارش؛ نردبان ثابت تاریخی فقط تشخیص است
-                </span>
+                <span className="sa-panel-note">مشاهده — نه سفارش</span>
               </summary>
               <div className="panel-body">
                 <OpportunitiesPanel

@@ -870,6 +870,12 @@ export const shadowPaperLedger = pgTable(
     nextLargerRejectionCode: text("next_larger_rejection_code"),
     nextLargerRejectionReason: text("next_larger_rejection_reason"),
     nextLargerMarginalPnlToman: bigint("next_larger_marginal_pnl_toman", { mode: "number" }),
+    /**
+     * Complete final sizing audit (CAPITAL_AWARE_MAX_SAFE). Restart-stable:
+     * limits, ceiling, final size, binding constraint, depth/VWAP, fees,
+     * predicted risk-adjusted net, inventory effect, rejection reason.
+     */
+    sizingAudit: jsonb("sizing_audit").$type<Record<string, unknown> | null>(),
     /** FIRST_SEEN | CHANGED | FILLED | CLOSED — why this row exists at all. */
     eventType: text("event_type"),
     /** Every exact cause that applied, canonically ordered. */
@@ -948,6 +954,46 @@ export const shadowPaperCycleSummaries = pgTable(
     createdAt: ts("created_at").notNull().defaultNow()
   },
   (t) => [index("shadow_paper_cycle_summary_idx").on(t.sessionId, t.occurredAt)]
+);
+
+/**
+ * Append-only per-cycle decision traces for the live decision monitor.
+ * Written after evaluation when SHADOW_DECISION_TRACE is enabled; never
+ * influences ranking or fills. Historical cycles before this table have only
+ * cycle summaries without full candidate arrays.
+ */
+export const shadowPaperDecisionTraces = pgTable(
+  "shadow_paper_decision_traces",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: uuid("session_id").notNull(),
+    runId: uuid("run_id"),
+    occurredAt: ts("occurred_at").notNull(),
+    venuesAvailable: integer("venues_available").notNull().default(0),
+    routesEvaluated: integer("routes_evaluated").notNull().default(0),
+    sizesEvaluated: integer("sizes_evaluated").notNull().default(0),
+    candidatesEvaluated: integer("candidates_evaluated").notNull().default(0),
+    rejectedCount: integer("rejected_count").notNull().default(0),
+    validCount: integer("valid_count").notNull().default(0),
+    selectedCount: integer("selected_count").notNull().default(0),
+    filledCount: integer("filled_count").notNull().default(0),
+    outcome: text("outcome").notNull(),
+    outcomeReasonFa: text("outcome_reason_fa"),
+    selectedLifecycleId: text("selected_lifecycle_id"),
+    snapshotRef: text("snapshot_ref"),
+    releaseVersion: text("release_version"),
+    policyFingerprint: text("policy_fingerprint"),
+    candidates: jsonb("candidates")
+      .$type<Array<Record<string, unknown>>>()
+      .notNull()
+      .default([]),
+    traceComplete: boolean("trace_complete").notNull().default(false),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [
+    index("shadow_paper_decision_traces_session_time_idx").on(t.sessionId, t.occurredAt),
+    index("shadow_paper_decision_traces_run_idx").on(t.runId)
+  ]
 );
 
 /**

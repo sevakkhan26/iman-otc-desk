@@ -1,31 +1,21 @@
 /**
- * `SMART_CAPITAL_DEPTH` — deterministic position sizing for PAPER execution.
+ * Capital-aware position sizing for PAPER execution.
  *
- * The fixed 5/10/20/25 USDT ladder is a DIAGNOSTIC PROBE of the order book, not
- * a trade size. This module turns the evidence a cycle actually produced into
- * one calculated size per route, and reports every constraint it considered so
- * the number can be argued with rather than trusted.
+ * finalSize = min(capital/balance limits, full slippage-bounded depth, order
+ * cap, venue exposure, allocation share) then validated for positive risk-
+ * adjusted net after both-leg fees and slippage. Analysis probes are fractions
+ * of that max only. The fixed 5/10/20/25 ladder is never an execution cap.
  *
  * The decision flow, in order:
  *
- *   1. POLICIES — every required risk policy must be set and unexpired. There
- *      is no default for any of them.
- *   2. EVIDENCE — both venues must be healthy, fresh, two-sided, with confirmed
- *      fees and confirmed settlement, and a walkable ladder on each leg.
- *   3. USABLE BALANCE — fee-inclusive capacity on each side, measured against
- *      the balance NET OF anything another candidate already reserved.
- *   4. CANDIDATES — 1/2/4/6/8/10 percent of the limiting usable side balance,
- *      capped by 10% of that balance, by 10% of each leg's slippage-bounded
- *      depth, by the capital plan share and by the risk policies, floored at
- *      25 USDT and quantized to the ledger's precision.
- *   5. EVALUATION — every candidate is priced by walking BOTH books, settled
- *      exactly, and checked against the inventory band. Each one is either
- *      eligible or carries one exact rejection code.
- *   6. SELECTION — the eligible candidate with the highest risk-adjusted PnL.
- *      Ties break on return in bps, then on inventory impact, then on the
- *      SMALLER size. The winner is not the largest size; it is the best one.
- *   7. EXPLANATION — why the winner won, and why the next larger candidate did
- *      not, in the same vocabulary the ledger persists.
+ *   1. POLICIES — every required risk policy must be set and unexpired.
+ *   2. EVIDENCE — healthy, fresh, two-sided books; confirmed fees/settlement.
+ *   3. USABLE BALANCE — fee-inclusive capacity net of reservations this cycle.
+ *   4. SAFE MAX — min of balance, full depth, order/venue/allocation caps.
+ *   5. CANDIDATES — adaptive densified breakpoints (not percentage probes alone).
+ *   6. EVALUATION — walk BOTH books (multi-level VWAP); inventory; edge floor.
+ *   7. SELECTION — largest eligible (profitable) size; never force utilization.
+ *   8. EXPLANATION — exact winning limiter and full persisted sizing audit.
  *
  * Two rules make the result trustworthy rather than merely plausible:
  *
@@ -64,11 +54,19 @@ import {
   CANDIDATE_PERCENTS,
   CAPITAL_CAP_PERCENT,
   DEPTH_CAP_PERCENT,
+  LEDGER_SIZE_QUANTUM_MICROS,
   MIN_EXECUTABLE_USDT_MICROS,
   slippageBoundedDepth,
   SMART_SIZING_POLICY,
   type SmartCandidateSet
 } from "@/lib/shadowArbitrage/paper/smartCandidates";
+import {
+  PAPER_POLICY_MIN_KEY,
+  PAPER_POLICY_MIN_USDT,
+  PAPER_POLICY_MIN_USDT_MICROS,
+  resolvePaperRouteFloor,
+  type VenueExecutionLimit
+} from "@/lib/shadowArbitrage/paper/venueExecutionLimits";
 import {
   buyIrtCapacityMicros,
   executableLadder,
@@ -89,8 +87,15 @@ export {
   CANDIDATE_PERCENTS,
   CAPITAL_CAP_PERCENT,
   DEPTH_CAP_PERCENT,
+  LEDGER_SIZE_QUANTUM_MICROS,
   MIN_EXECUTABLE_USDT_MICROS,
   SMART_SIZING_POLICY
+};
+
+export {
+  PAPER_POLICY_MIN_KEY,
+  PAPER_POLICY_MIN_USDT,
+  PAPER_POLICY_MIN_USDT_MICROS
 };
 
 /**
@@ -123,8 +128,8 @@ export type SizingConstraintKey =
   | "venue_concentration";
 
 export const SIZING_CONSTRAINT_FA: Record<SizingConstraintKey, string> = {
-  capital_cap: `سقف سرمایه — ${CAPITAL_CAP_PERCENT}٪ موجودی قابل استفادهٔ سمت محدودکننده`,
-  depth_cap: `سقف عمق — ${DEPTH_CAP_PERCENT}٪ عمق اجراپذیر هر پا در محدودهٔ لغزش مجاز`,
+  capital_cap: "سقف سرمایه/ظرفیت قابل استفادهٔ سمت محدودکننده (پس از کارمزد)",
+  depth_cap: "عمق اجراپذیر هر پا در محدودهٔ لغزش مجاز (چندسطحی VWAP)",
   depth_evidence: "عمق اثبات‌شدهٔ دفتر در همین چرخه",
   buy_irt_balance: "موجودی تومانی صرافی خرید (با احتساب کارمزد)",
   sell_usdt_balance: "موجودی تتری صرافی فروش (با احتساب کارمزد)",
@@ -152,6 +157,7 @@ export type SizingBlockerCode =
   | "no_balance_record"
   | "slippage_over_limit"
   | "size_floor"
+  | "venue_min_unknown"
   | "edge_below_floor"
   | "not_net_positive"
   | "book_invalid"
@@ -169,7 +175,13 @@ export const SIZING_BLOCKER_FA: Record<SizingBlockerCode, string> = {
   settlement_unconfirmed: "نحوهٔ تسویهٔ کارمزد تأیید نشده است",
   no_balance_record: "برای یکی از دو صرافی موجودی مجازی ثبت نشده است",
   slippage_over_limit: "بافر لغزش مدل‌شده از سقف مجاز بیشتر است",
-  size_floor: `ظرفیت قابل استفاده به حداقل اجراپذیر (${MIN_EXECUTABLE_USDT_MICROS / 1_000_000} تتر) نمی‌رسد`,
+  size_floor: "ظرفیت قابل استفاده به حداقل سیاست کاغذی (paper_policy_min) یا حداقل تأییدشدهٔ صرافی نمی‌رسد",
+  /**
+   * Not used to block Paper. Kept for LIVE readiness reporting / older audits.
+   * Unknown venue mins must block future live execution, not Paper simulation.
+   */
+  venue_min_unknown:
+    "حداقل حجم/گام اجرا برای یکی از دو صرافی تأیید نشده است (فقط LIVE — شبیه‌سازی کاغذی با paper_policy_min ادامه می‌دهد)",
   edge_below_floor: "حاشیهٔ تعدیل‌شده از کف سیاست کمتر است",
   not_net_positive: "سود تعدیل‌شده اکیداً مثبت نیست",
   book_invalid: "دفتر سفارش قابل استفاده نیست",
@@ -219,7 +231,7 @@ export const CANDIDATE_REJECTION_FA: Record<CandidateRejectionCode, string> = {
   negative_marginal_profitability: "هر تتر اضافه در این حجم سود را کم می‌کند",
   not_net_positive: "سود تعدیل‌شده در این حجم مثبت نیست",
   edge_below_floor: "حاشیهٔ تعدیل‌شده در این حجم از کف سیاست کمتر است",
-  below_min_size: `کمتر از حداقل اجراپذیر ${MIN_EXECUTABLE_USDT_MICROS / 1_000_000} تتر است`
+  below_min_size: "کمتر از paper_policy_min یا حداقل تأییدشدهٔ صرافی است"
 };
 
 /** Every figure the detail view shows, all integers unless noted. */
@@ -319,6 +331,58 @@ export type SizingSelection = {
   } | null;
 };
 
+/**
+ * Complete final sizing audit — persisted with the fill lifecycle so
+ * refresh/restart cannot change the explanation.
+ */
+export type SizingAudit = {
+  policy: typeof SMART_SIZING_POLICY;
+  status: "SIZED" | "BLOCKED";
+  /** All numeric hard limits considered (USDT micros unless noted). */
+  limits: {
+    capitalCapUsdtMicros: number | null;
+    depthCapUsdtMicros: number | null;
+    buyUsableUsdtMicros: number | null;
+    sellUsableUsdtMicros: number | null;
+    orderCapUsdtMicros: number | null;
+    venueAllocationUsdtMicros: number | null;
+    venueConcentrationUsdtMicros: number | null;
+    /** Effective Paper floor: max(paper_policy_min, verified venue min). */
+    minExecutableUsdtMicros: number;
+    /** Admin-approved global Paper minimum (USDT micros). Label: paper_policy_min. */
+    paperPolicyMinUsdtMicros: number;
+    /**
+     * Verified venue floor when both legs known; null if unknown.
+     * Unknown does not block Paper — only future LIVE.
+     */
+    verifiedVenueMinUsdtMicros: number | null;
+    /** Which floor bound the effective min: paper_policy_min | venue_min. */
+    floorBinding: "paper_policy_min" | "venue_min";
+    safeCeilingUsdtMicros: number | null;
+  };
+  safeCeilingUsdtMicros: number | null;
+  finalSizeUsdtMicros: number | null;
+  bindingConstraint: SizingConstraintKey | null;
+  buyDepthUsdtMicros: number | null;
+  sellDepthUsdtMicros: number | null;
+  buyVwapToman: number | null;
+  sellVwapToman: number | null;
+  grossSpreadToman: number | null;
+  buyFeeBps: number | null;
+  sellFeeBps: number | null;
+  predictedRiskAdjustedNetToman: number | null;
+  riskAdjustedReturnBps: number | null;
+  inventoryEffectPoints: number | null;
+  rejectionReason: string | null;
+  adaptive: {
+    candidateCount: number;
+    eligibleCount: number;
+    executionPointCount: number | null;
+    analysisPointCount: number | null;
+  };
+  selectionReasonFa: string | null;
+};
+
 export type SizingResult = {
   status: "SIZED" | "BLOCKED";
   /** The sizing policy in force. Recorded so a fill can never be misattributed. */
@@ -363,6 +427,8 @@ export type SizingResult = {
   quote: SizingQuote | null;
   economics: SizingEconomics | null;
   blockers: SizingBlocker[];
+  /** Complete audit for lifecycle persistence (restart-stable). */
+  audit: SizingAudit | null;
 };
 
 /**
@@ -420,6 +486,13 @@ export type SizingInput = {
   /** Present only when the corresponding venue is an OTC dealer. */
   buyQuote?: QuoteCapacityInput;
   sellQuote?: QuoteCapacityInput;
+  /**
+   * Optional override map of verified venue execution limits.
+   * When omitted, the process registry is used. Missing either leg does NOT
+   * block Paper — effective floor falls back to paper_policy_min (5 USDT).
+   * Unknown mins are recorded for LIVE readiness only.
+   */
+  venueExecutionLimits?: Map<string, VenueExecutionLimit>;
 };
 
 function blocker(code: SizingBlockerCode, subject: string, extraFa?: string): SizingBlocker {
@@ -556,6 +629,7 @@ function priceAt(
 }
 
 function blocked(blockers: SizingBlocker[], constraints: SizingConstraint[] = []): SizingResult {
+  const rejectionReason = blockers.map((b) => b.detailFa || b.code).join(" · ") || null;
   return {
     status: "BLOCKED",
     policy: SMART_SIZING_POLICY,
@@ -573,7 +647,125 @@ function blocked(blockers: SizingBlocker[], constraints: SizingConstraint[] = []
     baseline: null,
     quote: null,
     economics: null,
-    blockers
+    blockers,
+    audit: {
+      policy: SMART_SIZING_POLICY,
+      status: "BLOCKED",
+      limits: {
+        capitalCapUsdtMicros: null,
+        depthCapUsdtMicros: null,
+        buyUsableUsdtMicros: null,
+        sellUsableUsdtMicros: null,
+        orderCapUsdtMicros: null,
+        venueAllocationUsdtMicros: null,
+        venueConcentrationUsdtMicros: null,
+        minExecutableUsdtMicros: PAPER_POLICY_MIN_USDT_MICROS,
+        paperPolicyMinUsdtMicros: PAPER_POLICY_MIN_USDT_MICROS,
+        verifiedVenueMinUsdtMicros: null,
+        floorBinding: PAPER_POLICY_MIN_KEY,
+        safeCeilingUsdtMicros: null
+      },
+      safeCeilingUsdtMicros: null,
+      finalSizeUsdtMicros: null,
+      bindingConstraint: null,
+      buyDepthUsdtMicros: null,
+      sellDepthUsdtMicros: null,
+      buyVwapToman: null,
+      sellVwapToman: null,
+      grossSpreadToman: null,
+      buyFeeBps: null,
+      sellFeeBps: null,
+      predictedRiskAdjustedNetToman: null,
+      riskAdjustedReturnBps: null,
+      inventoryEffectPoints: null,
+      rejectionReason,
+      adaptive: {
+        candidateCount: 0,
+        eligibleCount: 0,
+        executionPointCount: null,
+        analysisPointCount: null
+      },
+      selectionReasonFa: null
+    }
+  };
+}
+
+function buildAudit(partial: {
+  status: "SIZED" | "BLOCKED";
+  sizeUsdtMicros: number | null;
+  bindingConstraint: SizingConstraintKey | null;
+  constraints: SizingConstraint[];
+  capacity: SizingResult["capacity"];
+  quote: SizingQuote | null;
+  economics: SizingEconomics | null;
+  inventory: InventoryAssessment | null;
+  blockers: SizingBlocker[];
+  selection: SizingSelection | null;
+  candidates: SizingCandidate[];
+  adaptiveMeta: SmartCandidateSet["adaptive"] | null;
+  buyFeeBps: number | null;
+  sellFeeBps: number | null;
+  /** Effective Paper floor. Not ledger quantum. */
+  minExecutableUsdtMicros?: number | null;
+  paperPolicyMinUsdtMicros?: number | null;
+  verifiedVenueMinUsdtMicros?: number | null;
+  floorBinding?: "paper_policy_min" | "venue_min" | null;
+}): SizingAudit {
+  const capOf = (key: SizingConstraintKey) =>
+    partial.constraints.find((c) => c.key === key)?.capUsdtMicros ?? null;
+  const rejectionReason =
+    partial.status === "BLOCKED"
+      ? partial.blockers.map((b) => b.detailFa || b.code).join(" · ") || null
+      : null;
+  const grossSpreadToman =
+    partial.quote && partial.sizeUsdtMicros
+      ? Math.round(
+          ((partial.quote.sellVwapToman - partial.quote.buyVwapToman) * partial.sizeUsdtMicros) /
+            1_000_000
+        )
+      : null;
+  return {
+    policy: SMART_SIZING_POLICY,
+    status: partial.status,
+    limits: {
+      capitalCapUsdtMicros: capOf("capital_cap"),
+      depthCapUsdtMicros: capOf("depth_cap"),
+      buyUsableUsdtMicros: capOf("buy_irt_balance"),
+      sellUsableUsdtMicros: capOf("sell_usdt_balance"),
+      orderCapUsdtMicros: capOf("policy_max_order_size"),
+      venueAllocationUsdtMicros: capOf("venue_allocation"),
+      venueConcentrationUsdtMicros: capOf("venue_concentration"),
+      minExecutableUsdtMicros:
+        partial.minExecutableUsdtMicros != null && partial.minExecutableUsdtMicros > 0
+          ? partial.minExecutableUsdtMicros
+          : PAPER_POLICY_MIN_USDT_MICROS,
+      paperPolicyMinUsdtMicros:
+        partial.paperPolicyMinUsdtMicros ?? PAPER_POLICY_MIN_USDT_MICROS,
+      verifiedVenueMinUsdtMicros: partial.verifiedVenueMinUsdtMicros ?? null,
+      floorBinding: partial.floorBinding ?? PAPER_POLICY_MIN_KEY,
+      safeCeilingUsdtMicros: partial.capacity?.ceilingMicros ?? null
+    },
+    safeCeilingUsdtMicros: partial.capacity?.ceilingMicros ?? null,
+    finalSizeUsdtMicros: partial.sizeUsdtMicros,
+    bindingConstraint: partial.bindingConstraint,
+    buyDepthUsdtMicros: partial.capacity?.buyDepth.depthMicros ?? null,
+    sellDepthUsdtMicros: partial.capacity?.sellDepth.depthMicros ?? null,
+    buyVwapToman: partial.quote?.buyVwapToman ?? null,
+    sellVwapToman: partial.quote?.sellVwapToman ?? null,
+    grossSpreadToman,
+    buyFeeBps: partial.buyFeeBps,
+    sellFeeBps: partial.sellFeeBps,
+    predictedRiskAdjustedNetToman: partial.economics?.riskAdjustedPnlToman ?? null,
+    riskAdjustedReturnBps: partial.economics?.riskAdjustedReturnBps ?? null,
+    inventoryEffectPoints: partial.inventory?.measurable ? partial.inventory.impactPoints : null,
+    rejectionReason,
+    adaptive: {
+      candidateCount: partial.candidates.length,
+      eligibleCount: partial.candidates.filter((c) => c.eligible).length,
+      executionPointCount: partial.adaptiveMeta?.executionPointCount ?? null,
+      analysisPointCount: partial.adaptiveMeta?.analysisPointCount ?? null
+    },
+    selectionReasonFa: partial.selection?.reasonFa ?? null
   };
 }
 
@@ -631,6 +823,20 @@ export function computeRouteSize(input: SizingInput): SizingResult {
   if (!buyBalance || !sellBalance) {
     blockers.push(blocker("no_balance_record", !buyBalance ? input.buySourceId : input.sellSourceId));
   }
+
+  /* ── 2b. Paper floor = max(paper_policy_min, verified venue min) ─────────
+   *
+   * paper_policy_min (5 USDT) is the admin-approved global Paper minimum — not
+   * an exchange limit. Verified venue mins raise the floor when known.
+   * Unknown venue mins never block Paper; they flag LIVE readiness only.
+   */
+  const routeFloor = resolvePaperRouteFloor(
+    input.buySourceId,
+    input.sellSourceId,
+    input.venueExecutionLimits ?? null
+  );
+  const minExecutableMicros = routeFloor.minMicros;
+  const sizeStepMicros = routeFloor.stepMicros;
 
   /* ── 3. freshness, measured against the admin's own budget ────────────── */
   const maxAgeMs = policy.max_quote_age_ms;
@@ -718,6 +924,12 @@ export function computeRouteSize(input: SizingInput): SizingResult {
   const sellFeeBps = input.sellFeeBps as number;
   const buyAsks = buyLadder.levels;
   const sellBids = sellLadder.levels;
+  const routeMinExecutableMicros = minExecutableMicros;
+  const paperFloorMeta = {
+    paperPolicyMinUsdtMicros: routeFloor.paperPolicyMinMicros,
+    verifiedVenueMinUsdtMicros: routeFloor.verifiedVenueMinMicros,
+    floorBinding: routeFloor.binding
+  };
 
   /* ── 6. the capital basis ────────────────────────────────────────────────
    *
@@ -789,7 +1001,13 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     buyDepthMicros: buyDepth.depthMicros,
     sellDepthMicros: sellDepth.depthMicros,
     extraCapsMicros: extraCaps,
-    granularityMicros: SIZE_GRANULARITY_MICROS
+    // Step = max(venue steps, ledger quantum). Min = verified venue mins.
+    granularityMicros: Math.max(sizeStepMicros, SIZE_GRANULARITY_MICROS),
+    minMicros: routeMinExecutableMicros,
+    // Book breakpoints densify the execution set so inventory-tight routes
+    // still find a valid size below the coarse 10% analysis probe.
+    buyLevels: buyAsks,
+    sellLevels: sellBids
   });
 
   const percentFor = (micros: number): number | null =>
@@ -925,6 +1143,20 @@ export function computeRouteSize(input: SizingInput): SizingResult {
   });
 
   if (!candidateSet.quantities.length) {
+    const floorBlockers: SizingBlocker[] = [
+      ...policyBlockers,
+      blocker(
+        "size_floor",
+        bindingFor(candidateSet.ceilingMicros) ?? "unknown",
+        `سقف‌ها به ${usdtFa(candidateSet.ceilingMicros)} تتر می‌رسند که کمتر از کف Paper (${
+          routeMinExecutableMicros / 1_000_000
+        } تتر = max(paper_policy_min ${PAPER_POLICY_MIN_USDT}، حداقل تأییدشدهٔ صرافی)) است؛ محدودکننده: ${
+          bindingFor(candidateSet.ceilingMicros)
+            ? SIZING_CONSTRAINT_FA[bindingFor(candidateSet.ceilingMicros) as SizingConstraintKey]
+            : "—"
+        }`
+      )
+    ];
     return {
       ...partialBase,
       status: "BLOCKED",
@@ -937,20 +1169,25 @@ export function computeRouteSize(input: SizingInput): SizingResult {
       baseline,
       quote: null,
       economics: null,
-      blockers: [
-        ...policyBlockers,
-        blocker(
-          "size_floor",
-          bindingFor(candidateSet.ceilingMicros) ?? "unknown",
-          `سقف‌ها به ${usdtFa(candidateSet.ceilingMicros)} تتر می‌رسند که کمتر از حداقل اجراپذیر ${
-            MIN_EXECUTABLE_USDT_MICROS / 1_000_000
-          } تتر است؛ محدودکننده: ${
-            bindingFor(candidateSet.ceilingMicros)
-              ? SIZING_CONSTRAINT_FA[bindingFor(candidateSet.ceilingMicros) as SizingConstraintKey]
-              : "—"
-          }`
-        )
-      ]
+      blockers: floorBlockers,
+      audit: buildAudit({
+        status: "BLOCKED",
+        sizeUsdtMicros: null,
+        bindingConstraint: null,
+        constraints,
+        capacity,
+        quote: null,
+        economics: null,
+        inventory: null,
+        blockers: floorBlockers,
+        selection: null,
+        candidates: [],
+        adaptiveMeta: candidateSet.adaptive,
+        buyFeeBps,
+        sellFeeBps,
+        minExecutableUsdtMicros: routeMinExecutableMicros,
+        ...paperFloorMeta
+      })
     };
   }
 
@@ -1168,11 +1405,13 @@ export function computeRouteSize(input: SizingInput): SizingResult {
 
   if (!eligible.length) {
     /*
-     * Nothing traded. The reason is the one the LARGEST evaluated candidate
-     * gave — it is the quantity the caps actually pointed at, so its cause is
-     * the cause an operator needs, not the cause of the smallest probe.
+     * Nothing traded. Prefer inventory_limit when any fully-walked candidate
+     * was refused only by the inventory band — the largest raw candidate can
+     * fail balance recheck at the ceiling and would otherwise misreport as a
+     * balance error while the real closed band is inventory.
      */
-    const last = evaluated[evaluated.length - 1];
+    const inventoryHit = [...evaluated].reverse().find((e) => e.code === "inventory_limit");
+    const last = inventoryHit ?? evaluated[evaluated.length - 1];
     const code = last?.code ?? "insufficient_depth";
     const blockerCode: SizingBlockerCode =
       code === "inventory_limit"
@@ -1184,8 +1423,18 @@ export function computeRouteSize(input: SizingInput): SizingResult {
             : code === "excessive_slippage"
               ? "slippage_over_limit"
               : code === "insufficient_balance"
-                ? "no_balance_record"
+                ? "depth_exhausted"
                 : "depth_exhausted";
+    const blockersOut: SizingBlocker[] = [
+      ...policyBlockers,
+      blocker(
+        blockerCode,
+        `${input.buySourceId}→${input.sellSourceId}`,
+        `${evaluated.length} حجم نامزد (حل‌کنندهٔ تطبیقی) بررسی شد و هیچ‌کدام واجد شرایط نبود؛ نماینده (${usdtFa(
+          last?.q ?? 0
+        )} تتر): ${last?.detailFa ?? CANDIDATE_REJECTION_FA[code]}`
+      )
+    ];
     return {
       ...partial,
       status: "BLOCKED",
@@ -1196,34 +1445,45 @@ export function computeRouteSize(input: SizingInput): SizingResult {
       inventory: last?.inventory ?? null,
       quote: null,
       economics: last?.econ ?? null,
-      blockers: [
-        ...policyBlockers,
-        blocker(
-          blockerCode,
-          `${input.buySourceId}→${input.sellSourceId}`,
-          `${evaluated.length} حجم نامزد بررسی شد و هیچ‌کدام واجد شرایط نبود؛ بزرگ‌ترین نامزد (${usdtFa(
-            last?.q ?? 0
-          )} تتر): ${last?.detailFa ?? CANDIDATE_REJECTION_FA[code]}`
-        )
-      ]
+      blockers: blockersOut,
+      audit: buildAudit({
+        status: "BLOCKED",
+        sizeUsdtMicros: null,
+        bindingConstraint: last ? bindingFor(last.q) : null,
+        constraints,
+        capacity,
+        quote: null,
+        economics: last?.econ ?? null,
+        inventory: last?.inventory ?? null,
+        blockers: blockersOut,
+        selection: null,
+        candidates,
+        adaptiveMeta: candidateSet.adaptive,
+        buyFeeBps,
+        sellFeeBps,
+        minExecutableUsdtMicros: routeMinExecutableMicros,
+        ...paperFloorMeta
+      })
     };
   }
 
   /*
-   * 8a. Risk policies gate approval, not analysis. Everything above — caps,
-   * the candidate ladder, walks, the whole profit curve — is already computed
-   * and is returned with the block, so capacity stays inspectable while the
-   * limits are still being decided.
+   * 8a. Final size = maximum safe size that is still economically profitable.
+   *
+   * Among eligible candidates (passed balance, full book walk, inventory,
+   * positive risk-adjusted PnL, edge floor), pick the LARGEST size. Profit
+   * ranking only breaks ties at equal size. Utilization targets never force a
+   * larger size past safety or positive net edge.
    */
   const rank = (a: Evaluated, b: Evaluated) =>
-    // 1. the most risk-adjusted profit in toman;
+    // 1. maximum safe size that cleared all gates;
+    b.q - a.q ||
+    // 2. better risk-adjusted profit at that size;
     b.econ.riskAdjustedPnlToman - a.econ.riskAdjustedPnlToman ||
-    // 2. the better return on the capital it ties up;
+    // 3. better return on capital;
     b.econ.riskAdjustedReturnBps - a.econ.riskAdjustedReturnBps ||
-    // 3. the trade that leaves inventory closer to target (lower is better);
-    a.inventory.impactPoints - b.inventory.impactPoints ||
-    // 4. the smaller size — same result for less capital and less footprint.
-    a.q - b.q;
+    // 4. lower inventory impact.
+    a.inventory.impactPoints - b.inventory.impactPoints;
 
   const ordered = [...eligible].sort(rank);
   const best = ordered[0];
@@ -1251,20 +1511,38 @@ export function computeRouteSize(input: SizingInput): SizingResult {
       inventory: best.inventory,
       quote,
       economics: best.econ,
-      blockers: policyBlockers
+      blockers: policyBlockers,
+      audit: buildAudit({
+        status: "BLOCKED",
+        sizeUsdtMicros: null,
+        bindingConstraint: bindingFor(best.q),
+        constraints,
+        capacity,
+        quote,
+        economics: best.econ,
+        inventory: best.inventory,
+        blockers: policyBlockers,
+        selection: null,
+        candidates,
+        adaptiveMeta: candidateSet.adaptive,
+        buyFeeBps,
+        sellFeeBps,
+        minExecutableUsdtMicros: routeMinExecutableMicros,
+        ...paperFloorMeta
+      })
     };
   }
 
   /* ── 8b. why this size, and why not the next one up ─────────────────────── */
   const runnerUp = ordered[1] ?? null;
   let tieBreakFa: string | null = null;
-  if (runnerUp && runnerUp.econ.riskAdjustedPnlToman === best.econ.riskAdjustedPnlToman) {
-    if (runnerUp.econ.riskAdjustedReturnBps !== best.econ.riskAdjustedReturnBps) {
-      tieBreakFa = `سود برابر بود؛ بازده تعدیل‌شدهٔ بالاتر (${best.econ.riskAdjustedReturnBps} در برابر ${runnerUp.econ.riskAdjustedReturnBps} bps) تعیین‌کننده شد.`;
+  if (runnerUp && runnerUp.q === best.q) {
+    if (runnerUp.econ.riskAdjustedPnlToman !== best.econ.riskAdjustedPnlToman) {
+      tieBreakFa = `حجم برابر؛ سود تعدیل‌شدهٔ بالاتر تعیین‌کننده شد.`;
+    } else if (runnerUp.econ.riskAdjustedReturnBps !== best.econ.riskAdjustedReturnBps) {
+      tieBreakFa = `حجم و سود برابر؛ بازده تعدیل‌شدهٔ بالاتر تعیین‌کننده شد.`;
     } else if (runnerUp.inventory.impactPoints !== best.inventory.impactPoints) {
-      tieBreakFa = `سود و بازده برابر بود؛ اثر بهتر بر موجودی (${best.inventory.impactPoints} در برابر ${runnerUp.inventory.impactPoints} واحد) تعیین‌کننده شد.`;
-    } else {
-      tieBreakFa = "سود، بازده و اثر موجودی برابر بود؛ حجم کوچک‌تر انتخاب شد.";
+      tieBreakFa = `حجم/سود/بازده برابر؛ اثر بهتر بر موجودی تعیین‌کننده شد.`;
     }
   }
 
@@ -1307,14 +1585,15 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     selectedSizeUsdtMicros: best.q,
     selectedPercentOfUsable: percentFor(best.q),
     reasonFa:
-      `بیشترین سود تعدیل‌شده میان ${eligible.length} حجم واجد شرایط از ${evaluated.length} نامزد بررسی‌شده: ` +
-      `${best.econ.riskAdjustedPnlToman.toLocaleString("en-US")} تومان (${best.econ.riskAdjustedReturnBps} bps) ` +
-      `در ${usdtFa(best.q)} تتر؛ ${
+      `حداکثر حجم امن و سودده (حل‌کنندهٔ تطبیقی): ${usdtFa(best.q)} تتر ` +
+      `(${eligible.length} حجم واجد شرایط از ${evaluated.length} نامزد؛ ` +
+      `سود تعدیل‌شده ${best.econ.riskAdjustedPnlToman.toLocaleString("en-US")} تومان / ${best.econ.riskAdjustedReturnBps} bps)؛ ` +
+      `${
         bindingFor(best.q)
-          ? `سقف محدودکننده «${SIZING_CONSTRAINT_FA[bindingFor(best.q) as SizingConstraintKey]}»`
-          : `هیچ سقفی محدودکننده نبود — منحنی سود این حجم را انتخاب کرد (بیشترین حجم ممکن ${usdtFa(
-              quantizedCeiling
-            )} تتر بود)`
+          ? `محدودکنندهٔ برنده: «${SIZING_CONSTRAINT_FA[bindingFor(best.q) as SizingConstraintKey]}»`
+          : nextLarger?.code === "inventory_limit"
+            ? `حجم زیر سقف ${usdtFa(quantizedCeiling)} تتر به‌خاطر باند موجودی`
+            : `سقف محاسبه‌شده ${usdtFa(quantizedCeiling)} تتر — سودآوری این حجم را تأیید کرد`
       }؛ اثر موجودی ${best.inventory.impactPoints} واحد.`,
     tieBreakFa,
     nextLarger
@@ -1330,18 +1609,30 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     inventory: best.inventory,
     quote,
     economics: best.econ,
-    blockers: []
+    blockers: [],
+    audit: buildAudit({
+      status: "SIZED",
+      sizeUsdtMicros: best.q,
+      bindingConstraint: bindingFor(best.q),
+      constraints,
+      capacity,
+      quote,
+      economics: best.econ,
+      inventory: best.inventory,
+      blockers: [],
+      selection,
+      candidates,
+      adaptiveMeta: candidateSet.adaptive,
+      buyFeeBps,
+      sellFeeBps,
+      minExecutableUsdtMicros: routeMinExecutableMicros,
+      ...paperFloorMeta
+    })
   };
 }
 
 /**
- * The fixed 5/10/20/25 ladder, priced on the same books and the same fees.
- *
- * This is a COMPARISON, never a decision. No caller may execute a baseline row,
- * and `executable` is hard-coded false so the shape itself cannot be mistaken
- * for a plan. Rows that the books or balances cannot support say so instead of
- * being omitted, because "the fixed size would not have filled" is the most
- * interesting comparison of all.
+ * Analysis-only fixed probe ladder (historical 5/10/20/25), never executable.
  */
 function buildBaseline(input: {
   buyAsks: BookLevel[];
@@ -1426,7 +1717,7 @@ function buildBaseline(input: {
     policy: BASELINE_POLICY,
     executable: false,
     noteFa:
-      "نردبان ثابت ۵/۱۰/۲۰/۲۵ تتر فقط مبنای مقایسه است و هرگز اجرا نمی‌شود؛ کارگزار کاغذی حجم محاسبه‌شدهٔ SMART_CAPITAL_DEPTH را اجرا می‌کند.",
+      "نردبان ثابت ۵/۱۰/۲۰/۲۵ تتر فقط تحلیل است و هرگز سقف اجرا نیست؛ حجم نهایی از min(سرمایه، موجودی، عمق VWAP، سیاست) با سود خالص مثبت است.",
     rows,
     bestRiskAdjustedPnlToman: bestPnl,
     bestSizeUsdt: bestSize

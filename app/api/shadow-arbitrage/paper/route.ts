@@ -54,10 +54,13 @@ import {
   CANDIDATE_PERCENTS,
   CAPITAL_CAP_PERCENT,
   DEPTH_CAP_PERCENT,
-  MIN_EXECUTABLE_USDT_MICROS,
+  LEDGER_SIZE_QUANTUM_MICROS,
+  PAPER_POLICY_MIN_KEY,
+  PAPER_POLICY_MIN_USDT,
   SIZING_REQUIRED_POLICIES,
   SMART_SIZING_POLICY
 } from "@/lib/shadowArbitrage/paper/sizing";
+import { listVenueExecutionLimits } from "@/lib/shadowArbitrage/paper/venueExecutionLimits";
 import {
   targetsFromAllocations,
   type InventoryModel
@@ -643,7 +646,19 @@ export async function GET(request: Request) {
       candidatePercents: CANDIDATE_PERCENTS,
       capitalCapPercent: CAPITAL_CAP_PERCENT,
       depthCapPercent: DEPTH_CAP_PERCENT,
-      minExecutableUsdt: MIN_EXECUTABLE_USDT_MICROS / 1_000_000
+      /** Accounting precision only — not an executable trade floor. */
+      ledgerSizeQuantumUsdt: LEDGER_SIZE_QUANTUM_MICROS / 1_000_000,
+      /**
+       * Admin-approved global Paper minimum (USDT). Label: paper_policy_min.
+       * Not an official exchange limit. Paper never sizes below this.
+       * Effective floor = max(paper_policy_min, verified venue min).
+       */
+      paperPolicyMinUsdt: PAPER_POLICY_MIN_USDT,
+      paperPolicyMinKey: PAPER_POLICY_MIN_KEY,
+      /** @deprecated Prefer paperPolicyMinUsdt — kept for older UI readers. */
+      minExecutableUsdt: PAPER_POLICY_MIN_USDT,
+      /** Verified venue limit count in-process (LIVE readiness; not Paper floor). */
+      verifiedVenueLimitCount: listVenueExecutionLimits().length
     },
     requiredPolicies: SIZING_REQUIRED_POLICIES,
     venueSemantics,

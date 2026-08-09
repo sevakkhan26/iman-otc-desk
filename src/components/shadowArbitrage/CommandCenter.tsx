@@ -58,8 +58,8 @@ function usdtFa(micros: number): string {
  * server also sends them in `policyParameters`, and a test pins the two
  * together so a change on one side cannot drift from the other.
  */
-export const CAPITAL_CAP_PERCENT_FA = 10;
-export const DEPTH_CAP_PERCENT_FA = 10;
+export const CAPITAL_CAP_PERCENT_FA = 100;
+export const DEPTH_CAP_PERCENT_FA = 100;
 
 /** One leg's child-fill ladder, as the API returns it. */
 export type BookWalkView = {
@@ -322,7 +322,16 @@ export type SizingView = {
     candidatePercents: number[];
     capitalCapPercent: number;
     depthCapPercent: number;
-    minExecutableUsdt: number;
+    /** Accounting precision only (e.g. 0.0001). Not a trade floor. */
+    ledgerSizeQuantumUsdt?: number;
+    /** Admin Paper minimum (USDT). Label: paper_policy_min — not a venue min. */
+    paperPolicyMinUsdt?: number;
+    paperPolicyMinKey?: string;
+    /**
+     * Effective display floor when server sends one; prefer paperPolicyMinUsdt.
+     * Never a guessed 25 USDT ladder.
+     */
+    minExecutableUsdt: number | null;
   };
   requiredPolicies: string[];
   venueSemantics?: VenueSemanticsView;
@@ -725,19 +734,38 @@ export function CommandCenter({
       {sizing && !sizing.missingPolicies.length ? (
         <div className="sa-callout sa-callout-muted" role="status">
           <span className="sa-chip sa-chip-sm sa-chip-good sa-sz-policy-chip">
-            {sizing.policy ?? "SMART_CAPITAL_DEPTH"}
+            {sizing.policy ?? "CAPITAL_AWARE_MAX_SAFE"}
           </span>{" "}
-          حجم هوشمند فعال است — {toFaDigits(sizedCount)} مسیر از{" "}
+          حجم سرمایه‌آگاه فعال است — {toFaDigits(sizedCount)} مسیر از{" "}
           {toFaDigits(sizing.routes.length)} مسیر بررسی‌شده حجم گرفت.
           {sizing.policyParameters ? (
             <span className="sa-sub">
               {" "}
-              نامزدها {toFaDigits(sizing.policyParameters.candidatePercents.join("، "))}٪ از موجودی
-              قابل استفادهٔ سمت محدودکننده، با سقف سرمایهٔ{" "}
-              {toFaDigits(sizing.policyParameters.capitalCapPercent)}٪، سقف عمق{" "}
-              {toFaDigits(sizing.policyParameters.depthCapPercent)}٪ هر پا و حداقل اجراپذیر{" "}
-              {toFaDigits(sizing.policyParameters.minExecutableUsdt)} تتر. نردبان ثابت
-              ۵/۱۰/۲۰/۲۵ فقط مبنای مقایسه است و اجرا نمی‌شود.
+              حجم نهایی = min(موجودی، عمق VWAP، سقف سفارش، تمرکز، سهم سرمایه) با سود خالص
+              مثبت. فقط حجم هوشمند، سقف امن و محدودیت‌کننده نمایش داده می‌شود.
+              {typeof sizing.policyParameters.ledgerSizeQuantumUsdt === "number" ? (
+                <>
+                  {" "}
+                  کوانتوم دفتر {toFaDigits(sizing.policyParameters.ledgerSizeQuantumUsdt)} تتر
+                  (دقت حسابداری، نه کف اجرا).
+                </>
+              ) : null}
+              {(() => {
+                const paperMin =
+                  typeof sizing.policyParameters.paperPolicyMinUsdt === "number"
+                    ? sizing.policyParameters.paperPolicyMinUsdt
+                    : sizing.policyParameters.minExecutableUsdt;
+                if (paperMin == null) return null;
+                return (
+                  <>
+                    {" "}
+                    حداقل سیاست کاغذی (
+                    {sizing.policyParameters.paperPolicyMinKey ?? "paper_policy_min"}){" "}
+                    {toFaDigits(paperMin)} تتر — نه حداقل صرافی؛ کف مؤثر = max(این مقدار،
+                    حداقل تأییدشدهٔ صرافی).
+                  </>
+                );
+              })()}
             </span>
           ) : null}
         </div>
@@ -961,7 +989,7 @@ export function CommandCenter({
                   </dd>
                 </div>
                 <div>
-                  <dt>سقف سرمایه ({toFaDigits(CAPITAL_CAP_PERCENT_FA)}٪)</dt>
+                  <dt>ظرفیت سرمایه / موجودی</dt>
                   <dd>
                     {bestSizing?.sizing.capacity ? (
                       <>
@@ -976,7 +1004,7 @@ export function CommandCenter({
                   </dd>
                 </div>
                 <div>
-                  <dt>سقف عمق ({toFaDigits(DEPTH_CAP_PERCENT_FA)}٪)</dt>
+                  <dt>عمق اجراپذیر (VWAP چندسطحی)</dt>
                   <dd>
                     {bestSizing?.sizing.capacity ? (
                       <>
@@ -1498,154 +1526,10 @@ export function CommandCenter({
                       </div>
                     ) : null}
 
-                    {/* The old fixed ladder, priced on the same evidence. */}
-                    {bestSizing.sizing.baseline ? (
-                      <div className="sa-sz-block">
-                        <p className="sa-sub sa-sz-caption">
-                          مبنای مقایسه — نردبان ثابت{" "}
-                          <span className="sa-chip sa-chip-sm sa-chip-muted">
-                            {bestSizing.sizing.baseline.policy}
-                          </span>{" "}
-                          <span className="sa-chip sa-chip-sm sa-chip-danger">
-                            اجرا نمی‌شود
-                          </span>
-                        </p>
-                        <div className="sa-table-wrap sa-sz-desktop">
-                          <table className="sa-table">
-                            <thead>
-                              <tr>
-                                <th scope="col" className="num">حجم ثابت (تتر)</th>
-                                <th scope="col" className="num">VWAP خرید</th>
-                                <th scope="col" className="num">VWAP فروش</th>
-                                <th scope="col" className="num">سود تعدیل‌شده</th>
-                                <th scope="col" className="num">بازده (bps)</th>
-                                <th scope="col">وضعیت</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {bestSizing.sizing.baseline.rows.map((r) => (
-                                <tr key={r.sizeUsdt}>
-                                  <td className="num">
-                                    <Bidi>{toFaDigits(r.sizeUsdt)}</Bidi>
-                                  </td>
-                                  <td className="num">
-                                    {r.buyVwapToman === null ? (
-                                      DASH
-                                    ) : (
-                                      <TomanAmount value={r.buyVwapToman} />
-                                    )}
-                                  </td>
-                                  <td className="num">
-                                    {r.sellVwapToman === null ? (
-                                      DASH
-                                    ) : (
-                                      <TomanAmount value={r.sellVwapToman} />
-                                    )}
-                                  </td>
-                                  <td
-                                    className={
-                                      r.riskAdjustedPnlToman === null
-                                        ? "num"
-                                        : r.riskAdjustedPnlToman > 0
-                                          ? "num sa-pos"
-                                          : "num sa-neg"
-                                    }
-                                  >
-                                    {r.riskAdjustedPnlToman === null ? (
-                                      DASH
-                                    ) : (
-                                      <TomanAmount value={r.riskAdjustedPnlToman} />
-                                    )}
-                                  </td>
-                                  <td className="num">
-                                    {r.riskAdjustedReturnBps === null ? (
-                                      DASH
-                                    ) : (
-                                      <Bidi>{toFaDigits(r.riskAdjustedReturnBps)}</Bidi>
-                                    )}
-                                  </td>
-                                  <td className="sa-sub">{r.reasonFa}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-
-                        <ul className="sa-sz-cards">
-                          {bestSizing.sizing.baseline.rows.map((r) => (
-                            <li key={r.sizeUsdt} className="sa-sz-card">
-                              <div className="sa-sz-card-head">
-                                <span className="sa-sz-card-title">
-                                  <Bidi>{toFaDigits(r.sizeUsdt)}</Bidi> تتر
-                                </span>
-                                <span className="sa-chip sa-chip-sm sa-chip-danger">
-                                  اجرا نمی‌شود
-                                </span>
-                              </div>
-                              <dl className="sa-sz-card-grid">
-                                <div>
-                                  <dt>سود تعدیل‌شده</dt>
-                                  <dd
-                                    className={
-                                      r.riskAdjustedPnlToman === null
-                                        ? undefined
-                                        : r.riskAdjustedPnlToman > 0
-                                          ? "sa-pos"
-                                          : "sa-neg"
-                                    }
-                                  >
-                                    {r.riskAdjustedPnlToman === null ? (
-                                      DASH
-                                    ) : (
-                                      <TomanAmount value={r.riskAdjustedPnlToman} />
-                                    )}
-                                  </dd>
-                                </div>
-                                <div>
-                                  <dt>بازده</dt>
-                                  <dd>
-                                    {r.riskAdjustedReturnBps === null ? (
-                                      DASH
-                                    ) : (
-                                      <Bidi>{toFaDigits(r.riskAdjustedReturnBps)} bps</Bidi>
-                                    )}
-                                  </dd>
-                                </div>
-                              </dl>
-                              <p className="sa-sub sa-sz-card-note">{r.reasonFa}</p>
-                            </li>
-                          ))}
-                        </ul>
-
-                        <p className="sa-sub">
-                          {bestSizing.sizing.baseline.noteFa}
-                          {bestSizing.sizing.baseline.bestRiskAdjustedPnlToman !== null &&
-                          bestSizing.sizing.economics ? (
-                            <>
-                              {" "}
-                              بهترین نتیجهٔ نردبان ثابت (
-                              <Bidi>
-                                {toFaDigits(bestSizing.sizing.baseline.bestSizeUsdt ?? 0)}
-                              </Bidi>{" "}
-                              تتر):{" "}
-                              <TomanAmount
-                                value={bestSizing.sizing.baseline.bestRiskAdjustedPnlToman}
-                              />{" "}
-                              در برابر{" "}
-                              <TomanAmount
-                                value={bestSizing.sizing.economics.riskAdjustedPnlToman}
-                              />{" "}
-                              حجم هوشمند.
-                            </>
-                          ) : null}
-                        </p>
-                      </div>
-                    ) : null}
-
                     <p className="sa-sub">
-                      قیمت‌گذاری با پیمایش واقعی سطوح دفتر انجام شده است، نه با یک قیمت سرصفحه یا
-                      پروب ثابت. حجم انتخابی بیشترین سود تعدیل‌شده را می‌دهد و لزوماً بزرگ‌ترین حجم
-                      ممکن نیست؛ فراتر از عمق مشاهده‌شده هیچ برون‌یابی انجام نمی‌شود.
+                      قیمت‌گذاری با پیمایش واقعی سطوح دفتر انجام شده است، نه با یک قیمت سرصفحه.
+                      حجم انتخابی بیشترین سود تعدیل‌شده است؛ فراتر از عمق مشاهده‌شده هیچ
+                      برون‌یابی انجام نمی‌شود. نردبان ثابت ۵/۱۰/۲۰/۲۵ در UI نمایش داده نمی‌شود.
                     </p>
                   </div>
                 </details>

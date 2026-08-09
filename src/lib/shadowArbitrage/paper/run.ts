@@ -72,6 +72,26 @@ export async function runPaperExecutionForCycle(input: {
   if (session.status !== "RUNNING") return { ran: false, reason: "not_running", sessionId: session.id };
 
   /*
+   * Session-setup duration gate: immutable endsAt from note (paper_session_setup_v1).
+   * Never extends endsAt on restart — only archives when elapsed.
+   */
+  try {
+    const { parseSessionSetupNote } = await import(
+      "@/lib/shadowArbitrage/paper/sessionCapital"
+    );
+    const setup = parseSessionSetupNote(session.note);
+    if (setup?.endsAt) {
+      const endsMs = Date.parse(setup.endsAt);
+      if (Number.isFinite(endsMs) && Date.now() >= endsMs) {
+        await setPaperSessionStatus(session.id, "STOPPED");
+        return { ran: false, reason: "not_running", sessionId: session.id };
+      }
+    }
+  } catch {
+    /* ignore parse errors — fail open to experiment gate below */
+  }
+
+  /*
    * Four-day experiment gate: while an ACTIVE experiment exists, new Paper
    * trades only open before endsAt. After endsAt, complete the experiment and
    * leave the collector running without new fills.
@@ -190,18 +210,36 @@ export async function runPaperExecutionForCycle(input: {
     });
   }
 
-  // Portfolio limits for the active four-day experiment (if any).
-  let portfolioLimits:
-    | {
-        enabled: boolean;
-        equityToman: number;
-        markPriceToman: number;
-        maxUtilizationPercent: number;
-        minReservePercent: number;
-        maxRouteCapitalPercent: number;
-        maxVenueExposurePercent: number;
-      }
-    | undefined;
+  /*
+   * Portfolio limits are ALWAYS attached on the Paper execution path.
+   * Defaults: util ≤80%, reserve ≥20%, route ≤10%, venue ≤20%.
+   * An open experiment may override the percents; it never removes the layer.
+   * Missing session capital / mark fails closed (enabled with zero equity is
+   * rejected inside evaluateCycle).
+   */
+  const {
+    PAPER_4D_MAX_UTILIZATION_PERCENT,
+    PAPER_4D_MIN_RESERVE_PERCENT,
+    PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT,
+    PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT
+  } = await import("@/lib/shadowArbitrage/paper/experimentPolicy");
+  let portfolioLimits: {
+    enabled: boolean;
+    equityToman: number;
+    markPriceToman: number;
+    maxUtilizationPercent: number;
+    minReservePercent: number;
+    maxRouteCapitalPercent: number;
+    maxVenueExposurePercent: number;
+  } = {
+    enabled: true,
+    equityToman: portfolioValueToman > 0 ? portfolioValueToman : 0,
+    markPriceToman: valuationPriceToman > 0 ? valuationPriceToman : 0,
+    maxUtilizationPercent: PAPER_4D_MAX_UTILIZATION_PERCENT,
+    minReservePercent: PAPER_4D_MIN_RESERVE_PERCENT,
+    maxRouteCapitalPercent: PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT,
+    maxVenueExposurePercent: PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT
+  };
   let activeExperimentId: string | null = null;
   try {
     const { getActiveExperiment, experimentIsOpen } = await import(
@@ -212,8 +250,9 @@ export async function runPaperExecutionForCycle(input: {
       activeExperimentId = exp.id;
       portfolioLimits = {
         enabled: true,
-        equityToman: portfolioValueToman > 0 ? portfolioValueToman : exp.initialCapitalToman,
-        markPriceToman: valuationPriceToman,
+        equityToman:
+          portfolioValueToman > 0 ? portfolioValueToman : exp.initialCapitalToman,
+        markPriceToman: valuationPriceToman > 0 ? valuationPriceToman : portfolioLimits.markPriceToman,
         maxUtilizationPercent: exp.maxUtilizationPercent,
         minReservePercent: exp.minReservePercent,
         maxRouteCapitalPercent: exp.maxRouteCapitalPercent,
@@ -221,7 +260,7 @@ export async function runPaperExecutionForCycle(input: {
       };
     }
   } catch {
-    /* migration not yet applied */
+    /* migration not yet applied — keep hard-coded defaults above */
   }
 
   const evaluation = evaluateCycle({
@@ -314,7 +353,9 @@ export async function runPaperExecutionForCycle(input: {
                 nextLargerRejectionCode: d.sizing.selection.nextLarger?.code ?? null,
                 nextLargerRejectionReason: d.sizing.selection.nextLarger?.detailFa ?? null,
                 nextLargerMarginalPnlToman:
-                  d.sizing.selection.nextLarger?.marginalPnlToman ?? null
+                  d.sizing.selection.nextLarger?.marginalPnlToman ?? null,
+                /** Complete restart-stable audit (never alters execution if write fails). */
+                audit: d.sizing.audit ?? null
               }
             : undefined
       });
@@ -350,6 +391,77 @@ export async function runPaperExecutionForCycle(input: {
     } catch {
       /* non-fatal reporting */
     }
+  }
+
+  /*
+   * Append-only decision trace (observability). Written AFTER evaluation and
+   * commit so it cannot influence ranking, sizing or fills. Failures are
+   * swallowed and must never alter the paper outcome. Gated by
+   * SHADOW_DECISION_TRACE / non-production default.
+   */
+  try {
+    const { decisionTraceEnabled, appendDecisionTrace } = await import(
+      "@/db/repositories/shadowDecisionTraces"
+    );
+    if (decisionTraceEnabled()) {
+      const { buildCandidateTraces, cycleOutcomeFromTraces } = await import(
+        "@/lib/shadowArbitrage/paper/decisionTraceCapture"
+      );
+      const filledIds = new Set(fills.map((f) => f.lifecycleId));
+      const candidates = buildCandidateTraces({
+        decisions: evaluation.decisions,
+        evaluation,
+        filledLifecycleIds: filledIds,
+        venueCount: input.sources.length
+      });
+      const { outcome, reasonFa } = cycleOutcomeFromTraces(candidates, committed.filled);
+      const selected = candidates.find((c) => c.selected);
+      const routes = new Set(candidates.map((c) => c.routeKey)).size;
+      const sizes = new Set(candidates.map((c) => c.sizeUsdt)).size;
+      let releaseVersion: string | null = null;
+      let policyFingerprint: string | null = null;
+      try {
+        const appVersion = (await import("../../../../version.json")).default as {
+          appVersion: string;
+        };
+        releaseVersion = appVersion.appVersion;
+      } catch {
+        /* optional */
+      }
+      if (activeExperimentId) {
+        try {
+          const { getActiveExperiment } = await import("@/db/repositories/shadowExperiments");
+          const exp = await getActiveExperiment();
+          policyFingerprint = exp?.policyFingerprint ?? null;
+          if (exp?.releaseVersion) releaseVersion = exp.releaseVersion;
+        } catch {
+          /* optional */
+        }
+      }
+      const written = await appendDecisionTrace({
+        sessionId: session.id,
+        runId: input.runId,
+        occurredAt: input.occurredAt,
+        venuesAvailable: input.sources.length,
+        routesEvaluated: routes,
+        sizesEvaluated: sizes,
+        candidates,
+        selectedLifecycleId: selected?.lifecycleId ?? null,
+        filledCount: committed.filled,
+        outcome,
+        outcomeReasonFa: reasonFa,
+        snapshotRef: input.runId,
+        releaseVersion,
+        policyFingerprint,
+        traceComplete: true
+      });
+      if ("error" in written) {
+        // Visible only in logs — never mutates the decision.
+        console.warn("[shadow-paper] decision trace append failed", written.error);
+      }
+    }
+  } catch {
+    /* never take down paper execution */
   }
 
   return {

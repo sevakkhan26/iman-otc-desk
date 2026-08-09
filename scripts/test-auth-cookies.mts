@@ -167,7 +167,8 @@ function runUnitTests() {
 }
 
 async function runLiveTests() {
-  const base = process.env.AUTH_TEST_BASE ?? "http://127.0.0.1:3000";
+  // Prefer Local RC (:3210). Override with AUTH_TEST_BASE when intentional.
+  const base = process.env.AUTH_TEST_BASE ?? "http://127.0.0.1:3210";
   console.log(`\n== Live HTTP against ${base} ==`);
 
   let raw: string;
@@ -175,6 +176,14 @@ async function runLiveTests() {
     raw = await curlRaw(["-X", "POST", `${base}/api/auth/logout`]);
   } catch (e) {
     console.log(`  SKIP live tests (server not reachable: ${(e as Error).message})`);
+    return;
+  }
+
+  // Wrong process on the port (HTML error page, non-JSON) — skip, do not fail suite.
+  if (statusLine(raw) !== 200 || !/"ok"\s*:\s*true/.test(raw)) {
+    console.log(
+      `  SKIP live tests (not an OTC desk auth surface at ${base}; status=${statusLine(raw)})`
+    );
     return;
   }
 

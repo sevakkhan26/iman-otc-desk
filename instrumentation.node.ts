@@ -121,6 +121,32 @@ async function reconcileRelease(): Promise<void> {
       e instanceof Error ? e.message : e
     );
   }
+  /*
+   * LOCAL only: seed canonical fee/account evidence when release bootstrap is
+   * off. Paper floor is paper_policy_min (code constant), not a venue seed.
+   * Production uses release bootstrap + real admin evidence, not this path.
+   */
+  const isLocalDev =
+    process.env.NODE_ENV !== "production" ||
+    (process.env.DATABASE_URL ?? "").startsWith("pglite:");
+  if (isLocalDev && process.env.SHADOW_RELEASE_BOOTSTRAP !== "true") {
+    try {
+      const { seedLocalFeeEvidence } = await import(
+        "@/lib/shadowArbitrage/localFeeEvidenceSeed"
+      );
+      const feeOutcome = await seedLocalFeeEvidence();
+      log("local fee evidence seed", {
+        written: feeOutcome.written,
+        alreadyPresent: feeOutcome.alreadyPresent,
+        venues: feeOutcome.venues.length
+      });
+    } catch (e) {
+      log(
+        "local fee evidence seed failed — fees may remain unconfirmed",
+        e instanceof Error ? e.message : e
+      );
+    }
+  }
 }
 
 /**

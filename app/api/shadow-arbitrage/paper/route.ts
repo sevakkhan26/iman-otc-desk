@@ -55,13 +55,12 @@ import {
   CAPITAL_CAP_PERCENT,
   DEPTH_CAP_PERCENT,
   LEDGER_SIZE_QUANTUM_MICROS,
+  PAPER_POLICY_MIN_KEY,
+  PAPER_POLICY_MIN_USDT,
   SIZING_REQUIRED_POLICIES,
   SMART_SIZING_POLICY
 } from "@/lib/shadowArbitrage/paper/sizing";
-import {
-  listVenueExecutionLimits,
-  seedLocalPaperExecutionLimits
-} from "@/lib/shadowArbitrage/paper/venueExecutionLimits";
+import { listVenueExecutionLimits } from "@/lib/shadowArbitrage/paper/venueExecutionLimits";
 import {
   targetsFromAllocations,
   type InventoryModel
@@ -85,19 +84,6 @@ import { PAPER_FEE_SETTLEMENT, microsToUsdt, settlementFor, usdtToMicros } from 
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-
-/**
- * LOCAL Paper: ensure verified execution mins are in-process before sizing.
- * Idempotent. Production never uses this fixture path.
- */
-function ensureLocalExecutionLimitsSeeded(): void {
-  const isLocal =
-    process.env.NODE_ENV !== "production" ||
-    (process.env.DATABASE_URL ?? "").startsWith("pglite:");
-  if (!isLocal || process.env.SHADOW_RELEASE_BOOTSTRAP === "true") return;
-  if (listVenueExecutionLimits().length > 0) return;
-  seedLocalPaperExecutionLimits();
-}
 
 /**
  * Phase 6 — admin-only paper execution control surface.
@@ -395,8 +381,6 @@ export async function GET(request: Request) {
   const session = await requireAdminSession();
   if (!isSession(session)) return session;
 
-  ensureLocalExecutionLimitsSeeded();
-
   // Optional server-side filter so a large session never ships every candidate.
   const reason = new URL(request.url).searchParams.get("reason");
   const [snap, history] = await Promise.all([snapshot(reason), listPaperSessions(20)]);
@@ -665,18 +649,16 @@ export async function GET(request: Request) {
       /** Accounting precision only — not an executable trade floor. */
       ledgerSizeQuantumUsdt: LEDGER_SIZE_QUANTUM_MICROS / 1_000_000,
       /**
-       * Executable floor is per-route from verified venue limits.
-       * When every registered venue shares one min (local fixture), surface it;
-       * otherwise null — never invent a global 25 USDT ladder.
+       * Admin-approved global Paper minimum (USDT). Label: paper_policy_min.
+       * Not an official exchange limit. Paper never sizes below this.
+       * Effective floor = max(paper_policy_min, verified venue min).
        */
-      minExecutableUsdt: (() => {
-        const limits = listVenueExecutionLimits();
-        if (!limits.length) return null;
-        const mins = limits.map((l) => l.minNotionalUsdtMicros);
-        const lo = Math.min(...mins);
-        const hi = Math.max(...mins);
-        return lo === hi ? lo / 1_000_000 : null;
-      })()
+      paperPolicyMinUsdt: PAPER_POLICY_MIN_USDT,
+      paperPolicyMinKey: PAPER_POLICY_MIN_KEY,
+      /** @deprecated Prefer paperPolicyMinUsdt — kept for older UI readers. */
+      minExecutableUsdt: PAPER_POLICY_MIN_USDT,
+      /** Verified venue limit count in-process (LIVE readiness; not Paper floor). */
+      verifiedVenueLimitCount: listVenueExecutionLimits().length
     },
     requiredPolicies: SIZING_REQUIRED_POLICIES,
     venueSemantics,

@@ -31,10 +31,6 @@ import { describeRebalance, evaluateCycle } from "@/lib/shadowArbitrage/paper/en
 import { targetsFromAllocations, type InventoryModel } from "@/lib/shadowArbitrage/paper/inventory";
 import { microsToUsdt, type VenueBalance } from "@/lib/shadowArbitrage/paper/broker";
 import type { QuoteCapacityInput } from "@/lib/shadowArbitrage/paper/liquidity";
-import {
-  listVenueExecutionLimits,
-  seedLocalPaperExecutionLimits
-} from "@/lib/shadowArbitrage/paper/venueExecutionLimits";
 import type { NormalizedSourceSnapshot, ShadowOpportunity, ShadowSourceId } from "@/lib/shadowArbitrage/types";
 
 export type PaperCycleOutcome = {
@@ -74,14 +70,6 @@ export async function runPaperExecutionForCycle(input: {
   const session: PaperSessionRow | null = await getActivePaperSession();
   if (!session) return { ran: false, reason: "no_session" };
   if (session.status !== "RUNNING") return { ran: false, reason: "not_running", sessionId: session.id };
-
-  // LOCAL: verified fixture mins in-process (idempotent). Production never uses this.
-  const isLocal =
-    process.env.NODE_ENV !== "production" ||
-    (process.env.DATABASE_URL ?? "").startsWith("pglite:");
-  if (isLocal && process.env.SHADOW_RELEASE_BOOTSTRAP !== "true" && !listVenueExecutionLimits().length) {
-    seedLocalPaperExecutionLimits();
-  }
 
   /*
    * Four-day experiment gate: while an ACTIVE experiment exists, new Paper

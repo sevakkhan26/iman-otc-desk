@@ -1,0 +1,37 @@
+{
+  "ok": true,
+  "notProduction": true,
+  "sessionId": "bfb71277-ec09-47db-9acf-1e23890f7be9",
+  "fillId": "c0eecfbc-5585-4827-a310-93370edfeb32",
+  "lifecycleId": "local-paper-policy-min-proof-1786276183295",
+  "sizeUsdt": 12,
+  "paperPolicyMinUsdt": 5,
+  "paperPolicyMinKey": "paper_policy_min",
+  "economicNetPnlToman": 83040,
+  "riskAdjustedPnlToman": 81888,
+  "buyFeeAsset": "IRT",
+  "sellFeeAsset": "USDT",
+  "feeTomanTotal": 5760,
+  "feeUsdtMicrosTotal": 36000,
+  "sizingPolicy": "CAPITAL_AWARE_MAX_SAFE",
+  "sizingAudit": {
+    "limits": {
+      "floorBinding": "paper_policy_min",
+      "minExecutableUsdtMicros": 5000000,
+      "paperPolicyMinUsdtMicros": 5000000,
+      "verifiedVenueMinUsdtMicros": null
+    },
+    "policy": "CAPITAL_AWARE_MAX_SAFE",
+    "status": "SIZED",
+    "buyFeeBps": 25,
+    "sellFeeBps": 30,
+    "bindingConstraint": "capital_cap",
+    "finalSizeUsdtMicros": 12000000,
+    "predictedRiskAdjustedNetToman": 81888
+  },
+  "floorBinding": "paper_policy_min",
+  "statsFilled": 1,
+  "equityToman": 100083040,
+  "realizedEconomicToman": 83040,
+  "injectedAt": "2026-08-09T11:49:43.294Z"
+}

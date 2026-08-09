@@ -324,9 +324,12 @@ export type SizingView = {
     depthCapPercent: number;
     /** Accounting precision only (e.g. 0.0001). Not a trade floor. */
     ledgerSizeQuantumUsdt?: number;
+    /** Admin Paper minimum (USDT). Label: paper_policy_min — not a venue min. */
+    paperPolicyMinUsdt?: number;
+    paperPolicyMinKey?: string;
     /**
-     * Verified executable min when uniform across registered venues; null when
-     * per-route or unknown (never a guessed 25 USDT ladder).
+     * Effective display floor when server sends one; prefer paperPolicyMinUsdt.
+     * Never a guessed 25 USDT ladder.
      */
     minExecutableUsdt: number | null;
   };
@@ -748,15 +751,22 @@ export function CommandCenter({
                   (دقت حسابداری، نه کف اجرا).
                 </>
               ) : null}
-              {sizing.policyParameters.minExecutableUsdt != null ? (
-                <>
-                  {" "}
-                  حداقل اجراپذیر تأییدشده {toFaDigits(sizing.policyParameters.minExecutableUsdt)}{" "}
-                  تتر.
-                </>
-              ) : (
-                <> حداقل اجرا از حد تأییدشدهٔ هر صرافی (بدون حدس).</>
-              )}
+              {(() => {
+                const paperMin =
+                  typeof sizing.policyParameters.paperPolicyMinUsdt === "number"
+                    ? sizing.policyParameters.paperPolicyMinUsdt
+                    : sizing.policyParameters.minExecutableUsdt;
+                if (paperMin == null) return null;
+                return (
+                  <>
+                    {" "}
+                    حداقل سیاست کاغذی (
+                    {sizing.policyParameters.paperPolicyMinKey ?? "paper_policy_min"}){" "}
+                    {toFaDigits(paperMin)} تتر — نه حداقل صرافی؛ کف مؤثر = max(این مقدار،
+                    حداقل تأییدشدهٔ صرافی).
+                  </>
+                );
+              })()}
             </span>
           ) : null}
         </div>

@@ -32,8 +32,6 @@ import {
   CONFIRMED_AT,
   RELEASE_KEY
 } from "@/lib/shadowArbitrage/releaseBootstrap";
-import { seedLocalPaperExecutionLimits } from "@/lib/shadowArbitrage/paper/venueExecutionLimits";
-
 /** Marker note only — not a second source of fee numbers. */
 export const LOCAL_FEE_SEED_NOTE =
   "local fee parity — canonical evidence from releaseBootstrap APPROVED_VENUES";
@@ -68,8 +66,8 @@ export type LocalFeeSeedResult = {
  * Safe to call repeatedly. Does not touch paper sessions, balances, ledgers.
  */
 export async function seedLocalFeeEvidence(): Promise<LocalFeeSeedResult> {
-  // Verified local execution mins (not ledger dust) — required for sizing.
-  seedLocalPaperExecutionLimits();
+  // Paper floor is paper_policy_min (5 USDT) in venueExecutionLimits — not a
+  // seeded fake exchange min. Verified venue mins are optional and raise the floor.
 
   const latestFees = await loadLatestFeeConfirmations();
   const latestAccounts = await loadLatestAccountConfirmations();

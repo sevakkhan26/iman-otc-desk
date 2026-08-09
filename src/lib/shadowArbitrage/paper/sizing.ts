@@ -61,7 +61,10 @@ import {
   type SmartCandidateSet
 } from "@/lib/shadowArbitrage/paper/smartCandidates";
 import {
-  resolveRouteExecutionFloor,
+  PAPER_POLICY_MIN_KEY,
+  PAPER_POLICY_MIN_USDT,
+  PAPER_POLICY_MIN_USDT_MICROS,
+  resolvePaperRouteFloor,
   type VenueExecutionLimit
 } from "@/lib/shadowArbitrage/paper/venueExecutionLimits";
 import {
@@ -87,6 +90,12 @@ export {
   LEDGER_SIZE_QUANTUM_MICROS,
   MIN_EXECUTABLE_USDT_MICROS,
   SMART_SIZING_POLICY
+};
+
+export {
+  PAPER_POLICY_MIN_KEY,
+  PAPER_POLICY_MIN_USDT,
+  PAPER_POLICY_MIN_USDT_MICROS
 };
 
 /**
@@ -166,9 +175,13 @@ export const SIZING_BLOCKER_FA: Record<SizingBlockerCode, string> = {
   settlement_unconfirmed: "نحوهٔ تسویهٔ کارمزد تأیید نشده است",
   no_balance_record: "برای یکی از دو صرافی موجودی مجازی ثبت نشده است",
   slippage_over_limit: "بافر لغزش مدل‌شده از سقف مجاز بیشتر است",
-  size_floor: "ظرفیت قابل استفاده به حداقل اجراپذیر صرافی‌ها نمی‌رسد",
+  size_floor: "ظرفیت قابل استفاده به حداقل سیاست کاغذی (paper_policy_min) یا حداقل تأییدشدهٔ صرافی نمی‌رسد",
+  /**
+   * Not used to block Paper. Kept for LIVE readiness reporting / older audits.
+   * Unknown venue mins must block future live execution, not Paper simulation.
+   */
   venue_min_unknown:
-    "حداقل حجم/گام اجرا برای یکی از دو صرافی تأیید نشده است — بدون حدس بسته شد",
+    "حداقل حجم/گام اجرا برای یکی از دو صرافی تأیید نشده است (فقط LIVE — شبیه‌سازی کاغذی با paper_policy_min ادامه می‌دهد)",
   edge_below_floor: "حاشیهٔ تعدیل‌شده از کف سیاست کمتر است",
   not_net_positive: "سود تعدیل‌شده اکیداً مثبت نیست",
   book_invalid: "دفتر سفارش قابل استفاده نیست",
@@ -218,7 +231,7 @@ export const CANDIDATE_REJECTION_FA: Record<CandidateRejectionCode, string> = {
   negative_marginal_profitability: "هر تتر اضافه در این حجم سود را کم می‌کند",
   not_net_positive: "سود تعدیل‌شده در این حجم مثبت نیست",
   edge_below_floor: "حاشیهٔ تعدیل‌شده در این حجم از کف سیاست کمتر است",
-  below_min_size: "کمتر از حداقل اجراپذیر تأییدشدهٔ صرافی‌های مسیر است"
+  below_min_size: "کمتر از paper_policy_min یا حداقل تأییدشدهٔ صرافی است"
 };
 
 /** Every figure the detail view shows, all integers unless noted. */
@@ -334,7 +347,17 @@ export type SizingAudit = {
     orderCapUsdtMicros: number | null;
     venueAllocationUsdtMicros: number | null;
     venueConcentrationUsdtMicros: number | null;
+    /** Effective Paper floor: max(paper_policy_min, verified venue min). */
     minExecutableUsdtMicros: number;
+    /** Admin-approved global Paper minimum (USDT micros). Label: paper_policy_min. */
+    paperPolicyMinUsdtMicros: number;
+    /**
+     * Verified venue floor when both legs known; null if unknown.
+     * Unknown does not block Paper — only future LIVE.
+     */
+    verifiedVenueMinUsdtMicros: number | null;
+    /** Which floor bound the effective min: paper_policy_min | venue_min. */
+    floorBinding: "paper_policy_min" | "venue_min";
     safeCeilingUsdtMicros: number | null;
   };
   safeCeilingUsdtMicros: number | null;
@@ -465,7 +488,9 @@ export type SizingInput = {
   sellQuote?: QuoteCapacityInput;
   /**
    * Optional override map of verified venue execution limits.
-   * When omitted, the process registry is used. Missing either leg → venue_min_unknown.
+   * When omitted, the process registry is used. Missing either leg does NOT
+   * block Paper — effective floor falls back to paper_policy_min (5 USDT).
+   * Unknown mins are recorded for LIVE readiness only.
    */
   venueExecutionLimits?: Map<string, VenueExecutionLimit>;
 };
@@ -634,7 +659,10 @@ function blocked(blockers: SizingBlocker[], constraints: SizingConstraint[] = []
         orderCapUsdtMicros: null,
         venueAllocationUsdtMicros: null,
         venueConcentrationUsdtMicros: null,
-        minExecutableUsdtMicros: 0,
+        minExecutableUsdtMicros: PAPER_POLICY_MIN_USDT_MICROS,
+        paperPolicyMinUsdtMicros: PAPER_POLICY_MIN_USDT_MICROS,
+        verifiedVenueMinUsdtMicros: null,
+        floorBinding: PAPER_POLICY_MIN_KEY,
         safeCeilingUsdtMicros: null
       },
       safeCeilingUsdtMicros: null,
@@ -677,8 +705,11 @@ function buildAudit(partial: {
   adaptiveMeta: SmartCandidateSet["adaptive"] | null;
   buyFeeBps: number | null;
   sellFeeBps: number | null;
-  /** Verified route executable floor (venue mins). Not ledger quantum. */
+  /** Effective Paper floor. Not ledger quantum. */
   minExecutableUsdtMicros?: number | null;
+  paperPolicyMinUsdtMicros?: number | null;
+  verifiedVenueMinUsdtMicros?: number | null;
+  floorBinding?: "paper_policy_min" | "venue_min" | null;
 }): SizingAudit {
   const capOf = (key: SizingConstraintKey) =>
     partial.constraints.find((c) => c.key === key)?.capUsdtMicros ?? null;
@@ -707,9 +738,11 @@ function buildAudit(partial: {
       minExecutableUsdtMicros:
         partial.minExecutableUsdtMicros != null && partial.minExecutableUsdtMicros > 0
           ? partial.minExecutableUsdtMicros
-          : partial.candidates.length > 0
-            ? Math.min(...partial.candidates.map((c) => c.sizeUsdtMicros))
-            : 0,
+          : PAPER_POLICY_MIN_USDT_MICROS,
+      paperPolicyMinUsdtMicros:
+        partial.paperPolicyMinUsdtMicros ?? PAPER_POLICY_MIN_USDT_MICROS,
+      verifiedVenueMinUsdtMicros: partial.verifiedVenueMinUsdtMicros ?? null,
+      floorBinding: partial.floorBinding ?? PAPER_POLICY_MIN_KEY,
       safeCeilingUsdtMicros: partial.capacity?.ceilingMicros ?? null
     },
     safeCeilingUsdtMicros: partial.capacity?.ceilingMicros ?? null,
@@ -791,23 +824,19 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     blockers.push(blocker("no_balance_record", !buyBalance ? input.buySourceId : input.sellSourceId));
   }
 
-  /* ── 2b. verified venue min notional / step — never invent ─────────────── */
-  const routeFloor = resolveRouteExecutionFloor(
+  /* ── 2b. Paper floor = max(paper_policy_min, verified venue min) ─────────
+   *
+   * paper_policy_min (5 USDT) is the admin-approved global Paper minimum — not
+   * an exchange limit. Verified venue mins raise the floor when known.
+   * Unknown venue mins never block Paper; they flag LIVE readiness only.
+   */
+  const routeFloor = resolvePaperRouteFloor(
     input.buySourceId,
     input.sellSourceId,
     input.venueExecutionLimits ?? null
   );
-  if (!routeFloor.ok) {
-    blockers.push(
-      blocker(
-        "venue_min_unknown",
-        routeFloor.missingSourceIds.join(","),
-        `حداقل اجرا برای ${routeFloor.missingSourceIds.join(" و ")} تأیید نشده است؛ بدون حدس بسته شد.`
-      )
-    );
-  }
-  const minExecutableMicros = routeFloor.ok ? routeFloor.minMicros : null;
-  const sizeStepMicros = routeFloor.ok ? routeFloor.stepMicros : SIZE_GRANULARITY_MICROS;
+  const minExecutableMicros = routeFloor.minMicros;
+  const sizeStepMicros = routeFloor.stepMicros;
 
   /* ── 3. freshness, measured against the admin's own budget ────────────── */
   const maxAgeMs = policy.max_quote_age_ms;
@@ -887,15 +916,7 @@ export function computeRouteSize(input: SizingInput): SizingResult {
   );
   const fatal = blockers.filter((b) => !policyBlockers.includes(b));
 
-  if (
-    fatal.length ||
-    !buyBalance ||
-    !sellBalance ||
-    !buyLadder.ok ||
-    !sellLadder.ok ||
-    !routeFloor.ok ||
-    minExecutableMicros === null
-  ) {
+  if (fatal.length || !buyBalance || !sellBalance || !buyLadder.ok || !sellLadder.ok) {
     return blocked(blockers);
   }
 
@@ -904,6 +925,11 @@ export function computeRouteSize(input: SizingInput): SizingResult {
   const buyAsks = buyLadder.levels;
   const sellBids = sellLadder.levels;
   const routeMinExecutableMicros = minExecutableMicros;
+  const paperFloorMeta = {
+    paperPolicyMinUsdtMicros: routeFloor.paperPolicyMinMicros,
+    verifiedVenueMinUsdtMicros: routeFloor.verifiedVenueMinMicros,
+    floorBinding: routeFloor.binding
+  };
 
   /* ── 6. the capital basis ────────────────────────────────────────────────
    *
@@ -1122,9 +1148,9 @@ export function computeRouteSize(input: SizingInput): SizingResult {
       blocker(
         "size_floor",
         bindingFor(candidateSet.ceilingMicros) ?? "unknown",
-        `سقف‌ها به ${usdtFa(candidateSet.ceilingMicros)} تتر می‌رسند که کمتر از حداقل اجراپذیر صرافی‌ها (${
+        `سقف‌ها به ${usdtFa(candidateSet.ceilingMicros)} تتر می‌رسند که کمتر از کف Paper (${
           routeMinExecutableMicros / 1_000_000
-        } تتر) است؛ محدودکننده: ${
+        } تتر = max(paper_policy_min ${PAPER_POLICY_MIN_USDT}، حداقل تأییدشدهٔ صرافی)) است؛ محدودکننده: ${
           bindingFor(candidateSet.ceilingMicros)
             ? SIZING_CONSTRAINT_FA[bindingFor(candidateSet.ceilingMicros) as SizingConstraintKey]
             : "—"
@@ -1159,7 +1185,8 @@ export function computeRouteSize(input: SizingInput): SizingResult {
         adaptiveMeta: candidateSet.adaptive,
         buyFeeBps,
         sellFeeBps,
-        minExecutableUsdtMicros: routeMinExecutableMicros
+        minExecutableUsdtMicros: routeMinExecutableMicros,
+        ...paperFloorMeta
       })
     };
   }
@@ -1434,7 +1461,8 @@ export function computeRouteSize(input: SizingInput): SizingResult {
         adaptiveMeta: candidateSet.adaptive,
         buyFeeBps,
         sellFeeBps,
-        minExecutableUsdtMicros: routeMinExecutableMicros
+        minExecutableUsdtMicros: routeMinExecutableMicros,
+        ...paperFloorMeta
       })
     };
   }
@@ -1499,7 +1527,8 @@ export function computeRouteSize(input: SizingInput): SizingResult {
         adaptiveMeta: candidateSet.adaptive,
         buyFeeBps,
         sellFeeBps,
-        minExecutableUsdtMicros: routeMinExecutableMicros
+        minExecutableUsdtMicros: routeMinExecutableMicros,
+        ...paperFloorMeta
       })
     };
   }
@@ -1596,7 +1625,8 @@ export function computeRouteSize(input: SizingInput): SizingResult {
       adaptiveMeta: candidateSet.adaptive,
       buyFeeBps,
       sellFeeBps,
-      minExecutableUsdtMicros: routeMinExecutableMicros
+      minExecutableUsdtMicros: routeMinExecutableMicros,
+      ...paperFloorMeta
     })
   };
 }

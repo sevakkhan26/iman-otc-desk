@@ -1,11 +1,11 @@
 {
   "label": "LOCAL-LIFECYCLE-FIXTURE",
   "notProduction": true,
-  "sessionId": "26184bd5-466a-4aa6-a857-5c3d37d4c1e2",
+  "sessionId": "bffbe162-0437-48ba-ba5a-3c14d8c5c8bc",
   "lifecycleId": "local-fixture-lifecycle-1",
   "model": "atomic_dual_leg",
   "durationMs": 0,
-  "occurredAt": "2026-08-09T11:31:25.806Z",
+  "occurredAt": "2026-08-09T11:46:33.363Z",
   "buyVenue": "nobitex",
   "sellVenue": "wallex",
   "sizeUsdt": 100,
@@ -29,7 +29,7 @@
   "riskAdjustedPnlToman": 682400,
   "bindingConstraint": "capital_cap",
   "sizingPolicy": "CAPITAL_AWARE_MAX_SAFE",
-  "ledgerId": "633aa698-1ae9-43fd-b94e-98d4f6c79900",
+  "ledgerId": "a59aa329-33bc-4d45-8e37-2bd61bd10a85",
   "stats": {
     "filled": 1,
     "skipped": 0,
@@ -41,7 +41,7 @@
     "feeTomanTotal": 48000,
     "feeUsdtMicrosTotal": 300000,
     "blockReasons": [],
-    "lastFillAt": "2026-08-09 14:31:25.806+03"
+    "lastFillAt": "2026-08-09 14:46:33.363+03"
   },
   "accountingSummary": {
     "equityToman": 10000692000,
@@ -51,8 +51,8 @@
   "noOpenPosition": true,
   "restartProof": {
     "ok": true,
-    "sessionId": "26184bd5-466a-4aa6-a857-5c3d37d4c1e2",
-    "ledgerId": "633aa698-1ae9-43fd-b94e-98d4f6c79900",
+    "sessionId": "bffbe162-0437-48ba-ba5a-3c14d8c5c8bc",
+    "ledgerId": "a59aa329-33bc-4d45-8e37-2bd61bd10a85",
     "filled": 1,
     "economicNetPnlToman": 692000,
     "riskAdjustedPnlToman": 682400,

@@ -122,8 +122,8 @@ async function reconcileRelease(): Promise<void> {
     );
   }
   /*
-   * LOCAL only: seed verified Paper execution mins + fee evidence when release
-   * bootstrap is off. Never invents mins — fixture is admin-confirmed local only.
+   * LOCAL only: seed canonical fee/account evidence when release bootstrap is
+   * off. Paper floor is paper_policy_min (code constant), not a venue seed.
    * Production uses release bootstrap + real admin evidence, not this path.
    */
   const isLocalDev =
@@ -135,14 +135,14 @@ async function reconcileRelease(): Promise<void> {
         "@/lib/shadowArbitrage/localFeeEvidenceSeed"
       );
       const feeOutcome = await seedLocalFeeEvidence();
-      log("local fee + execution-limit seed", {
+      log("local fee evidence seed", {
         written: feeOutcome.written,
         alreadyPresent: feeOutcome.alreadyPresent,
         venues: feeOutcome.venues.length
       });
     } catch (e) {
       log(
-        "local fee/execution-limit seed failed — sizing may block venue_min_unknown",
+        "local fee evidence seed failed — fees may remain unconfirmed",
         e instanceof Error ? e.message : e
       );
     }

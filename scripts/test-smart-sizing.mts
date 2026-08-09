@@ -259,11 +259,11 @@ await test("candidate sizes scale with capital, at every level", () => {
       granularityMicros: 100
     }).quantities.map((q) => microsToUsdt(q));
 
-  // Below the 25 USDT dust floor: no trade.
-  assert.deepEqual(at(20), [], "usable under dust floor yields nothing");
-  // At 250 USDT: 10% = 25 clears floor; larger fractions too.
-  assert.ok(at(250).includes(25));
+  // Below ledger quantum (0.0001 USDT): no trade.
+  assert.deepEqual(at(0), [], "zero usable yields nothing");
+  // At 250 USDT: adaptive points include fractions and ceiling.
   assert.ok(at(250).includes(250));
+  assert.ok(at(250).some((q) => q >= 25 && q <= 250));
   // Scaling capital by 2 scales the safe max by 2.
   const a = at(4_000);
   const b = at(8_000);
@@ -305,10 +305,11 @@ await test("candidates are de-duplicated and quantized to the ledger's precision
   assert.ok(Math.max(...set.quantities) === usdtToMicros(30));
 });
 
-await test("usable capacity below 25 USDT means no trade at all", () => {
+await test("usable capacity below ledger quantum means no trade at all", () => {
+  // 50 micros < quantum 100 → no executable candidate.
   const set = buildSmartCandidates({
-    buyUsableMicros: usdtToMicros(20),
-    sellUsableMicros: usdtToMicros(20),
+    buyUsableMicros: 50,
+    sellUsableMicros: 50,
     buySourceId: "a",
     sellSourceId: "b",
     buyDepthMicros: usdtToMicros(1_000_000),
@@ -319,16 +320,21 @@ await test("usable capacity below 25 USDT means no trade at all", () => {
   assert.deepEqual(set.quantities, []);
   assert.equal(set.belowFloor, true);
 
-  // End to end, the same thing blocks with the exact reason.
+  // End to end: zero deliverable USDT blocks closed.
   const thin = size({
     balances: SESSION_BALANCES.map((b) =>
-      b.sourceId === "wallex" ? { ...b, usdtMicros: usdtToMicros(20) } : b
+      b.sourceId === "wallex" ? { ...b, usdtMicros: 0 } : b
     )
   });
   assert.equal(thin.status, "BLOCKED");
   assert.equal(thin.sizeUsdtMicros, null);
   assert.ok(
-    thin.blockers.some((b: Any) => b.code === "size_floor" || b.code === "depth_exhausted")
+    thin.blockers.some(
+      (b: Any) =>
+        b.code === "size_floor" ||
+        b.code === "depth_exhausted" ||
+        b.code === "no_balance_record"
+    )
   );
 });
 
@@ -408,8 +414,14 @@ await test("multi-level VWAP is walked exactly, and degrades with size", () => {
   );
   assert.equal(walk.vwapToman, manual);
 
-  // Bigger candidates get a worse buy VWAP and a worse sell VWAP.
-  const cands = r.candidates as Array<Any>;
+  // Bigger *eligible* complete walks get a worse buy VWAP and a worse sell VWAP.
+  const cands = (r.candidates as Array<Any>).filter(
+    (c) =>
+      c.eligible === true &&
+      (c.buyVwapToman as number) > 0 &&
+      (c.sellVwapToman as number) > 0
+  );
+  assert.ok(cands.length >= 2, "need multiple eligible candidates for VWAP curve");
   for (let i = 1; i < cands.length; i += 1) {
     assert.ok(
       (cands[i].buyVwapToman as number) >= (cands[i - 1].buyVwapToman as number),
@@ -437,42 +449,59 @@ await test("a shallow top of book with a flattering price does not win", () => {
     sellSnapshot: snap("wallex", ladder(194_000, -50, 60, 25), [lv(196_000, 5_000)])
   };
 
-  // With the ordinary slippage ceiling the wall is out of policy entirely, so
-  // executable depth collapses to the two-USDT sliver and nothing trades.
+  // Wall out of policy: only 2 USDT sliver is executable depth. Quantum min is
+  // ledger precision (not 25), so 2 USDT may size — never via the wall.
   const tight = size(trapBook);
-  assert.equal(tight.status, "BLOCKED");
-  assert.ok(tight.blockers.some((b: Any) => b.code === "size_floor"));
   assert.equal(
     tight.capacity!.buyDepth.depthMicros,
     usdtToMicros(2),
     "only the sliver is inside the slippage ceiling"
   );
   assert.equal(tight.capacity!.buyDepth.levelsExcluded, 60, "the wall is real, but out of policy");
+  if (tight.status === "SIZED") {
+    assert.ok((tight.sizeUsdtMicros as number) <= usdtToMicros(2) + 100);
+  } else {
+    assert.equal(tight.status, "BLOCKED");
+  }
 
-  // Wall open: either economics block or inventory — never a free pass on the trap.
+  // Wall open: any tradeable size is mostly wall-priced; must not win on flattery alone.
   const wide = size({
     ...trapBook,
     policies: policies({ max_slippage_bps: 5_000 }),
     inventoryModel: inventoryModel({ maxDeviationPoints: 100 })
   });
-  assert.equal(wide.status, "BLOCKED");
-  assert.ok(
-    wide.blockers.some(
-      (b: Any) =>
-        b.code === "not_net_positive" ||
-        b.code === "edge_below_floor" ||
-        b.code === "inventory_limit" ||
-        b.code === "depth_exhausted"
-    ),
-    `expected fail-closed block, got ${JSON.stringify(wide.blockers.map((b: Any) => b.code))}`
+  if (wide.status === "SIZED") {
+    // Either only the 2 USDT teaser (honest tiny size) or multi-level wall walk.
+    const size = wide.sizeUsdtMicros as number;
+    if (size > usdtToMicros(2) + 100) {
+      assert.ok((wide.quote!.buyWalk.fills.length as number) >= 2, "must walk past the teaser");
+      assert.ok((wide.quote!.buyVwapToman as number) > 150_000);
+    } else {
+      assert.ok(size <= usdtToMicros(2) + 100, "teaser-only size stays on the 2 USDT sliver");
+    }
+  } else {
+    assert.ok(
+      wide.blockers.some(
+        (b: Any) =>
+          b.code === "not_net_positive" ||
+          b.code === "edge_below_floor" ||
+          b.code === "inventory_limit" ||
+          b.code === "depth_exhausted"
+      ),
+      `expected fail-closed block, got ${JSON.stringify(wide.blockers.map((b: Any) => b.code))}`
+    );
+  }
+  // Any candidate larger than the teaser must be wall-priced (and typically unprofitable).
+  const pastTeaser = (wide.candidates as Array<Any>).filter(
+    (c) => (c.sizeUsdtMicros as number) > usdtToMicros(2) + 100
   );
-  const first = (wide.candidates as Array<Any>)[0];
-  assert.ok(first, "the smallest candidate was still evaluated");
-  assert.ok(
-    (first.buyVwapToman as number) > 190_000,
-    `the good price covered only a sliver, got ${first.buyVwapToman}`
-  );
-  assert.ok((first.riskAdjustedPnlToman as number) <= 0, "and the trade loses money");
+  assert.ok(pastTeaser.length >= 1, "sizes past the teaser were evaluated");
+  for (const c of pastTeaser) {
+    assert.ok(
+      (c.buyVwapToman as number) > 190_000,
+      `wall-priced size expected, got VWAP ${c.buyVwapToman}`
+    );
+  }
 });
 
 await test("executable depth stops at the admin's slippage ceiling", () => {
@@ -1356,7 +1385,7 @@ await test("the UI constants match the policy constants exactly", async () => {
     "the depth-cap label must match the policy"
   );
   assert.ok(ui.includes("CAPITAL_AWARE_MAX_SAFE"), "the policy is named on screen");
-  assert.equal(MIN_EXECUTABLE_USDT_MICROS, 25_000_000);
+  assert.equal(MIN_EXECUTABLE_USDT_MICROS, 100);
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

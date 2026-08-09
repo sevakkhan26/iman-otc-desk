@@ -150,7 +150,7 @@ await test("policy constants: full capital/depth, no 5/10/20/25 execution cap", 
   assert.equal(SMART_SIZING_POLICY, "CAPITAL_AWARE_MAX_SAFE");
   assert.equal(CAPITAL_CAP_PERCENT, 100);
   assert.equal(DEPTH_CAP_PERCENT, 100);
-  assert.equal(MIN_EXECUTABLE_USDT_MICROS, 25_000_000);
+  assert.equal(MIN_EXECUTABLE_USDT_MICROS, 100);
   assert.deepEqual([...BASELINE_FIXED_SIZES_USDT], [5, 10, 20, 25]);
   assert.ok(BASELINE_POLICY.includes("ANALYSIS"));
 });

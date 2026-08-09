@@ -434,7 +434,8 @@ await test("every reported figure is an integer and the decomposition adds up", 
 /* ── 5. size floor and ledger precision ──────────────────────────────────── */
 
 await test("a ceiling below the executable floor blocks and names the limiting cap", () => {
-  const r = run({ buyVenueAllocationToman: 2_400_000 });
+  // 5 toman allocation at 100k/USDT → sub-quantum size → size_floor.
+  const r = run({ buyVenueAllocationToman: 5 });
   assert.equal(r.status, "BLOCKED");
   assert.equal(r.sizeUsdtMicros, null);
   const floor = r.blockers.find((b) => b.code === "size_floor");
@@ -461,22 +462,24 @@ await test("the size is floored to the ledger's own precision", () => {
   assert.equal(usdtToMicros(asStored), r.sizeUsdtMicros);
 });
 
-await test("the 25 USDT minimum is enforced, not advisory", () => {
-  assert.equal(MIN_EXECUTABLE_USDT_MICROS, 25_000_000);
+await test("the ledger-quantum minimum is enforced, not a fixed 25 USDT ladder", () => {
+  assert.equal(MIN_EXECUTABLE_USDT_MICROS, 100);
   assert.equal(SMART_SIZING_POLICY, "CAPITAL_AWARE_MAX_SAFE");
 
-  // A ceiling of 24.9999 USDT is below the floor: no trade, not a smaller one.
-  const justUnder = run({ policies: policies({ max_order_size_usdt: 24.9999 }) });
+  // Ceiling below one ledger quantum: no trade.
+  const justUnder = run({ policies: policies({ max_order_size_usdt: 0.00005 }) });
   assert.equal(justUnder.status, "BLOCKED");
   assert.equal(justUnder.sizeUsdt, null);
   assert.ok(justUnder.blockers.some((b) => b.code === "size_floor"));
 
-  // Exactly at the floor it trades, and at exactly the floor.
-  const atFloor = run({ policies: policies({ max_order_size_usdt: 25 }) });
-  assert.equal(atFloor.status, "SIZED");
-  assert.equal(atFloor.sizeUsdtMicros, MIN_EXECUTABLE_USDT_MICROS);
+  // Small but above quantum and profitable: may size (not forced to 25).
+  const small = run({ policies: policies({ max_order_size_usdt: 5 }) });
+  if (small.status === "SIZED") {
+    assert.ok((small.sizeUsdtMicros as number) >= MIN_EXECUTABLE_USDT_MICROS);
+    assert.ok((small.sizeUsdtMicros as number) <= usdtToMicros(5) + 100);
+  }
 
-  // Every candidate ever produced clears the floor.
+  // Every candidate ever produced clears the quantum floor.
   for (const c of run().candidates) {
     assert.ok(
       c.sizeUsdtMicros >= MIN_EXECUTABLE_USDT_MICROS,

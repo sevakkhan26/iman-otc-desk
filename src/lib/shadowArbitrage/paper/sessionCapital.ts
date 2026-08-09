@@ -1,8 +1,10 @@
 /**
- * Configurable Paper session capital — pure helpers only (Step 1).
+ * Configurable Paper session capital — pure helpers (Step 1 + Step 4 policy sync).
  *
- * Does not size trades, touch SMART_CAPITAL_DEPTH, or place orders.
- * Capital is whole toman end-to-end; residual after allocation must be zero.
+ * Does not place orders. Capital is whole toman end-to-end; residual after
+ * allocation must be zero. Changing capital may produce a matching immutable
+ * order-cap policy snapshot when the order cap is capital-derived — never
+ * when an explicit admin cap is in force.
  */
 import { createHash } from "node:crypto";
 import {
@@ -16,9 +18,66 @@ import {
   type AllocationValidation,
   type VenueAllocation
 } from "@/lib/shadowArbitrage/paper/portfolio";
+import {
+  PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT,
+  PAPER_4D_MAX_UTILIZATION_PERCENT,
+  PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT,
+  PAPER_4D_MIN_RESERVE_PERCENT
+} from "@/lib/shadowArbitrage/paper/experimentPolicy";
 
 /** Re-export bounds so UI/API share one source. */
 export { MIN_CAPITAL_TOMAN, MAX_CAPITAL_TOMAN };
+
+/** setBy value written when the order cap is recomputed from capital. */
+export const ORDER_CAP_DERIVED_ACTOR = "capital-derived" as const;
+
+export type OrderCapMode = "explicit_admin" | "capital_derived";
+
+/**
+ * Classify the live max_order_size_usdt policy.
+ * Explicit admin (or any non-derived setBy) is never overwritten by capital apply.
+ */
+export function classifyOrderCapMode(input: {
+  configured: boolean;
+  setBy: string | null | undefined;
+}): OrderCapMode {
+  if (!input.configured) return "capital_derived";
+  const by = (input.setBy ?? "").trim();
+  if (!by || by === ORDER_CAP_DERIVED_ACTOR || by.startsWith("capital-derived")) {
+    return "capital_derived";
+  }
+  return "explicit_admin";
+}
+
+/**
+ * Capital-relative order ceiling (USDT, floored).
+ *
+ * min of:
+ *  - usable equity after min reserve / max util (default 20% reserve → 80% usable)
+ *  - route capital % of equity (default 10%)
+ *  - venue exposure % of equity (default 20%)
+ * converted at the reference mark. Never invents a mark.
+ */
+export function deriveOrderCapUsdt(input: {
+  equityToman: number;
+  markPriceToman: number;
+  maxUtilizationPercent?: number;
+  minReservePercent?: number;
+  maxRouteCapitalPercent?: number;
+  maxVenueExposurePercent?: number;
+}): number {
+  if (!(input.equityToman > 0) || !(input.markPriceToman > 0)) return 0;
+  const maxUtil = input.maxUtilizationPercent ?? PAPER_4D_MAX_UTILIZATION_PERCENT;
+  const minReserve = input.minReservePercent ?? PAPER_4D_MIN_RESERVE_PERCENT;
+  const maxRoute = input.maxRouteCapitalPercent ?? PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT;
+  const maxVenue = input.maxVenueExposurePercent ?? PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT;
+  const usablePct = Math.min(maxUtil, Math.max(0, 100 - minReserve));
+  const usableToman = Math.floor((input.equityToman * usablePct) / 100);
+  const routeToman = Math.floor((input.equityToman * maxRoute) / 100);
+  const venueToman = Math.floor((input.equityToman * maxVenue) / 100);
+  const capToman = Math.min(usableToman, routeToman, venueToman);
+  return Math.floor(capToman / input.markPriceToman);
+}
 
 export type CapitalAmountErrorCode =
   | "empty"
@@ -96,6 +155,29 @@ export function parseWholeTomanCapital(
   return { ok: true, value: n };
 }
 
+export type SessionCapitalLimitsSnapshot = {
+  maxUtilizationPercent: number;
+  minReservePercent: number;
+  maxRouteCapitalPercent: number;
+  maxVenueExposurePercent: number;
+};
+
+export type SessionCapitalOrderCapPreview = {
+  mode: OrderCapMode;
+  /** Current stored policy value (USDT), null if unset. */
+  currentMaxOrderUsdt: number | null;
+  currentSetBy: string | null;
+  /** Derived from the *new* capital (always computed for display). */
+  derivedMaxOrderUsdt: number;
+  /**
+   * Value that will apply after capital apply:
+   * - explicit_admin → currentMaxOrderUsdt (unchanged)
+   * - capital_derived → derivedMaxOrderUsdt (will be persisted)
+   */
+  effectiveMaxOrderUsdt: number;
+  willWritePolicy: boolean;
+};
+
 export type SessionCapitalPreview = {
   totalCapitalToman: number;
   valuationPriceToman: number;
@@ -106,6 +188,10 @@ export type SessionCapitalPreview = {
   /** Opaque token the apply step must echo. */
   previewToken: string;
   unit: "toman";
+  /** Prior capital for old/new comparison (null when no active session). */
+  oldCapitalToman: number | null;
+  limits: SessionCapitalLimitsSnapshot;
+  orderCap: SessionCapitalOrderCapPreview;
 };
 
 export function buildSessionCapitalPreview(input: {
@@ -113,6 +199,10 @@ export function buildSessionCapitalPreview(input: {
   valuationPriceToman: number;
   venueIds: string[];
   activeSessionId: string | null;
+  oldCapitalToman?: number | null;
+  /** Current max_order_size_usdt policy if configured. */
+  currentOrderCap?: { value: number; setBy: string | null } | null;
+  limits?: Partial<SessionCapitalLimitsSnapshot>;
 }): SessionCapitalPreview {
   const total = Math.round(input.totalCapitalToman);
   const mark = Math.round(input.valuationPriceToman);
@@ -136,13 +226,56 @@ export function buildSessionCapitalPreview(input: {
     throw new Error(`allocation residual not zero: ${residualToman}`);
   }
 
+  const limits: SessionCapitalLimitsSnapshot = {
+    maxUtilizationPercent:
+      input.limits?.maxUtilizationPercent ?? PAPER_4D_MAX_UTILIZATION_PERCENT,
+    minReservePercent: input.limits?.minReservePercent ?? PAPER_4D_MIN_RESERVE_PERCENT,
+    maxRouteCapitalPercent:
+      input.limits?.maxRouteCapitalPercent ?? PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT,
+    maxVenueExposurePercent:
+      input.limits?.maxVenueExposurePercent ?? PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT
+  };
+
+  const derivedMaxOrderUsdt = deriveOrderCapUsdt({
+    equityToman: total,
+    markPriceToman: mark,
+    maxUtilizationPercent: limits.maxUtilizationPercent,
+    minReservePercent: limits.minReservePercent,
+    maxRouteCapitalPercent: limits.maxRouteCapitalPercent,
+    maxVenueExposurePercent: limits.maxVenueExposurePercent
+  });
+
+  const currentMaxOrderUsdt =
+    input.currentOrderCap && Number.isFinite(input.currentOrderCap.value)
+      ? input.currentOrderCap.value
+      : null;
+  const currentSetBy = input.currentOrderCap?.setBy ?? null;
+  const mode = classifyOrderCapMode({
+    configured: currentMaxOrderUsdt !== null,
+    setBy: currentSetBy
+  });
+  const willWritePolicy = mode === "capital_derived";
+  const effectiveMaxOrderUsdt =
+    mode === "explicit_admin" && currentMaxOrderUsdt !== null
+      ? currentMaxOrderUsdt
+      : derivedMaxOrderUsdt;
+
+  const oldCapitalToman =
+    input.oldCapitalToman === undefined || input.oldCapitalToman === null
+      ? null
+      : Math.round(input.oldCapitalToman);
+
   const previewToken = createHash("sha256")
     .update(
       [
-        "paper-session-capital-v1",
+        "paper-session-capital-v2",
         input.activeSessionId ?? "none",
         String(total),
         String(mark),
+        String(oldCapitalToman ?? "none"),
+        mode,
+        String(effectiveMaxOrderUsdt),
+        String(willWritePolicy),
         ...allocations.map((a) => `${a.sourceId}:${a.irtToman}:${a.usdtUnits}`)
       ].join("|")
     )
@@ -156,7 +289,17 @@ export function buildSessionCapitalPreview(input: {
     residualToman: 0,
     perVenue: validation.perVenue,
     previewToken,
-    unit: "toman"
+    unit: "toman",
+    oldCapitalToman,
+    limits,
+    orderCap: {
+      mode,
+      currentMaxOrderUsdt,
+      currentSetBy,
+      derivedMaxOrderUsdt,
+      effectiveMaxOrderUsdt,
+      willWritePolicy
+    }
   };
 }
 
@@ -166,6 +309,9 @@ export function sessionCapitalPreviewToken(input: {
   valuationPriceToman: number;
   venueIds: string[];
   activeSessionId: string | null;
+  oldCapitalToman?: number | null;
+  currentOrderCap?: { value: number; setBy: string | null } | null;
+  limits?: Partial<SessionCapitalLimitsSnapshot>;
 }): string {
   return buildSessionCapitalPreview(input).previewToken;
 }

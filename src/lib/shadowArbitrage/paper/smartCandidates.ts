@@ -30,10 +30,15 @@ import {
 export const SMART_SIZING_POLICY = "CAPITAL_AWARE_MAX_SAFE" as const;
 
 /**
- * Dust floor — not a ladder rung. Below this the two legs are not worth trading.
+ * Ledger quantum only (numeric(12,4) → 1e-4 USDT). This is the sole executable
+ * size floor: not a fixed 5/10/20/25 ladder rung, not a guessed exchange
+ * minimum. Per-venue notional/step mins would attach only when admin-confirmed;
+ * none are configured today and none are invented here.
+ *
  * Never used as an upper cap on finalSize.
  */
-export const MIN_EXECUTABLE_USDT_MICROS = 25_000_000;
+export const LEDGER_SIZE_QUANTUM_MICROS = 100;
+export const MIN_EXECUTABLE_USDT_MICROS = LEDGER_SIZE_QUANTUM_MICROS;
 
 /**
  * Analysis-only fractions of the safe maximum.
@@ -163,7 +168,7 @@ export type SmartCandidateSet = {
   depthCapSide: "buy" | "sell";
   /** The binding minimum of every cap supplied, including the two above. */
   ceilingMicros: number;
-  /** True when the ceiling itself is below the 25 USDT floor. */
+  /** True when the ceiling itself is below the ledger quantum floor. */
   belowFloor: boolean;
   /**
    * Analysis-only percentage rungs (display / profit curve labels).

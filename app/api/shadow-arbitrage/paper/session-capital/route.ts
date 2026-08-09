@@ -22,11 +22,14 @@ import { SHADOW_SOURCES } from "@/lib/shadowArbitrage/config";
 import {
   MAX_CAPITAL_TOMAN,
   MIN_CAPITAL_TOMAN,
+  ORDER_CAP_DERIVED_ACTOR,
   buildSessionCapitalPreview,
   parseWholeTomanCapital
 } from "@/lib/shadowArbitrage/paper/sessionCapital";
 import { portfolioValueToman } from "@/lib/shadowArbitrage/paper/portfolio";
 import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
+import { loadRiskPolicyValues, recordRiskPolicy } from "@/db/repositories/shadowLive";
+import { buildPolicyState } from "@/lib/shadowArbitrage/live/policy";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -153,13 +156,22 @@ export async function POST(request: Request) {
   }
 
   const active = await getActivePaperSession();
+  const policyState = buildPolicyState(await loadRiskPolicyValues(), Date.now());
+  const orderPol = policyState.find((p) => p.definition.key === "max_order_size_usdt");
+  const currentOrderCap =
+    orderPol?.configured && orderPol.value !== null && orderPol.value !== undefined
+      ? { value: orderPol.value as number, setBy: orderPol.setBy ?? null }
+      : null;
+
   let preview;
   try {
     preview = buildSessionCapitalPreview({
       totalCapitalToman: parsed.value,
       valuationPriceToman: mark,
       venueIds: venueIds(),
-      activeSessionId: active?.id ?? null
+      activeSessionId: active?.id ?? null,
+      oldCapitalToman: active?.totalCapitalToman ?? null,
+      currentOrderCap
     });
   } catch (e) {
     return bad(
@@ -186,12 +198,15 @@ export async function POST(request: Request) {
             }
           : null,
         preview: {
+          oldCapitalToman: preview.oldCapitalToman,
           totalCapitalToman: preview.totalCapitalToman,
           valuationPriceToman: preview.valuationPriceToman,
           allocations: preview.allocations,
           allocationSumToman: preview.allocationSumToman,
           residualToman: preview.residualToman,
           perVenue: preview.perVenue,
+          limits: preview.limits,
+          orderCap: preview.orderCap,
           previewToken: preview.previewToken
         },
         requiresConfirmation: true
@@ -225,6 +240,32 @@ export async function POST(request: Request) {
         : undefined
   });
 
+  /*
+   * Immutable order-cap snapshot when capital-derived.
+   * Explicit admin caps (e.g. max_order_size_usdt=500) are never overwritten.
+   */
+  let orderCapPolicy: { written: boolean; mode: string; valueUsdt: number } | null = null;
+  if (preview.orderCap.willWritePolicy && !result.reused) {
+    await recordRiskPolicy({
+      policyKey: "max_order_size_usdt",
+      value: preview.orderCap.derivedMaxOrderUsdt,
+      setBy: ORDER_CAP_DERIVED_ACTOR,
+      validForDays: 30,
+      note: `capital-derived from equity=${preview.totalCapitalToman} mark=${preview.valuationPriceToman} util≤${preview.limits.maxUtilizationPercent}% reserve≥${preview.limits.minReservePercent}% route≤${preview.limits.maxRouteCapitalPercent}% venue≤${preview.limits.maxVenueExposurePercent}% session=${result.newSession.id}`
+    });
+    orderCapPolicy = {
+      written: true,
+      mode: preview.orderCap.mode,
+      valueUsdt: preview.orderCap.derivedMaxOrderUsdt
+    };
+  } else {
+    orderCapPolicy = {
+      written: false,
+      mode: preview.orderCap.mode,
+      valueUsdt: preview.orderCap.effectiveMaxOrderUsdt
+    };
+  }
+
   const bals = await loadPaperBalances(result.newSession.id);
   const balanceMarked = bals.reduce(
     (s, b) => s + b.irtToman + Math.round((b.usdtMicros / 1e6) * preview.valuationPriceToman),
@@ -254,6 +295,9 @@ export async function POST(request: Request) {
       ),
       residualToman: 0,
       balanceMarkedTotalToman: balanceMarked,
+      oldCapitalToman: preview.oldCapitalToman,
+      limits: preview.limits,
+      orderCap: orderCapPolicy,
       activeSessionCount: activesAfter.length,
       history: history.map((h) => ({
         id: h.id,

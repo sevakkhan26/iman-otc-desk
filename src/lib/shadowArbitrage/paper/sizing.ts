@@ -54,6 +54,7 @@ import {
   CANDIDATE_PERCENTS,
   CAPITAL_CAP_PERCENT,
   DEPTH_CAP_PERCENT,
+  LEDGER_SIZE_QUANTUM_MICROS,
   MIN_EXECUTABLE_USDT_MICROS,
   slippageBoundedDepth,
   SMART_SIZING_POLICY,
@@ -79,6 +80,7 @@ export {
   CANDIDATE_PERCENTS,
   CAPITAL_CAP_PERCENT,
   DEPTH_CAP_PERCENT,
+  LEDGER_SIZE_QUANTUM_MICROS,
   MIN_EXECUTABLE_USDT_MICROS,
   SMART_SIZING_POLICY
 };
@@ -159,7 +161,7 @@ export const SIZING_BLOCKER_FA: Record<SizingBlockerCode, string> = {
   settlement_unconfirmed: "نحوهٔ تسویهٔ کارمزد تأیید نشده است",
   no_balance_record: "برای یکی از دو صرافی موجودی مجازی ثبت نشده است",
   slippage_over_limit: "بافر لغزش مدل‌شده از سقف مجاز بیشتر است",
-  size_floor: `ظرفیت قابل استفاده به حداقل اجراپذیر (${MIN_EXECUTABLE_USDT_MICROS / 1_000_000} تتر) نمی‌رسد`,
+  size_floor: `ظرفیت قابل استفاده به حداقل کوانتوم دفتر (${MIN_EXECUTABLE_USDT_MICROS / 1_000_000} تتر) نمی‌رسد`,
   edge_below_floor: "حاشیهٔ تعدیل‌شده از کف سیاست کمتر است",
   not_net_positive: "سود تعدیل‌شده اکیداً مثبت نیست",
   book_invalid: "دفتر سفارش قابل استفاده نیست",
@@ -209,7 +211,7 @@ export const CANDIDATE_REJECTION_FA: Record<CandidateRejectionCode, string> = {
   negative_marginal_profitability: "هر تتر اضافه در این حجم سود را کم می‌کند",
   not_net_positive: "سود تعدیل‌شده در این حجم مثبت نیست",
   edge_below_floor: "حاشیهٔ تعدیل‌شده در این حجم از کف سیاست کمتر است",
-  below_min_size: `کمتر از حداقل اجراپذیر ${MIN_EXECUTABLE_USDT_MICROS / 1_000_000} تتر است`
+  below_min_size: `کمتر از کوانتوم دفتر ${MIN_EXECUTABLE_USDT_MICROS / 1_000_000} تتر است`
 };
 
 /** Every figure the detail view shows, all integers unless noted. */

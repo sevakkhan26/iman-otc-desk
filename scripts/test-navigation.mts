@@ -325,10 +325,10 @@ await test("8C every existing panel survives, in the section that now owns it", 
   const venues = read("src/components/shadowArbitrage/VenuesSection.tsx");
   assert.ok(venues.includes("کارمزد خرید") || venues.includes("taker"));
   assert.ok(
-    venues.includes("عمق سفارش‌های خرید (Bid)") &&
-      venues.includes("عمق سفارش‌های فروش (Ask)")
+    venues.includes("حجم خرید (Bid)") && venues.includes("حجم فروش (Ask)")
   );
-  assert.ok(venues.includes("نه ظرفیت اجرایی") || venues.includes("عمق = نقدینگی"));
+  assert.ok(venues.includes("حجم قابل‌مشاهده در دفتر سفارش دریافتی"));
+  assert.ok(venues.includes("نه ظرفیت اجرایی") || venues.includes("نه عمق لغزش"));
   assert.ok(venues.includes("rawDepthUsdt"));
   assert.equal(venues.includes("usableCapacityUsdt"), false);
   assert.equal(venues.includes("<SourcesPanel"), false, "verbose SourcesPanel removed from Venues");
@@ -1762,13 +1762,13 @@ await test("release version: one authoritative public field, valid package metad
   const pkg = JSON.parse(read("package.json")) as { version: string; private?: boolean };
 
   // The product's version is exactly what this release is called.
-  assert.equal(version.appVersion, "4.2.3");
+  assert.equal(version.appVersion, "4.2.4");
 
-  // 4.2.3 is valid SemVer; appVersion and package.json stay aligned.
+  // 4.2.4 is valid SemVer; appVersion and package.json stay aligned.
   const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?$/;
-  assert.equal(semver.test(version.appVersion), true, "4.2.3 is valid SemVer");
+  assert.equal(semver.test(version.appVersion), true, "4.2.4 is valid SemVer");
   assert.ok(semver.test(pkg.version), `package.json keeps valid SemVer, found ${pkg.version}`);
-  assert.equal(pkg.version, "4.2.3");
+  assert.equal(pkg.version, "4.2.4");
   assert.equal(pkg.version, version.packageMetadataVersion, "and the two stay in step");
   assert.equal(pkg.private, true, "the package is never published, so its version is metadata only");
 
@@ -2183,6 +2183,11 @@ await test("8B the UI redesign added no backend logic of its own", async () => {
        */
       "src/lib/shadowArbitrage/paper/accounting.ts",
       "src/lib/shadowArbitrage/paper/venueDepthView.ts",
+      /*
+       * Pure visible received-book Bid/Ask volume for Exchange Status UI.
+       * No network, DB, credentials, orders. Engine slippage depth unchanged.
+       */
+      "src/lib/shadowArbitrage/paper/marketDepth.ts",
       "src/lib/shadowArbitrage/paper/experimentPolicy.ts",
       "src/lib/shadowArbitrage/paper/utilization.ts",
       "src/lib/shadowArbitrage/paper/portfolioAllocator.ts",

@@ -3,17 +3,16 @@
  *
  * Separates four facts that must never be conflated:
  *   موجودی          — Paper balances (not depth)
- *   عمق بازار       — order-book liquidity inside the admin slippage window
- *                     (rawDepthUsdt / rawDepthToman — pure market depth)
+ *   حجم قابل‌مشاهده — all received Bid/Ask levels (rawDepthUsdt / rawDepthToman)
+ *                     Σ qty / Σ price×qty; no slippage window (v4.2.4)
  *   ظرفیت قابل استفاده — min(depth, balance, policies) from venueCapacity()
  *   حجم پیشنهادی    — SMART_CAPITAL_DEPTH route size when present
  *
  * Pure: no network, no database, no clock. Uses the same cycle's book levels
  * the caller already holds — never re-fetches.
  *
- * v4.2.3: rawDepth* is pure market depth (Σ qty / Σ price×qty), independent of
- * capital, balances, allocations, order caps. UI must not display usableCapacity
- * as "depth".
+ * Engine slippage-bounded depth is unchanged (smartCandidates / sizing).
+ * UI must not display usableCapacity as "depth".
  */
 import type { BookLevel } from "@/lib/shadowArbitrage/types";
 import {
@@ -28,6 +27,7 @@ import {
 } from "@/lib/shadowArbitrage/paper/liquidity";
 import {
   buildMarketDepthCard,
+  QUOTE_ONLY_FA,
   type AcceptedDepthLevel,
   type MarketDepthSide
 } from "@/lib/shadowArbitrage/paper/marketDepth";
@@ -35,20 +35,18 @@ import {
 export type SideDepthView = {
   bestPriceToman: number | null;
   /**
-   * Pure market depth inside max_slippage_bps (USDT = exact Σ quantities).
-   * Never capital- or policy-capped.
+   * Visible received-book volume USDT = exact Σ quantities of all valid levels.
+   * Not slippage-bounded; not capital- or policy-capped.
    */
   rawDepthUsdt: number | null;
   /**
-   * Exact Σ(priceToman × amountUsdt) of accepted levels — not USDT × best.
+   * Exact Σ(priceToman × amountUsdt) of all included levels — not USDT × best.
    */
   rawDepthToman: number | null;
   levelsAccepted: number | null;
   levelsExcluded: number | null;
-  /** Accepted price band [min, max] inside the slippage window. */
   acceptedPriceMin?: number | null;
   acceptedPriceMax?: number | null;
-  /** Levels that contributed to market depth (evidence / audit). */
   acceptedLevels?: AcceptedDepthLevel[];
   /** VWAP if the recommended smart size were walked; null when size/depth missing. */
   smartSizeVwapToman: number | null;
@@ -240,7 +238,7 @@ export function buildVenueDepthCard(input: VenueDepthInput): VenueDepthCard {
       cap.sell.capacityUsdtMicros === null ? null : microsToUsdt(cap.sell.capacityUsdtMicros);
     const buyPrice = q?.userBuyPriceToman ?? null;
     const sellPrice = q?.userSellPriceToman ?? null;
-    const na = market.ask.unavailableFa ?? "عمق بازار دفتر برای نقل‌قول تک‌قیمتی ناموجود است";
+    const na = market.ask.unavailableFa ?? QUOTE_ONLY_FA;
     const buySide: SideDepthView = {
       ...emptySide(na),
       bestPriceToman: buyPrice,

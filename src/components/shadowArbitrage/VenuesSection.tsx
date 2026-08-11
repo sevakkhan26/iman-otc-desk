@@ -1,10 +1,11 @@
 "use client";
 
 /**
- * «وضعیت صرافی‌ها» — health, fees, pure market Bid/Ask depth.
+ * «وضعیت صرافی‌ها» — health, fees, visible received order-book Bid/Ask volume.
  *
- * v4.2.3: depth is pure order-book depth inside max_slippage_bps only.
- * Never displays usableCapacity / capital / policy caps as "depth".
+ * v4.2.4: volume = all valid received levels (not slippage-bounded).
+ * Never displays usableCapacity / capital / policy caps as book volume.
+ * Engine sizing depth is unchanged.
  */
 import { TomanAmount } from "@/components/TomanAmount";
 import { Bidi } from "@/components/shadowArbitrage/Bidi";
@@ -98,17 +99,23 @@ function healthFa(status: string): string {
   return HEALTH_FA[status] ?? status;
 }
 
-/**
- * Pure market depth display. Never falls back to capacity/balance.
- */
-function MarketDepthValue({
+function fmtAgeFa(ageMs: number | null | undefined): string | null {
+  if (ageMs === null || ageMs === undefined || !Number.isFinite(ageMs)) return null;
+  const sec = Math.max(0, Math.round(ageMs / 1000));
+  return `${toFaDigits(sec)} ثانیه`;
+}
+
+/** Visible book volume — never capacity/balance fallback. */
+function VisibleVolumeValue({
   usdt,
   toman,
+  levels,
   unavailable,
   reasonFa
 }: {
   usdt: number | null | undefined;
   toman: number | null | undefined;
+  levels: number | null | undefined;
   unavailable?: boolean;
   reasonFa?: string | null;
 }) {
@@ -120,8 +127,10 @@ function MarketDepthValue({
   ) {
     return (
       <span className="sa-unknown" title={reasonFa ?? undefined}>
-        {NA_FA}
-        {reasonFa ? <span className="sa-sub"> — {reasonFa}</span> : null}
+        {reasonFa && reasonFa.includes("چندسطحی") ? reasonFa : NA_FA}
+        {reasonFa && !reasonFa.includes("چندسطحی") ? (
+          <span className="sa-sub"> — {reasonFa}</span>
+        ) : null}
       </span>
     );
   }
@@ -133,6 +142,12 @@ function MarketDepthValue({
           {" · "}
           <TomanAmount value={toman} />
         </>
+      ) : null}
+      {levels !== null && levels !== undefined ? (
+        <span className="sa-sub">
+          {" · "}
+          <Bidi>{toFaDigits(levels)}</Bidi> سطح
+        </span>
       ) : null}
     </span>
   );
@@ -165,7 +180,7 @@ export function VenuesSection({
         <div className="panel-header sa-panel-header">
           <h3 className="panel-title">وضعیت صرافی‌ها</h3>
           <div className="sa-panel-note">
-            عمق = نقدینگی دفتر داخل پنجرهٔ لغزش · نه ظرفیت اجرایی
+            حجم قابل‌مشاهده در دفتر سفارش دریافتی · نه عمق لغزش‌محدود · نه ظرفیت اجرایی
           </div>
         </div>
         <div className="panel-body sa-venue-grid sa-venue-grid-compact">
@@ -194,14 +209,13 @@ export function VenuesSection({
             const feeMissingFa =
               fee?.blockerFa ?? fee?.miss ?? "شواهد کارمزد در این چرخه ثبت نشده";
 
-            // Pure market depth only:
-            // buy side of card = Ask depth; sell side = Bid depth.
+            // buy side of card = Ask volume; sell side = Bid volume.
             const ask = depth?.buy;
             const bid = depth?.sell;
             const missingDepthFa = depth
               ? null
-              : "عمق بازار این صرافی در این چرخه ارسال نشده";
-
+              : "حجم دفتر این صرافی در این چرخه ارسال نشده";
+            const ageLabel = fmtAgeFa(depth?.snapshotAgeMs ?? sn?.ageMs ?? null);
             const nameFa = sem?.nameFa ?? v?.nameFa ?? id;
 
             return (
@@ -209,6 +223,9 @@ export function VenuesSection({
                 <header className="sa-venue-card-head">
                   <div>
                     <strong>{nameFa}</strong>
+                    {ageLabel ? (
+                      <span className="sa-sub sa-ps-key">سن اسنپ‌شات: {ageLabel}</span>
+                    ) : null}
                   </div>
                   <span className={`sa-chip sa-chip-sm sa-chip-${tone}`}>
                     {healthFa(status)}
@@ -244,22 +261,24 @@ export function VenuesSection({
                     </dd>
                   </div>
                   <div>
-                    <dt>عمق سفارش‌های خرید (Bid)</dt>
+                    <dt>حجم خرید (Bid) — قابل‌مشاهده</dt>
                     <dd>
-                      <MarketDepthValue
+                      <VisibleVolumeValue
                         usdt={bid?.rawDepthUsdt}
                         toman={bid?.rawDepthToman}
+                        levels={bid?.levelsAccepted}
                         unavailable={bid?.unavailable || !depth}
                         reasonFa={bid?.unavailableFa ?? missingDepthFa}
                       />
                     </dd>
                   </div>
                   <div>
-                    <dt>عمق سفارش‌های فروش (Ask)</dt>
+                    <dt>حجم فروش (Ask) — قابل‌مشاهده</dt>
                     <dd>
-                      <MarketDepthValue
+                      <VisibleVolumeValue
                         usdt={ask?.rawDepthUsdt}
                         toman={ask?.rawDepthToman}
+                        levels={ask?.levelsAccepted}
                         unavailable={ask?.unavailable || !depth}
                         reasonFa={ask?.unavailableFa ?? missingDepthFa}
                       />

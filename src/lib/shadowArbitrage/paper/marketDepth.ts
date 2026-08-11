@@ -1,16 +1,16 @@
 /**
- * Pure market-depth (order-book) projection for Exchange Status UI.
+ * Visible order-book volume for Exchange Status UI (v4.2.4).
  *
- * Independent of Paper capital, balances, allocations, order caps, and risk
- * limits. Executable capacity remains in liquidity/venueCapacity — this module
- * never consults them.
+ * Buyer volume  = Σ quantity of every valid received Bid level.
+ * Seller volume = Σ quantity of every valid received Ask level.
+ * Toman         = Σ (priceToman × quantity) across all included levels.
  *
- * Definitions (user-facing Bid/Ask):
- *   Bid depth  = sum of bid quantities within max_slippage_bps below best bid
- *   Ask depth  = sum of ask quantities within max_slippage_bps above best ask
+ * Independent of max_slippage_bps, Paper capital, balances, allocations,
+ * order caps, risk limits, and executable capacity. Slippage-bounded depth
+ * used by the trading/sizing engine lives elsewhere and is unchanged.
  *
- * USDT  = Σ amountUsdt of accepted levels
- * Toman = Σ (priceToman × amountUsdt) of accepted levels  (NOT USDT × best)
+ * Never fabricates values. Stale/missing/empty/malformed/crossed → ناموجود.
+ * Quote-only venues → «دفتر سفارش چندسطحی ارائه نمی‌شود».
  */
 import type { BookLevel } from "@/lib/shadowArbitrage/types";
 import { orderedLevels, type BookSide } from "@/lib/shadowArbitrage/paper/liquidity";
@@ -23,16 +23,21 @@ export type AcceptedDepthLevel = {
 export type MarketDepthSide = {
   /** Best bid (sell walk) or best ask (buy walk). */
   bestPriceToman: number | null;
-  /** Inclusive price range of accepted levels [min, max]. */
+  /** Inclusive price range of included levels [min, max]. */
   acceptedPriceMin: number | null;
   acceptedPriceMax: number | null;
-  /** Exact sum of accepted level quantities (USDT). */
+  /** Exact sum of all valid received level quantities (USDT). */
   depthUsdt: number | null;
-  /** Exact Σ(priceToman × amountUsdt) across accepted levels. */
+  /** Exact Σ(priceToman × amountUsdt) across all included levels. */
   depthToman: number | null;
+  /** Count of valid received levels included. */
   levelsAccepted: number | null;
+  /**
+   * Always 0 for visible volume (no slippage exclusion). Kept for API shape.
+   */
   levelsExcluded: number | null;
   acceptedLevels: AcceptedDepthLevel[];
+  /** Not applied to visible volume; retained for evidence only when known. */
   maxSlippageBps: number | null;
   unavailable: boolean;
   unavailableFa: string | null;
@@ -44,16 +49,22 @@ export type MarketDepthCard = {
   asOf: string;
   snapshotAgeMs: number | null;
   maxSlippageBps: number | null;
-  /** Bid book depth (user sells into bids). */
+  /** Bid book volume (all received bids). */
   bid: MarketDepthSide;
-  /** Ask book depth (user buys from asks). */
+  /** Ask book volume (all received asks). */
   ask: MarketDepthSide;
   bookCrossed: boolean;
+  /** UI label key for operator clarity. */
+  displayKind: "visible_received_book";
 };
 
 const NA = "ناموجود";
+export const QUOTE_ONLY_FA = "دفتر سفارش چندسطحی ارائه نمی‌شود";
 
-function emptySide(reasonFa: string, maxSlippageBps: number | null): MarketDepthSide {
+function emptySide(
+  reasonFa: string,
+  maxSlippageBps: number | null = null
+): MarketDepthSide {
   return {
     bestPriceToman: null,
     acceptedPriceMin: null,
@@ -70,20 +81,18 @@ function emptySide(reasonFa: string, maxSlippageBps: number | null): MarketDepth
 }
 
 /**
- * Slippage-window market depth for one side of the book.
- * `side: "buy"` walks asks (Ask depth); `side: "sell"` walks bids (Bid depth).
+ * Visible volume for one side of the book — every valid received level.
+ * `side: "buy"` walks asks (seller volume); `side: "sell"` walks bids (buyer volume).
+ * maxSlippageBps is ignored (not applied).
  */
-export function computeMarketDepthSide(
+export function computeVisibleBookVolumeSide(
   levels: BookLevel[] | null | undefined,
   side: BookSide,
-  maxSlippageBps: number | null,
-  opts?: { forceUnavailableFa?: string | null }
+  opts?: { forceUnavailableFa?: string | null; maxSlippageBps?: number | null }
 ): MarketDepthSide {
+  const maxSlippageBps = opts?.maxSlippageBps ?? null;
   if (opts?.forceUnavailableFa) {
     return emptySide(opts.forceUnavailableFa, maxSlippageBps);
-  }
-  if (maxSlippageBps === null || !Number.isFinite(maxSlippageBps) || maxSlippageBps < 0) {
-    return emptySide("سقف لغزش (max_slippage_bps) برای محاسبهٔ عمق بازار تنظیم نشده", null);
   }
   if (!levels || !levels.length) {
     return emptySide("دفتر سفارش خالی یا در دسترس نیست", maxSlippageBps);
@@ -94,7 +103,7 @@ export function computeMarketDepthSide(
     return emptySide("دفتر سفارش پس از مرتب‌سازی سطحی ندارد", maxSlippageBps);
   }
 
-  // Malformed prices/quantities → fail closed
+  const included: AcceptedDepthLevel[] = [];
   for (const l of ordered) {
     if (
       !Number.isFinite(l.priceToman) ||
@@ -104,52 +113,46 @@ export function computeMarketDepthSide(
     ) {
       return emptySide("دفتر سفارش ناقص یا نامعتبر است", maxSlippageBps);
     }
+    included.push({ priceToman: l.priceToman, amountUsdt: l.amountUsdt });
   }
 
-  const best = ordered[0].priceToman;
-  const accepted: AcceptedDepthLevel[] = [];
-  let excluded = 0;
-
-  for (const level of ordered) {
-    const deviationBps =
-      side === "buy"
-        ? ((level.priceToman - best) / best) * 10_000
-        : ((best - level.priceToman) / best) * 10_000;
-    if (deviationBps > maxSlippageBps) {
-      excluded = ordered.length - accepted.length;
-      break;
-    }
-    accepted.push({ priceToman: level.priceToman, amountUsdt: level.amountUsdt });
-  }
-  if (accepted.length === 0) {
-    return emptySide("هیچ سطحی داخل پنجرهٔ لغزش نیست", maxSlippageBps);
-  }
-  if (excluded === 0 && accepted.length < ordered.length) {
-    excluded = ordered.length - accepted.length;
-  }
-
-  // Exact sums — no best-price shortcut for toman.
   let depthUsdt = 0;
   let depthToman = 0;
-  for (const l of accepted) {
+  for (const l of included) {
     depthUsdt += l.amountUsdt;
     depthToman += l.priceToman * l.amountUsdt;
   }
 
-  const prices = accepted.map((l) => l.priceToman);
+  const prices = included.map((l) => l.priceToman);
   return {
-    bestPriceToman: best,
+    bestPriceToman: ordered[0].priceToman,
     acceptedPriceMin: Math.min(...prices),
     acceptedPriceMax: Math.max(...prices),
     depthUsdt,
     depthToman,
-    levelsAccepted: accepted.length,
-    levelsExcluded: excluded,
-    acceptedLevels: accepted,
+    levelsAccepted: included.length,
+    levelsExcluded: 0,
+    acceptedLevels: included,
     maxSlippageBps,
     unavailable: false,
     unavailableFa: null
   };
+}
+
+/**
+ * @deprecated Use computeVisibleBookVolumeSide. Kept name for call-site stability;
+ * no longer applies max_slippage_bps.
+ */
+export function computeMarketDepthSide(
+  levels: BookLevel[] | null | undefined,
+  side: BookSide,
+  maxSlippageBps: number | null,
+  opts?: { forceUnavailableFa?: string | null }
+): MarketDepthSide {
+  return computeVisibleBookVolumeSide(levels, side, {
+    forceUnavailableFa: opts?.forceUnavailableFa,
+    maxSlippageBps
+  });
 }
 
 export type BuildMarketDepthInput = {
@@ -157,29 +160,27 @@ export type BuildMarketDepthInput = {
   marketModel: string;
   bookBids: BookLevel[] | null | undefined;
   bookAsks: BookLevel[] | null | undefined;
-  maxSlippageBps: number | null;
+  /** Not used for visible volume; retained for evidence/API compatibility. */
+  maxSlippageBps?: number | null;
   asOf: string;
   snapshotAgeMs?: number | null;
-  /** When true (stale snapshot), both sides are ناموجود. */
   stale?: boolean;
   sourceFailureFa?: string | null;
-  /** Optional max age; if snapshotAgeMs exceeds it, fail closed. */
   maxQuoteAgeMs?: number | null;
 };
 
 /**
- * Build Bid + Ask pure market depth for one venue from its own book.
+ * Build Bid + Ask visible received-book volume for one venue.
  * Never reuses another venue's book or shared values.
  */
 export function buildMarketDepthCard(input: BuildMarketDepthInput): MarketDepthCard {
-  const maxSlip = input.maxSlippageBps;
+  const maxSlip = input.maxSlippageBps ?? null;
   let forceFa: string | null = null;
 
   if (input.marketModel === "OTC_QUOTE") {
-    forceFa =
-      "این منبع نقل‌قول تک‌قیمتی است و دفتر سفارش چندسطحی ندارد — عمق بازار ناموجود";
+    forceFa = QUOTE_ONLY_FA;
   } else if (input.stale) {
-    forceFa = "دادهٔ بازار کهنه است — عمق بازار ناموجود";
+    forceFa = "دادهٔ بازار کهنه است — حجم دفتر ناموجود";
   } else if (
     input.maxQuoteAgeMs != null &&
     input.snapshotAgeMs != null &&
@@ -187,14 +188,13 @@ export function buildMarketDepthCard(input: BuildMarketDepthInput): MarketDepthC
     Number.isFinite(input.snapshotAgeMs) &&
     input.snapshotAgeMs > input.maxQuoteAgeMs
   ) {
-    forceFa = "سن اسنپ‌شات از سقف مجاز گذشته — عمق بازار ناموجود";
+    forceFa = "سن اسنپ‌شات از سقف مجاز گذشته — حجم دفتر ناموجود";
   } else if (input.sourceFailureFa) {
     forceFa = `خطای منبع: ${input.sourceFailureFa}`;
   } else if (!input.bookBids || !input.bookAsks) {
     forceFa = "دفتر سفارش (دو طرف) در این چرخه موجود نیست";
   }
 
-  // Crossed book: best bid > best ask
   let bookCrossed = false;
   if (!forceFa && input.bookBids?.length && input.bookAsks?.length) {
     const bidOrdered = orderedLevels(input.bookBids, "sell");
@@ -209,15 +209,17 @@ export function buildMarketDepthCard(input: BuildMarketDepthInput): MarketDepthC
       bestBid > bestAsk
     ) {
       bookCrossed = true;
-      forceFa = "دفتر متقاطع است (بهترین خرید بالاتر از بهترین فروش) — عمق بازار ناموجود";
+      forceFa = "دفتر متقاطع است (بهترین خرید بالاتر از بهترین فروش) — حجم دفتر ناموجود";
     }
   }
 
-  const bid = computeMarketDepthSide(input.bookBids, "sell", maxSlip, {
-    forceUnavailableFa: forceFa
+  const bid = computeVisibleBookVolumeSide(input.bookBids, "sell", {
+    forceUnavailableFa: forceFa,
+    maxSlippageBps: maxSlip
   });
-  const ask = computeMarketDepthSide(input.bookAsks, "buy", maxSlip, {
-    forceUnavailableFa: forceFa
+  const ask = computeVisibleBookVolumeSide(input.bookAsks, "buy", {
+    forceUnavailableFa: forceFa,
+    maxSlippageBps: maxSlip
   });
 
   return {
@@ -228,11 +230,12 @@ export function buildMarketDepthCard(input: BuildMarketDepthInput): MarketDepthC
     maxSlippageBps: maxSlip,
     bid,
     ask,
-    bookCrossed
+    bookCrossed,
+    displayKind: "visible_received_book"
   };
 }
 
-/** Recompute depth totals from accepted levels — for independent evidence checks. */
+/** Recompute totals from levels — independent evidence check. */
 export function recomputeDepthTotals(levels: AcceptedDepthLevel[]): {
   depthUsdt: number;
   depthToman: number;
@@ -247,3 +250,4 @@ export function recomputeDepthTotals(levels: AcceptedDepthLevel[]): {
 }
 
 export const MARKET_DEPTH_NA_FA = NA;
+export const VISIBLE_BOOK_VOLUME_LABEL_FA = "حجم قابل‌مشاهده در دفتر سفارش دریافتی";

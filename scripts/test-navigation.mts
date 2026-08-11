@@ -325,10 +325,12 @@ await test("8C every existing panel survives, in the section that now owns it", 
   const venues = read("src/components/shadowArbitrage/VenuesSection.tsx");
   assert.ok(venues.includes("کارمزد خرید") || venues.includes("taker"));
   assert.ok(
-    venues.includes("عمق خریدار") ||
-      venues.includes("عمق فروشنده") ||
-      venues.includes("عمق قابل‌استفاده")
+    venues.includes("عمق سفارش‌های خرید (Bid)") &&
+      venues.includes("عمق سفارش‌های فروش (Ask)")
   );
+  assert.ok(venues.includes("نه ظرفیت اجرایی") || venues.includes("عمق = نقدینگی"));
+  assert.ok(venues.includes("rawDepthUsdt"));
+  assert.equal(venues.includes("usableCapacityUsdt"), false);
   assert.equal(venues.includes("<SourcesPanel"), false, "verbose SourcesPanel removed from Venues");
 });
 
@@ -1760,13 +1762,13 @@ await test("release version: one authoritative public field, valid package metad
   const pkg = JSON.parse(read("package.json")) as { version: string; private?: boolean };
 
   // The product's version is exactly what this release is called.
-  assert.equal(version.appVersion, "4.2.2");
+  assert.equal(version.appVersion, "4.2.3");
 
-  // 4.2.2 is valid SemVer; appVersion and package.json stay aligned.
+  // 4.2.3 is valid SemVer; appVersion and package.json stay aligned.
   const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?$/;
-  assert.equal(semver.test(version.appVersion), true, "4.2.2 is valid SemVer");
+  assert.equal(semver.test(version.appVersion), true, "4.2.3 is valid SemVer");
   assert.ok(semver.test(pkg.version), `package.json keeps valid SemVer, found ${pkg.version}`);
-  assert.equal(pkg.version, "4.2.2");
+  assert.equal(pkg.version, "4.2.3");
   assert.equal(pkg.version, version.packageMetadataVersion, "and the two stay in step");
   assert.equal(pkg.private, true, "the package is never published, so its version is metadata only");
 

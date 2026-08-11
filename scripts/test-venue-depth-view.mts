@@ -65,6 +65,8 @@ await test("raw depth respects the slippage window and does not use balance as d
   assert.equal(card.buy.levelsAccepted, 2);
   assert.equal(card.buy.levelsExcluded, 1);
   assert.ok(card.buy.rawDepthUsdt !== null && card.buy.rawDepthUsdt === 100);
+  // Exact Σ price×qty, not USDT×best
+  assert.equal(card.buy.rawDepthToman, 200_000 * 50 + 200_200 * 50);
   // Balance is huge; depth stays book depth, not balance.
   assert.ok((card.buy.rawDepthUsdt as number) < 1000);
   assert.equal(card.buy.unavailable, false);
@@ -119,7 +121,7 @@ await test("missing book is unavailable, not zero depth", () => {
   assert.ok(card.buy.unavailableFa && /دفتر|ثبت|503/i.test(card.buy.unavailableFa));
 });
 
-await test("OTC quote has no multi-level book depth; quote capacity only", () => {
+await test("OTC quote has no multi-level book depth; market depth is ناموجود", () => {
   const card = buildVenueDepthCard({
     sourceId: "abantether",
     marketModel: "OTC_QUOTE",
@@ -146,14 +148,12 @@ await test("OTC quote has no multi-level book depth; quote capacity only", () =>
     asOf: "2026-08-05T12:00:00.000Z"
   });
   assert.equal(card.marketModel, "OTC_QUOTE");
-  assert.equal(card.buy.levelsAccepted, null);
-  assert.equal(card.buy.bestPriceToman, 201_000);
-  assert.equal(card.buy.rawDepthUsdt, 100);
-  assert.ok(
-    card.buy.unavailableFa === null ||
-      /نقل‌قول|دفتر/.test(card.buy.unavailableFa ?? "") ||
-      card.buy.rawDepthUsdt === 100
-  );
+  // Pure market depth is unavailable for OTC quotes (not maxExecutable capacity).
+  assert.equal(card.buy.rawDepthUsdt, null);
+  assert.equal(card.buy.unavailable, true);
+  assert.ok(card.buy.unavailableFa && /نقل‌قول|دفتر|ناموجود/.test(card.buy.unavailableFa));
+  // Capacity may still be reported separately.
+  assert.ok(card.buy.usableCapacityUsdt === null || card.buy.usableCapacityUsdt === 100);
 });
 
 await test("sell side uses bids; buy side uses asks", () => {

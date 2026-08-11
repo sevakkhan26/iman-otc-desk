@@ -78,11 +78,17 @@ export type AccountsAccounting = {
 /** Kept for API compatibility; depth is no longer shown on Accounts. */
 export type VenueDepthSideView = {
   bestPriceToman: number | null;
+  /** Pure market depth USDT (Σ accepted level quantities). */
   rawDepthUsdt: number | null;
+  /** Pure market depth toman (Σ price × qty) — not USDT × best. */
   rawDepthToman: number | null;
   levelsAccepted: number | null;
   levelsExcluded: number | null;
+  acceptedPriceMin?: number | null;
+  acceptedPriceMax?: number | null;
+  acceptedLevels?: Array<{ priceToman: number; amountUsdt: number }>;
   smartSizeVwapToman: number | null;
+  /** Executable capacity — not market depth. */
   usableCapacityUsdt: number | null;
   usableCapacityToman: number | null;
   limitingKey: string | null;

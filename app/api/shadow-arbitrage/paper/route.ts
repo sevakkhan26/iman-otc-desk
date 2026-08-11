@@ -815,6 +815,9 @@ export async function GET(request: Request) {
       maxSlippageBps,
       markPriceToman: markForAccounting,
       sourceFailureFa: sn?.errorReason ?? sn?.degradedReason ?? null,
+      stale: Boolean(sn?.stale),
+      maxQuoteAgeMs: maxQuoteAgeMsPolicy,
+      snapshotAgeMs: sn?.ageMs ?? null,
       quote:
         sn?.marketModel === "OTC_QUOTE"
           ? {
@@ -829,8 +832,7 @@ export async function GET(request: Request) {
       smartRecommendedUsdt: smart?.sizeUsdt ?? null,
       smartRouteKey: smart?.routeKey ?? null,
       smartBindingConstraint: smart?.binding ?? null,
-      asOf,
-      snapshotAgeMs: sn?.ageMs ?? null
+      asOf
     });
   });
 

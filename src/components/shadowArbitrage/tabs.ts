@@ -1,12 +1,12 @@
 /**
  * Shadow Arbitrage — five operator sections.
  *
- * Order is the order an operator works: money, venues, book, decisions, then
- * configuration. Sections are URL-addressable through `?tab=`. Legacy four- and
- * seven-tab slugs map through `SHADOW_TAB_ALIASES` so old bookmarks still land
- * on the section that now owns their content.
+ * Order matches the operator workflow (v4.2.1): capital → open orders →
+ * decisions → venues → configuration. Sections are URL-addressable through
+ * `?tab=`. Legacy four- and seven-tab slugs map through `SHADOW_TAB_ALIASES`
+ * so old bookmarks still land on the section that now owns their content.
  */
-export type ShadowTabId = "accounts" | "venues" | "book" | "activity" | "settings";
+export type ShadowTabId = "accounts" | "book" | "activity" | "venues" | "settings";
 
 export type ShadowTab = {
   id: ShadowTabId;
@@ -20,27 +20,27 @@ export const SHADOW_TABS: ShadowTab[] = [
   {
     id: "accounts",
     labelFa: "سرمایه و حساب",
-    hintFa: "موجودی مجازی، سود و زیان، کارمزدهای ثبت‌شده و سرمایهٔ آزاد"
+    hintFa: "خلاصه پرتفوی و موجودی مجازی هر صرافی"
+  },
+  {
+    id: "book",
+    labelFa: "سفارش‌ها",
+    hintFa: "سفارش‌های باز یا در صف — نه معاملات تکمیل‌شده"
+  },
+  {
+    id: "activity",
+    labelFa: "فعالیت‌ها",
+    hintFa: "چرا معامله شد یا نشد، و جزئیات معاملات تکمیل‌شده"
   },
   {
     id: "venues",
     labelFa: "وضعیت صرافی‌ها",
-    hintFa: "قیمت، کارمزد، ظرفیت و سلامت هر صرافی — نه سفارش واقعی"
-  },
-  {
-    id: "book",
-    labelFa: "سفارش‌ها و پوزیشن‌ها",
-    hintFa: "سفارش و پوزیشن باز مجازی، و تاریخچهٔ معاملات بسته‌شده"
-  },
-  {
-    id: "activity",
-    labelFa: "فعالیت و تصمیم‌ها",
-    hintFa: "چرخهٔ فعلی، نامزدها، رد/پذیرش و تصمیم حجم — فقط خواندنی"
+    hintFa: "سلامت، کارمزد taker و عمق قابل‌استفاده"
   },
   {
     id: "settings",
     labelFa: "تنظیمات",
-    hintFa: "سیاست Paper، سرمایه و تخصیص، شواهد و آمادگی اجرای واقعی"
+    hintFa: "نشست Paper، سیاست‌ها و تنظیمات پیشرفته"
   }
 ];
 

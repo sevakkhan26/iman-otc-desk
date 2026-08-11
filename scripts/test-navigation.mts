@@ -211,7 +211,8 @@ await test("no page, layout, API, database or backend logic was touched", () => 
     "ActivityDecisions",
     "CapitalSimulator",
     "LiveReadiness",
-    "PaperSettings"
+    "PaperSettings",
+    "PaperSessionCapitalControl"
   ]) {
     assert.ok(view.includes(`<${panel}`), `${panel} must still be on the page`);
   }
@@ -224,11 +225,11 @@ await test("no page, layout, API, database or backend logic was touched", () => 
 await test("8C the five operator sections exist in order with Persian labels", () => {
   assert.deepEqual(
     SHADOW_TABS.map((t) => t.id),
-    ["accounts", "venues", "book", "activity", "settings"]
+    ["accounts", "book", "activity", "venues", "settings"]
   );
   assert.deepEqual(
     SHADOW_TABS.map((t) => t.labelFa),
-    ["سرمایه و حساب", "وضعیت صرافی‌ها", "سفارش‌ها و پوزیشن‌ها", "فعالیت و تصمیم‌ها", "تنظیمات"]
+    ["سرمایه و حساب", "سفارش‌ها", "فعالیت‌ها", "وضعیت صرافی‌ها", "تنظیمات"]
   );
   // Every section carries a Persian one-line explanation for its tooltip.
   for (const t of SHADOW_TABS) {
@@ -311,22 +312,20 @@ await test("8C every existing panel survives, in the section that now owns it", 
     ["BookSection", "book"],
     ["ActivityDecisions", "activity"],
     ["CapitalSimulator", "settings"],
-    ["OpportunitiesPanel", "book"],
-    ["AnalyticsPanels", "book"],
     ["LiveReadiness", "settings"],
-    ["PaperSettings", "settings"]
+    ["PaperSettings", "settings"],
+    ["PaperSessionCapitalControl", "settings"]
   ];
   for (const [component, tab] of sectionTab) {
     assert.ok(view.includes(`<${component}`), `${component} must still be rendered`);
     const guard = view.lastIndexOf(`tab === "${tab}"`, view.indexOf(`<${component}`));
     assert.ok(guard > 0, `${component} must sit inside the ${tab} tab`);
   }
-  assert.ok(read("src/components/shadowArbitrage/VenuesSection.tsx").includes("<SourcesPanel"));
-  // The drawer stays outside the panels so a selected row survives a tab change.
-  assert.ok(view.includes("<OpportunityDrawer"));
-  const drawerIndex = view.indexOf("<OpportunityDrawer");
-  const panelEnd = view.lastIndexOf("</div>");
-  assert.ok(drawerIndex < panelEnd + 200, "drawer is rendered at page level");
+  // v4.2.1: Venues is compact (health + fees + usable depth); SourcesPanel is not mounted.
+  const venues = read("src/components/shadowArbitrage/VenuesSection.tsx");
+  assert.ok(venues.includes("کارمزد خرید") || venues.includes("taker"));
+  assert.ok(venues.includes("عمق قابل‌استفاده"));
+  assert.equal(venues.includes("<SourcesPanel"), false, "verbose SourcesPanel removed from Venues");
 });
 
 await test("8A the Shadow warning is permanent and the red Live warning is not", () => {
@@ -335,7 +334,7 @@ await test("8A the Shadow warning is permanent and the red Live warning is not",
   const warnIndex = view.indexOf("sa-warning-compact");
   const tabsIndex = view.indexOf("<ShadowTabs");
   assert.ok(warnIndex > 0 && warnIndex < tabsIndex, "the Shadow warning precedes the tabs");
-  assert.equal(view.includes("SHADOW_WARNING_FA"), true);
+  assert.ok(view.includes("PAPER") && view.includes("DISARMED"), "compact PAPER/DISARMED strip");
 
   // The red live banner belongs to LiveReadiness, which only the live tab mounts.
   assert.equal(
@@ -1757,13 +1756,13 @@ await test("release version: one authoritative public field, valid package metad
   const pkg = JSON.parse(read("package.json")) as { version: string; private?: boolean };
 
   // The product's version is exactly what this release is called.
-  assert.equal(version.appVersion, "4.2.0");
+  assert.equal(version.appVersion, "4.2.1");
 
-  // 4.2.0 is valid SemVer; appVersion and package.json stay aligned.
+  // 4.2.1 is valid SemVer; appVersion and package.json stay aligned.
   const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?$/;
-  assert.equal(semver.test(version.appVersion), true, "4.2.0 is valid SemVer");
+  assert.equal(semver.test(version.appVersion), true, "4.2.1 is valid SemVer");
   assert.ok(semver.test(pkg.version), `package.json keeps valid SemVer, found ${pkg.version}`);
-  assert.equal(pkg.version, "4.2.0");
+  assert.equal(pkg.version, "4.2.1");
   assert.equal(pkg.version, version.packageMetadataVersion, "and the two stay in step");
   assert.equal(pkg.private, true, "the package is never published, so its version is metadata only");
 
@@ -2296,14 +2295,25 @@ await test("8C the Command Center answers the standing questions on one screen",
   }
 });
 
-await test("8C session create, start, pause and stop live under Accounts", () => {
+await test("8C session lifecycle controls remain available (Settings hosts setup in v4.2.1)", () => {
   const view = read("src/components/ShadowArbitrageView.tsx");
-  assert.ok(view.includes("<AccountsSection"), "Accounts owns capital state");
+  assert.ok(view.includes("<AccountsSection"), "Accounts owns capital state display");
+  // v4.2.1: session setup moved to Settings; engine/API unchanged.
+  assert.ok(view.includes("<PaperSessionCapitalControl"), "session setup under Settings");
   const accountsUi = read("src/components/shadowArbitrage/AccountsSection.tsx");
-  assert.ok(accountsUi.includes("session: true"), "session controls present");
+  assert.equal(
+    accountsUi.includes("PaperSessionCapitalControl"),
+    false,
+    "Accounts no longer mounts session setup"
+  );
+  assert.equal(
+    accountsUi.includes("آزمایش Paper"),
+    false,
+    "large experiment panel removed from Accounts"
+  );
 
   const paper = read("src/components/shadowArbitrage/PaperSimple.tsx");
-  // Plain Persian for every step of the lifecycle.
+  // Plain Persian for every step of the lifecycle — still in PaperSimple for advanced use.
   for (const label of [
     "ساخت نشست جدید از طرح فعلی",
     "شروع ارزیابی",
@@ -2326,17 +2336,21 @@ await test("8C session create, start, pause and stop live under Accounts", () =>
     assert.equal(route.includes(`"${banned}"`), false, `no ${banned} action may exist`);
   }
 
-  // Closed trades live under BookSection (ledger history), not a second shell.
-  assert.ok(view.includes("<BookSection"), "Book owns closed trades");
+  // Closed trades live under Activity (explainability), not Orders.
+  assert.ok(view.includes("<ActivityDecisions"), "Activity owns completed trades");
+  const book = read("src/components/shadowArbitrage/BookSection.tsx");
+  assert.ok(book.includes("QUEUED") && book.includes("OPEN"), "Orders shows open statuses only");
+  assert.equal(book.includes("معاملات بسته‌شده"), false, "Orders must not list closed trades");
   assert.ok(paper.includes("export type PaperParts"), "the split is a declared contract");
 });
 
-await test("4.2.0 five sections and Settings configuration only", () => {
+await test("4.2.1 five sections order and Settings session control", () => {
   const tabs = read("src/components/shadowArbitrage/tabs.ts");
   assert.ok(tabs.includes("سرمایه و حساب"));
+  assert.ok(tabs.includes("سفارش‌ها"));
+  assert.ok(tabs.includes("فعالیت‌ها"));
   assert.ok(tabs.includes("وضعیت صرافی‌ها"));
-  assert.ok(tabs.includes("سفارش‌ها و پوزیشن‌ها"));
-  assert.ok(tabs.includes("فعالیت و تصمیم‌ها"));
+  assert.ok(tabs.includes("تنظیمات"));
   assert.ok(tabs.includes('id: "paper"'));
   assert.ok(tabs.includes('id: "capital"'));
   assert.ok(tabs.includes('id: "live"'));
@@ -2350,9 +2364,15 @@ await test("4.2.0 five sections and Settings configuration only", () => {
   assert.ok(view.includes('settingsView === "capital"'));
   assert.ok(view.includes('settingsView === "live"'));
   assert.ok(view.includes("<LiveReadiness"));
+  assert.ok(view.includes("<PaperSessionCapitalControl"));
+  assert.ok(view.includes("تنظیمات پیشرفته"));
+  assert.ok(view.includes("evaluatedCycleCount"));
   const acct = read("src/lib/shadowArbitrage/paper/accounting.ts");
   assert.ok(acct.includes("buildPortfolioAccounting"));
   assert.ok(acct.includes("openOrders: []"));
+  const activity = read("src/components/shadowArbitrage/ActivityDecisions.tsx");
+  assert.ok(activity.includes("چرا معامله شد یا نشد؟"));
+  assert.ok(activity.includes("Unavailable"));
 });
 
 
@@ -2397,11 +2417,11 @@ await test("4.1.8.0 Paper policy set is one atomic, fingerprinted decision", () 
   assert.ok(paperUi.includes("apply_paper_policy_set"));
 
   const activity = read("src/components/shadowArbitrage/ActivityDecisions.tsx");
-  assert.ok(activity.includes("فقط خواندنی"));
+  assert.ok(activity.includes("چرا معامله شد یا نشد؟"));
   assert.ok(activity.includes("method: \"POST\"") === false, "Activity must never POST");
   assert.ok(activity.includes("bindingConstraint"));
   assert.ok(activity.includes("riskAdjustedPnlToman"));
-  assert.ok(activity.includes("sa-ad-cards"));
+  assert.ok(activity.includes("sa-ad-cards") || activity.includes("sa-why-card"));
 
   const lr = read("src/components/shadowArbitrage/LiveReadiness.tsx");
   assert.ok(lr.includes("PAPER_POLICY_SET_KEYS"));

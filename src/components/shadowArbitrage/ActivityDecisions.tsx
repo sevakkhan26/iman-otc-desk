@@ -1,20 +1,11 @@
 "use client";
 
 /**
- * Activity and decisions — what the desk did, and exactly why.
+ * «فعالیت‌ها» — why traded / not traded, and completed trade evidence.
  *
- * Strictly read-only. It issues no POST on load, on refresh, on filtering, on
- * paging or on opening a detail: every filter is applied to data already
- * fetched, and every filter lives in the query string so a link reproduces the
- * exact view. A read-only surface that quietly posts is a surface that can
- * change state by being looked at.
- *
- * It creates no second activity system either. Everything here is already
- * persisted: the paper ledger with its SMART_CAPITAL_DEPTH evidence columns,
- * the per-cycle summaries, the session row, and the live sizing study the
- * Command Center already computes.
+ * Strictly read-only. Never invents values; missing data → Unavailable + reason.
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { TomanAmount } from "@/components/TomanAmount";
 import { formatTehran } from "@/components/format";
 import { Bidi } from "@/components/shadowArbitrage/Bidi";
@@ -23,7 +14,8 @@ import { reasonLabel } from "@/lib/shadowArbitrage/paper/reasons";
 import { readInt, useShadowViewState } from "@/components/shadowArbitrage/urlState";
 import type { RouteSizingView } from "@/components/shadowArbitrage/CommandCenter";
 import type { NormalizedSourceSnapshot } from "@/lib/shadowArbitrage/types";
-import { PAPER_POLICY_SET_KEY } from "@/lib/shadowArbitrage/live/paperPolicySet";
+import { TradeDetailsPanel } from "@/components/shadowArbitrage/TradeDetailsPanel";
+import type { ClosedTradeEvidence } from "@/lib/shadowArbitrage/paper/tradeDetailsView";
 
 /** One recorded decision, as the paper API returns it. */
 export type ActivityLedgerRow = {
@@ -36,11 +28,24 @@ export type ActivityLedgerRow = {
   sizeUsdt: number;
   buyVwapToman: number | null;
   sellVwapToman: number | null;
+  buyNotionalToman?: number | null;
+  sellNotionalToman?: number | null;
+  buyFeeBps?: number | null;
+  sellFeeBps?: number | null;
+  buyFeeAsset?: string | null;
+  sellFeeAsset?: string | null;
+  feeTomanTotal?: number | null;
+  feeUsdtMicrosTotal?: number | null;
+  sellFeeValueToman?: number | null;
+  grossSpreadToman?: number | null;
+  cashPnlIrtToman?: number | null;
   rejectionCode: string | null;
   rejectionReason: string | null;
   reasonCodes?: string[];
   riskAdjustedPnlToman: number | null;
   economicNetPnlToman: number | null;
+  slippageBufferToman?: number | null;
+  markPriceToman?: number | null;
   occurredAt: string;
   sizingPolicy?: string | null;
   sizingReason?: string | null;
@@ -56,6 +61,7 @@ export type ActivityLedgerRow = {
   nextLargerRejectionCode?: string | null;
   nextLargerRejectionReason?: string | null;
   nextLargerMarginalPnlToman?: number | null;
+  balancesAfter?: Array<{ sourceId: string; irtToman: number; usdtMicros: number }>;
 };
 
 export type ActivityCycleSummary = {
@@ -83,9 +89,18 @@ type Props = {
   sources: NormalizedSourceSnapshot[];
   serverNow: string | null;
   loading: boolean;
+  /** Optional experiment context for trade detail panel. */
+  experimentContext?: {
+    experimentId?: string | null;
+    policyFingerprint?: string | null;
+    releaseVersion?: string | null;
+  } | null;
+  /** Min required risk-adjusted edge percent from policy, if known. */
+  minRiskAdjustedEdgePercent?: number | null;
 };
 
 const DASH = <span className="sa-unknown">—</span>;
+const UNAVAILABLE = "Unavailable";
 const usdt = (micros: number | null | undefined) =>
   micros === null || micros === undefined ? null : (micros / 1_000_000).toFixed(4);
 
@@ -104,6 +119,263 @@ const SESSION_STATUS_FA: Record<string, string> = {
   CREATED: "شروع‌نشده"
 };
 
+function Unavail({ reason }: { reason: string }) {
+  return (
+    <span className="sa-unknown" title={reason}>
+      {UNAVAILABLE}
+      <span className="sa-sub"> — {reason}</span>
+    </span>
+  );
+}
+
+function Field({
+  label,
+  children
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="sa-why-field">
+      <dt>{label}</dt>
+      <dd>{children}</dd>
+    </div>
+  );
+}
+
+function WhyRouteCard({
+  r,
+  sourceAge,
+  minEdgePct
+}: {
+  r: RouteSizingView;
+  sourceAge: Map<string, { ageMs: number | null; asOf: string | null }>;
+  minEdgePct: number | null | undefined;
+}) {
+  const s = r.sizing;
+  const buyAge = sourceAge.get(r.buySourceId);
+  const sellAge = sourceAge.get(r.sellSourceId);
+  const ceiling =
+    s.capacity?.ceilingMicros != null
+      ? s.capacity.ceilingMicros / 1e6
+      : s.maxFeasibleUsdtMicros != null
+        ? s.maxFeasibleUsdtMicros / 1e6
+        : null;
+  const econ = s.economics;
+  const quote = s.quote;
+  const isSized = s.status === "SIZED";
+  const isBlocked = s.status === "BLOCKED";
+
+  // Gross spread: sell VWAP − buy VWAP × size when quote present
+  let grossSpread: number | null = null;
+  let grossPnl: number | null = null;
+  if (quote && s.sizeUsdt != null) {
+    grossSpread = quote.sellVwapToman - quote.buyVwapToman;
+    grossPnl = grossSpread * s.sizeUsdt;
+  } else if (econ) {
+    // cash PnL is after fees in some models — show only when we have it as labeled cash
+    grossPnl = econ.cashPnlIrtToman ?? null;
+  }
+
+  const riskAdj = econ?.riskAdjustedPnlToman ?? null;
+  const economicNet = econ?.economicNetPnlToman ?? null;
+  // Min required profit in toman: min edge % of capital involved when both known
+  let minRequired: number | null = null;
+  let shortfall: number | null = null;
+  if (
+    minEdgePct != null &&
+    Number.isFinite(minEdgePct) &&
+    econ?.capitalInvolvedToman != null &&
+    Number.isFinite(econ.capitalInvolvedToman)
+  ) {
+    minRequired = (minEdgePct / 100) * econ.capitalInvolvedToman;
+    if (riskAdj != null) {
+      shortfall = Math.max(0, minRequired - riskAdj);
+    }
+  }
+
+  const rejectionReason =
+    s.blockers?.[0]?.detailFa ??
+    s.selection?.nextLarger?.detailFa ??
+    (isBlocked ? s.blockers?.map((b) => b.detailFa).join(" · ") || null : null) ??
+    (!isSized ? "مسیر حجم نگرفت — جزئیات در blockers" : null);
+
+  const executionReason =
+    isSized
+      ? s.selection?.reasonFa ?? s.policy ?? "SIZED"
+      : rejectionReason;
+
+  return (
+    <article className="sa-why-card panel sa-panel">
+      <header className="sa-why-card-head">
+        <strong>
+          {r.buySourceId} ← {r.sellSourceId}
+        </strong>
+        <span
+          className={`sa-chip sa-chip-sm sa-chip-${isSized ? "good" : "muted"}`}
+        >
+          {isSized ? "قابل اجرا / حجم‌گرفته" : "رد / مسدود"}
+        </span>
+      </header>
+      <dl className="sa-why-grid">
+        <Field label="مسیر ارزیابی‌شده">
+          <code className="sa-ps-key">{r.routeKey}</code>
+        </Field>
+        <Field label="صرافی خرید / فروش">
+          {r.buySourceId} / {r.sellSourceId}
+        </Field>
+        <Field label="زمان / سن داده خرید">
+          {buyAge?.ageMs != null ? (
+            <Bidi>{toFaDigits(Math.round(buyAge.ageMs / 1000))} ثانیه</Bidi>
+          ) : (
+            <Unavail reason="سن اسنپ‌شات خرید در payload نیست" />
+          )}
+        </Field>
+        <Field label="زمان / سن داده فروش">
+          {sellAge?.ageMs != null ? (
+            <Bidi>{toFaDigits(Math.round(sellAge.ageMs / 1000))} ثانیه</Bidi>
+          ) : (
+            <Unavail reason="سن اسنپ‌شات فروش در payload نیست" />
+          )}
+        </Field>
+        <Field label="VWAP خرید">
+          {quote ? (
+            <TomanAmount value={quote.buyVwapToman} />
+          ) : (
+            <Unavail reason="quote.buyVwapToman در sizing موجود نیست" />
+          )}
+        </Field>
+        <Field label="VWAP فروش">
+          {quote ? (
+            <TomanAmount value={quote.sellVwapToman} />
+          ) : (
+            <Unavail reason="quote.sellVwapToman در sizing موجود نیست" />
+          )}
+        </Field>
+        <Field label="سقف امن">
+          {ceiling != null ? (
+            <Bidi>{toFaDigits(ceiling.toFixed(4))} USDT</Bidi>
+          ) : (
+            <Unavail reason="capacity.ceilingMicros / maxFeasible ثبت نشده" />
+          )}
+        </Field>
+        <Field label="حجم انتخاب‌شده">
+          {s.sizeUsdt != null ? (
+            <Bidi>{toFaDigits(s.sizeUsdt.toFixed(4))} USDT</Bidi>
+          ) : (
+            <Unavail reason="sizeUsdt برای این مسیر null است" />
+          )}
+        </Field>
+        <Field label="محدودکننده قطعی">
+          {s.bindingConstraint ?? (
+            <Unavail reason="bindingConstraint در sizing ثبت نشده" />
+          )}
+        </Field>
+        <Field label="اسپرد ناخالص (هر تتر)">
+          {grossSpread != null ? (
+            <TomanAmount value={grossSpread} />
+          ) : (
+            <Unavail reason="نیاز به quote.buy/sell VWAP" />
+          )}
+        </Field>
+        <Field label="P&L ناخالص تقریبی">
+          {grossPnl != null ? (
+            <TomanAmount value={grossPnl} />
+          ) : (
+            <Unavail reason="quote+size یا cashPnlIrtToman موجود نیست" />
+          )}
+        </Field>
+        <Field label="کارمزد پای خرید (venue / asset)">
+          {econ?.sellFeeValueToman != null || quote ? (
+            <span className="sa-sub">
+              venue: {r.buySourceId}
+              {" · "}
+              {econ ? (
+                <>
+                  sell-leg fee value: <TomanAmount value={econ.sellFeeValueToman} />
+                </>
+              ) : (
+                <Unavail reason="economics.sellFeeValueToman (و تفکیک buy-leg) در payload نیست" />
+              )}
+            </span>
+          ) : (
+            <Unavail reason="economics برای کارمزد پاها موجود نیست" />
+          )}
+        </Field>
+        <Field label="کارمزد پای فروش (venue / asset)">
+          <span className="sa-sub">
+            venue: {r.sellSourceId}
+            {" · "}
+            {econ ? (
+              <>
+                sellFeeValueToman: <TomanAmount value={econ.sellFeeValueToman} />
+              </>
+            ) : (
+              <Unavail reason="economics.sellFeeValueToman موجود نیست" />
+            )}
+          </span>
+        </Field>
+        <Field label="لغزش (slippage)">
+          {quote ? (
+            <Bidi>
+              buy {toFaDigits(quote.buySlippageBps)} bps · sell{" "}
+              {toFaDigits(quote.sellSlippageBps)} bps
+            </Bidi>
+          ) : econ?.slippageBufferToman != null ? (
+            <TomanAmount value={econ.slippageBufferToman} />
+          ) : (
+            <Unavail reason="quote.slippageBps و economics.slippageBufferToman موجود نیست" />
+          )}
+        </Field>
+        <Field label="بافر ریسک">
+          {econ?.slippageBufferToman != null ? (
+            <TomanAmount value={econ.slippageBufferToman} />
+          ) : (
+            <Unavail reason="economics.slippageBufferToman موجود نیست" />
+          )}
+        </Field>
+        <Field label="خالص اقتصادی">
+          {economicNet != null ? (
+            <TomanAmount value={economicNet} />
+          ) : (
+            <Unavail reason="economics.economicNetPnlToman موجود نیست" />
+          )}
+        </Field>
+        <Field label="خالص تعدیل‌شده ریسک">
+          {riskAdj != null ? (
+            <TomanAmount value={riskAdj} />
+          ) : (
+            <Unavail reason="economics.riskAdjustedPnlToman موجود نیست" />
+          )}
+        </Field>
+        <Field label="حداقل سود لازم">
+          {minRequired != null ? (
+            <TomanAmount value={minRequired} />
+          ) : minEdgePct != null ? (
+            <Bidi>{toFaDigits(minEdgePct)}٪ لبه (سرمایهٔ درگیر نامشخص)</Bidi>
+          ) : (
+            <Unavail reason="min_risk_adjusted_edge_percent یا capitalInvolved ثبت نشده" />
+          )}
+        </Field>
+        <Field label="کسری دقیق (رد)">
+          {!isSized && shortfall != null ? (
+            <TomanAmount value={shortfall} />
+          ) : !isSized ? (
+            <Unavail reason="کوتاهی قابل محاسبه نیست بدون minRequired و riskAdj" />
+          ) : (
+            <span className="sa-sub">— (مسیر رد نشده)</span>
+          )}
+        </Field>
+        <Field label="دلیل اجرا یا رد">
+          {executionReason ?? (
+            <Unavail reason="selection.reasonFa / blockers خالی است" />
+          )}
+        </Field>
+      </dl>
+    </article>
+  );
+}
+
 export function ActivityDecisions({
   session,
   ledger,
@@ -112,7 +384,9 @@ export function ActivityDecisions({
   sizingPolicy,
   sources,
   serverNow,
-  loading
+  loading,
+  experimentContext = null,
+  minRiskAdjustedEdgePercent = null
 }: Props) {
   const { read, write } = useShadowViewState();
   const venue = read("av", "all");
@@ -121,8 +395,19 @@ export function ActivityDecisions({
   const window = read("aw", "all");
   const page = readInt(read("ap", "1"), 1, 1, 10_000);
   const perPage = readInt(read("an", "20"), 20, 10, 100);
+  const [openTradeId, setOpenTradeId] = useState<string | null>(null);
 
-  /** Every venue that appears on either leg of a recorded decision. */
+  const sourceAge = useMemo(() => {
+    const m = new Map<string, { ageMs: number | null; asOf: string | null }>();
+    for (const s of sources) {
+      m.set(s.sourceId, {
+        ageMs: typeof s.ageMs === "number" ? s.ageMs : null,
+        asOf: null
+      });
+    }
+    return m;
+  }, [sources]);
+
   const venues = useMemo(() => {
     const set = new Set<string>();
     for (const r of ledger) {
@@ -132,7 +417,6 @@ export function ActivityDecisions({
     return [...set].sort();
   }, [ledger]);
 
-  /** Every rejection code actually present, with how often. */
   const reasons = useMemo(() => {
     const counts = new Map<string, number>();
     for (const r of ledger) {
@@ -156,29 +440,385 @@ export function ActivityDecisions({
     });
   }, [ledger, venue, outcome, reason, window, nowMs]);
 
+  const filledTrades = useMemo(
+    () =>
+      ledger.filter((r) => r.outcome === "FILLED") as unknown as ClosedTradeEvidence[],
+    [ledger]
+  );
+
   const totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
   const safePage = Math.min(page, totalPages);
   const shown = filtered.slice((safePage - 1) * perPage, safePage * perPage);
 
   const filledCount = ledger.filter((r) => r.outcome === "FILLED").length;
   const skippedCount = ledger.length - filledCount;
-  const sizedRoutes = routes.filter((r) => r.sizing.status === "SIZED");
 
-  /** Any filter change returns to page one; nothing else changes. */
   const setFilter = (patch: Record<string, string | null>) => write({ ...patch, ap: "1" });
+
+  const openTrade =
+    openTradeId != null
+      ? filledTrades.find((t) => t.id === openTradeId) ?? null
+      : null;
+
+  // Prefer routes with any evaluation signal for the why section
+  const whyRoutes = routes.length
+    ? [...routes].sort((a, b) => {
+        const as = a.sizing.status === "SIZED" ? 0 : 1;
+        const bs = b.sizing.status === "SIZED" ? 0 : 1;
+        if (as !== bs) return as - bs;
+        return (b.sizing.sizeUsdt ?? 0) - (a.sizing.sizeUsdt ?? 0);
+      })
+    : [];
+
+  // Latest ledger rows as fallback explainability when routes empty
+  const latestLedger = useMemo(
+    () => [...ledger].sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt)).slice(0, 8),
+    [ledger]
+  );
 
   return (
     <div className="sa-stack">
-      {/* ── session and headline counts ──────────────────────────────────── */}
-      <section className="panel sa-panel" aria-label="وضعیت نشست کاغذی">
+      {/* ── Why traded / not ─────────────────────────────────────────────── */}
+      <section className="panel sa-panel" aria-label="چرا معامله شد یا نشد؟">
         <div className="panel-header sa-panel-header">
-          <h3 className="panel-title sa-panel-title">فعالیت و تصمیم‌ها</h3>
-          <div className="sa-panel-note">فقط خواندنی — این نما هیچ چیزی را تغییر نمی‌دهد</div>
+          <h3 className="panel-title sa-panel-title">چرا معامله شد یا نشد؟</h3>
+          <div className="sa-panel-note">
+            آخرین چرخه
+            {sizingPolicy ? ` · ${sizingPolicy}` : ""}
+          </div>
+        </div>
+        <div className="panel-body sa-stack">
+          {loading && !whyRoutes.length && !latestLedger.length ? (
+            <p className="sa-sub">در حال خواندن…</p>
+          ) : null}
+
+          {whyRoutes.length ? (
+            <div className="sa-why-list">
+              {whyRoutes.slice(0, 12).map((r) => (
+                <WhyRouteCard
+                  key={r.routeKey}
+                  r={r}
+                  sourceAge={sourceAge}
+                  minEdgePct={minRiskAdjustedEdgePercent}
+                />
+              ))}
+            </div>
+          ) : latestLedger.length ? (
+            <div className="sa-why-list">
+              {latestLedger.map((r) => (
+                <article key={r.id} className="sa-why-card panel sa-panel">
+                  <header className="sa-why-card-head">
+                    <strong>
+                      {r.buySourceId} ← {r.sellSourceId}
+                    </strong>
+                    <span
+                      className={`sa-chip sa-chip-sm sa-chip-${
+                        r.outcome === "FILLED" ? "good" : "muted"
+                      }`}
+                    >
+                      {r.outcome === "FILLED" ? "اجراشده" : "ردشده"}
+                    </span>
+                  </header>
+                  <dl className="sa-why-grid">
+                    <Field label="مسیر">{r.routeKey}</Field>
+                    <Field label="صرافی خرید / فروش">
+                      {r.buySourceId} / {r.sellSourceId}
+                    </Field>
+                    <Field label="زمان">{formatTehran(r.occurredAt)}</Field>
+                    <Field label="سن داده">
+                      <Unavail reason="سن quote در ردیف دفتر ذخیره نشده" />
+                    </Field>
+                    <Field label="VWAP خرید">
+                      {r.buyVwapToman != null ? (
+                        <TomanAmount value={r.buyVwapToman} />
+                      ) : (
+                        <Unavail reason="buyVwapToman در ledger null است" />
+                      )}
+                    </Field>
+                    <Field label="VWAP فروش">
+                      {r.sellVwapToman != null ? (
+                        <TomanAmount value={r.sellVwapToman} />
+                      ) : (
+                        <Unavail reason="sellVwapToman در ledger null است" />
+                      )}
+                    </Field>
+                    <Field label="سقف امن">
+                      {r.capitalCapUsdtMicros != null || r.depthCapUsdtMicros != null ? (
+                        <Bidi>
+                          capital {usdt(r.capitalCapUsdtMicros) ?? "—"} · depth{" "}
+                          {usdt(r.depthCapUsdtMicros) ?? "—"} USDT
+                        </Bidi>
+                      ) : (
+                        <Unavail reason="capitalCap/depthCap در ledger ثبت نشده" />
+                      )}
+                    </Field>
+                    <Field label="حجم انتخاب‌شده">
+                      <Bidi>{toFaDigits(r.sizeUsdt.toFixed(4))} USDT</Bidi>
+                    </Field>
+                    <Field label="محدودکننده">
+                      {r.bindingConstraint ?? (
+                        <Unavail reason="bindingConstraint در ledger ثبت نشده" />
+                      )}
+                    </Field>
+                    <Field label="اسپرد / P&L ناخالص">
+                      {r.grossSpreadToman != null ? (
+                        <TomanAmount value={r.grossSpreadToman} />
+                      ) : (
+                        <Unavail reason="grossSpreadToman در ledger موجود نیست" />
+                      )}
+                    </Field>
+                    <Field label="کارمزد خرید (venue / asset)">
+                      {r.buyFeeBps != null || r.feeTomanTotal != null ? (
+                        <span className="sa-sub">
+                          {r.buySourceId}
+                          {r.buyFeeAsset ? ` · ${r.buyFeeAsset}` : ""}
+                          {r.buyFeeBps != null ? ` · ${toFaDigits(r.buyFeeBps)} bps` : ""}
+                          {r.feeTomanTotal != null ? (
+                            <>
+                              {" · "}
+                              <TomanAmount value={r.feeTomanTotal} />
+                            </>
+                          ) : null}
+                        </span>
+                      ) : (
+                        <Unavail reason="buyFeeBps / feeTomanTotal در ledger نیست" />
+                      )}
+                    </Field>
+                    <Field label="کارمزد فروش (venue / asset)">
+                      {r.sellFeeBps != null || r.sellFeeValueToman != null ? (
+                        <span className="sa-sub">
+                          {r.sellSourceId}
+                          {r.sellFeeAsset ? ` · ${r.sellFeeAsset}` : ""}
+                          {r.sellFeeBps != null ? ` · ${toFaDigits(r.sellFeeBps)} bps` : ""}
+                          {r.sellFeeValueToman != null ? (
+                            <>
+                              {" · "}
+                              <TomanAmount value={r.sellFeeValueToman} />
+                            </>
+                          ) : null}
+                        </span>
+                      ) : (
+                        <Unavail reason="sellFeeBps / sellFeeValueToman در ledger نیست" />
+                      )}
+                    </Field>
+                    <Field label="لغزش / بافر ریسک">
+                      {r.slippageBufferToman != null ? (
+                        <TomanAmount value={r.slippageBufferToman} />
+                      ) : (
+                        <Unavail reason="slippageBufferToman در ledger موجود نیست" />
+                      )}
+                    </Field>
+                    <Field label="خالص اقتصادی">
+                      {r.economicNetPnlToman != null ? (
+                        <TomanAmount value={r.economicNetPnlToman} />
+                      ) : (
+                        <Unavail reason="economicNetPnlToman null است" />
+                      )}
+                    </Field>
+                    <Field label="خالص تعدیل‌شده">
+                      {r.riskAdjustedPnlToman != null ? (
+                        <TomanAmount value={r.riskAdjustedPnlToman} />
+                      ) : (
+                        <Unavail reason="riskAdjustedPnlToman null است" />
+                      )}
+                    </Field>
+                    <Field label="حداقل سود لازم">
+                      <Unavail reason="حداقل سود در ردیف دفتر ذخیره نشده؛ از سیاست چرخه استفاده کنید" />
+                    </Field>
+                    <Field label="کسری / دلیل">
+                      {r.outcome === "SKIPPED" ? (
+                        r.rejectionReason ?? reasonLabel(r.rejectionCode ?? "") ?? (
+                          <Unavail reason="rejectionReason خالی است" />
+                        )
+                      ) : (
+                        r.sizingReason ?? "اجرا شد"
+                      )}
+                    </Field>
+                  </dl>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="sa-sub">
+              هنوز مسیر یا تصمیمی برای توضیح وجود ندارد.
+            </p>
+          )}
+        </div>
+      </section>
+
+      {/* ── Completed trades ─────────────────────────────────────────────── */}
+      <section className="panel sa-panel" aria-label="معاملات تکمیل‌شده">
+        <div className="panel-header sa-panel-header">
+          <h3 className="panel-title">معاملات تکمیل‌شده</h3>
+          <div className="sa-panel-note">
+            <Bidi>{toFaDigits(filledTrades.length)}</Bidi> معامله
+          </div>
+        </div>
+        <div className="panel-body sa-stack">
+          {filledTrades.length ? (
+            <>
+              <div className="sa-table-wrap sa-ad-desktop">
+                <table className="sa-table">
+                  <thead>
+                    <tr>
+                      <th>خرید</th>
+                      <th>فروش</th>
+                      <th className="num">حجم</th>
+                      <th className="num">VWAP</th>
+                      <th className="num">خالص اقتصادی</th>
+                      <th>زمان / مدت</th>
+                      <th>ledger</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filledTrades.slice(0, 50).map((t) => (
+                      <tr key={t.id}>
+                        <td>
+                          {t.buySourceId}
+                          <div className="sa-sub">
+                            {t.buyVwapToman != null ? (
+                              <TomanAmount value={t.buyVwapToman} />
+                            ) : (
+                              <Unavail reason="buyVwapToman" />
+                            )}
+                            {t.buyFeeBps != null ? (
+                              <> · fee {toFaDigits(t.buyFeeBps)} bps</>
+                            ) : null}
+                            {t.buyFeeAsset ? ` (${t.buyFeeAsset})` : ""}
+                          </div>
+                        </td>
+                        <td>
+                          {t.sellSourceId}
+                          <div className="sa-sub">
+                            {t.sellVwapToman != null ? (
+                              <TomanAmount value={t.sellVwapToman} />
+                            ) : (
+                              <Unavail reason="sellVwapToman" />
+                            )}
+                            {t.sellFeeBps != null ? (
+                              <> · fee {toFaDigits(t.sellFeeBps)} bps</>
+                            ) : null}
+                            {t.sellFeeAsset ? ` (${t.sellFeeAsset})` : ""}
+                          </div>
+                        </td>
+                        <td className="num">
+                          <Bidi>{toFaDigits(t.sizeUsdt.toFixed(4))}</Bidi>
+                        </td>
+                        <td className="num">
+                          {t.buyVwapToman != null && t.sellVwapToman != null ? (
+                            <Bidi>
+                              {toFaDigits(t.buyVwapToman.toLocaleString("en-US"))} ↤{" "}
+                              {toFaDigits(t.sellVwapToman.toLocaleString("en-US"))}
+                            </Bidi>
+                          ) : (
+                            DASH
+                          )}
+                        </td>
+                        <td className="num">
+                          {t.economicNetPnlToman != null ? (
+                            <TomanAmount value={t.economicNetPnlToman} />
+                          ) : (
+                            <Unavail reason="economicNetPnlToman" />
+                          )}
+                          {t.markPriceToman != null && t.economicNetPnlToman != null ? (
+                            <div className="sa-sub">
+                              ≈{" "}
+                              <Bidi>
+                                {toFaDigits(
+                                  (t.economicNetPnlToman / t.markPriceToman).toFixed(4)
+                                )}
+                              </Bidi>{" "}
+                              USDT
+                            </div>
+                          ) : null}
+                        </td>
+                        <td className="sa-sub">
+                          {formatTehran(t.occurredAt)}
+                          <div>مدت: atomic dual-leg · ۰ ms</div>
+                        </td>
+                        <td className="sa-sub">
+                          <code className="sa-ps-key">{t.id}</code>
+                          <div>FILLED</div>
+                          {t.bindingConstraint ? (
+                            <div>sizing: {t.bindingConstraint}</div>
+                          ) : null}
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="sa-btn sa-btn-ghost sa-td-open-btn"
+                            onClick={() =>
+                              setOpenTradeId((cur) => (cur === t.id ? null : t.id))
+                            }
+                          >
+                            جزئیات
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <ul className="sa-ad-cards">
+                {filledTrades.slice(0, 50).map((t) => (
+                  <li key={t.id} className="sa-ad-card">
+                    <div className="sa-ad-card-head">
+                      <span className="sa-ad-card-title">
+                        {t.buySourceId} ← {t.sellSourceId}
+                      </span>
+                      {t.economicNetPnlToman != null ? (
+                        <TomanAmount value={t.economicNetPnlToman} />
+                      ) : (
+                        DASH
+                      )}
+                    </div>
+                    <p className="sa-sub">
+                      <Bidi>{toFaDigits(t.sizeUsdt.toFixed(4))}</Bidi> تتر ·{" "}
+                      {formatTehran(t.occurredAt)} · {t.id}
+                    </p>
+                    <button
+                      type="button"
+                      className="sa-btn sa-btn-ghost"
+                      onClick={() =>
+                        setOpenTradeId((cur) => (cur === t.id ? null : t.id))
+                      }
+                    >
+                      جزئیات معامله
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {openTrade ? (
+                <TradeDetailsPanel
+                  trade={openTrade}
+                  context={{
+                    experimentId: experimentContext?.experimentId ?? null,
+                    policyFingerprint: experimentContext?.policyFingerprint ?? null,
+                    releaseVersion: experimentContext?.releaseVersion ?? null
+                  }}
+                  open
+                  onClose={() => setOpenTradeId(null)}
+                />
+              ) : null}
+            </>
+          ) : (
+            <p className="sa-sub">
+              {loading ? "در حال خواندن…" : "هنوز معاملهٔ تکمیل‌شده‌ای در دفتر نیست."}
+            </p>
+          )}
+        </div>
+      </section>
+
+      {/* ── session headline ─────────────────────────────────────────────── */}
+      <section className="panel sa-panel" aria-label="خلاصه نشست">
+        <div className="panel-header sa-panel-header">
+          <h3 className="panel-title sa-panel-title">خلاصه نشست</h3>
         </div>
         <div className="panel-body">
           <dl className="sa-ad-summary">
             <div>
-              <dt>نشست کاغذی</dt>
+              <dt>نشست</dt>
               <dd>
                 {session ? (
                   <>
@@ -201,26 +841,6 @@ export function ActivityDecisions({
               </dd>
             </div>
             <div>
-              <dt>سرمایهٔ نشست</dt>
-              <dd>{session ? <TomanAmount value={session.totalCapitalToman} /> : DASH}</dd>
-            </div>
-            <div>
-              <dt>سیاست حجم‌دهی</dt>
-              <dd>
-                {sizingPolicy ? (
-                  <span className="sa-chip sa-chip-sm sa-chip-muted">{sizingPolicy}</span>
-                ) : (
-                  DASH
-                )}
-              </dd>
-            </div>
-            <div>
-              <dt>مجموعهٔ سیاست Paper</dt>
-              <dd>
-                <span className="sa-chip sa-chip-sm sa-chip-muted">{PAPER_POLICY_SET_KEY}</span>
-              </dd>
-            </div>
-            <div>
               <dt>اجراشده · رد‌شده</dt>
               <dd>
                 <Bidi>
@@ -229,269 +849,23 @@ export function ActivityDecisions({
               </dd>
             </div>
             <div>
-              <dt>مسیرهای حجم‌گرفته (چرخهٔ فعلی)</dt>
+              <dt>چرخه‌های ثبت‌شده</dt>
               <dd>
-                <Bidi>
-                  {toFaDigits(sizedRoutes.length)} از {toFaDigits(routes.length)}
-                </Bidi>
+                <Bidi>{toFaDigits(cycleSummaries.length)}</Bidi>
               </dd>
-            </div>
-            <div>
-              <dt>آخرین به‌روزرسانی</dt>
-              <dd>{serverNow ? formatTehran(serverNow) : DASH}</dd>
             </div>
           </dl>
         </div>
       </section>
 
-      {/* ── recent evaluation cycles ─────────────────────────────────────── */}
-      <section className="panel sa-panel" aria-label="چرخه‌های ارزیابی اخیر">
-        <div className="panel-header sa-panel-header">
-          <h3 className="panel-title sa-panel-title">چرخه‌های ارزیابی اخیر</h3>
-          <div className="sa-panel-note">هر ردیف یک چرخهٔ کامل ارزیابی است</div>
-        </div>
-        <div className="panel-body">
-          {cycleSummaries.length ? (
-            <div className="sa-table-wrap">
-              <table className="sa-table">
-                <thead>
-                  <tr>
-                    <th scope="col">زمان</th>
-                    <th scope="col" className="num">نامزد بررسی‌شده</th>
-                    <th scope="col" className="num">اجراشده</th>
-                    <th scope="col" className="num">ردشده</th>
-                    <th scope="col">دلایل غالب</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {cycleSummaries.slice(0, 30).map((c) => (
-                    <tr key={c.occurredAt}>
-                      <td data-label="زمان">{formatTehran(c.occurredAt)}</td>
-                      <td data-label="نامزد بررسی‌شده" className="num">
-                        <Bidi>{toFaDigits(c.candidatesEvaluated)}</Bidi>
-                      </td>
-                      <td data-label="اجراشده" className="num">
-                        <Bidi>{toFaDigits(c.filled)}</Bidi>
-                      </td>
-                      <td data-label="ردشده" className="num">
-                        <Bidi>{toFaDigits(c.skipped)}</Bidi>
-                      </td>
-                      <td data-label="دلایل غالب" className="sa-sub">
-                        {Object.entries(c.reasonCounts ?? {})
-                          .sort((a, b) => b[1] - a[1])
-                          .slice(0, 3)
-                          .map(([code, n]) => `${reasonLabel(code)} (${toFaDigits(n)})`)
-                          .join(" · ") || DASH}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <p className="sa-sub">
-              {loading ? "در حال خواندن…" : "هنوز هیچ چرخهٔ ارزیابی ثبت نشده است."}
-            </p>
-          )}
-        </div>
-      </section>
-
-      {/* ── current cycle smart size only (no fixed ladder) ──────────────── */}
-      <section className="panel sa-panel" aria-label="تصمیم حجم در چرخهٔ فعلی">
-        <div className="panel-header sa-panel-header">
-          <h3 className="panel-title sa-panel-title">تصمیم حجم در چرخهٔ فعلی</h3>
-          <div className="sa-panel-note">
-            حجم هوشمند، سقف امن و محدودیت‌کننده — بدون نردبان ثابت
-          </div>
-        </div>
-        <div className="panel-body">
-          {sizedRoutes.length ? (
-            <>
-              <div className="sa-table-wrap sa-ad-desktop">
-                <table className="sa-table">
-                  <thead>
-                    <tr>
-                      <th scope="col">مسیر</th>
-                      <th scope="col" className="num">حجم هوشمند</th>
-                      <th scope="col" className="num">سقف امن</th>
-                      <th scope="col">محدودیت‌کننده</th>
-                      <th scope="col" className="num">VWAP دو پا</th>
-                      <th scope="col" className="num">سود · بازده</th>
-                      <th scope="col" className="num">اثر موجودی</th>
-                      <th scope="col">چرا بزرگ‌تر نه</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sizedRoutes.map((r) => (
-                      <tr key={r.routeKey}>
-                        <td data-label="مسیر">
-                          {r.buySourceId} ← {r.sellSourceId}
-                        </td>
-                        <td data-label="حجم هوشمند" className="num">
-                          <Bidi>{toFaDigits((r.sizing.sizeUsdt ?? 0).toFixed(4))}</Bidi>
-                        </td>
-                        <td data-label="سقف امن" className="num">
-                          {r.sizing.capacity?.ceilingMicros != null ? (
-                            <Bidi>
-                              {toFaDigits(
-                                (r.sizing.capacity.ceilingMicros / 1_000_000).toFixed(4)
-                              )}
-                            </Bidi>
-                          ) : r.sizing.maxFeasibleUsdtMicros != null ? (
-                            <Bidi>
-                              {toFaDigits(
-                                (r.sizing.maxFeasibleUsdtMicros / 1_000_000).toFixed(4)
-                              )}
-                            </Bidi>
-                          ) : (
-                            DASH
-                          )}
-                        </td>
-                        <td data-label="محدودیت‌کننده" className="sa-sub">
-                          {r.sizing.bindingConstraint ?? "منحنی سود، نه یک سقف"}
-                        </td>
-                        <td data-label="VWAP دو پا" className="num">
-                          {r.sizing.quote ? (
-                            <Bidi>
-                              {toFaDigits(r.sizing.quote.buyVwapToman.toLocaleString("en-US"))} ↤{" "}
-                              {toFaDigits(r.sizing.quote.sellVwapToman.toLocaleString("en-US"))}
-                            </Bidi>
-                          ) : (
-                            DASH
-                          )}
-                        </td>
-                        <td data-label="سود · بازده" className="num">
-                          {r.sizing.economics ? (
-                            <>
-                              <TomanAmount value={r.sizing.economics.riskAdjustedPnlToman} />
-                              <br />
-                              <Bidi>
-                                {toFaDigits(r.sizing.economics.riskAdjustedReturnBps)} bps
-                              </Bidi>
-                            </>
-                          ) : (
-                            DASH
-                          )}
-                        </td>
-                        <td data-label="اثر موجودی" className="num">
-                          {r.sizing.inventory?.measurable ? (
-                            <Bidi>
-                              {r.sizing.inventory.impactPoints > 0 ? "+" : ""}
-                              {toFaDigits(r.sizing.inventory.impactPoints.toFixed(2))}
-                            </Bidi>
-                          ) : (
-                            DASH
-                          )}
-                        </td>
-                        <td data-label="چرا بزرگ‌تر نه" className="sa-sub">
-                          {r.sizing.selection?.nextLarger
-                            ? `${r.sizing.selection.nextLarger.code} — ${r.sizing.selection.nextLarger.detailFa}`
-                            : "نامزد بزرگ‌تری وجود نداشت"}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <ul className="sa-ad-cards">
-                {sizedRoutes.map((r) => (
-                  <li key={r.routeKey} className="sa-ad-card">
-                    <div className="sa-ad-card-head">
-                      <span className="sa-ad-card-title">
-                        {r.buySourceId} ← {r.sellSourceId}
-                      </span>
-                      <span className="sa-chip sa-chip-sm sa-chip-good">
-                        <Bidi>{toFaDigits((r.sizing.sizeUsdt ?? 0).toFixed(4))}</Bidi> تتر
-                      </span>
-                    </div>
-                    <dl className="sa-ad-card-grid">
-                      <div>
-                        <dt>سود تعدیل‌شده</dt>
-                        <dd>
-                          {r.sizing.economics ? (
-                            <TomanAmount value={r.sizing.economics.riskAdjustedPnlToman} />
-                          ) : (
-                            DASH
-                          )}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>بازده</dt>
-                        <dd>
-                          {r.sizing.economics ? (
-                            <Bidi>
-                              {toFaDigits(r.sizing.economics.riskAdjustedReturnBps)} bps
-                            </Bidi>
-                          ) : (
-                            DASH
-                          )}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>سقف امن</dt>
-                        <dd>
-                          {r.sizing.capacity?.ceilingMicros != null ? (
-                            <Bidi>
-                              {toFaDigits(
-                                (r.sizing.capacity.ceilingMicros / 1_000_000).toFixed(4)
-                              )}
-                            </Bidi>
-                          ) : r.sizing.maxFeasibleUsdtMicros != null ? (
-                            <Bidi>
-                              {toFaDigits(
-                                (r.sizing.maxFeasibleUsdtMicros / 1_000_000).toFixed(4)
-                              )}
-                            </Bidi>
-                          ) : (
-                            DASH
-                          )}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>محدودیت‌کننده</dt>
-                        <dd className="sa-sub">
-                          {r.sizing.bindingConstraint ?? "—"}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>اثر موجودی</dt>
-                        <dd>
-                          {r.sizing.inventory?.measurable ? (
-                            <Bidi>
-                              {toFaDigits(r.sizing.inventory.impactPoints.toFixed(2))} واحد
-                            </Bidi>
-                          ) : (
-                            DASH
-                          )}
-                        </dd>
-                      </div>
-                    </dl>
-                    <p className="sa-sub sa-ad-card-note">
-                      {r.sizing.selection?.reasonFa ?? "دلیل ثبت نشده"}
-                    </p>
-                  </li>
-                ))}
-              </ul>
-            </>
-          ) : (
-            <p className="sa-sub">
-              در این چرخه هیچ مسیری حجم نگرفت. دلیل دقیق هر مسیر در «مرکز فرماندهی» و در فهرست
-              تصمیم‌های ثبت‌شدهٔ پایین همین صفحه آمده است.
-            </p>
-          )}
-        </div>
-      </section>
-
-      {/* ── recorded decisions, filtered ─────────────────────────────────── */}
+      {/* ── recorded decisions ───────────────────────────────────────────── */}
       <section className="panel sa-panel" aria-label="تصمیم‌های ثبت‌شده">
         <div className="panel-header sa-panel-header">
           <h3 className="panel-title sa-panel-title">تصمیم‌های ثبت‌شده</h3>
           <div className="sa-panel-note">
             <Bidi>
               {toFaDigits(filtered.length)} از {toFaDigits(ledger.length)}
-            </Bidi>{" "}
-            ردیف
+            </Bidi>
           </div>
         </div>
 
@@ -539,7 +913,7 @@ export function ActivityDecisions({
             </select>
           </label>
           <label className="sa-field">
-            <span className="sa-field-label">بازهٔ زمانی</span>
+            <span className="sa-field-label">بازه</span>
             <select
               className="sa-control"
               value={window}
@@ -565,20 +939,17 @@ export function ActivityDecisions({
                       <th scope="col">مسیر</th>
                       <th scope="col">نتیجه</th>
                       <th scope="col" className="num">حجم</th>
-                      <th scope="col" className="num">VWAP دو پا</th>
-                      <th scope="col" className="num">سود · بازده</th>
-                      <th scope="col" className="num">اثر موجودی</th>
                       <th scope="col">دلیل</th>
                     </tr>
                   </thead>
                   <tbody>
                     {shown.map((r) => (
                       <tr key={r.id}>
-                        <td data-label="زمان">{formatTehran(r.occurredAt)}</td>
-                        <td data-label="مسیر">
+                        <td>{formatTehran(r.occurredAt)}</td>
+                        <td>
                           {r.buySourceId} ← {r.sellSourceId}
                         </td>
-                        <td data-label="نتیجه">
+                        <td>
                           <span
                             className={`sa-chip sa-chip-sm sa-chip-${
                               r.outcome === "FILLED" ? "good" : "muted"
@@ -587,77 +958,17 @@ export function ActivityDecisions({
                             {r.outcome === "FILLED" ? "اجراشده" : "ردشده"}
                           </span>
                         </td>
-                        <td data-label="حجم" className="num">
+                        <td className="num">
                           <Bidi>{toFaDigits(r.sizeUsdt.toFixed(4))}</Bidi>
                         </td>
-                        <td data-label="VWAP دو پا" className="num">
-                          {r.buyVwapToman && r.sellVwapToman ? (
-                            <Bidi>
-                              {toFaDigits(r.buyVwapToman.toLocaleString("en-US"))} ↤{" "}
-                              {toFaDigits(r.sellVwapToman.toLocaleString("en-US"))}
-                            </Bidi>
-                          ) : (
-                            DASH
-                          )}
-                        </td>
-                        <td data-label="سود · بازده" className="num">
-                          {r.riskAdjustedPnlToman === null ? (
-                            DASH
-                          ) : (
-                            <>
-                              <TomanAmount value={r.riskAdjustedPnlToman} />
-                              {r.riskAdjustedReturnBps !== null &&
-                              r.riskAdjustedReturnBps !== undefined ? (
-                                <>
-                                  <br />
-                                  <Bidi>{toFaDigits(r.riskAdjustedReturnBps)} bps</Bidi>
-                                </>
-                              ) : null}
-                            </>
-                          )}
-                        </td>
-                        <td data-label="اثر موجودی" className="num">
-                          {r.inventoryImpactPoints === null ||
-                          r.inventoryImpactPoints === undefined ? (
-                            DASH
-                          ) : (
-                            <Bidi>{toFaDigits(r.inventoryImpactPoints.toFixed(2))}</Bidi>
-                          )}
-                        </td>
-                        <td data-label="دلیل" className="sa-sub">
+                        <td className="sa-sub">
                           {r.outcome === "FILLED"
-                            ? (r.sizingReason ?? "دلیل ثبت نشده")
+                            ? (r.sizingReason ?? "—")
                             : (r.rejectionReason ?? reasonLabel(r.rejectionCode ?? ""))}
-                          {r.nextLargerRejectionCode ? (
-                            <>
-                              <br />
-                              <span className="sa-strong">چرا بزرگ‌تر نه: </span>
-                              {r.nextLargerRejectionCode} —{" "}
-                              {r.nextLargerRejectionReason ?? ""}
-                            </>
-                          ) : null}
                           {r.bindingConstraint ? (
                             <>
                               <br />
                               محدودکننده: {r.bindingConstraint}
-                              {r.limitingSourceId ? ` (${r.limitingSourceId})` : ""}
-                            </>
-                          ) : null}
-                          {r.capitalCapUsdtMicros !== null &&
-                          r.capitalCapUsdtMicros !== undefined ? (
-                            <>
-                              <br />
-                              سقف سرمایه <Bidi>{toFaDigits(usdt(r.capitalCapUsdtMicros) ?? "")}</Bidi>{" "}
-                              · سقف عمق{" "}
-                              <Bidi>{toFaDigits(usdt(r.depthCapUsdtMicros) ?? "")}</Bidi>
-                            </>
-                          ) : null}
-                          {r.sizingPolicy ? (
-                            <>
-                              <br />
-                              <span className="sa-chip sa-chip-sm sa-chip-muted">
-                                {r.sizingPolicy}
-                              </span>
                             </>
                           ) : null}
                         </td>
@@ -666,66 +977,6 @@ export function ActivityDecisions({
                   </tbody>
                 </table>
               </div>
-
-              <ul className="sa-ad-cards">
-                {shown.map((r) => (
-                  <li key={r.id} className="sa-ad-card">
-                    <div className="sa-ad-card-head">
-                      <span className="sa-ad-card-title">
-                        {r.buySourceId} ← {r.sellSourceId}
-                      </span>
-                      <span
-                        className={`sa-chip sa-chip-sm sa-chip-${
-                          r.outcome === "FILLED" ? "good" : "muted"
-                        }`}
-                      >
-                        {r.outcome === "FILLED" ? "اجراشده" : "ردشده"}
-                      </span>
-                    </div>
-                    <dl className="sa-ad-card-grid">
-                      <div>
-                        <dt>زمان</dt>
-                        <dd>{formatTehran(r.occurredAt)}</dd>
-                      </div>
-                      <div>
-                        <dt>حجم</dt>
-                        <dd>
-                          <Bidi>{toFaDigits(r.sizeUsdt.toFixed(4))}</Bidi> تتر
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>سود تعدیل‌شده</dt>
-                        <dd>
-                          {r.riskAdjustedPnlToman === null ? (
-                            DASH
-                          ) : (
-                            <TomanAmount value={r.riskAdjustedPnlToman} />
-                          )}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>VWAP دو پا</dt>
-                        <dd>
-                          {r.buyVwapToman && r.sellVwapToman ? (
-                            <Bidi>
-                              {toFaDigits(r.buyVwapToman.toLocaleString("en-US"))} ↤{" "}
-                              {toFaDigits(r.sellVwapToman.toLocaleString("en-US"))}
-                            </Bidi>
-                          ) : (
-                            DASH
-                          )}
-                        </dd>
-                      </div>
-                    </dl>
-                    <p className="sa-sub sa-ad-card-note">
-                      {r.outcome === "FILLED"
-                        ? (r.sizingReason ?? "دلیل ثبت نشده")
-                        : (r.rejectionReason ?? reasonLabel(r.rejectionCode ?? ""))}
-                    </p>
-                  </li>
-                ))}
-              </ul>
-
               <div className="sa-pager">
                 <button
                   type="button"
@@ -748,9 +999,6 @@ export function ActivityDecisions({
                 >
                   بعدی
                 </button>
-                <span className="sa-pager-count">
-                  <Bidi>{toFaDigits(filtered.length)}</Bidi> ردیف
-                </span>
               </div>
             </>
           ) : (
@@ -764,57 +1012,6 @@ export function ActivityDecisions({
           )}
         </div>
       </section>
-
-      {/* ── source health and freshness ──────────────────────────────────── */}
-      <section className="panel sa-panel" aria-label="سلامت و تازگی منابع">
-        <div className="panel-header sa-panel-header">
-          <h3 className="panel-title sa-panel-title">سلامت و تازگی منابع</h3>
-          <div className="sa-panel-note">دادهٔ همان چرخه‌ای که تصمیم‌ها روی آن گرفته شد</div>
-        </div>
-        <div className="panel-body sa-table-wrap">
-          <table className="sa-table">
-            <thead>
-              <tr>
-                <th scope="col">صرافی</th>
-                <th scope="col">سلامت</th>
-                <th scope="col" className="num">سن داده</th>
-                <th scope="col">مدل بازار</th>
-                <th scope="col">مانع</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sources.map((s) => (
-                <tr key={s.sourceId}>
-                  <td data-label="صرافی">{s.sourceName}</td>
-                  <td data-label="سلامت">
-                    <span
-                      className={`sa-chip sa-chip-sm sa-chip-${
-                        s.health === "healthy" ? "good" : s.health === "degraded" ? "warn" : "danger"
-                      }`}
-                    >
-                      {s.health}
-                    </span>
-                  </td>
-                  <td data-label="سن داده" className="num">
-                    <Bidi>{toFaDigits(Math.round(s.ageMs / 1000))}</Bidi> ثانیه
-                    {s.stale ? " (کهنه)" : ""}
-                  </td>
-                  <td data-label="مدل بازار">{s.marketModel}</td>
-                  <td data-label="مانع" className="sa-sub">
-                    {s.errorReason ?? s.degradedReason ?? DASH}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <p className="sa-sub sa-ad-foot">
-        این نما فقط خواندنی است: بارگذاری، تازه‌سازی، فیلتر، صفحه‌بندی و باز کردن جزئیات هیچ
-        درخواست تغییردهنده‌ای نمی‌فرستند. ارقام از همان ردیف‌های ثبت‌شدهٔ دفتر کاغذی و خلاصهٔ
-        چرخه‌ها خوانده می‌شوند و دوباره محاسبه نمی‌گردند.
-      </p>
     </div>
   );
 }

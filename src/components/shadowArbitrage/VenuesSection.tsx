@@ -1,18 +1,21 @@
 "use client";
 
 /**
- * «وضعیت صرافی‌ها» — one card per venue: price, fees, capacity, health.
+ * «وضعیت صرافی‌ها» — compact: health, buy/sell taker fees, usable depth only.
+ *
+ * v4.2.1: no price ladder, capacity diagnostics, or verbose depth blocks.
+ * Fees appear only here. Depth uses real slippage-bounded accepted values;
+ * never fabricated.
  */
 import { TomanAmount } from "@/components/TomanAmount";
-import { formatTehran } from "@/components/format";
 import { Bidi } from "@/components/shadowArbitrage/Bidi";
 import { toFaDigits } from "@/components/shadowArbitrage/labels";
-import { SourcesPanel } from "@/components/shadowArbitrage/SourcesPanel";
 import type {
   FeeConfirmationAudit,
   VenueFeeEvidence,
   VenueReadiness
 } from "@/components/shadowArbitrage/sourcesModel";
+import type { VenueDepthCardView } from "@/components/shadowArbitrage/AccountsSection";
 import type { RouteSizingView } from "@/components/shadowArbitrage/CommandCenter";
 import type { NormalizedSourceSnapshot } from "@/lib/shadowArbitrage/types";
 
@@ -50,21 +53,23 @@ type VenueSemanticsRow = {
 };
 
 type Props = {
-  certifications: ObservationPayloadLike["certifications"];
+  certifications?: unknown[];
   health: ObservationPayloadLike["sourceHealth"];
   snapshots: NormalizedSourceSnapshot[];
   venues: VenueReadiness[];
   feeEvidence: VenueFeeEvidence[];
-  auditHistory: FeeConfirmationAudit[];
-  feeReverifyDays: number | null;
-  pollIntervalMs: number;
+  auditHistory?: FeeConfirmationAudit[];
+  feeReverifyDays?: number | null;
+  pollIntervalMs?: number;
   loading: boolean;
-  error: string | null;
-  onReload: () => void;
-  venueCapacities: VenueCapacity[];
-  venueSemantics: VenueSemanticsRow[] | null;
-  routes: RouteSizingView[];
-  serverNow: string | null;
+  error?: string | null;
+  onReload?: () => void;
+  venueCapacities?: VenueCapacity[];
+  venueSemantics?: VenueSemanticsRow[] | null;
+  routes?: RouteSizingView[];
+  serverNow?: string | null;
+  /** Preferred source for slippage-bounded usable depth. */
+  venueDepthCards?: VenueDepthCardView[] | null;
 };
 
 type ObservationPayloadLike = {
@@ -80,45 +85,55 @@ type ObservationPayloadLike = {
   }>;
 };
 
-const DASH = <span className="sa-unknown">—</span>;
+const UNAVAILABLE = "Unavailable";
 
-function microsUsdt(m: number | null | undefined): string {
-  if (m === null || m === undefined) return "—";
-  return (m / 1_000_000).toFixed(4);
+function DepthValue({
+  usdt,
+  toman,
+  reasonFa
+}: {
+  usdt: number | null | undefined;
+  toman: number | null | undefined;
+  reasonFa?: string | null;
+}) {
+  if (usdt === null || usdt === undefined || !Number.isFinite(usdt)) {
+    return (
+      <span className="sa-unknown" title={reasonFa ?? "عمق لغزش‌محدود در این چرخه موجود نیست"}>
+        {UNAVAILABLE}
+        {reasonFa ? ` — ${reasonFa}` : ""}
+      </span>
+    );
+  }
+  return (
+    <span>
+      <Bidi>{toFaDigits(usdt.toFixed(4))}</Bidi> USDT
+      {toman !== null && toman !== undefined && Number.isFinite(toman) ? (
+        <>
+          {" · "}
+          <TomanAmount value={toman} />
+        </>
+      ) : null}
+    </span>
+  );
 }
 
 export function VenuesSection({
-  certifications,
   health,
   snapshots,
   venues,
   feeEvidence,
-  auditHistory,
-  feeReverifyDays,
-  pollIntervalMs,
   loading,
-  error,
-  onReload,
-  venueCapacities,
-  venueSemantics,
-  routes,
-  serverNow
+  venueCapacities = [],
+  venueSemantics = null,
+  venueDepthCards = null
 }: Props) {
-  const snapBy = new Map(snapshots.map((s) => [s.sourceId, s]));
   const healthBy = new Map((health ?? []).map((h) => [h.sourceId, h]));
   const feeBy = new Map(feeEvidence.map((f) => [f.sourceId, f]));
+  const venueBy = new Map(venues.map((v) => [v.sourceId, v]));
+  const depthBy = new Map((venueDepthCards ?? []).map((d) => [d.sourceId, d]));
   const capBy = new Map(venueCapacities.map((c) => [c.sourceId, c]));
   const semBy = new Map((venueSemantics ?? []).map((s) => [s.sourceId, s]));
-  const bestRouteByVenue = new Map<string, RouteSizingView>();
-  for (const r of routes) {
-    if (r.sizing.status !== "SIZED") continue;
-    for (const sid of [r.buySourceId, r.sellSourceId]) {
-      const prev = bestRouteByVenue.get(sid);
-      if (!prev || (r.sizing.sizeUsdt ?? 0) > (prev.sizing.sizeUsdt ?? 0)) {
-        bestRouteByVenue.set(sid, r);
-      }
-    }
-  }
+  const snapBy = new Map(snapshots.map((s) => [s.sourceId, s]));
 
   const orderedIds =
     venues.length > 0
@@ -127,162 +142,136 @@ export function VenuesSection({
 
   return (
     <div className="sa-stack">
-      <section className="panel sa-panel" aria-label="کارت‌های صرافی">
+      <section className="panel sa-panel" aria-label="وضعیت صرافی‌ها">
         <div className="panel-header sa-panel-header">
           <h3 className="panel-title">وضعیت صرافی‌ها</h3>
-          <div className="sa-panel-note">
-            نه صرافی Shadow · OMPFinex خارج است ·{" "}
-            {serverNow ? formatTehran(serverNow) : DASH}
-          </div>
         </div>
-        <div className="panel-body sa-venue-grid">
+        <div className="panel-body sa-venue-grid sa-venue-grid-compact">
           {orderedIds.map((id) => {
-            const sn = snapBy.get(id as never);
             const h = healthBy.get(id);
             const fee = feeBy.get(id);
+            const v = venueBy.get(id);
+            const depth = depthBy.get(id);
             const cap = capBy.get(id);
             const sem = semBy.get(id);
-            const best = bestRouteByVenue.get(id);
-            const ask = sn?.userBuyPriceToman ?? null;
-            const bid = sn?.userSellPriceToman ?? null;
-            const spread =
-              ask !== null && bid !== null && Number.isFinite(ask) && Number.isFinite(bid)
-                ? Math.round(ask - bid)
-                : null;
+            const sn = snapBy.get(id as never);
+
             const status =
               h?.status ??
-              (sn?.stale ? "degraded" : sn?.errorReason ? "unhealthy" : "healthy");
+              (sn?.stale ? "degraded" : sn?.errorReason ? "unhealthy" : sn ? "healthy" : "unknown");
             const tone =
               status === "healthy" || status === "ok" || status === "fresh"
                 ? "good"
                 : status === "degraded" || sn?.stale
                   ? "warn"
-                  : "danger";
+                  : status === "unknown"
+                    ? "muted"
+                    : "danger";
+
+            const buyFee =
+              fee?.takerFeeBps ?? v?.takerFeeBps ?? null;
+            const sellFee =
+              fee?.takerFeeBps ?? v?.takerFeeBps ?? null;
+
+            // Prefer real slippage-bounded accepted depth from venue depth cards.
+            let buyDepthUsdt: number | null = depth?.buy?.usableCapacityUsdt ?? null;
+            let buyDepthToman: number | null = depth?.buy?.usableCapacityToman ?? null;
+            let buyReason = depth?.buy?.unavailableFa ?? depth?.buy?.reasonFa ?? null;
+            let sellDepthUsdt: number | null = depth?.sell?.usableCapacityUsdt ?? null;
+            let sellDepthToman: number | null = depth?.sell?.usableCapacityToman ?? null;
+            let sellReason = depth?.sell?.unavailableFa ?? depth?.sell?.reasonFa ?? null;
+
+            // Fall back to capacity micros only when depth card side is unavailable.
+            if (buyDepthUsdt === null || buyDepthUsdt === undefined) {
+              const micros =
+                cap?.buy?.capacityUsdtMicros ?? sem?.buyCapacityUsdtMicros ?? null;
+              if (micros !== null && micros !== undefined) {
+                buyDepthUsdt = micros / 1_000_000;
+                buyDepthToman = null;
+                buyReason = cap?.buy?.reasonFa ?? null;
+              } else if (depth?.buy?.unavailable) {
+                buyReason = depth.buy.unavailableFa ?? buyReason;
+              }
+            }
+            if (sellDepthUsdt === null || sellDepthUsdt === undefined) {
+              const micros =
+                cap?.sell?.capacityUsdtMicros ?? sem?.sellCapacityUsdtMicros ?? null;
+              if (micros !== null && micros !== undefined) {
+                sellDepthUsdt = micros / 1_000_000;
+                sellDepthToman = null;
+                sellReason = cap?.sell?.reasonFa ?? null;
+              } else if (depth?.sell?.unavailable) {
+                sellReason = depth.sell.unavailableFa ?? sellReason;
+              }
+            }
 
             return (
-              <article key={id} className="sa-venue-card glass-control">
+              <article key={id} className="sa-venue-card sa-venue-card-compact glass-control">
                 <header className="sa-venue-card-head">
                   <div>
-                    <strong>{sem?.nameFa ?? id}</strong>
+                    <strong>{sem?.nameFa ?? v?.nameFa ?? id}</strong>
                     <span className="sa-ps-key">{id}</span>
                   </div>
                   <span className={`sa-chip sa-chip-sm sa-chip-${tone}`}>{status}</span>
                 </header>
-                <dl className="sa-venue-card-grid">
+                <dl className="sa-venue-card-grid sa-venue-card-grid-minimal">
                   <div>
-                    <dt>خرید (ask)</dt>
-                    <dd>{ask !== null ? <TomanAmount value={Number(ask)} /> : DASH}</dd>
-                  </div>
-                  <div>
-                    <dt>فروش (bid)</dt>
-                    <dd>{bid !== null ? <TomanAmount value={Number(bid)} /> : DASH}</dd>
-                  </div>
-                  <div>
-                    <dt>اسپرد</dt>
+                    <dt>سلامت</dt>
                     <dd>
-                      {spread !== null ? <TomanAmount value={spread} /> : DASH}
+                      <span className={`sa-chip sa-chip-sm sa-chip-${tone}`}>{status}</span>
                     </dd>
                   </div>
                   <div>
-                    <dt>نوع داده</dt>
+                    <dt>کارمزد خرید / taker</dt>
                     <dd className="sa-sub">
-                      {sem?.dataType ?? cap?.marketModel ?? sn?.marketModel ?? "—"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>سن اسنپ‌شات</dt>
-                    <dd className="sa-sub">
-                      {sn?.ageMs !== undefined && sn?.ageMs !== null ? (
-                        <Bidi>{toFaDigits(Math.round(sn.ageMs / 1000))} ثانیه</Bidi>
+                      {buyFee !== null && buyFee !== undefined ? (
+                        <Bidi>{toFaDigits(buyFee)} bps</Bidi>
                       ) : (
-                        DASH
+                        <span
+                          className="sa-unknown"
+                          title={fee?.blockerFa ?? fee?.miss ?? "شواهد کارمزد موجود نیست"}
+                        >
+                          {UNAVAILABLE}
+                        </span>
                       )}
                     </dd>
                   </div>
                   <div>
-                    <dt>تأخیر / خطاهای پیاپی</dt>
+                    <dt>کارمزد فروش / taker</dt>
                     <dd className="sa-sub">
-                      {h?.latencyMs !== null && h?.latencyMs !== undefined ? (
-                        <Bidi>{toFaDigits(h.latencyMs)} ms</Bidi>
+                      {sellFee !== null && sellFee !== undefined ? (
+                        <Bidi>{toFaDigits(sellFee)} bps</Bidi>
                       ) : (
-                        DASH
-                      )}{" "}
-                      ·{" "}
-                      <Bidi>{toFaDigits(h?.consecutiveFailures ?? 0)}</Bidi>
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>کارمزد taker (شواهد)</dt>
-                    <dd className="sa-sub">
-                      {fee?.takerFeeBps !== null && fee?.takerFeeBps !== undefined
-                        ? `${toFaDigits(fee.takerFeeBps)} bps`
-                        : "نامشخص"}
-                      {fee?.provenance ? ` · ${fee.provenance}` : ""}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>ظرفیت خرید / فروش</dt>
-                    <dd className="sa-sub">
-                      <Bidi>
-                        {toFaDigits(
-                          microsUsdt(
-                            cap?.buy?.capacityUsdtMicros ?? sem?.buyCapacityUsdtMicros
-                          )
-                        )}
-                      </Bidi>{" "}
-                      /{" "}
-                      <Bidi>
-                        {toFaDigits(
-                          microsUsdt(
-                            cap?.sell?.capacityUsdtMicros ?? sem?.sellCapacityUsdtMicros
-                          )
-                        )}
-                      </Bidi>{" "}
-                      USDT
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>محدودکننده</dt>
-                    <dd className="sa-sub">
-                      {cap?.buy?.limitingCap ?? sem?.buyLimiter ?? "—"} /{" "}
-                      {cap?.sell?.limitingCap ?? sem?.sellLimiter ?? "—"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>حجم هوشمند پیشنهادی</dt>
-                    <dd>
-                      {best?.sizing?.sizeUsdt !== null &&
-                      best?.sizing?.sizeUsdt !== undefined ? (
-                        <Bidi>{toFaDigits(best.sizing.sizeUsdt.toFixed(4))} USDT</Bidi>
-                      ) : (
-                        DASH
+                        <span
+                          className="sa-unknown"
+                          title={fee?.blockerFa ?? fee?.miss ?? "شواهد کارمزد موجود نیست"}
+                        >
+                          {UNAVAILABLE}
+                        </span>
                       )}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>عمق قابل‌استفاده خریدار</dt>
+                    <dd>
+                      <DepthValue
+                        usdt={buyDepthUsdt}
+                        toman={buyDepthToman}
+                        reasonFa={buyReason}
+                      />
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>عمق قابل‌استفاده فروشنده</dt>
+                    <dd>
+                      <DepthValue
+                        usdt={sellDepthUsdt}
+                        toman={sellDepthToman}
+                        reasonFa={sellReason}
+                      />
                     </dd>
                   </div>
                 </dl>
-                {(h?.errorReason || h?.degradedReason || sn?.errorReason || sem?.blockerFa) && (
-                  <details className="sa-venue-detail">
-                    <summary>جزئیات مشکل و شواهد</summary>
-                    <p className="sa-sub">
-                      {sem?.blockerFa ??
-                        h?.errorReason ??
-                        h?.degradedReason ??
-                        sn?.errorReason ??
-                        sn?.degradedReason ??
-                        "—"}
-                    </p>
-                    {h?.lastSuccessAt ? (
-                      <p className="sa-sub">
-                        آخرین موفقیت: {formatTehran(h.lastSuccessAt)}
-                      </p>
-                    ) : null}
-                    <p className="sa-sub">
-                      پایه خرید/فروش قابل‌استفاده:{" "}
-                      {sem?.buyLegUsable ? "بله" : "خیر"} /{" "}
-                      {sem?.sellLegUsable ? "بله" : "خیر"}
-                    </p>
-                  </details>
-                )}
               </article>
             );
           })}
@@ -291,29 +280,6 @@ export function VenuesSection({
           ) : null}
         </div>
       </section>
-
-      <details className="panel sa-panel sa-advanced-details">
-        <summary className="panel-header sa-panel-header">
-          <span className="panel-title">شواهد کامل منابع و کارمزد</span>
-          <span className="sa-panel-note">جدول‌های تشخیصی و تاریخچهٔ تأیید</span>
-        </summary>
-        <div className="panel-body">
-          <SourcesPanel
-            certifications={(certifications as never) ?? []}
-            health={(health as never) ?? []}
-            snapshots={snapshots}
-            venues={venues}
-            feeEvidence={feeEvidence}
-            auditHistory={auditHistory}
-            feeReverifyDays={feeReverifyDays}
-            pollIntervalMs={pollIntervalMs}
-            loading={loading}
-            error={error}
-            onReload={onReload}
-          />
-        </div>
-      </details>
-
     </div>
   );
 }

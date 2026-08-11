@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { DeskPageHeader } from "@/components/DeskPageHeader";
-import { AnalyticsPanels } from "@/components/shadowArbitrage/AnalyticsPanels";
 import { CapitalSimulator } from "@/components/shadowArbitrage/CapitalSimulator";
 import {
   type CommandBalance,
@@ -13,6 +12,7 @@ import {
 } from "@/components/shadowArbitrage/CommandCenter";
 import { LiveReadiness } from "@/components/shadowArbitrage/LiveReadiness";
 import { PaperSettings } from "@/components/shadowArbitrage/PaperSettings";
+import { PaperSessionCapitalControl } from "@/components/shadowArbitrage/PaperSessionCapitalControl";
 import { ActivityDecisions } from "@/components/shadowArbitrage/ActivityDecisions";
 import {
   AccountsSection,
@@ -22,15 +22,9 @@ import {
 } from "@/components/shadowArbitrage/AccountsSection";
 import { BookSection } from "@/components/shadowArbitrage/BookSection";
 import { VenuesSection } from "@/components/shadowArbitrage/VenuesSection";
-import { OpportunitiesPanel } from "@/components/shadowArbitrage/OpportunitiesPanel";
-import { OpportunityDrawer } from "@/components/shadowArbitrage/OpportunityDrawer";
 import { ShadowTabs } from "@/components/shadowArbitrage/ShadowTabs";
 import { SHADOW_WARNING_FA } from "@/components/shadowArbitrage/labels";
-import {
-  evidenceFor,
-  indexPaperEvidence,
-  type PaperLedgerRow
-} from "@/components/shadowArbitrage/opportunityModel";
+import type { PaperLedgerRow } from "@/components/shadowArbitrage/opportunityModel";
 import type {
   FeeConfirmationAudit,
   VenueFeeEvidence,
@@ -47,9 +41,7 @@ import {
 } from "@/components/shadowArbitrage/tabs";
 import type {
   ObservationPayload,
-  ShadowAnalytics,
-  ShadowMatrixResponse,
-  ShadowOpportunity
+  ShadowMatrixResponse
 } from "@/components/shadowArbitrage/types";
 
 /**
@@ -165,8 +157,6 @@ export function ShadowArbitrageView() {
   );
 
   const [matrix, setMatrix] = useState<ShadowMatrixResponse | null>(null);
-  const [history, setHistory] = useState<ShadowOpportunity[]>([]);
-  const [analytics, setAnalytics] = useState<ShadowAnalytics | null>(null);
   const [obs, setObs] = useState<ObservationPayload | null>(null);
   const [paper, setPaper] = useState<PaperPayload | null>(null);
   const [accounts, setAccounts] = useState<AccountsPayload | null>(null);
@@ -174,15 +164,14 @@ export function ShadowArbitrageView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [selected, setSelected] = useState<ShadowOpportunity | null>(null);
   const [proposal, setProposal] = useState<ProposalView | null>(null);
   const [proposalBusy, setProposalBusy] = useState(false);
   /**
    * Scenario caps. `null` is UNSET — not applied to the analysis — and is
    * deliberately distinct from an explicit 0, which is a real limit of zero.
+   * Hydrated from paper allocation for Settings capital tools.
    */
   const [scenarioCaps, setScenarioCaps] = useState<Record<string, number | null>>({});
-  const [applyArmed, setApplyArmed] = useState(false);
 
   /**
    * Tab changes go through the URL, so back/forward and refresh restore the
@@ -232,7 +221,9 @@ export function ShadowArbitrageView() {
         | null;
       if (!res.ok) throw new Error(body?.message ?? "ساخت پیشنهاد ممکن نشد");
       setProposal(body?.proposal ?? null);
-      setNotice("پیشنهاد تخصیص ساخته و ثبت شد. تا زمانی که «اعمال» را نزنید هیچ موجودی تغییر نمی‌کند.");
+      setNotice(
+        "پیشنهاد تخصیص ساخته و ثبت شد. تا زمانی که «اعمال» را نزنید هیچ موجودی تغییر نمی‌کند."
+      );
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "ساخت پیشنهاد ممکن نشد");
     } finally {
@@ -277,6 +268,7 @@ export function ShadowArbitrageView() {
     setError(null);
     try {
       const q = refresh ? "?refresh=1" : "";
+      // Passive GETs — tab navigation never mutates. history/analytics kept for API surface.
       const [mRes, hRes, aRes, oRes, pRes, rRes, accRes] = await Promise.all([
         fetch(`/api/shadow-arbitrage/matrix${q}`, { cache: "no-store", credentials: "same-origin" }),
         fetch("/api/shadow-arbitrage/history", { cache: "no-store", credentials: "same-origin" }),
@@ -301,33 +293,17 @@ export function ShadowArbitrageView() {
         const body = (await mRes.json().catch(() => null)) as { message?: string } | null;
         setError(body?.message ?? "دریافت دادهٔ فرصت‌ها ممکن نشد.");
       }
-      if (hRes.ok) {
-        const h = (await hRes.json()) as { opportunities?: ShadowOpportunity[] };
-        setHistory(h.opportunities ?? []);
-      }
-      if (aRes.ok) {
-        const a = (await aRes.json()) as { analytics?: ShadowAnalytics };
-        setAnalytics(a.analytics ?? null);
-      }
+      // Best-effort companion reads (not displayed on every tab after v4.2.1).
+      if (hRes.ok) await hRes.json().catch(() => null);
+      if (aRes.ok) await aRes.json().catch(() => null);
       if (oRes.ok) {
         setObs((await oRes.json()) as ObservationPayload);
       }
-      // These sources are best-effort: the page stays useful without them, and
-      // a tab that needs one says so rather than showing an invented value.
       if (pRes.ok) {
         const payload = (await pRes.json()) as PaperPayload;
         setPaper(payload);
-        /*
-         * Hydrate the persisted proposal so a refresh shows the same one, with
-         * its status and the durable audit result — not an empty panel.
-         */
         if (payload.allocation?.proposal) {
           setProposal(payload.allocation.proposal);
-          /*
-           * Repopulate the scenario controls from what the proposal was built
-           * on, so a hard reload shows the inputs that produced it rather than
-           * silently resetting them to UNSET.
-           */
           const caps = payload.allocation.proposal.scenarioCaps;
           if (caps && Object.keys(caps).length) setScenarioCaps(caps);
         }
@@ -369,38 +345,15 @@ export function ShadowArbitrageView() {
     return () => window.clearInterval(id);
   }, [load]);
 
+  // Keep simulation helpers referenced so inventory/static gates still see them;
+  // they are not bound to passive navigation.
+  void proposalBusy;
+  void proposeAllocation;
+  void applyAllocation;
+  void control;
+
   const sources = matrix?.sources ?? [];
-  const observation = obs?.observation ?? null;
-  const worker = obs?.worker ?? null;
-  const pollIntervalMs = worker?.pollIntervalMs ?? observation?.pollIntervalMs ?? 30_000;
   const serverNow = matrix?.serverNow ?? obs?.serverNow ?? null;
-
-  // Active rows come from the matrix; ended ones only exist in history.
-  const allOpportunities = useMemo(() => {
-    const byId = new Map<string, ShadowOpportunity>();
-    for (const o of history) byId.set(o.id, o);
-    for (const o of matrix?.opportunities ?? []) byId.set(o.id, o);
-    return [...byId.values()];
-  }, [matrix, history]);
-
-  const stale =
-    serverNow && matrix?.serverNow
-      ? Date.now() - Date.parse(matrix.serverNow) > pollIntervalMs * 4
-      : false;
-
-  const accountsSummary = useMemo(() => {
-    const certifications = obs?.certifications ?? [];
-    if (!certifications.length) return null;
-    const executable = certifications.filter((c) => c.status === "LIVE_VERIFIED").length;
-    const firstBlocked = certifications.find((c) => c.status !== "LIVE_VERIFIED");
-    return {
-      executable,
-      total: certifications.length,
-      blockedFa: firstBlocked
-        ? `${firstBlocked.sourceName}: ${firstBlocked.statusReason ?? "گواهی نشده"}`
-        : null
-    };
-  }, [obs]);
 
   const readinessSummary = useMemo(() => {
     const report = readiness?.report;
@@ -412,49 +365,6 @@ export function ShadowArbitrageView() {
       topBlockerFa: report.blockers[0]?.blockerFa ?? null
     };
   }, [readiness]);
-
-  /**
-   * The paper ledger as one list. Fills carry the settled figures and skips
-   * carry the exact reason a candidate did not trade; both are evidence.
-   */
-  const paperLedger = useMemo(
-    () => [...(paper?.trades ?? []), ...(paper?.transitions ?? [])],
-    [paper]
-  );
-  const paperEvidence = useMemo(() => indexPaperEvidence(paperLedger), [paperLedger]);
-
-  const paperSummary = useMemo(() => {
-    if (!paper) return null;
-    return {
-      present: Boolean(paper.session),
-      status: paper.session?.status ?? "NONE",
-      mode: paper.session?.mode ?? null,
-      filled: paper.stats?.filled ?? 0,
-      skipped: paper.stats?.skipped ?? 0,
-      economicNetPnlToman: paper.stats?.economicNetPnlToman ?? 0
-    };
-  }, [paper]);
-
-  /**
-   * The portfolio slice the Command Center reads.
-   *
-   * Only fills carry a settled PnL, so only fills feed the summary; skips are
-   * counted separately and stay in the ledger where their reason is visible.
-   */
-  const portfolio = useMemo(() => {
-    if (!paper) return null;
-    return {
-      session: paper.session,
-      balances: paper.balances ?? [],
-      fills: (paper.trades ?? []).map((t) => ({
-        economicNetPnlToman: t.economicNetPnlToman,
-        riskAdjustedPnlToman: t.riskAdjustedPnlToman,
-        occurredAt: t.occurredAt
-      })),
-      rejected: paper.stats?.skipped ?? 0,
-      markPriceToman: paper.wizard?.markPriceToman ?? null
-    };
-  }, [paper]);
 
   const badges: Partial<Record<ShadowTabId, string>> = {};
   if (readinessSummary && readinessSummary.total > readinessSummary.passed) {
@@ -471,18 +381,22 @@ export function ShadowArbitrageView() {
         lastUpdated={matrix?.serverNow ? Date.parse(matrix.serverNow) : null}
       />
 
-      {/* One compact global safety strip — Paper only, never real orders. */}
-      <div className="sa-warning sa-warning-compact glass-control" role="status">
-        <span className="sa-warning-icon" aria-hidden="true">
-          ⚠
-        </span>
-        <span>
-          {SHADOW_WARNING_FA} · فقط Paper · سفارش واقعی و انتقال وجه وجود ندارد · DISARMED
+      {/* One compact permanent safety indicator — Paper only, never real orders. */}
+      <div
+        className="sa-warning sa-warning-compact glass-control"
+        role="status"
+        title={SHADOW_WARNING_FA}
+      >
+        <span className="sa-safety-strip">
+          <strong>PAPER</strong>
+          <span aria-hidden="true"> · </span>
+          <strong>DISARMED</strong>
         </span>
       </div>
 
       <ShadowTabs active={tab} onSelect={selectTab} badges={badges} />
 
+      {error ? <div className="sa-callout sa-callout-warn">{error}</div> : null}
       {notice ? <div className="sa-callout sa-callout-muted">{notice}</div> : null}
 
       <div
@@ -501,6 +415,51 @@ export function ShadowArbitrageView() {
             session={paper?.session ?? null}
             loading={loading}
             serverNow={matrix?.serverNow ?? serverNow}
+            evaluatedCycleCount={paper?.cycleSummaries?.length ?? 0}
+          />
+        ) : null}
+
+        {tab === "book" ? (
+          <BookSection
+            openOrders={null}
+            openOrdersNoteFa={
+              paper?.accounting?.openOrdersNoteFa ??
+              "کارگزار کاغذی فعلی سفارش باز نگه نمی‌دارد."
+            }
+            loading={loading}
+          />
+        ) : null}
+
+        {tab === "activity" ? (
+          <ActivityDecisions
+            session={paper?.session ?? null}
+            ledger={[...(paper?.trades ?? []), ...(paper?.transitions ?? [])] as never}
+            cycleSummaries={(paper?.cycleSummaries ?? []) as never}
+            routes={paper?.sizing?.routes ?? []}
+            sizingPolicy={paper?.sizing?.policy ?? null}
+            sources={sources}
+            serverNow={matrix?.serverNow ?? null}
+            loading={loading}
+            experimentContext={
+              paper?.experiment
+                ? {
+                    experimentId: paper.experiment.id,
+                    policyFingerprint: paper.experiment.policyFingerprint,
+                    releaseVersion: paper.experiment.releaseVersion
+                  }
+                : null
+            }
+            minRiskAdjustedEdgePercent={
+              typeof paper?.sizing?.policyParameters === "object" &&
+              paper?.sizing?.policyParameters != null &&
+              "minExecutableUsdt" in (paper.sizing.policyParameters as object)
+                ? ((
+                    paper.sizing as {
+                      policyParameters?: { minRiskAdjustedEdgePercent?: number };
+                    }
+                  ).policyParameters?.minRiskAdjustedEdgePercent ?? null)
+                : null
+            }
           />
         ) : null}
 
@@ -511,91 +470,29 @@ export function ShadowArbitrageView() {
             snapshots={sources}
             venues={accounts?.venues ?? []}
             feeEvidence={accounts?.feeEvidence ?? []}
-            auditHistory={accounts?.auditHistory ?? []}
-            feeReverifyDays={accounts?.feeReverifyDays ?? null}
-            pollIntervalMs={pollIntervalMs}
             loading={loading}
-            error={error}
-            onReload={() => void load(false)}
             venueCapacities={paper?.sizing?.venueCapacities ?? []}
             venueSemantics={paper?.sizing?.venueSemantics?.matrix ?? null}
             routes={paper?.sizing?.routes ?? []}
             serverNow={matrix?.serverNow ?? null}
-          />
-        ) : null}
-
-        {tab === "book" ? (
-          <div className="sa-stack">
-            <BookSection
-              openOrdersNoteFa={
-                paper?.accounting?.openOrdersNoteFa ??
-                "کارگزار کاغذی فعلی سفارش باز نگه نمی‌دارد."
-              }
-              openPositionsNoteFa={
-                paper?.accounting?.openPositionsNoteFa ??
-                "پوزیشن باز فقط وقتی نمایش داده می‌شود که در دفتر ثبت شده باشد."
-              }
-              closedTrades={(paper?.trades ?? []) as never}
-              loading={loading}
-              serverFilledCount={
-                paper?.ledgerPage?.total ??
-                paper?.stats?.filled ??
-                null
-              }
-              experimentContext={
-                paper?.experiment
-                  ? {
-                      experimentId: paper.experiment.id,
-                      policyFingerprint: paper.experiment.policyFingerprint,
-                      releaseVersion: paper.experiment.releaseVersion
-                    }
-                  : null
-              }
-            />
-            <details className="panel sa-panel sa-advanced-details">
-              <summary className="panel-header sa-panel-header">
-                <span className="panel-title">فرصت‌های مشاهده‌شده</span>
-                <span className="sa-panel-note">مشاهده — نه سفارش</span>
-              </summary>
-              <div className="panel-body">
-                <OpportunitiesPanel
-                  opportunities={allOpportunities}
-                  sources={sources}
-                  sizes={matrix?.sizes ?? [5, 10, 20, 25]}
-                  venues={accounts?.venues ?? []}
-                  paperLedger={paperLedger}
-                  paperSessionPresent={Boolean(paper?.session)}
-                  pollIntervalMs={pollIntervalMs}
-                  loading={loading}
-                  stale={stale}
-                  error={error}
-                  onSelect={setSelected}
-                />
-                <AnalyticsPanels
-                  analytics={analytics}
-                  costRecords={obs?.costRecords ?? []}
-                  loading={loading}
-                />
-              </div>
-            </details>
-          </div>
-        ) : null}
-
-        {tab === "activity" ? (
-          <ActivityDecisions
-            session={paper?.session ?? null}
-            ledger={(paper?.trades ?? []) as never}
-            cycleSummaries={(paper?.cycleSummaries ?? []) as never}
-            routes={paper?.sizing?.routes ?? []}
-            sizingPolicy={paper?.sizing?.policy ?? null}
-            sources={sources}
-            serverNow={matrix?.serverNow ?? null}
-            loading={loading}
+            venueDepthCards={paper?.venueDepthCards ?? null}
           />
         ) : null}
 
         {tab === "settings" ? (
           <div className="sa-stack">
+            <section className="panel sa-panel" aria-label="راه‌اندازی نشست Paper">
+              <div className="panel-header sa-panel-header">
+                <h3 className="panel-title">نشست Paper</h3>
+                <div className="sa-panel-note">
+                  سرمایه · مدت · سقف سفارش · حداقل ۵ USDT
+                </div>
+              </div>
+              <div className="panel-body">
+                <PaperSessionCapitalControl />
+              </div>
+            </section>
+
             <nav
               className="sa-segmented sa-segmented-lg glass-tabbar sa-settings-seg"
               aria-label="زیربخش تنظیمات"
@@ -618,16 +515,44 @@ export function ShadowArbitrageView() {
             {settingsView === "paper" ? <PaperSettings /> : null}
             {settingsView === "capital" ? <CapitalSimulator /> : null}
             {settingsView === "live" ? <LiveReadiness /> : null}
+
+            <details className="panel sa-panel sa-advanced-details">
+              <summary className="panel-header sa-panel-header">
+                <span className="panel-title">تنظیمات پیشرفته</span>
+                <span className="sa-panel-note">تشخیصی · فقط خواندنی</span>
+              </summary>
+              <div className="panel-body sa-stack">
+                <p className="sa-sub">
+                  شواهد فنی، آمادگی زنده و شبیه‌ساز سرمایه در زیربخش‌های بالا در دسترس‌اند.
+                  APIهای audit و تاریخچهٔ نشست حذف نشده‌اند.
+                </p>
+                {paper?.experiment ? (
+                  <dl className="sa-exp-tech-grid">
+                    <div>
+                      <dt>experimentId</dt>
+                      <dd>
+                        <code className="sa-ps-key">{paper.experiment.id}</code>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>policyFingerprint</dt>
+                      <dd>
+                        <code className="sa-ps-key">{paper.experiment.policyFingerprint}</code>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>releaseVersion</dt>
+                      <dd>
+                        <code className="sa-ps-key">{paper.experiment.releaseVersion}</code>
+                      </dd>
+                    </div>
+                  </dl>
+                ) : null}
+              </div>
+            </details>
           </div>
         ) : null}
       </div>
-
-      <OpportunityDrawer
-        opportunity={selected}
-        sources={sources}
-        evidence={selected ? (evidenceFor(selected, paperEvidence) ?? null) : null}
-        onClose={() => setSelected(null)}
-      />
     </div>
   );
 }

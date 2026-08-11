@@ -8363,6 +8363,103 @@ table th {
   }
 }
 
+
+/* ── v4.2.1 Shadow UI simplification (layout only) ─────────────────────────── */
+.sa-safety-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  font-weight: 600;
+}
+.sa-safety-strip strong {
+  font-weight: 700;
+}
+.sa-cycle-card .sa-cycle-count {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+}
+.sa-empty-state {
+  text-align: center;
+  padding: 1.25rem 0.75rem;
+}
+.sa-empty-title {
+  margin: 0 0 0.35rem;
+  font-weight: 600;
+  font-size: 14px;
+}
+.sa-acct-venue-compact .sa-bal-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem 0.75rem;
+}
+.sa-why-list {
+  display: grid;
+  gap: 0.75rem;
+}
+.sa-why-card {
+  margin: 0;
+}
+.sa-why-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.65rem 0.85rem;
+  border-bottom: var(--line-soft);
+}
+.sa-why-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem 1rem;
+  margin: 0;
+  padding: 0.75rem 0.85rem;
+}
+.sa-why-field dt {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.sa-why-field dd {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+}
+.sa-venue-card-compact .sa-venue-card-grid-minimal {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem 0.75rem;
+}
+.sa-venue-grid-compact {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+@media (max-width: 768px) {
+  .sa-why-grid,
+  .sa-acct-venue-compact .sa-bal-metrics,
+  .sa-venue-card-compact .sa-venue-card-grid-minimal {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 390px) {
+  .sa-page-tabbed,
+  .sa-tabpanel,
+  .sa-stack,
+  .sa-venue-grid-compact {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+}
+
 /* ── Shadow Arbitrage · Phase 8C command center ───────────────────────────── */
 /*
  * LAYOUT ONLY — the same contract as Phase 8A and 8B above.

@@ -1,11 +1,10 @@
 "use client";
 
 /**
- * «وضعیت صرافی‌ها» — compact: health, buy/sell taker fees, usable depth only.
+ * «وضعیت صرافی‌ها» — health, fees, pure market Bid/Ask depth.
  *
- * v4.2.2: balanced multi-column grid (no auto-fill zero-min tracks).
- * Fees appear only here. Depth uses real slippage-bounded accepted values;
- * never fabricated.
+ * v4.2.3: depth is pure order-book depth inside max_slippage_bps only.
+ * Never displays usableCapacity / capital / policy caps as "depth".
  */
 import { TomanAmount } from "@/components/TomanAmount";
 import { Bidi } from "@/components/shadowArbitrage/Bidi";
@@ -93,23 +92,36 @@ const HEALTH_FA: Record<string, string> = {
   unknown: "نامشخص"
 };
 
+const NA_FA = "ناموجود";
+
 function healthFa(status: string): string {
   return HEALTH_FA[status] ?? status;
 }
 
-function DepthValue({
+/**
+ * Pure market depth display. Never falls back to capacity/balance.
+ */
+function MarketDepthValue({
   usdt,
   toman,
+  unavailable,
   reasonFa
 }: {
   usdt: number | null | undefined;
   toman: number | null | undefined;
+  unavailable?: boolean;
   reasonFa?: string | null;
 }) {
-  if (usdt === null || usdt === undefined || !Number.isFinite(usdt)) {
+  if (
+    unavailable ||
+    usdt === null ||
+    usdt === undefined ||
+    !Number.isFinite(usdt)
+  ) {
     return (
       <span className="sa-unknown" title={reasonFa ?? undefined}>
-        {reasonFa?.trim() ? reasonFa : "عمق این چرخه ثبت نشده"}
+        {NA_FA}
+        {reasonFa ? <span className="sa-sub"> — {reasonFa}</span> : null}
       </span>
     );
   }
@@ -132,7 +144,6 @@ export function VenuesSection({
   venues,
   feeEvidence,
   loading,
-  venueCapacities = [],
   venueSemantics = null,
   venueDepthCards = null
 }: Props) {
@@ -140,7 +151,6 @@ export function VenuesSection({
   const feeBy = new Map(feeEvidence.map((f) => [f.sourceId, f]));
   const venueBy = new Map(venues.map((v) => [v.sourceId, v]));
   const depthBy = new Map((venueDepthCards ?? []).map((d) => [d.sourceId, d]));
-  const capBy = new Map(venueCapacities.map((c) => [c.sourceId, c]));
   const semBy = new Map((venueSemantics ?? []).map((s) => [s.sourceId, s]));
   const snapBy = new Map(snapshots.map((s) => [s.sourceId, s]));
 
@@ -154,6 +164,9 @@ export function VenuesSection({
       <section className="panel sa-panel" aria-label="وضعیت صرافی‌ها">
         <div className="panel-header sa-panel-header">
           <h3 className="panel-title">وضعیت صرافی‌ها</h3>
+          <div className="sa-panel-note">
+            عمق = نقدینگی دفتر داخل پنجرهٔ لغزش · نه ظرفیت اجرایی
+          </div>
         </div>
         <div className="panel-body sa-venue-grid sa-venue-grid-compact">
           {orderedIds.map((id) => {
@@ -161,7 +174,6 @@ export function VenuesSection({
             const fee = feeBy.get(id);
             const v = venueBy.get(id);
             const depth = depthBy.get(id);
-            const cap = capBy.get(id);
             const sem = semBy.get(id);
             const sn = snapBy.get(id as never);
 
@@ -182,35 +194,13 @@ export function VenuesSection({
             const feeMissingFa =
               fee?.blockerFa ?? fee?.miss ?? "شواهد کارمزد در این چرخه ثبت نشده";
 
-            let buyDepthUsdt: number | null = depth?.buy?.usableCapacityUsdt ?? null;
-            let buyDepthToman: number | null = depth?.buy?.usableCapacityToman ?? null;
-            let buyReason = depth?.buy?.unavailableFa ?? depth?.buy?.reasonFa ?? null;
-            let sellDepthUsdt: number | null = depth?.sell?.usableCapacityUsdt ?? null;
-            let sellDepthToman: number | null = depth?.sell?.usableCapacityToman ?? null;
-            let sellReason = depth?.sell?.unavailableFa ?? depth?.sell?.reasonFa ?? null;
-
-            if (buyDepthUsdt === null || buyDepthUsdt === undefined) {
-              const micros =
-                cap?.buy?.capacityUsdtMicros ?? sem?.buyCapacityUsdtMicros ?? null;
-              if (micros !== null && micros !== undefined) {
-                buyDepthUsdt = micros / 1_000_000;
-                buyDepthToman = null;
-                buyReason = cap?.buy?.reasonFa ?? null;
-              } else if (depth?.buy?.unavailable) {
-                buyReason = depth.buy.unavailableFa ?? buyReason;
-              }
-            }
-            if (sellDepthUsdt === null || sellDepthUsdt === undefined) {
-              const micros =
-                cap?.sell?.capacityUsdtMicros ?? sem?.sellCapacityUsdtMicros ?? null;
-              if (micros !== null && micros !== undefined) {
-                sellDepthUsdt = micros / 1_000_000;
-                sellDepthToman = null;
-                sellReason = cap?.sell?.reasonFa ?? null;
-              } else if (depth?.sell?.unavailable) {
-                sellReason = depth.sell.unavailableFa ?? sellReason;
-              }
-            }
+            // Pure market depth only:
+            // buy side of card = Ask depth; sell side = Bid depth.
+            const ask = depth?.buy;
+            const bid = depth?.sell;
+            const missingDepthFa = depth
+              ? null
+              : "عمق بازار این صرافی در این چرخه ارسال نشده";
 
             const nameFa = sem?.nameFa ?? v?.nameFa ?? id;
 
@@ -254,22 +244,24 @@ export function VenuesSection({
                     </dd>
                   </div>
                   <div>
-                    <dt>عمق خریدار</dt>
+                    <dt>عمق سفارش‌های خرید (Bid)</dt>
                     <dd>
-                      <DepthValue
-                        usdt={buyDepthUsdt}
-                        toman={buyDepthToman}
-                        reasonFa={buyReason}
+                      <MarketDepthValue
+                        usdt={bid?.rawDepthUsdt}
+                        toman={bid?.rawDepthToman}
+                        unavailable={bid?.unavailable || !depth}
+                        reasonFa={bid?.unavailableFa ?? missingDepthFa}
                       />
                     </dd>
                   </div>
                   <div>
-                    <dt>عمق فروشنده</dt>
+                    <dt>عمق سفارش‌های فروش (Ask)</dt>
                     <dd>
-                      <DepthValue
-                        usdt={sellDepthUsdt}
-                        toman={sellDepthToman}
-                        reasonFa={sellReason}
+                      <MarketDepthValue
+                        usdt={ask?.rawDepthUsdt}
+                        toman={ask?.rawDepthToman}
+                        unavailable={ask?.unavailable || !depth}
+                        reasonFa={ask?.unavailableFa ?? missingDepthFa}
                       />
                     </dd>
                   </div>

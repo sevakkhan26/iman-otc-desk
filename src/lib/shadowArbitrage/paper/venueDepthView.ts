@@ -1,14 +1,19 @@
 /**
- * Per-venue market-depth card model for «سرمایه و حساب».
+ * Per-venue market-depth card model for «سرمایه و حساب» / Exchange Status.
  *
  * Separates four facts that must never be conflated:
  *   موجودی          — Paper balances (not depth)
  *   عمق بازار       — order-book liquidity inside the admin slippage window
+ *                     (rawDepthUsdt / rawDepthToman — pure market depth)
  *   ظرفیت قابل استفاده — min(depth, balance, policies) from venueCapacity()
  *   حجم پیشنهادی    — SMART_CAPITAL_DEPTH route size when present
  *
  * Pure: no network, no database, no clock. Uses the same cycle's book levels
  * the caller already holds — never re-fetches.
+ *
+ * v4.2.3: rawDepth* is pure market depth (Σ qty / Σ price×qty), independent of
+ * capital, balances, allocations, order caps. UI must not display usableCapacity
+ * as "depth".
  */
 import type { BookLevel } from "@/lib/shadowArbitrage/types";
 import {
@@ -21,24 +26,39 @@ import {
   type VenueCapacity,
   type VenueCapacityReason
 } from "@/lib/shadowArbitrage/paper/liquidity";
-import { slippageBoundedDepth } from "@/lib/shadowArbitrage/paper/smartCandidates";
+import {
+  buildMarketDepthCard,
+  type AcceptedDepthLevel,
+  type MarketDepthSide
+} from "@/lib/shadowArbitrage/paper/marketDepth";
 
 export type SideDepthView = {
   bestPriceToman: number | null;
-  /** Depth inside the active slippage window, USDT. */
+  /**
+   * Pure market depth inside max_slippage_bps (USDT = exact Σ quantities).
+   * Never capital- or policy-capped.
+   */
   rawDepthUsdt: number | null;
+  /**
+   * Exact Σ(priceToman × amountUsdt) of accepted levels — not USDT × best.
+   */
   rawDepthToman: number | null;
   levelsAccepted: number | null;
   levelsExcluded: number | null;
+  /** Accepted price band [min, max] inside the slippage window. */
+  acceptedPriceMin?: number | null;
+  acceptedPriceMax?: number | null;
+  /** Levels that contributed to market depth (evidence / audit). */
+  acceptedLevels?: AcceptedDepthLevel[];
   /** VWAP if the recommended smart size were walked; null when size/depth missing. */
   smartSizeVwapToman: number | null;
-  /** Usable capacity after depth + balance + policies. Null = not computable. */
+  /** Usable capacity after depth + balance + policies. Not market depth. */
   usableCapacityUsdt: number | null;
   usableCapacityToman: number | null;
   limitingKey: string | null;
   limitingLabelFa: string | null;
   reasonFa: string | null;
-  /** True when values are genuinely unavailable (not zero liquidity). */
+  /** True when market depth is genuinely unavailable (not zero liquidity). */
   unavailable: boolean;
   unavailableFa: string | null;
 };
@@ -49,12 +69,18 @@ export type VenueDepthCard = {
   marketModel: string;
   asOf: string;
   snapshotAgeMs: number | null;
+  /**
+   * buy = Ask depth (user buys from asks);
+   * sell = Bid depth (user sells into bids).
+   */
   buy: SideDepthView;
   sell: SideDepthView;
   /** SMART_CAPITAL_DEPTH recommendation touching this venue, if any. */
   smartRecommendedUsdt: number | null;
   smartRouteKey: string | null;
   smartBindingConstraint: string | null;
+  /** True when best bid > best ask — market depth is ناموجود. */
+  bookCrossed?: boolean;
 };
 
 export type VenueDepthInput = {
@@ -74,6 +100,8 @@ export type VenueDepthInput = {
   maxSlippageBps: number | null;
   markPriceToman: number | null;
   sourceFailureFa?: string | null;
+  stale?: boolean;
+  maxQuoteAgeMs?: number | null;
   quote?: {
     userBuyPriceToman: number | null;
     userSellPriceToman: number | null;
@@ -97,6 +125,9 @@ function emptySide(unavailableFa: string): SideDepthView {
     rawDepthToman: null,
     levelsAccepted: null,
     levelsExcluded: null,
+    acceptedPriceMin: null,
+    acceptedPriceMax: null,
+    acceptedLevels: [],
     smartSizeVwapToman: null,
     usableCapacityUsdt: null,
     usableCapacityToman: null,
@@ -108,66 +139,52 @@ function emptySide(unavailableFa: string): SideDepthView {
   };
 }
 
-function sideFromBook(input: {
-  levels: BookLevel[];
-  side: "buy" | "sell";
-  maxSlippageBps: number;
-  capacity: VenueCapacity["buy"];
-  smartSizeUsdt: number | null;
-  markPriceToman: number | null;
-}): SideDepthView {
-  const { levels, side, maxSlippageBps, capacity, smartSizeUsdt, markPriceToman } = input;
-  const bounded = slippageBoundedDepth(levels, side, maxSlippageBps);
-  const best = bounded.bestPriceToman;
-  const rawDepthUsdt =
-    bounded.levelsIncluded > 0 ? microsToUsdt(bounded.depthMicros) : 0;
-  const rawDepthToman =
-    best !== null && bounded.depthMicros > 0
-      ? Math.round(microsToUsdt(bounded.depthMicros) * best)
-      : best !== null
-        ? 0
-        : null;
-
+function marketToSide(
+  market: MarketDepthSide,
+  capacity: VenueCapacity["buy"] | VenueCapacity["sell"],
+  levels: BookLevel[] | null | undefined,
+  side: "buy" | "sell",
+  smartSizeUsdt: number | null,
+  markPriceToman: number | null
+): SideDepthView {
   let smartSizeVwapToman: number | null = null;
-  if (smartSizeUsdt !== null && smartSizeUsdt > 0 && levels.length) {
+  if (smartSizeUsdt !== null && smartSizeUsdt > 0 && levels?.length) {
     const walk = walkBook(levels, usdtToMicros(smartSizeUsdt), side);
     smartSizeVwapToman = walk.filledMicros > 0 ? walk.vwapToman : null;
   }
 
   const usableMicros = capacity.capacityUsdtMicros;
   const usableUsdt = usableMicros === null ? null : microsToUsdt(usableMicros);
-  const priceForToman = best ?? markPriceToman;
+  const priceForToman = market.bestPriceToman ?? markPriceToman;
   const usableToman =
     usableUsdt === null || priceForToman === null || priceForToman <= 0
       ? null
       : Math.round(usableUsdt * priceForToman);
 
-  const unavailable = usableMicros === null && capacity.reason !== "ok" && capacity.reason !== "zero_balance";
-
+  // Market-depth unavailability is independent of capacity.
   return {
-    bestPriceToman: best,
-    rawDepthUsdt: bounded.bestPriceToman === null ? null : rawDepthUsdt,
-    rawDepthToman,
-    levelsAccepted: bounded.bestPriceToman === null ? null : bounded.levelsIncluded,
-    levelsExcluded: bounded.bestPriceToman === null ? null : bounded.levelsExcluded,
+    bestPriceToman: market.bestPriceToman,
+    rawDepthUsdt: market.depthUsdt,
+    rawDepthToman: market.depthToman,
+    levelsAccepted: market.levelsAccepted,
+    levelsExcluded: market.levelsExcluded,
+    acceptedPriceMin: market.acceptedPriceMin,
+    acceptedPriceMax: market.acceptedPriceMax,
+    acceptedLevels: market.acceptedLevels,
     smartSizeVwapToman,
     usableCapacityUsdt: usableUsdt,
     usableCapacityToman: usableToman,
     limitingKey: capacity.limitingCap,
     limitingLabelFa: capacity.limitingCap ? CAP_LABEL_FA[capacity.limitingCap] : null,
-    reasonFa: capacity.reasonFa,
-    unavailable: unavailable || bounded.bestPriceToman === null,
-    unavailableFa:
-      bounded.bestPriceToman === null
-        ? capacity.reasonFa || "عمق دفتر قابل محاسبه نیست"
-        : unavailable
-          ? capacity.reasonFa
-          : null
+    reasonFa: market.unavailable ? market.unavailableFa : capacity.reasonFa,
+    unavailable: market.unavailable,
+    unavailableFa: market.unavailableFa
   };
 }
 
 /**
  * Build one venue's depth/capacity view from a single cycle snapshot.
+ * Market depth (rawDepth*) is pure book depth; usableCapacity* is separate.
  */
 export function buildVenueDepthCard(input: VenueDepthInput): VenueDepthCard {
   const cap = venueCapacity({
@@ -196,85 +213,68 @@ export function buildVenueDepthCard(input: VenueDepthInput): VenueDepthCard {
     sourceFailureFa: input.sourceFailureFa
   });
 
-  const maxSlip =
-    input.maxSlippageBps !== null && Number.isFinite(input.maxSlippageBps)
-      ? input.maxSlippageBps
-      : Number.POSITIVE_INFINITY;
-
   const smart = input.smartRecommendedUsdt ?? null;
+  const stale = Boolean(input.stale || input.quote?.stale);
+  const maxQuoteAgeMs = input.maxQuoteAgeMs ?? input.quote?.maxQuoteAgeMs ?? null;
+  const snapshotAgeMs = input.snapshotAgeMs ?? input.quote?.ageMs ?? null;
+
+  const market = buildMarketDepthCard({
+    sourceId: input.sourceId,
+    marketModel: input.marketModel,
+    bookBids: input.bookBids,
+    bookAsks: input.bookAsks,
+    maxSlippageBps: input.maxSlippageBps,
+    asOf: input.asOf,
+    snapshotAgeMs,
+    stale,
+    sourceFailureFa: input.sourceFailureFa,
+    maxQuoteAgeMs
+  });
 
   if (input.marketModel === "OTC_QUOTE") {
+    // Market depth is unavailable for OTC quotes; capacity may still be set.
     const q = input.quote;
-    const quoteDetail =
-      "این منبع نقل‌قول تک‌قیمتی است و اساساً دفتر سفارش چندسطحی ندارد؛ ظرفیت از حداکثر اعلام‌شدهٔ خودِ صرافی است.";
     const buyUsable =
       cap.buy.capacityUsdtMicros === null ? null : microsToUsdt(cap.buy.capacityUsdtMicros);
     const sellUsable =
       cap.sell.capacityUsdtMicros === null ? null : microsToUsdt(cap.sell.capacityUsdtMicros);
     const buyPrice = q?.userBuyPriceToman ?? null;
     const sellPrice = q?.userSellPriceToman ?? null;
-    const maxUsdt = q?.maxExecutableUsdt ?? null;
+    const na = market.ask.unavailableFa ?? "عمق بازار دفتر برای نقل‌قول تک‌قیمتی ناموجود است";
     const buySide: SideDepthView = {
+      ...emptySide(na),
       bestPriceToman: buyPrice,
-      rawDepthUsdt: maxUsdt,
-      rawDepthToman:
-        maxUsdt !== null && buyPrice !== null ? Math.round(maxUsdt * buyPrice) : null,
-      levelsAccepted: null,
-      levelsExcluded: null,
       smartSizeVwapToman: buyPrice,
       usableCapacityUsdt: buyUsable,
       usableCapacityToman:
         buyUsable !== null && buyPrice !== null ? Math.round(buyUsable * buyPrice) : null,
       limitingKey: cap.buy.limitingCap,
       limitingLabelFa: cap.buy.limitingCap ? CAP_LABEL_FA[cap.buy.limitingCap] : null,
-      reasonFa: cap.buy.reasonFa,
-      unavailable: maxUsdt === null && buyUsable === null,
-      unavailableFa: maxUsdt === null ? quoteDetail : null
+      reasonFa: cap.buy.reasonFa
     };
     const sellSide: SideDepthView = {
+      ...emptySide(na),
       bestPriceToman: sellPrice,
-      rawDepthUsdt: maxUsdt,
-      rawDepthToman:
-        maxUsdt !== null && sellPrice !== null ? Math.round(maxUsdt * sellPrice) : null,
-      levelsAccepted: null,
-      levelsExcluded: null,
       smartSizeVwapToman: sellPrice,
       usableCapacityUsdt: sellUsable,
       usableCapacityToman:
         sellUsable !== null && sellPrice !== null ? Math.round(sellUsable * sellPrice) : null,
       limitingKey: cap.sell.limitingCap,
       limitingLabelFa: cap.sell.limitingCap ? CAP_LABEL_FA[cap.sell.limitingCap] : null,
-      reasonFa: cap.sell.reasonFa,
-      unavailable: maxUsdt === null && sellUsable === null,
-      unavailableFa: maxUsdt === null ? quoteDetail : null
+      reasonFa: cap.sell.reasonFa
     };
     return {
       sourceId: input.sourceId,
       nameFa: input.nameFa ?? null,
       marketModel: input.marketModel,
       asOf: input.asOf,
-      snapshotAgeMs: input.snapshotAgeMs ?? q?.ageMs ?? null,
+      snapshotAgeMs: snapshotAgeMs,
       buy: buySide,
       sell: sellSide,
       smartRecommendedUsdt: smart,
       smartRouteKey: input.smartRouteKey ?? null,
-      smartBindingConstraint: input.smartBindingConstraint ?? null
-    };
-  }
-
-  if (!input.bookAsks || !input.bookBids) {
-    const reason = cap.buy.reasonFa || "دفتر سفارش در دسترس نیست";
-    return {
-      sourceId: input.sourceId,
-      nameFa: input.nameFa ?? null,
-      marketModel: input.marketModel,
-      asOf: input.asOf,
-      snapshotAgeMs: input.snapshotAgeMs ?? null,
-      buy: emptySide(reason),
-      sell: emptySide(reason),
-      smartRecommendedUsdt: smart,
-      smartRouteKey: input.smartRouteKey ?? null,
-      smartBindingConstraint: input.smartBindingConstraint ?? null
+      smartBindingConstraint: input.smartBindingConstraint ?? null,
+      bookCrossed: market.bookCrossed
     };
   }
 
@@ -283,26 +283,28 @@ export function buildVenueDepthCard(input: VenueDepthInput): VenueDepthCard {
     nameFa: input.nameFa ?? null,
     marketModel: input.marketModel,
     asOf: input.asOf,
-    snapshotAgeMs: input.snapshotAgeMs ?? null,
-    buy: sideFromBook({
-      levels: input.bookAsks,
-      side: "buy",
-      maxSlippageBps: maxSlip,
-      capacity: cap.buy,
-      smartSizeUsdt: smart,
-      markPriceToman: input.markPriceToman
-    }),
-    sell: sideFromBook({
-      levels: input.bookBids,
-      side: "sell",
-      maxSlippageBps: maxSlip,
-      capacity: cap.sell,
-      smartSizeUsdt: smart,
-      markPriceToman: input.markPriceToman
-    }),
+    snapshotAgeMs: snapshotAgeMs,
+    // buy view = Ask market depth; sell view = Bid market depth
+    buy: marketToSide(
+      market.ask,
+      cap.buy,
+      input.bookAsks,
+      "buy",
+      smart,
+      input.markPriceToman
+    ),
+    sell: marketToSide(
+      market.bid,
+      cap.sell,
+      input.bookBids,
+      "sell",
+      smart,
+      input.markPriceToman
+    ),
     smartRecommendedUsdt: smart,
     smartRouteKey: input.smartRouteKey ?? null,
-    smartBindingConstraint: input.smartBindingConstraint ?? null
+    smartBindingConstraint: input.smartBindingConstraint ?? null,
+    bookCrossed: market.bookCrossed
   };
 }
 

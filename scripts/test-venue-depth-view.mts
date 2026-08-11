@@ -62,12 +62,13 @@ await test("raw depth respects the slippage window and does not use balance as d
     smartRecommendedUsdt: 25
   });
   assert.equal(card.buy.bestPriceToman, 200_000);
-  assert.equal(card.buy.levelsAccepted, 2);
-  assert.equal(card.buy.levelsExcluded, 1);
-  assert.ok(card.buy.rawDepthUsdt !== null && card.buy.rawDepthUsdt === 100);
+  // v4.2.4: all received levels, including those outside 15 bps
+  assert.equal(card.buy.levelsAccepted, 3);
+  assert.equal(card.buy.levelsExcluded, 0);
+  assert.ok(card.buy.rawDepthUsdt !== null && card.buy.rawDepthUsdt === 200);
   // Exact Σ price×qty, not USDT×best
-  assert.equal(card.buy.rawDepthToman, 200_000 * 50 + 200_200 * 50);
-  // Balance is huge; depth stays book depth, not balance.
+  assert.equal(card.buy.rawDepthToman, 200_000 * 50 + 200_200 * 50 + 202_000 * 100);
+  // Balance is huge; volume stays book volume, not balance.
   assert.ok((card.buy.rawDepthUsdt as number) < 1000);
   assert.equal(card.buy.unavailable, false);
 });
@@ -148,10 +149,13 @@ await test("OTC quote has no multi-level book depth; market depth is ناموج�
     asOf: "2026-08-05T12:00:00.000Z"
   });
   assert.equal(card.marketModel, "OTC_QUOTE");
-  // Pure market depth is unavailable for OTC quotes (not maxExecutable capacity).
+  // Quote-only: no fabricated multi-level depth.
   assert.equal(card.buy.rawDepthUsdt, null);
   assert.equal(card.buy.unavailable, true);
-  assert.ok(card.buy.unavailableFa && /نقل‌قول|دفتر|ناموجود/.test(card.buy.unavailableFa));
+  assert.ok(
+    card.buy.unavailableFa &&
+      (card.buy.unavailableFa.includes("چندسطحی") || /نقل‌قول|دفتر|ناموجود/.test(card.buy.unavailableFa))
+  );
   // Capacity may still be reported separately.
   assert.ok(card.buy.usableCapacityUsdt === null || card.buy.usableCapacityUsdt === 100);
 });

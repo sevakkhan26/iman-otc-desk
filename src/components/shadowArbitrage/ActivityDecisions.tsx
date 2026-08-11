@@ -1,16 +1,21 @@
 "use client";
 
 /**
- * «فعالیت‌ها» — why traded / not traded, and completed trade evidence.
+ * «فعالیت‌ها» — readable Persian decision summaries + completed trade evidence.
  *
- * Strictly read-only. Never invents values; missing data → Unavailable + reason.
+ * Strictly read-only. Never invents values. Missing fields are omitted (or one
+ * concise Persian note), never raw keys or null dumps in the operator view.
  */
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { TomanAmount } from "@/components/TomanAmount";
 import { formatTehran } from "@/components/format";
 import { Bidi } from "@/components/shadowArbitrage/Bidi";
 import { toFaDigits } from "@/components/shadowArbitrage/labels";
 import { reasonLabel } from "@/lib/shadowArbitrage/paper/reasons";
+import {
+  SIZING_CONSTRAINT_FA,
+  type SizingConstraintKey
+} from "@/lib/shadowArbitrage/paper/sizing";
 import { readInt, useShadowViewState } from "@/components/shadowArbitrage/urlState";
 import type { RouteSizingView } from "@/components/shadowArbitrage/CommandCenter";
 import type { NormalizedSourceSnapshot } from "@/lib/shadowArbitrage/types";
@@ -89,18 +94,15 @@ type Props = {
   sources: NormalizedSourceSnapshot[];
   serverNow: string | null;
   loading: boolean;
-  /** Optional experiment context for trade detail panel. */
   experimentContext?: {
     experimentId?: string | null;
     policyFingerprint?: string | null;
     releaseVersion?: string | null;
   } | null;
-  /** Min required risk-adjusted edge percent from policy, if known. */
   minRiskAdjustedEdgePercent?: number | null;
 };
 
 const DASH = <span className="sa-unknown">—</span>;
-const UNAVAILABLE = "Unavailable";
 const usdt = (micros: number | null | undefined) =>
   micros === null || micros === undefined ? null : (micros / 1_000_000).toFixed(4);
 
@@ -119,26 +121,45 @@ const SESSION_STATUS_FA: Record<string, string> = {
   CREATED: "شروع‌نشده"
 };
 
-function Unavail({ reason }: { reason: string }) {
-  return (
-    <span className="sa-unknown" title={reason}>
-      {UNAVAILABLE}
-      <span className="sa-sub"> — {reason}</span>
-    </span>
-  );
+function constraintFa(key: string | null | undefined): string | null {
+  if (!key) return null;
+  const known = SIZING_CONSTRAINT_FA[key as SizingConstraintKey];
+  if (known) return known;
+  // Already-Persian free text or unknown code — show as-is if looks Persian-ish.
+  if (/[\u0600-\u06FF]/.test(key)) return key;
+  return reasonLabel(key);
 }
 
-function Field({
+function PresentField({
   label,
   children
 }: {
   label: string;
-  children: React.ReactNode;
+  children: ReactNode | null | undefined;
 }) {
+  if (children === null || children === undefined || children === false) return null;
   return (
     <div className="sa-why-field">
       <dt>{label}</dt>
       <dd>{children}</dd>
+    </div>
+  );
+}
+
+function Group({
+  title,
+  children
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  // Only render the group if at least one field rendered.
+  const items = Array.isArray(children) ? children.filter(Boolean) : [children].filter(Boolean);
+  if (!items.length) return null;
+  return (
+    <div className="sa-why-group">
+      <h4 className="sa-why-group-title">{title}</h4>
+      <dl className="sa-why-grid">{items}</dl>
     </div>
   );
 }
@@ -164,22 +185,14 @@ function WhyRouteCard({
   const econ = s.economics;
   const quote = s.quote;
   const isSized = s.status === "SIZED";
-  const isBlocked = s.status === "BLOCKED";
 
-  // Gross spread: sell VWAP − buy VWAP × size when quote present
   let grossSpread: number | null = null;
-  let grossPnl: number | null = null;
-  if (quote && s.sizeUsdt != null) {
+  if (quote) {
     grossSpread = quote.sellVwapToman - quote.buyVwapToman;
-    grossPnl = grossSpread * s.sizeUsdt;
-  } else if (econ) {
-    // cash PnL is after fees in some models — show only when we have it as labeled cash
-    grossPnl = econ.cashPnlIrtToman ?? null;
   }
 
   const riskAdj = econ?.riskAdjustedPnlToman ?? null;
   const economicNet = econ?.economicNetPnlToman ?? null;
-  // Min required profit in toman: min edge % of capital involved when both known
   let minRequired: number | null = null;
   let shortfall: number | null = null;
   if (
@@ -189,189 +202,275 @@ function WhyRouteCard({
     Number.isFinite(econ.capitalInvolvedToman)
   ) {
     minRequired = (minEdgePct / 100) * econ.capitalInvolvedToman;
-    if (riskAdj != null) {
-      shortfall = Math.max(0, minRequired - riskAdj);
-    }
+    if (riskAdj != null) shortfall = Math.max(0, minRequired - riskAdj);
   }
 
-  const rejectionReason =
+  const bindingFa = constraintFa(s.bindingConstraint);
+  const blockerFa =
     s.blockers?.[0]?.detailFa ??
-    s.selection?.nextLarger?.detailFa ??
-    (isBlocked ? s.blockers?.map((b) => b.detailFa).join(" · ") || null : null) ??
-    (!isSized ? "مسیر حجم نگرفت — جزئیات در blockers" : null);
+    (s.blockers?.length ? s.blockers.map((b) => b.detailFa).filter(Boolean).join(" · ") : null);
+  const selectionFa = s.selection?.reasonFa ?? null;
 
-  const executionReason =
-    isSized
-      ? s.selection?.reasonFa ?? s.policy ?? "SIZED"
-      : rejectionReason;
+  const rejectionFa =
+    blockerFa ||
+    selectionFa ||
+    (s.blockers?.[0]?.code ? reasonLabel(s.blockers[0].code) : null) ||
+    "مسیر در این چرخه حجم نگرفت";
+
+  const headline = isSized
+    ? `معامله انجام شد چون ${
+        selectionFa ??
+        (s.sizeUsdt != null
+          ? `حجم ${toFaDigits(s.sizeUsdt.toFixed(4))} تتر روی مسیر ${r.buySourceId} ← ${r.sellSourceId} پذیرفته شد`
+          : `مسیر ${r.buySourceId} ← ${r.sellSourceId} حجم‌گرفت`)
+      }${bindingFa ? ` · محدودکننده: ${bindingFa}` : ""}.`
+    : `معامله انجام نشد چون ${rejectionFa}${
+        shortfall != null && shortfall > 0
+          ? ` · کسری سود نسبت به حداقل لازم حدود ${toFaDigits(Math.round(shortfall).toLocaleString("en-US"))} تومان`
+          : ""
+      }.`;
+
+  const missingNotes: string[] = [];
+  if (!quote) missingNotes.push("قیمت میانگین (VWAP) این مسیر در sizing ثبت نشده");
+  if (!econ) missingNotes.push("جزئیات اقتصادی (کارمزد/خالص) این مسیر در sizing ثبت نشده");
+  if (buyAge?.ageMs == null && sellAge?.ageMs == null) {
+    missingNotes.push("سن دادهٔ صرافی‌ها در این payload نیست");
+  }
 
   return (
     <article className="sa-why-card panel sa-panel">
-      <header className="sa-why-card-head">
-        <strong>
-          {r.buySourceId} ← {r.sellSourceId}
-        </strong>
-        <span
-          className={`sa-chip sa-chip-sm sa-chip-${isSized ? "good" : "muted"}`}
-        >
-          {isSized ? "قابل اجرا / حجم‌گرفته" : "رد / مسدود"}
-        </span>
-      </header>
-      <dl className="sa-why-grid">
-        <Field label="مسیر ارزیابی‌شده">
-          <code className="sa-ps-key">{r.routeKey}</code>
-        </Field>
-        <Field label="صرافی خرید / فروش">
-          {r.buySourceId} / {r.sellSourceId}
-        </Field>
-        <Field label="زمان / سن داده خرید">
+      <p className={`sa-why-headline ${isSized ? "is-ok" : "is-no"}`}>{headline}</p>
+
+      <Group title="مسیر">
+        <PresentField label="خرید از">{r.buySourceId}</PresentField>
+        <PresentField label="فروش به">{r.sellSourceId}</PresentField>
+      </Group>
+
+      <Group title="دادهٔ بازار">
+        <PresentField label="سن دادهٔ خرید">
           {buyAge?.ageMs != null ? (
             <Bidi>{toFaDigits(Math.round(buyAge.ageMs / 1000))} ثانیه</Bidi>
-          ) : (
-            <Unavail reason="سن اسنپ‌شات خرید در payload نیست" />
-          )}
-        </Field>
-        <Field label="زمان / سن داده فروش">
+          ) : null}
+        </PresentField>
+        <PresentField label="سن دادهٔ فروش">
           {sellAge?.ageMs != null ? (
             <Bidi>{toFaDigits(Math.round(sellAge.ageMs / 1000))} ثانیه</Bidi>
-          ) : (
-            <Unavail reason="سن اسنپ‌شات فروش در payload نیست" />
-          )}
-        </Field>
-        <Field label="VWAP خرید">
-          {quote ? (
-            <TomanAmount value={quote.buyVwapToman} />
-          ) : (
-            <Unavail reason="quote.buyVwapToman در sizing موجود نیست" />
-          )}
-        </Field>
-        <Field label="VWAP فروش">
-          {quote ? (
-            <TomanAmount value={quote.sellVwapToman} />
-          ) : (
-            <Unavail reason="quote.sellVwapToman در sizing موجود نیست" />
-          )}
-        </Field>
-        <Field label="سقف امن">
-          {ceiling != null ? (
-            <Bidi>{toFaDigits(ceiling.toFixed(4))} USDT</Bidi>
-          ) : (
-            <Unavail reason="capacity.ceilingMicros / maxFeasible ثبت نشده" />
-          )}
-        </Field>
-        <Field label="حجم انتخاب‌شده">
-          {s.sizeUsdt != null ? (
-            <Bidi>{toFaDigits(s.sizeUsdt.toFixed(4))} USDT</Bidi>
-          ) : (
-            <Unavail reason="sizeUsdt برای این مسیر null است" />
-          )}
-        </Field>
-        <Field label="محدودکننده قطعی">
-          {s.bindingConstraint ?? (
-            <Unavail reason="bindingConstraint در sizing ثبت نشده" />
-          )}
-        </Field>
-        <Field label="اسپرد ناخالص (هر تتر)">
-          {grossSpread != null ? (
-            <TomanAmount value={grossSpread} />
-          ) : (
-            <Unavail reason="نیاز به quote.buy/sell VWAP" />
-          )}
-        </Field>
-        <Field label="P&L ناخالص تقریبی">
-          {grossPnl != null ? (
-            <TomanAmount value={grossPnl} />
-          ) : (
-            <Unavail reason="quote+size یا cashPnlIrtToman موجود نیست" />
-          )}
-        </Field>
-        <Field label="کارمزد پای خرید (venue / asset)">
-          {econ?.sellFeeValueToman != null || quote ? (
-            <span className="sa-sub">
-              venue: {r.buySourceId}
-              {" · "}
-              {econ ? (
-                <>
-                  sell-leg fee value: <TomanAmount value={econ.sellFeeValueToman} />
-                </>
-              ) : (
-                <Unavail reason="economics.sellFeeValueToman (و تفکیک buy-leg) در payload نیست" />
-              )}
-            </span>
-          ) : (
-            <Unavail reason="economics برای کارمزد پاها موجود نیست" />
-          )}
-        </Field>
-        <Field label="کارمزد پای فروش (venue / asset)">
-          <span className="sa-sub">
-            venue: {r.sellSourceId}
-            {" · "}
-            {econ ? (
-              <>
-                sellFeeValueToman: <TomanAmount value={econ.sellFeeValueToman} />
-              </>
-            ) : (
-              <Unavail reason="economics.sellFeeValueToman موجود نیست" />
-            )}
-          </span>
-        </Field>
-        <Field label="لغزش (slippage)">
+          ) : null}
+        </PresentField>
+        <PresentField label="قیمت میانگین خرید">
+          {quote ? <TomanAmount value={quote.buyVwapToman} /> : null}
+        </PresentField>
+        <PresentField label="قیمت میانگین فروش">
+          {quote ? <TomanAmount value={quote.sellVwapToman} /> : null}
+        </PresentField>
+        <PresentField label="اختلاف قیمت (هر تتر)">
+          {grossSpread != null ? <TomanAmount value={grossSpread} /> : null}
+        </PresentField>
+        <PresentField label="لغزش">
           {quote ? (
             <Bidi>
-              buy {toFaDigits(quote.buySlippageBps)} bps · sell{" "}
+              خرید {toFaDigits(quote.buySlippageBps)} bps · فروش{" "}
               {toFaDigits(quote.sellSlippageBps)} bps
             </Bidi>
-          ) : econ?.slippageBufferToman != null ? (
-            <TomanAmount value={econ.slippageBufferToman} />
-          ) : (
-            <Unavail reason="quote.slippageBps و economics.slippageBufferToman موجود نیست" />
-          )}
-        </Field>
-        <Field label="بافر ریسک">
+          ) : null}
+        </PresentField>
+      </Group>
+
+      <Group title="حجم و محدودیت">
+        <PresentField label="حجم انتخاب‌شده">
+          {s.sizeUsdt != null ? (
+            <Bidi>{toFaDigits(s.sizeUsdt.toFixed(4))} تتر</Bidi>
+          ) : null}
+        </PresentField>
+        <PresentField label="سقف امن">
+          {ceiling != null ? (
+            <Bidi>{toFaDigits(ceiling.toFixed(4))} تتر</Bidi>
+          ) : null}
+        </PresentField>
+        <PresentField label="محدودکننده">{bindingFa}</PresentField>
+      </Group>
+
+      <Group title="هزینه و سود">
+        <PresentField label="کارمزد پای فروش (معادل تومان)">
+          {econ ? <TomanAmount value={econ.sellFeeValueToman} /> : null}
+        </PresentField>
+        <PresentField label="بافر ریسک / لغزش">
           {econ?.slippageBufferToman != null ? (
             <TomanAmount value={econ.slippageBufferToman} />
-          ) : (
-            <Unavail reason="economics.slippageBufferToman موجود نیست" />
-          )}
-        </Field>
-        <Field label="خالص اقتصادی">
-          {economicNet != null ? (
-            <TomanAmount value={economicNet} />
-          ) : (
-            <Unavail reason="economics.economicNetPnlToman موجود نیست" />
-          )}
-        </Field>
-        <Field label="خالص تعدیل‌شده ریسک">
-          {riskAdj != null ? (
-            <TomanAmount value={riskAdj} />
-          ) : (
-            <Unavail reason="economics.riskAdjustedPnlToman موجود نیست" />
-          )}
-        </Field>
-        <Field label="حداقل سود لازم">
-          {minRequired != null ? (
-            <TomanAmount value={minRequired} />
-          ) : minEdgePct != null ? (
-            <Bidi>{toFaDigits(minEdgePct)}٪ لبه (سرمایهٔ درگیر نامشخص)</Bidi>
-          ) : (
-            <Unavail reason="min_risk_adjusted_edge_percent یا capitalInvolved ثبت نشده" />
-          )}
-        </Field>
-        <Field label="کسری دقیق (رد)">
-          {!isSized && shortfall != null ? (
+          ) : null}
+        </PresentField>
+        <PresentField label="سود خالص اقتصادی">
+          {economicNet != null ? <TomanAmount value={economicNet} /> : null}
+        </PresentField>
+        <PresentField label="سود تعدیل‌شده ریسک">
+          {riskAdj != null ? <TomanAmount value={riskAdj} /> : null}
+        </PresentField>
+        <PresentField label="حداقل سود لازم">
+          {minRequired != null ? <TomanAmount value={minRequired} /> : null}
+        </PresentField>
+        <PresentField label="کسری نسبت به حداقل">
+          {!isSized && shortfall != null && shortfall > 0 ? (
             <TomanAmount value={shortfall} />
-          ) : !isSized ? (
-            <Unavail reason="کوتاهی قابل محاسبه نیست بدون minRequired و riskAdj" />
-          ) : (
-            <span className="sa-sub">— (مسیر رد نشده)</span>
-          )}
-        </Field>
-        <Field label="دلیل اجرا یا رد">
-          {executionReason ?? (
-            <Unavail reason="selection.reasonFa / blockers خالی است" />
-          )}
-        </Field>
-      </dl>
+          ) : null}
+        </PresentField>
+      </Group>
+
+      <Group title="تصمیم نهایی">
+        <PresentField label="نتیجه">
+          {isSized ? "قابل اجرا در این چرخه" : "رد / مسدود"}
+        </PresentField>
+        <PresentField label="دلیل">
+          {isSized ? selectionFa ?? "حجم پذیرفته شد" : rejectionFa}
+        </PresentField>
+      </Group>
+
+      {missingNotes.length ? (
+        <p className="sa-why-missing">
+          برخی جزئیات ثبت نشده: {missingNotes.slice(0, 2).join("؛ ")}.
+        </p>
+      ) : null}
+
+      <details className="sa-why-advanced sa-advanced-details">
+        <summary>جزئیات فنی</summary>
+        <dl className="sa-why-grid">
+          <PresentField label="کلید مسیر">
+            <code className="sa-ps-key">{r.routeKey}</code>
+          </PresentField>
+          <PresentField label="وضعیت sizing">{s.status}</PresentField>
+          <PresentField label="سیاست">{s.policy}</PresentField>
+          <PresentField label="کد محدودکنندهٔ خام">{s.bindingConstraint}</PresentField>
+          {s.blockers?.map((b, i) => (
+            <PresentField key={`${b.code}-${i}`} label={`مانع ${toFaDigits(i + 1)}`}>
+              {b.code ? `${reasonLabel(b.code)} — ` : ""}
+              {b.detailFa}
+            </PresentField>
+          ))}
+          <PresentField label="چرا بزرگ‌تر نه">
+            {s.selection?.nextLarger
+              ? `${s.selection.nextLarger.code} — ${s.selection.nextLarger.detailFa}`
+              : null}
+          </PresentField>
+        </dl>
+      </details>
+    </article>
+  );
+}
+
+function WhyLedgerCard({ r }: { r: ActivityLedgerRow }) {
+  const isFilled = r.outcome === "FILLED";
+  const bindingFa = constraintFa(r.bindingConstraint);
+  const rejectFa =
+    r.rejectionReason ||
+    (r.rejectionCode ? reasonLabel(r.rejectionCode) : null) ||
+    "دلیل رد در دفتر ثبت نشده";
+
+  const headline = isFilled
+    ? `معامله انجام شد چون ${
+        r.sizingReason ||
+        `معاملهٔ ${toFaDigits(r.sizeUsdt.toFixed(4))} تتری روی ${r.buySourceId} ← ${r.sellSourceId} در دفتر ثبت شد`
+      }${bindingFa ? ` · محدودکننده: ${bindingFa}` : ""}.`
+    : `معامله انجام نشد چون ${rejectFa}.`;
+
+  const missing: string[] = [];
+  if (r.buyVwapToman == null || r.sellVwapToman == null) {
+    missing.push("قیمت میانگین دو پا");
+  }
+  if (r.economicNetPnlToman == null && isFilled) {
+    missing.push("سود خالص اقتصادی");
+  }
+
+  return (
+    <article className="sa-why-card panel sa-panel">
+      <p className={`sa-why-headline ${isFilled ? "is-ok" : "is-no"}`}>{headline}</p>
+
+      <Group title="مسیر">
+        <PresentField label="خرید از">{r.buySourceId}</PresentField>
+        <PresentField label="فروش به">{r.sellSourceId}</PresentField>
+        <PresentField label="زمان">{formatTehran(r.occurredAt)}</PresentField>
+      </Group>
+
+      <Group title="دادهٔ بازار">
+        <PresentField label="قیمت میانگین خرید">
+          {r.buyVwapToman != null ? <TomanAmount value={r.buyVwapToman} /> : null}
+        </PresentField>
+        <PresentField label="قیمت میانگین فروش">
+          {r.sellVwapToman != null ? <TomanAmount value={r.sellVwapToman} /> : null}
+        </PresentField>
+        <PresentField label="اسپرد / سود ناخالص">
+          {r.grossSpreadToman != null ? <TomanAmount value={r.grossSpreadToman} /> : null}
+        </PresentField>
+      </Group>
+
+      <Group title="حجم و محدودیت">
+        <PresentField label="حجم">
+          <Bidi>{toFaDigits(r.sizeUsdt.toFixed(4))} تتر</Bidi>
+        </PresentField>
+        <PresentField label="محدودکننده">{bindingFa}</PresentField>
+        <PresentField label="سقف سرمایه">
+          {r.capitalCapUsdtMicros != null ? (
+            <Bidi>{toFaDigits(usdt(r.capitalCapUsdtMicros) ?? "")} تتر</Bidi>
+          ) : null}
+        </PresentField>
+        <PresentField label="سقف عمق">
+          {r.depthCapUsdtMicros != null ? (
+            <Bidi>{toFaDigits(usdt(r.depthCapUsdtMicros) ?? "")} تتر</Bidi>
+          ) : null}
+        </PresentField>
+      </Group>
+
+      <Group title="هزینه و سود">
+        <PresentField label="کارمزد تومان">
+          {r.feeTomanTotal != null ? <TomanAmount value={r.feeTomanTotal} /> : null}
+        </PresentField>
+        <PresentField label="کارمزد فروش (معادل تومان)">
+          {r.sellFeeValueToman != null ? (
+            <TomanAmount value={r.sellFeeValueToman} />
+          ) : null}
+        </PresentField>
+        <PresentField label="بافر ریسک">
+          {r.slippageBufferToman != null ? (
+            <TomanAmount value={r.slippageBufferToman} />
+          ) : null}
+        </PresentField>
+        <PresentField label="سود خالص اقتصادی">
+          {r.economicNetPnlToman != null ? (
+            <TomanAmount value={r.economicNetPnlToman} />
+          ) : null}
+        </PresentField>
+        <PresentField label="سود تعدیل‌شده">
+          {r.riskAdjustedPnlToman != null ? (
+            <TomanAmount value={r.riskAdjustedPnlToman} />
+          ) : null}
+        </PresentField>
+      </Group>
+
+      <Group title="تصمیم نهایی">
+        <PresentField label="نتیجه">{isFilled ? "اجراشده" : "ردشده"}</PresentField>
+        <PresentField label="دلیل">
+          {isFilled ? r.sizingReason ?? "در دفتر ثبت شد" : rejectFa}
+        </PresentField>
+      </Group>
+
+      {missing.length ? (
+        <p className="sa-why-missing">
+          برخی جزئیات این ردیف در دفتر نیست: {missing.join("، ")}.
+        </p>
+      ) : null}
+
+      <details className="sa-why-advanced sa-advanced-details">
+        <summary>جزئیات فنی</summary>
+        <dl className="sa-why-grid">
+          <PresentField label="شناسهٔ دفتر">
+            <code className="sa-ps-key">{r.id}</code>
+          </PresentField>
+          <PresentField label="کلید مسیر">
+            <code className="sa-ps-key">{r.routeKey}</code>
+          </PresentField>
+          <PresentField label="کد رد">{r.rejectionCode}</PresentField>
+          <PresentField label="سیاست حجم">{r.sizingPolicy}</PresentField>
+          <PresentField label="محدودکنندهٔ خام">{r.bindingConstraint}</PresentField>
+        </dl>
+      </details>
     </article>
   );
 }
@@ -460,7 +559,6 @@ export function ActivityDecisions({
       ? filledTrades.find((t) => t.id === openTradeId) ?? null
       : null;
 
-  // Prefer routes with any evaluation signal for the why section
   const whyRoutes = routes.length
     ? [...routes].sort((a, b) => {
         const as = a.sizing.status === "SIZED" ? 0 : 1;
@@ -470,15 +568,16 @@ export function ActivityDecisions({
       })
     : [];
 
-  // Latest ledger rows as fallback explainability when routes empty
   const latestLedger = useMemo(
-    () => [...ledger].sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt)).slice(0, 8),
+    () =>
+      [...ledger]
+        .sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt))
+        .slice(0, 8),
     [ledger]
   );
 
   return (
     <div className="sa-stack">
-      {/* ── Why traded / not ─────────────────────────────────────────────── */}
       <section className="panel sa-panel" aria-label="چرا معامله شد یا نشد؟">
         <div className="panel-header sa-panel-header">
           <h3 className="panel-title sa-panel-title">چرا معامله شد یا نشد؟</h3>
@@ -506,147 +605,15 @@ export function ActivityDecisions({
           ) : latestLedger.length ? (
             <div className="sa-why-list">
               {latestLedger.map((r) => (
-                <article key={r.id} className="sa-why-card panel sa-panel">
-                  <header className="sa-why-card-head">
-                    <strong>
-                      {r.buySourceId} ← {r.sellSourceId}
-                    </strong>
-                    <span
-                      className={`sa-chip sa-chip-sm sa-chip-${
-                        r.outcome === "FILLED" ? "good" : "muted"
-                      }`}
-                    >
-                      {r.outcome === "FILLED" ? "اجراشده" : "ردشده"}
-                    </span>
-                  </header>
-                  <dl className="sa-why-grid">
-                    <Field label="مسیر">{r.routeKey}</Field>
-                    <Field label="صرافی خرید / فروش">
-                      {r.buySourceId} / {r.sellSourceId}
-                    </Field>
-                    <Field label="زمان">{formatTehran(r.occurredAt)}</Field>
-                    <Field label="سن داده">
-                      <Unavail reason="سن quote در ردیف دفتر ذخیره نشده" />
-                    </Field>
-                    <Field label="VWAP خرید">
-                      {r.buyVwapToman != null ? (
-                        <TomanAmount value={r.buyVwapToman} />
-                      ) : (
-                        <Unavail reason="buyVwapToman در ledger null است" />
-                      )}
-                    </Field>
-                    <Field label="VWAP فروش">
-                      {r.sellVwapToman != null ? (
-                        <TomanAmount value={r.sellVwapToman} />
-                      ) : (
-                        <Unavail reason="sellVwapToman در ledger null است" />
-                      )}
-                    </Field>
-                    <Field label="سقف امن">
-                      {r.capitalCapUsdtMicros != null || r.depthCapUsdtMicros != null ? (
-                        <Bidi>
-                          capital {usdt(r.capitalCapUsdtMicros) ?? "—"} · depth{" "}
-                          {usdt(r.depthCapUsdtMicros) ?? "—"} USDT
-                        </Bidi>
-                      ) : (
-                        <Unavail reason="capitalCap/depthCap در ledger ثبت نشده" />
-                      )}
-                    </Field>
-                    <Field label="حجم انتخاب‌شده">
-                      <Bidi>{toFaDigits(r.sizeUsdt.toFixed(4))} USDT</Bidi>
-                    </Field>
-                    <Field label="محدودکننده">
-                      {r.bindingConstraint ?? (
-                        <Unavail reason="bindingConstraint در ledger ثبت نشده" />
-                      )}
-                    </Field>
-                    <Field label="اسپرد / P&L ناخالص">
-                      {r.grossSpreadToman != null ? (
-                        <TomanAmount value={r.grossSpreadToman} />
-                      ) : (
-                        <Unavail reason="grossSpreadToman در ledger موجود نیست" />
-                      )}
-                    </Field>
-                    <Field label="کارمزد خرید (venue / asset)">
-                      {r.buyFeeBps != null || r.feeTomanTotal != null ? (
-                        <span className="sa-sub">
-                          {r.buySourceId}
-                          {r.buyFeeAsset ? ` · ${r.buyFeeAsset}` : ""}
-                          {r.buyFeeBps != null ? ` · ${toFaDigits(r.buyFeeBps)} bps` : ""}
-                          {r.feeTomanTotal != null ? (
-                            <>
-                              {" · "}
-                              <TomanAmount value={r.feeTomanTotal} />
-                            </>
-                          ) : null}
-                        </span>
-                      ) : (
-                        <Unavail reason="buyFeeBps / feeTomanTotal در ledger نیست" />
-                      )}
-                    </Field>
-                    <Field label="کارمزد فروش (venue / asset)">
-                      {r.sellFeeBps != null || r.sellFeeValueToman != null ? (
-                        <span className="sa-sub">
-                          {r.sellSourceId}
-                          {r.sellFeeAsset ? ` · ${r.sellFeeAsset}` : ""}
-                          {r.sellFeeBps != null ? ` · ${toFaDigits(r.sellFeeBps)} bps` : ""}
-                          {r.sellFeeValueToman != null ? (
-                            <>
-                              {" · "}
-                              <TomanAmount value={r.sellFeeValueToman} />
-                            </>
-                          ) : null}
-                        </span>
-                      ) : (
-                        <Unavail reason="sellFeeBps / sellFeeValueToman در ledger نیست" />
-                      )}
-                    </Field>
-                    <Field label="لغزش / بافر ریسک">
-                      {r.slippageBufferToman != null ? (
-                        <TomanAmount value={r.slippageBufferToman} />
-                      ) : (
-                        <Unavail reason="slippageBufferToman در ledger موجود نیست" />
-                      )}
-                    </Field>
-                    <Field label="خالص اقتصادی">
-                      {r.economicNetPnlToman != null ? (
-                        <TomanAmount value={r.economicNetPnlToman} />
-                      ) : (
-                        <Unavail reason="economicNetPnlToman null است" />
-                      )}
-                    </Field>
-                    <Field label="خالص تعدیل‌شده">
-                      {r.riskAdjustedPnlToman != null ? (
-                        <TomanAmount value={r.riskAdjustedPnlToman} />
-                      ) : (
-                        <Unavail reason="riskAdjustedPnlToman null است" />
-                      )}
-                    </Field>
-                    <Field label="حداقل سود لازم">
-                      <Unavail reason="حداقل سود در ردیف دفتر ذخیره نشده؛ از سیاست چرخه استفاده کنید" />
-                    </Field>
-                    <Field label="کسری / دلیل">
-                      {r.outcome === "SKIPPED" ? (
-                        r.rejectionReason ?? reasonLabel(r.rejectionCode ?? "") ?? (
-                          <Unavail reason="rejectionReason خالی است" />
-                        )
-                      ) : (
-                        r.sizingReason ?? "اجرا شد"
-                      )}
-                    </Field>
-                  </dl>
-                </article>
+                <WhyLedgerCard key={r.id} r={r} />
               ))}
             </div>
           ) : (
-            <p className="sa-sub">
-              هنوز مسیر یا تصمیمی برای توضیح وجود ندارد.
-            </p>
+            <p className="sa-sub">هنوز مسیر یا تصمیمی برای توضیح وجود ندارد.</p>
           )}
         </div>
       </section>
 
-      {/* ── Completed trades ─────────────────────────────────────────────── */}
       <section className="panel sa-panel" aria-label="معاملات تکمیل‌شده">
         <div className="panel-header sa-panel-header">
           <h3 className="panel-title">معاملات تکمیل‌شده</h3>
@@ -664,10 +631,10 @@ export function ActivityDecisions({
                       <th>خرید</th>
                       <th>فروش</th>
                       <th className="num">حجم</th>
-                      <th className="num">VWAP</th>
+                      <th className="num">قیمت میانگین</th>
                       <th className="num">خالص اقتصادی</th>
-                      <th>زمان / مدت</th>
-                      <th>ledger</th>
+                      <th>زمان</th>
+                      <th>وضعیت</th>
                       <th />
                     </tr>
                   </thead>
@@ -680,12 +647,8 @@ export function ActivityDecisions({
                             {t.buyVwapToman != null ? (
                               <TomanAmount value={t.buyVwapToman} />
                             ) : (
-                              <Unavail reason="buyVwapToman" />
+                              "قیمت ثبت نشده"
                             )}
-                            {t.buyFeeBps != null ? (
-                              <> · fee {toFaDigits(t.buyFeeBps)} bps</>
-                            ) : null}
-                            {t.buyFeeAsset ? ` (${t.buyFeeAsset})` : ""}
                           </div>
                         </td>
                         <td>
@@ -694,12 +657,8 @@ export function ActivityDecisions({
                             {t.sellVwapToman != null ? (
                               <TomanAmount value={t.sellVwapToman} />
                             ) : (
-                              <Unavail reason="sellVwapToman" />
+                              "قیمت ثبت نشده"
                             )}
-                            {t.sellFeeBps != null ? (
-                              <> · fee {toFaDigits(t.sellFeeBps)} bps</>
-                            ) : null}
-                            {t.sellFeeAsset ? ` (${t.sellFeeAsset})` : ""}
                           </div>
                         </td>
                         <td className="num">
@@ -719,31 +678,11 @@ export function ActivityDecisions({
                           {t.economicNetPnlToman != null ? (
                             <TomanAmount value={t.economicNetPnlToman} />
                           ) : (
-                            <Unavail reason="economicNetPnlToman" />
+                            "ثبت نشده"
                           )}
-                          {t.markPriceToman != null && t.economicNetPnlToman != null ? (
-                            <div className="sa-sub">
-                              ≈{" "}
-                              <Bidi>
-                                {toFaDigits(
-                                  (t.economicNetPnlToman / t.markPriceToman).toFixed(4)
-                                )}
-                              </Bidi>{" "}
-                              USDT
-                            </div>
-                          ) : null}
                         </td>
-                        <td className="sa-sub">
-                          {formatTehran(t.occurredAt)}
-                          <div>مدت: atomic dual-leg · ۰ ms</div>
-                        </td>
-                        <td className="sa-sub">
-                          <code className="sa-ps-key">{t.id}</code>
-                          <div>FILLED</div>
-                          {t.bindingConstraint ? (
-                            <div>sizing: {t.bindingConstraint}</div>
-                          ) : null}
-                        </td>
+                        <td className="sa-sub">{formatTehran(t.occurredAt)}</td>
+                        <td className="sa-sub">تکمیل‌شده</td>
                         <td>
                           <button
                             type="button"
@@ -775,7 +714,7 @@ export function ActivityDecisions({
                     </div>
                     <p className="sa-sub">
                       <Bidi>{toFaDigits(t.sizeUsdt.toFixed(4))}</Bidi> تتر ·{" "}
-                      {formatTehran(t.occurredAt)} · {t.id}
+                      {formatTehran(t.occurredAt)}
                     </p>
                     <button
                       type="button"
@@ -810,7 +749,6 @@ export function ActivityDecisions({
         </div>
       </section>
 
-      {/* ── session headline ─────────────────────────────────────────────── */}
       <section className="panel sa-panel" aria-label="خلاصه نشست">
         <div className="panel-header sa-panel-header">
           <h3 className="panel-title sa-panel-title">خلاصه نشست</h3>
@@ -858,7 +796,6 @@ export function ActivityDecisions({
         </div>
       </section>
 
-      {/* ── recorded decisions ───────────────────────────────────────────── */}
       <section className="panel sa-panel" aria-label="تصمیم‌های ثبت‌شده">
         <div className="panel-header sa-panel-header">
           <h3 className="panel-title sa-panel-title">تصمیم‌های ثبت‌شده</h3>
@@ -938,7 +875,9 @@ export function ActivityDecisions({
                       <th scope="col">زمان</th>
                       <th scope="col">مسیر</th>
                       <th scope="col">نتیجه</th>
-                      <th scope="col" className="num">حجم</th>
+                      <th scope="col" className="num">
+                        حجم
+                      </th>
                       <th scope="col">دلیل</th>
                     </tr>
                   </thead>
@@ -968,7 +907,7 @@ export function ActivityDecisions({
                           {r.bindingConstraint ? (
                             <>
                               <br />
-                              محدودکننده: {r.bindingConstraint}
+                              محدودکننده: {constraintFa(r.bindingConstraint)}
                             </>
                           ) : null}
                         </td>

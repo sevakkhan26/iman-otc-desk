@@ -324,7 +324,11 @@ await test("8C every existing panel survives, in the section that now owns it", 
   // v4.2.1: Venues is compact (health + fees + usable depth); SourcesPanel is not mounted.
   const venues = read("src/components/shadowArbitrage/VenuesSection.tsx");
   assert.ok(venues.includes("کارمزد خرید") || venues.includes("taker"));
-  assert.ok(venues.includes("عمق قابل‌استفاده"));
+  assert.ok(
+    venues.includes("عمق خریدار") ||
+      venues.includes("عمق فروشنده") ||
+      venues.includes("عمق قابل‌استفاده")
+  );
   assert.equal(venues.includes("<SourcesPanel"), false, "verbose SourcesPanel removed from Venues");
 });
 
@@ -1756,13 +1760,13 @@ await test("release version: one authoritative public field, valid package metad
   const pkg = JSON.parse(read("package.json")) as { version: string; private?: boolean };
 
   // The product's version is exactly what this release is called.
-  assert.equal(version.appVersion, "4.2.1");
+  assert.equal(version.appVersion, "4.2.2");
 
-  // 4.2.1 is valid SemVer; appVersion and package.json stay aligned.
+  // 4.2.2 is valid SemVer; appVersion and package.json stay aligned.
   const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?$/;
-  assert.equal(semver.test(version.appVersion), true, "4.2.1 is valid SemVer");
+  assert.equal(semver.test(version.appVersion), true, "4.2.2 is valid SemVer");
   assert.ok(semver.test(pkg.version), `package.json keeps valid SemVer, found ${pkg.version}`);
-  assert.equal(pkg.version, "4.2.1");
+  assert.equal(pkg.version, "4.2.2");
   assert.equal(pkg.version, version.packageMetadataVersion, "and the two stay in step");
   assert.equal(pkg.private, true, "the package is never published, so its version is metadata only");
 
@@ -2372,7 +2376,8 @@ await test("4.2.1 five sections order and Settings session control", () => {
   assert.ok(acct.includes("openOrders: []"));
   const activity = read("src/components/shadowArbitrage/ActivityDecisions.tsx");
   assert.ok(activity.includes("چرا معامله شد یا نشد؟"));
-  assert.ok(activity.includes("Unavailable"));
+  assert.ok(activity.includes("معامله انجام شد چون") || activity.includes("معامله انجام نشد چون"));
+  assert.equal(activity.includes("Unavailable"), false, "no English Unavailable in decision UI");
 });
 
 
@@ -2418,10 +2423,22 @@ await test("4.1.8.0 Paper policy set is one atomic, fingerprinted decision", () 
 
   const activity = read("src/components/shadowArbitrage/ActivityDecisions.tsx");
   assert.ok(activity.includes("چرا معامله شد یا نشد؟"));
+  assert.ok(activity.includes("معامله انجام شد چون"));
+  assert.ok(activity.includes("معامله انجام نشد چون"));
   assert.ok(activity.includes("method: \"POST\"") === false, "Activity must never POST");
   assert.ok(activity.includes("bindingConstraint"));
   assert.ok(activity.includes("riskAdjustedPnlToman"));
   assert.ok(activity.includes("sa-ad-cards") || activity.includes("sa-why-card"));
+  assert.equal(activity.includes("Unavailable"), false);
+  // Venues grid must not use zero-min auto-fill tracks (v4.2.2 collapse root cause).
+  const css = read("app/globals.css");
+  const compact = css.slice(css.indexOf(".sa-venue-grid-compact"));
+  assert.equal(
+    /sa-venue-grid-compact\s*\{[^}]*auto-fill,\s*minmax\(0/.test(compact.slice(0, 400)),
+    false,
+    "compact venue grid must not use auto-fill minmax(0)"
+  );
+  assert.ok(compact.slice(0, 500).includes("repeat(3, minmax(0, 1fr))"));
 
   const lr = read("src/components/shadowArbitrage/LiveReadiness.tsx");
   assert.ok(lr.includes("PAPER_POLICY_SET_KEYS"));

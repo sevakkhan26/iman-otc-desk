@@ -8433,20 +8433,122 @@ table th {
   overflow-wrap: anywhere;
   line-height: 1.55;
 }
-.sa-venue-card-compact .sa-venue-card-grid-minimal {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.5rem 0.75rem;
-}
+/*
+ * v4.2.2 — venue grid fix.
+ * Root cause of collapse/overlap: `repeat(auto-fill, minmax(0, 1fr))` lets the
+ * browser invent near-zero-width tracks, packing every card into a crushed strip.
+ * Use fixed 3 → 2 → 1 responsive columns with minmax(0, 1fr) so tracks shrink
+ * safely without becoming zero-width columns.
+ */
 .sa-venue-grid-compact {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(0, 1fr));
-  gap: 0.75rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+  max-width: 100%;
+  align-items: stretch;
+  box-sizing: border-box;
+}
+.sa-venue-card-compact {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sa-venue-card-compact .sa-venue-card-head {
+  min-width: 0;
+  align-items: flex-start;
+}
+.sa-venue-card-compact .sa-venue-card-head > div {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+}
+.sa-venue-card-compact .sa-venue-card-grid-minimal {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px 0;
+  margin: 0;
+  min-width: 0;
+}
+.sa-venue-card-compact .sa-venue-card-grid-minimal > div {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 6px 10px;
+  align-items: baseline;
+  min-width: 0;
+}
+.sa-venue-card-compact .sa-venue-card-grid-minimal dt,
+.sa-venue-card-compact .sa-venue-card-grid-minimal dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* Why-decision cards (v4.2.2 readable summary) */
+.sa-why-headline {
+  margin: 0;
+  padding: 0.75rem 0.85rem 0.35rem;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.sa-why-headline.is-ok {
+  font-weight: 800;
+}
+.sa-why-headline.is-no {
+  font-weight: 800;
+}
+.sa-why-group {
+  margin: 0;
+  padding: 0.35rem 0.85rem 0.55rem;
+  border-top: var(--line-soft);
+}
+.sa-why-group-title {
+  margin: 0 0 0.35rem;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+.sa-why-group .sa-why-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 0;
+}
+.sa-why-missing {
+  margin: 0.25rem 0.85rem 0.65rem;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.sa-why-advanced {
+  margin: 0 0.65rem 0.65rem;
+  min-width: 0;
+}
+.sa-why-advanced summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 0.35rem 0.2rem;
+}
+.sa-why-advanced .sa-why-grid {
+  padding: 0.35rem 0.2rem 0.55rem;
+}
+@media (max-width: 1024px) {
+  .sa-venue-grid-compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 @media (max-width: 768px) {
   .sa-why-grid,
+  .sa-why-group .sa-why-grid,
   .sa-acct-venue-compact .sa-bal-metrics,
-  .sa-venue-card-compact .sa-venue-card-grid-minimal {
+  .sa-venue-card-compact .sa-venue-card-grid-minimal > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sa-venue-grid-compact {
     grid-template-columns: minmax(0, 1fr);
   }
 }

@@ -3,7 +3,7 @@
 /**
  * «وضعیت صرافی‌ها» — compact: health, buy/sell taker fees, usable depth only.
  *
- * v4.2.1: no price ladder, capacity diagnostics, or verbose depth blocks.
+ * v4.2.2: balanced multi-column grid (no auto-fill zero-min tracks).
  * Fees appear only here. Depth uses real slippage-bounded accepted values;
  * never fabricated.
  */
@@ -68,7 +68,6 @@ type Props = {
   venueSemantics?: VenueSemanticsRow[] | null;
   routes?: RouteSizingView[];
   serverNow?: string | null;
-  /** Preferred source for slippage-bounded usable depth. */
   venueDepthCards?: VenueDepthCardView[] | null;
 };
 
@@ -85,7 +84,18 @@ type ObservationPayloadLike = {
   }>;
 };
 
-const UNAVAILABLE = "Unavailable";
+const HEALTH_FA: Record<string, string> = {
+  healthy: "سالم",
+  ok: "سالم",
+  fresh: "سالم",
+  degraded: "مختل",
+  unhealthy: "ناسالم",
+  unknown: "نامشخص"
+};
+
+function healthFa(status: string): string {
+  return HEALTH_FA[status] ?? status;
+}
 
 function DepthValue({
   usdt,
@@ -98,9 +108,8 @@ function DepthValue({
 }) {
   if (usdt === null || usdt === undefined || !Number.isFinite(usdt)) {
     return (
-      <span className="sa-unknown" title={reasonFa ?? "عمق لغزش‌محدود در این چرخه موجود نیست"}>
-        {UNAVAILABLE}
-        {reasonFa ? ` — ${reasonFa}` : ""}
+      <span className="sa-unknown" title={reasonFa ?? undefined}>
+        {reasonFa?.trim() ? reasonFa : "عمق این چرخه ثبت نشده"}
       </span>
     );
   }
@@ -168,12 +177,11 @@ export function VenuesSection({
                     ? "muted"
                     : "danger";
 
-            const buyFee =
-              fee?.takerFeeBps ?? v?.takerFeeBps ?? null;
-            const sellFee =
-              fee?.takerFeeBps ?? v?.takerFeeBps ?? null;
+            const buyFee = fee?.takerFeeBps ?? v?.takerFeeBps ?? null;
+            const sellFee = fee?.takerFeeBps ?? v?.takerFeeBps ?? null;
+            const feeMissingFa =
+              fee?.blockerFa ?? fee?.miss ?? "شواهد کارمزد در این چرخه ثبت نشده";
 
-            // Prefer real slippage-bounded accepted depth from venue depth cards.
             let buyDepthUsdt: number | null = depth?.buy?.usableCapacityUsdt ?? null;
             let buyDepthToman: number | null = depth?.buy?.usableCapacityToman ?? null;
             let buyReason = depth?.buy?.unavailableFa ?? depth?.buy?.reasonFa ?? null;
@@ -181,7 +189,6 @@ export function VenuesSection({
             let sellDepthToman: number | null = depth?.sell?.usableCapacityToman ?? null;
             let sellReason = depth?.sell?.unavailableFa ?? depth?.sell?.reasonFa ?? null;
 
-            // Fall back to capacity micros only when depth card side is unavailable.
             if (buyDepthUsdt === null || buyDepthUsdt === undefined) {
               const micros =
                 cap?.buy?.capacityUsdtMicros ?? sem?.buyCapacityUsdtMicros ?? null;
@@ -205,54 +212,49 @@ export function VenuesSection({
               }
             }
 
+            const nameFa = sem?.nameFa ?? v?.nameFa ?? id;
+
             return (
               <article key={id} className="sa-venue-card sa-venue-card-compact glass-control">
                 <header className="sa-venue-card-head">
                   <div>
-                    <strong>{sem?.nameFa ?? v?.nameFa ?? id}</strong>
-                    <span className="sa-ps-key">{id}</span>
+                    <strong>{nameFa}</strong>
                   </div>
-                  <span className={`sa-chip sa-chip-sm sa-chip-${tone}`}>{status}</span>
+                  <span className={`sa-chip sa-chip-sm sa-chip-${tone}`}>
+                    {healthFa(status)}
+                  </span>
                 </header>
                 <dl className="sa-venue-card-grid sa-venue-card-grid-minimal">
                   <div>
                     <dt>سلامت</dt>
                     <dd>
-                      <span className={`sa-chip sa-chip-sm sa-chip-${tone}`}>{status}</span>
+                      <span className={`sa-chip sa-chip-sm sa-chip-${tone}`}>
+                        {healthFa(status)}
+                      </span>
                     </dd>
                   </div>
                   <div>
-                    <dt>کارمزد خرید / taker</dt>
+                    <dt>کارمزد خرید (taker)</dt>
                     <dd className="sa-sub">
                       {buyFee !== null && buyFee !== undefined ? (
                         <Bidi>{toFaDigits(buyFee)} bps</Bidi>
                       ) : (
-                        <span
-                          className="sa-unknown"
-                          title={fee?.blockerFa ?? fee?.miss ?? "شواهد کارمزد موجود نیست"}
-                        >
-                          {UNAVAILABLE}
-                        </span>
+                        <span className="sa-unknown">{feeMissingFa}</span>
                       )}
                     </dd>
                   </div>
                   <div>
-                    <dt>کارمزد فروش / taker</dt>
+                    <dt>کارمزد فروش (taker)</dt>
                     <dd className="sa-sub">
                       {sellFee !== null && sellFee !== undefined ? (
                         <Bidi>{toFaDigits(sellFee)} bps</Bidi>
                       ) : (
-                        <span
-                          className="sa-unknown"
-                          title={fee?.blockerFa ?? fee?.miss ?? "شواهد کارمزد موجود نیست"}
-                        >
-                          {UNAVAILABLE}
-                        </span>
+                        <span className="sa-unknown">{feeMissingFa}</span>
                       )}
                     </dd>
                   </div>
                   <div>
-                    <dt>عمق قابل‌استفاده خریدار</dt>
+                    <dt>عمق خریدار</dt>
                     <dd>
                       <DepthValue
                         usdt={buyDepthUsdt}
@@ -262,7 +264,7 @@ export function VenuesSection({
                     </dd>
                   </div>
                   <div>
-                    <dt>عمق قابل‌استفاده فروشنده</dt>
+                    <dt>عمق فروشنده</dt>
                     <dd>
                       <DepthValue
                         usdt={sellDepthUsdt}

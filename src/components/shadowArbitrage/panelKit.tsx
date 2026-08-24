@@ -16,17 +16,37 @@ export function Kpi({
   label,
   value,
   hint,
-  tone
+  tone,
+  spark
 }: {
   label: string;
   value: React.ReactNode;
   hint: string;
   tone: "good" | "warn" | "danger" | "muted";
+  spark?: number[];
 }) {
+  const maxSpark = spark && spark.length > 0 ? Math.max(...spark.map(Math.abs), 1) : 1;
+
   return (
     <section className={`panel sa-panel sa-kpi sa-rail-${tone}`}>
       <div className="panel-body sa-kpi-body">
-        <div className="sa-kpi-label">{label}</div>
+        <div className="sa-kpi-header">
+          <div className="sa-kpi-label">{label}</div>
+          {spark && spark.length > 0 && (
+            <div className="sa-kpi-spark" aria-hidden="true">
+              {spark.map((v, i) => {
+                const height = Math.max(10, (Math.abs(v) / maxSpark) * 100);
+                return (
+                  <div 
+                    key={i} 
+                    className="sa-kpi-spark-bar" 
+                    style={{ height: `${height}%` }} 
+                  />
+                );
+              })}
+            </div>
+          )}
+        </div>
         <div className="sa-kpi-value">{value}</div>
         <div className="sa-kpi-hint">{hint}</div>
       </div>

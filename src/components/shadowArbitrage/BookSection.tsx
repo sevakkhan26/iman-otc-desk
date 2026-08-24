@@ -97,7 +97,7 @@ export function BookSection({
                 </thead>
                 <tbody>
                   {open.map((o) => (
-                    <tr key={o.id}>
+                    <tr key={o.id} className="sa-row">
                       <td>
                         <span className="sa-chip sa-chip-sm sa-chip-warn">{o.status}</span>
                       </td>

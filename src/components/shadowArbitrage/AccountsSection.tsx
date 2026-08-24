@@ -10,6 +10,7 @@ import { TomanAmount } from "@/components/TomanAmount";
 import { formatTehran } from "@/components/format";
 import { Bidi } from "@/components/shadowArbitrage/Bidi";
 import { toFaDigits } from "@/components/shadowArbitrage/labels";
+import { Kpi } from "@/components/shadowArbitrage/panelKit";
 
 export type AccountsAccounting = {
   asOf: string;
@@ -159,41 +160,9 @@ type Props = {
 const DASH = <span className="sa-unknown">—</span>;
 const UNAVAILABLE = "Unavailable";
 
-function Metric({
-  label,
-  children
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="sa-acct-metric">
-      <dt>{label}</dt>
-      <dd>{children}</dd>
-    </div>
-  );
-}
-
 function pnlClass(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n) || n === 0) return "sa-pnl-zero";
-  return n > 0 ? "sa-pnl-pos" : "sa-pnl-neg";
-}
-
-function InnerCard({
-  title,
-  children,
-  className = ""
-}: {
-  title: string;
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <div className={`sa-inner-card ${className}`.trim()}>
-      <h4 className="sa-inner-card-title">{title}</h4>
-      <div className="sa-inner-card-body">{children}</div>
-    </div>
-  );
+  return n > 0 ? "sa-pos" : "sa-neg";
 }
 
 export function AccountsSection({
@@ -277,89 +246,49 @@ export function AccountsSection({
           </div>
         </div>
         <div className="panel-body sa-port-body">
-          <div className="sa-port-grid">
-            <InnerCard title="ارزش">
-              <dl className="sa-inner-metrics sa-inner-metrics-2">
-                <Metric label="سرمایهٔ اولیه">
-                  <TomanAmount value={a?.initialCapitalToman ?? session.totalCapitalToman} />
-                </Metric>
-                <Metric label="ارزش فعلی">
-                  {a?.equityToman !== null && a?.equityToman !== undefined ? (
-                    <TomanAmount value={a.equityToman} />
-                  ) : (
-                    <span className="sa-unknown" title="قیمت مبنا در دسترس نیست">
-                      {UNAVAILABLE}
-                    </span>
-                  )}
-                </Metric>
-                <Metric label="بازده">
-                  {a?.returnPercent !== null && a?.returnPercent !== undefined ? (
-                    <span className={pnlClass(a.returnPercent)}>
-                      <Bidi>{toFaDigits(a.returnPercent.toFixed(2))}٪</Bidi>
-                    </span>
-                  ) : (
-                    <span className="sa-unknown">{UNAVAILABLE}</span>
-                  )}
-                </Metric>
-                <Metric label="قیمت مبنای تتر">
-                  {a?.markPriceToman ? (
-                    <TomanAmount value={a.markPriceToman} />
-                  ) : (
-                    <span className="sa-unknown">{UNAVAILABLE}</span>
-                  )}
-                </Metric>
-              </dl>
-            </InnerCard>
-
-            <InnerCard title="نقدینگی">
-              <dl className="sa-inner-metrics sa-inner-metrics-2">
-                <Metric label="سرمایهٔ آزاد">
-                  {a?.freeCapitalToman !== null && a?.freeCapitalToman !== undefined ? (
-                    <TomanAmount value={a.freeCapitalToman} />
-                  ) : (
-                    <span className="sa-unknown">{UNAVAILABLE}</span>
-                  )}
-                </Metric>
-                <Metric label="IRT آزاد">
-                  <TomanAmount value={a?.availableIrtToman ?? 0} />
-                </Metric>
-                <Metric label="USDT آزاد">
-                  <Bidi>{toFaDigits((a?.availableUsdt ?? 0).toFixed(4))}</Bidi>
-                </Metric>
-                <Metric label="رزرو سفارش">
-                  <TomanAmount value={a?.reservedInOrdersToman ?? 0} />
-                </Metric>
-                <Metric label="درگیر پوزیشن">
-                  <TomanAmount value={a?.committedToPositionsToman ?? 0} />
-                </Metric>
-              </dl>
-            </InnerCard>
-
-            <InnerCard title="سود و زیان">
-              <dl className="sa-inner-metrics sa-inner-metrics-2">
-                <Metric label="سود امروز">
-                  <span className={pnlClass(a?.todayRealizedPnlToman ?? 0)}>
-                    <TomanAmount value={a?.todayRealizedPnlToman ?? 0} />
-                  </span>
-                </Metric>
-                <Metric label="تحقق‌یافته (اقتصادی)">
-                  <span className={pnlClass(a?.realizedEconomicPnlToman ?? 0)}>
-                    <TomanAmount value={a?.realizedEconomicPnlToman ?? 0} />
-                  </span>
-                </Metric>
-                <Metric label="تحقق‌نیافته">
-                  {a?.unrealizedPnlToman !== null && a?.unrealizedPnlToman !== undefined ? (
-                    <span className={pnlClass(a.unrealizedPnlToman)}>
-                      <TomanAmount value={a.unrealizedPnlToman} />
-                    </span>
-                  ) : (
-                    <span className="sa-unknown" title="قیمت مبنا یا پوزیشن باز ثبت نشده">
-                      {UNAVAILABLE}
-                    </span>
-                  )}
-                </Metric>
-              </dl>
-            </InnerCard>
+          <div className="sa-cards">
+            <Kpi
+              label="ارزش فعلی"
+              tone={a?.returnPercent && a.returnPercent < 0 ? "warn" : "good"}
+              hint={`بازده: ${a?.returnPercent ? toFaDigits(a.returnPercent.toFixed(2)) + "٪" : UNAVAILABLE}`}
+              value={
+                a?.equityToman !== null && a?.equityToman !== undefined ? (
+                  <TomanAmount value={a.equityToman} />
+                ) : (
+                  <span className="sa-unknown">{UNAVAILABLE}</span>
+                )
+              }
+            />
+            <Kpi
+              label="سود امروز"
+              tone={a?.todayRealizedPnlToman && a.todayRealizedPnlToman < 0 ? "warn" : a?.todayRealizedPnlToman && a.todayRealizedPnlToman > 0 ? "good" : "muted"}
+              hint="سود و زیان تحقق‌یافته (امروز)"
+              value={
+                <span className={pnlClass(a?.todayRealizedPnlToman ?? 0)}>
+                  <TomanAmount value={a?.todayRealizedPnlToman ?? 0} />
+                </span>
+              }
+            />
+            <Kpi
+              label="سرمایهٔ آزاد"
+              tone="good"
+              hint="مجموع نقدینگی در دسترس"
+              value={
+                a?.freeCapitalToman !== null && a?.freeCapitalToman !== undefined ? (
+                  <TomanAmount value={a.freeCapitalToman} />
+                ) : (
+                  <span className="sa-unknown">{UNAVAILABLE}</span>
+                )
+              }
+            />
+            <Kpi
+              label="درگیر / رزرو"
+              tone="muted"
+              hint="سرمایه در پوزیشن یا سفارش"
+              value={
+                <TomanAmount value={(a?.reservedInOrdersToman ?? 0) + (a?.committedToPositionsToman ?? 0)} />
+              }
+            />
           </div>
         </div>
       </section>

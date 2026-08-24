@@ -4,6 +4,7 @@
  * Read-only trade detail panel for closed Paper ledger rows.
  * Presentation only — values come from buildTradeDetailsView; no recalculation.
  */
+import { useEffect } from "react";
 import { TomanAmount } from "@/components/TomanAmount";
 import { formatTehran } from "@/components/format";
 import { Bidi } from "@/components/shadowArbitrage/Bidi";
@@ -66,7 +67,7 @@ function Row({
 
 function pnlClass(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n) || n === 0) return "sa-pnl-zero";
-  return n > 0 ? "sa-pnl-pos" : "sa-pnl-neg";
+  return n > 0 ? "sa-pos" : "sa-neg";
 }
 
 function MoneyTR({
@@ -89,19 +90,30 @@ function MoneyTR({
 }
 
 export function TradeDetailsPanel({ trade, context, open, onClose }: Props) {
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [open, onClose]);
+
   if (!open) return null;
   const v = buildTradeDetailsView(trade, context);
   const p = v.profitability;
 
   return (
-    <div className="sa-td-panel panel sa-panel" role="region" aria-label="جزئیات معامله">
-      <div className="panel-header sa-panel-header sa-td-head">
-        <h4 className="panel-title">جزئیات معامله</h4>
-        <button type="button" className="sa-btn sa-btn-ghost sa-td-close" onClick={onClose}>
-          بستن
-        </button>
-      </div>
-      <div className="panel-body sa-td-body">
+    <div className="sa-drawer-backdrop" onClick={onClose}>
+      <div className="sa-drawer" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+        <div className="sa-td-panel panel sa-panel" role="region" aria-label="جزئیات معامله">
+          <div className="panel-header sa-panel-header sa-td-head">
+            <h4 className="panel-title">جزئیات معامله</h4>
+            <button type="button" className="sa-btn sa-btn-ghost sa-td-close" onClick={onClose}>
+              بستن
+            </button>
+          </div>
+          <div className="panel-body sa-td-body">
         <section className="sa-td-block sa-td-profit" aria-label="سودآوری">
           <h5 className="sa-td-block-title">سودآوری (اقتصادی پس از کارمزد)</h5>
           <p className="sa-sub sa-td-profit-note">
@@ -434,7 +446,11 @@ export function TradeDetailsPanel({ trade, context, open, onClose }: Props) {
                   v.transaction.status.value === "FILLED" ? "sa-chip-good" : "sa-chip-danger"
                 }`}
               >
-                {v.transaction.status.value as string}
+                {v.transaction.status.value === "FILLED" 
+                  ? "اجراشده" 
+                  : v.transaction.status.value === "SKIPPED" 
+                  ? "ردشده" 
+                  : (v.transaction.status.value as string)}
               </span>
             </Row>
             <Row label="دلیل شکست" field={v.transaction.failureReason}>
@@ -577,6 +593,8 @@ export function TradeDetailsPanel({ trade, context, open, onClose }: Props) {
             </div>
           </dl>
         </details>
+      </div>
+    </div>
       </div>
     </div>
   );

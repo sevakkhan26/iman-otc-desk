@@ -374,25 +374,27 @@ export function ShadowArbitrageView() {
   return (
     <div className="sa-page sa-page-tabbed">
       <DeskPageHeader
-        title="آربیتراژ آزمایشی"
+        title={
+          <div className="sa-header-title" style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <span>آربیتراژ آزمایشی</span>
+            <div
+              className="sa-warning sa-warning-compact glass-control"
+              role="status"
+              title={SHADOW_WARNING_FA}
+            >
+              <span className="sa-safety-strip">
+                <strong>PAPER</strong>
+                <span aria-hidden="true"> · </span>
+                <strong>DISARMED</strong>
+              </span>
+            </div>
+          </div>
+        }
         serverNow={serverNow}
         loading={loading}
         onRefresh={() => void load(true)}
         lastUpdated={matrix?.serverNow ? Date.parse(matrix.serverNow) : null}
       />
-
-      {/* One compact permanent safety indicator — Paper only, never real orders. */}
-      <div
-        className="sa-warning sa-warning-compact glass-control"
-        role="status"
-        title={SHADOW_WARNING_FA}
-      >
-        <span className="sa-safety-strip">
-          <strong>PAPER</strong>
-          <span aria-hidden="true"> · </span>
-          <strong>DISARMED</strong>
-        </span>
-      </div>
 
       <ShadowTabs active={tab} onSelect={selectTab} badges={badges} />
 
@@ -465,16 +467,12 @@ export function ShadowArbitrageView() {
 
         {tab === "venues" ? (
           <VenuesSection
-            certifications={obs?.certifications ?? []}
             health={obs?.sourceHealth ?? []}
             snapshots={sources}
             venues={accounts?.venues ?? []}
             feeEvidence={accounts?.feeEvidence ?? []}
             loading={loading}
-            venueCapacities={paper?.sizing?.venueCapacities ?? []}
             venueSemantics={paper?.sizing?.venueSemantics?.matrix ?? null}
-            routes={paper?.sizing?.routes ?? []}
-            serverNow={matrix?.serverNow ?? null}
             venueDepthCards={paper?.venueDepthCards ?? null}
           />
         ) : null}
@@ -493,28 +491,36 @@ export function ShadowArbitrageView() {
               </div>
             </section>
 
-            <nav
-              className="sa-segmented sa-segmented-lg glass-tabbar sa-settings-seg"
-              aria-label="زیربخش تنظیمات"
-            >
-              {SHADOW_SETTINGS_VIEWS.map((v) => (
-                <button
-                  key={v.id}
-                  type="button"
-                  className={`sa-seg sa-seg-lg${
-                    settingsView === v.id ? " is-active glass-control" : ""
-                  }`}
-                  aria-pressed={settingsView === v.id}
-                  title={v.hintFa}
-                  onClick={() => selectSettingsView(v.id)}
+            <section className="panel sa-panel sa-settings-group">
+              <div className="panel-body sa-stack">
+                <nav
+                  className="sa-segmented sa-segmented-lg glass-tabbar sa-settings-seg sa-pill-tabs"
+                  aria-label="زیربخش تنظیمات"
+                  style={{ position: 'relative' }}
                 >
-                  {v.labelFa}
-                </button>
-              ))}
-            </nav>
-            {settingsView === "paper" ? <PaperSettings /> : null}
-            {settingsView === "capital" ? <CapitalSimulator /> : null}
-            {settingsView === "live" ? <LiveReadiness /> : null}
+                  {/* Note: In a real implementation we'd use a ref to track the active pill like ShadowTabs, but for the settings sub-nav we can just use simple CSS capsules. */}
+                  {SHADOW_SETTINGS_VIEWS.map((v) => (
+                    <button
+                      key={v.id}
+                      type="button"
+                      className={`sa-seg sa-seg-lg${
+                        settingsView === v.id ? " is-active" : ""
+                      }`}
+                      aria-pressed={settingsView === v.id}
+                      title={v.hintFa}
+                      onClick={() => selectSettingsView(v.id)}
+                    >
+                      {v.labelFa}
+                    </button>
+                  ))}
+                </nav>
+                <div className="sa-settings-content">
+                  {settingsView === "paper" ? <PaperSettings /> : null}
+                  {settingsView === "capital" ? <CapitalSimulator /> : null}
+                  {settingsView === "live" ? <LiveReadiness /> : null}
+                </div>
+              </div>
+            </section>
 
             <details className="panel sa-panel sa-advanced-details">
               <summary className="panel-header sa-panel-header">

@@ -20,6 +20,7 @@ import { readInt, useShadowViewState } from "@/components/shadowArbitrage/urlSta
 import type { RouteSizingView } from "@/components/shadowArbitrage/CommandCenter";
 import type { NormalizedSourceSnapshot } from "@/lib/shadowArbitrage/types";
 import { TradeDetailsPanel } from "@/components/shadowArbitrage/TradeDetailsPanel";
+import { FilterToolbar } from "@/components/shadowArbitrage/FilterToolbar";
 import type { ClosedTradeEvidence } from "@/lib/shadowArbitrage/paper/tradeDetailsView";
 
 /** One recorded decision, as the paper API returns it. */
@@ -552,8 +553,6 @@ export function ActivityDecisions({
   const filledCount = ledger.filter((r) => r.outcome === "FILLED").length;
   const skippedCount = ledger.length - filledCount;
 
-  const setFilter = (patch: Record<string, string | null>) => write({ ...patch, ap: "1" });
-
   const openTrade =
     openTradeId != null
       ? filledTrades.find((t) => t.id === openTradeId) ?? null
@@ -640,7 +639,7 @@ export function ActivityDecisions({
                   </thead>
                   <tbody>
                     {filledTrades.slice(0, 50).map((t) => (
-                      <tr key={t.id}>
+                      <tr key={t.id} className="sa-row">
                         <td>
                           {t.buySourceId}
                           <div className="sa-sub">
@@ -676,13 +675,17 @@ export function ActivityDecisions({
                         </td>
                         <td className="num">
                           {t.economicNetPnlToman != null ? (
-                            <TomanAmount value={t.economicNetPnlToman} />
+                            <span className={t.economicNetPnlToman > 0 ? "sa-pos" : "sa-neg"}>
+                              <TomanAmount value={t.economicNetPnlToman} />
+                            </span>
                           ) : (
                             "ثبت نشده"
                           )}
                         </td>
                         <td className="sa-sub">{formatTehran(t.occurredAt)}</td>
-                        <td className="sa-sub">تکمیل‌شده</td>
+                        <td>
+                          <span className="sa-chip sa-chip-sm sa-chip-good">اجراشده</span>
+                        </td>
                         <td>
                           <button
                             type="button"
@@ -806,63 +809,13 @@ export function ActivityDecisions({
           </div>
         </div>
 
-        <div className="panel-body sa-ad-filters">
-          <label className="sa-field">
-            <span className="sa-field-label">صرافی</span>
-            <select
-              className="sa-control"
-              value={venue}
-              onChange={(e) => setFilter({ av: e.target.value })}
-            >
-              <option value="all">همه</option>
-              {venues.map((v) => (
-                <option key={v} value={v}>
-                  {v}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="sa-field">
-            <span className="sa-field-label">نتیجه</span>
-            <select
-              className="sa-control"
-              value={outcome}
-              onChange={(e) => setFilter({ ao: e.target.value })}
-            >
-              <option value="all">همه</option>
-              <option value="FILLED">اجراشده</option>
-              <option value="SKIPPED">ردشده</option>
-            </select>
-          </label>
-          <label className="sa-field">
-            <span className="sa-field-label">دلیل رد</span>
-            <select
-              className="sa-control"
-              value={reason}
-              onChange={(e) => setFilter({ ar: e.target.value })}
-            >
-              <option value="all">همه</option>
-              {reasons.map(([code, n]) => (
-                <option key={code} value={code}>
-                  {`${reasonLabel(code)} (${n})`}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="sa-field">
-            <span className="sa-field-label">بازه</span>
-            <select
-              className="sa-control"
-              value={window}
-              onChange={(e) => setFilter({ aw: e.target.value })}
-            >
-              {WINDOWS.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.labelFa}
-                </option>
-              ))}
-            </select>
-          </label>
+        <div className="panel-body">
+          <FilterToolbar
+            venues={venues}
+            reasons={reasons}
+            reasonLabel={reasonLabel}
+            windows={WINDOWS}
+          />
         </div>
 
         <div className="panel-body">
@@ -883,7 +836,7 @@ export function ActivityDecisions({
                   </thead>
                   <tbody>
                     {shown.map((r) => (
-                      <tr key={r.id}>
+                      <tr key={r.id} className="sa-row">
                         <td>{formatTehran(r.occurredAt)}</td>
                         <td>
                           {r.buySourceId} ← {r.sellSourceId}
@@ -891,7 +844,7 @@ export function ActivityDecisions({
                         <td>
                           <span
                             className={`sa-chip sa-chip-sm sa-chip-${
-                              r.outcome === "FILLED" ? "good" : "muted"
+                              r.outcome === "FILLED" ? "good" : "warn"
                             }`}
                           >
                             {r.outcome === "FILLED" ? "اجراشده" : "ردشده"}

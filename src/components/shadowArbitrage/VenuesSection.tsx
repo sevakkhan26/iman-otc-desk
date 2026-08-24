@@ -10,30 +10,9 @@
 import { TomanAmount } from "@/components/TomanAmount";
 import { Bidi } from "@/components/shadowArbitrage/Bidi";
 import { toFaDigits } from "@/components/shadowArbitrage/labels";
-import type {
-  FeeConfirmationAudit,
-  VenueFeeEvidence,
-  VenueReadiness
-} from "@/components/shadowArbitrage/sourcesModel";
+import type { VenueFeeEvidence, VenueReadiness } from "@/components/shadowArbitrage/sourcesModel";
 import type { VenueDepthCardView } from "@/components/shadowArbitrage/AccountsSection";
-import type { RouteSizingView } from "@/components/shadowArbitrage/CommandCenter";
 import type { NormalizedSourceSnapshot } from "@/lib/shadowArbitrage/types";
-
-type VenueCapacity = {
-  sourceId: string;
-  nameFa?: string;
-  marketModel?: string;
-  buy?: {
-    capacityUsdtMicros: number | null;
-    limitingCap?: string | null;
-    reasonFa?: string | null;
-  };
-  sell?: {
-    capacityUsdtMicros: number | null;
-    limitingCap?: string | null;
-    reasonFa?: string | null;
-  };
-};
 
 type VenueSemanticsRow = {
   sourceId: string;
@@ -53,26 +32,16 @@ type VenueSemanticsRow = {
 };
 
 type Props = {
-  certifications?: unknown[];
   health: ObservationPayloadLike["sourceHealth"];
   snapshots: NormalizedSourceSnapshot[];
   venues: VenueReadiness[];
   feeEvidence: VenueFeeEvidence[];
-  auditHistory?: FeeConfirmationAudit[];
-  feeReverifyDays?: number | null;
-  pollIntervalMs?: number;
   loading: boolean;
-  error?: string | null;
-  onReload?: () => void;
-  venueCapacities?: VenueCapacity[];
   venueSemantics?: VenueSemanticsRow[] | null;
-  routes?: RouteSizingView[];
-  serverNow?: string | null;
   venueDepthCards?: VenueDepthCardView[] | null;
 };
 
 type ObservationPayloadLike = {
-  certifications?: unknown[];
   sourceHealth?: Array<{
     sourceId: string;
     status?: string;
@@ -219,72 +188,66 @@ export function VenuesSection({
             const nameFa = sem?.nameFa ?? v?.nameFa ?? id;
 
             return (
-              <article key={id} className="sa-venue-card sa-venue-card-compact glass-control">
-                <header className="sa-venue-card-head">
+              <article key={id} className="panel sa-venue-card-compact">
+                <header className="panel-header sa-venue-card-head">
                   <div>
-                    <strong>{nameFa}</strong>
+                    <strong className="panel-title">{nameFa}</strong>
                     {ageLabel ? (
-                      <span className="sa-sub sa-ps-key">سن اسنپ‌شات: {ageLabel}</span>
+                      <span className="sa-sub">سن اسنپ‌شات: {ageLabel}</span>
                     ) : null}
                   </div>
                   <span className={`sa-chip sa-chip-sm sa-chip-${tone}`}>
                     {healthFa(status)}
                   </span>
                 </header>
-                <dl className="sa-venue-card-grid sa-venue-card-grid-minimal">
-                  <div>
-                    <dt>سلامت</dt>
-                    <dd>
-                      <span className={`sa-chip sa-chip-sm sa-chip-${tone}`}>
-                        {healthFa(status)}
-                      </span>
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>کارمزد خرید (taker)</dt>
-                    <dd className="sa-sub">
-                      {buyFee !== null && buyFee !== undefined ? (
-                        <Bidi>{toFaDigits(buyFee)} bps</Bidi>
-                      ) : (
-                        <span className="sa-unknown">{feeMissingFa}</span>
-                      )}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>کارمزد فروش (taker)</dt>
-                    <dd className="sa-sub">
-                      {sellFee !== null && sellFee !== undefined ? (
-                        <Bidi>{toFaDigits(sellFee)} bps</Bidi>
-                      ) : (
-                        <span className="sa-unknown">{feeMissingFa}</span>
-                      )}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>حجم خرید (Bid) — قابل‌مشاهده</dt>
-                    <dd>
-                      <VisibleVolumeValue
-                        usdt={bid?.rawDepthUsdt}
-                        toman={bid?.rawDepthToman}
-                        levels={bid?.levelsAccepted}
-                        unavailable={bid?.unavailable || !depth}
-                        reasonFa={bid?.unavailableFa ?? missingDepthFa}
-                      />
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>حجم فروش (Ask) — قابل‌مشاهده</dt>
-                    <dd>
-                      <VisibleVolumeValue
-                        usdt={ask?.rawDepthUsdt}
-                        toman={ask?.rawDepthToman}
-                        levels={ask?.levelsAccepted}
-                        unavailable={ask?.unavailable || !depth}
-                        reasonFa={ask?.unavailableFa ?? missingDepthFa}
-                      />
-                    </dd>
-                  </div>
-                </dl>
+                <div className="panel-body">
+                  <dl className="sa-venue-card-grid-minimal">
+                    <div>
+                      <dt className="sa-sub">کارمزد خرید (taker)</dt>
+                      <dd>
+                        {buyFee !== null && buyFee !== undefined ? (
+                          <Bidi>{toFaDigits(buyFee)} bps</Bidi>
+                        ) : (
+                          <span className="sa-unknown">{feeMissingFa}</span>
+                        )}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="sa-sub">کارمزد فروش (taker)</dt>
+                      <dd>
+                        {sellFee !== null && sellFee !== undefined ? (
+                          <Bidi>{toFaDigits(sellFee)} bps</Bidi>
+                        ) : (
+                          <span className="sa-unknown">{feeMissingFa}</span>
+                        )}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="sa-sub">حجم خرید (Bid) — قابل‌مشاهده</dt>
+                      <dd>
+                        <VisibleVolumeValue
+                          usdt={bid?.rawDepthUsdt}
+                          toman={bid?.rawDepthToman}
+                          levels={bid?.levelsAccepted}
+                          unavailable={bid?.unavailable || !depth}
+                          reasonFa={bid?.unavailableFa ?? missingDepthFa}
+                        />
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="sa-sub">حجم فروش (Ask) — قابل‌مشاهده</dt>
+                      <dd>
+                        <VisibleVolumeValue
+                          usdt={ask?.rawDepthUsdt}
+                          toman={ask?.rawDepthToman}
+                          levels={ask?.levelsAccepted}
+                          unavailable={ask?.unavailable || !depth}
+                          reasonFa={ask?.unavailableFa ?? missingDepthFa}
+                        />
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
               </article>
             );
           })}

@@ -5610,6 +5610,12 @@ table th {
    and light both work; yellow appears only in the compact warning chip
    and in "needs attention" states, never as a large block.
    ==================================================================== */
+:root[data-theme="dark"] .sa-page {
+  --card: #0f172a; /* slate-900 */
+  --line: #1e293b; /* slate-800 */
+  --line-soft: #334155; /* slate-700 */
+  --input-bg: #0f172a;
+}
 .sa-page {
   display: grid;
   gap: 14px;
@@ -5848,6 +5854,55 @@ table th {
   gap: 14px 18px;
   align-items: flex-end;
 }
+.sa-filter-toolbar {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px;
+  border-radius: 999px;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.sa-filter-toolbar::-webkit-scrollbar {
+  display: none;
+}
+.sa-filter-toolbar-field {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.sa-filter-toolbar-select {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding-block: 4px;
+  padding-inline: 12px 28px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.sa-filter-toolbar-select:focus-visible {
+  outline: 2px solid rgb(var(--brand) / 0.55);
+  outline-offset: -2px;
+}
+.sa-filter-toolbar-chevron {
+  position: absolute;
+  inset-inline-end: 8px;
+  inset-block-start: 50%;
+  transform: translateY(-50%);
+  width: 12px;
+  height: 12px;
+  pointer-events: none;
+  color: var(--text);
+}
+.sa-filter-toolbar-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--line-soft, var(--line));
+  margin-inline: 4px;
+}
 .sa-filter-group {
   display: grid;
   gap: 5px;
@@ -5919,8 +5974,8 @@ table th {
 }
 .sa-btn {
   min-height: 36px;
-  padding: 7px 14px;
-  border-radius: var(--radius-md, 12px);
+  padding: 7px 16px;
+  border-radius: 999px;
   border: 1px solid var(--line);
   background: var(--card);
   color: var(--text);
@@ -5928,18 +5983,25 @@ table th {
   font-weight: 700;
   font-family: inherit;
   cursor: pointer;
-  transition: background 150ms ease, border-color 150ms ease;
+  transition: all var(--duration, 160ms) var(--ease-out, ease);
 }
 .sa-btn:hover {
   border-color: color-mix(in srgb, var(--text) 25%, var(--line));
+  background: color-mix(in srgb, var(--line) 15%, transparent);
 }
 .sa-btn-primary {
   border-color: color-mix(in srgb, var(--green) 45%, var(--line));
   background: color-mix(in srgb, var(--green) 14%, var(--card));
+  color: color-mix(in srgb, var(--green) 90%, var(--text));
 }
 .sa-btn-ghost {
+  border-color: transparent;
   background: transparent;
   color: var(--muted);
+}
+.sa-btn-ghost:hover {
+  background: color-mix(in srgb, var(--line) 30%, transparent);
+  color: var(--text);
 }
 
 /* ── tables ─────────────────────────────────────────────────────────── */
@@ -5958,7 +6020,7 @@ table th {
   top: 0;
   z-index: 1;
   padding: 9px 10px;
-  text-align: right;
+  text-align: start;
   font-size: 12px;
   font-weight: 700;
   color: var(--muted);
@@ -5973,7 +6035,7 @@ table th {
   color: var(--text);
 }
 .sa-table .num {
-  text-align: left;
+  text-align: end;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -6004,7 +6066,7 @@ table th {
 .sa-route-cell {
   direction: ltr;
   unicode-bidi: embed;
-  text-align: right;
+  text-align: end;
   font-size: 12px;
 }
 .sa-wrap-cell {
@@ -6702,7 +6764,27 @@ table th {
   gap: 4px;
   padding: 4px;
   white-space: nowrap;
+  position: relative;
 }
+
+/* Pill Indicator for Morph Tabs */
+.sa-pill-indicator {
+  position: absolute;
+  inset-block-start: 4px;
+  inset-block-end: 4px;
+  border-radius: var(--radius-md);
+  background: var(--card);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  transition: inset-inline-start var(--duration, 200ms) var(--ease-out, ease-out), width var(--duration, 200ms) var(--ease-out, ease-out), opacity var(--duration, 200ms) var(--ease-out, ease-out);
+  pointer-events: none;
+  z-index: 0;
+}
+@media (prefers-reduced-motion) {
+  .sa-pill-indicator {
+    transition: none;
+  }
+}
+
 /* An inactive tab is a plain control slot; the active one wears .glass-control. */
 .sa-tab {
   display: inline-flex;
@@ -6724,6 +6806,8 @@ table th {
   scroll-snap-align: center;
   cursor: pointer;
   transition: color var(--duration, 160ms) var(--ease-out, ease);
+  position: relative;
+  z-index: 1;
 }
 .sa-tab:hover {
   color: var(--text);
@@ -6734,6 +6818,9 @@ table th {
 }
 .sa-tab.is-active {
   color: var(--text);
+  /* Remove background/box-shadow from active tab since indicator handles it */
+  background: transparent !important;
+  box-shadow: none !important;
 }
 /* Semantic badge — a badge, never card material. */
 .sa-tab-badge {
@@ -7265,10 +7352,27 @@ table th {
   min-height: 104px;
   align-content: start;
 }
+.sa-kpi-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 .sa-kpi-label {
   font-size: 12px;
   font-weight: 600;
   color: var(--muted);
+}
+.sa-kpi-spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 18px;
+}
+.sa-kpi-spark-bar {
+  width: 4px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--brand, var(--text)) 40%, var(--line));
 }
 .sa-kpi-value {
   font-size: 22px;
@@ -7488,10 +7592,14 @@ table th {
   justify-content: space-between;
   gap: 12px 16px;
   font-size: 13px;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--card) 60%, transparent);
+  border-radius: 14px;
 }
 .sa-pager-count,
 .sa-pager-page {
   color: var(--muted);
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 .sa-pager-size {
@@ -8049,12 +8157,13 @@ table th {
 }
 .sa-bal-metric-label {
   font-size: 12px;
+  font-weight: 600;
   color: var(--muted);
   line-height: 1.5;
 }
 .sa-bal-metric-value {
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 800;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
@@ -8254,13 +8363,22 @@ table th {
   white-space: nowrap;
 }
 .sa-td-panel {
-  margin-top: 12px;
   min-width: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 .sa-td-head {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+  position: sticky;
+  top: 0;
+  background: color-mix(in srgb, var(--card) 96%, transparent);
+  backdrop-filter: blur(10px);
+  z-index: 10;
+  border-bottom: 1px solid var(--line);
 }
 .sa-td-close {
   margin-inline-start: auto;
@@ -8461,17 +8579,30 @@ table th {
 }
 .sa-venue-card-compact .sa-venue-card-head {
   min-width: 0;
+  min-height: 0;
+  padding: 12px 14px;
   align-items: flex-start;
 }
 .sa-venue-card-compact .sa-venue-card-head > div {
   min-width: 0;
   flex: 1 1 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-inline-end: 8px;
   overflow-wrap: anywhere;
+}
+.sa-venue-card-compact .sa-venue-card-head .sa-sub {
+  font-size: 12px;
+}
+.sa-venue-card-compact .panel-body {
+  padding-top: 0;
 }
 .sa-venue-card-compact .sa-venue-card-grid-minimal {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 6px 0;
+  gap: 10px 0;
   margin: 0;
   min-width: 0;
 }
@@ -8486,6 +8617,13 @@ table th {
 .sa-venue-card-compact .sa-venue-card-grid-minimal dd {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+.sa-venue-card-compact .sa-venue-card-grid-minimal dt {
+  font-size: 12px;
+}
+.sa-venue-card-compact .sa-venue-card-grid-minimal dd {
+  font-size: 13px;
+  font-weight: 500;
 }
 /* Why-decision cards (v4.2.2 readable summary) */
 .sa-why-headline {
@@ -9330,11 +9468,6 @@ table th {
   font-weight: 600;
   overflow-wrap: anywhere;
 }
-.sa-ad-filters {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-}
 .sa-ad-foot {
   margin: 0;
   line-height: 1.9;
@@ -9349,9 +9482,6 @@ table th {
 }
 
 @media (max-width: 1024px) {
-  .sa-ad-filters {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
   .sa-ad-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -9367,9 +9497,6 @@ table th {
     display: grid;
   }
   .sa-ps-meta {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .sa-ad-filters {
     grid-template-columns: minmax(0, 1fr);
   }
   .sa-ad-summary {

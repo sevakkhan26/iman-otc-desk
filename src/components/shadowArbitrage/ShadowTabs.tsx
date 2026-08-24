@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { SHADOW_TABS, type ShadowTabId } from "@/components/shadowArbitrage/tabs";
 
 type Props = {
@@ -21,6 +21,8 @@ type Props = {
 export function ShadowTabs({ active, onSelect, badges }: Props) {
   const stripRef = useRef<HTMLDivElement>(null);
 
+  const [indicatorStyle, setIndicatorStyle] = useState({ width: 0, insetInlineStart: 0, opacity: 0 });
+
   /**
    * Bring the active tab fully into view when the strip is scrollable.
    *
@@ -31,11 +33,48 @@ export function ShadowTabs({ active, onSelect, badges }: Props) {
   useEffect(() => {
     const strip = stripRef.current;
     if (!strip) return;
+    const tablist = strip.querySelector<HTMLElement>('.sa-tabs');
+    if (!tablist) return;
+
+    const updateIndicator = () => {
+      const current = strip.querySelector<HTMLElement>('[aria-selected="true"]');
+      if (!current) return;
+      
+      const parentRect = tablist.getBoundingClientRect();
+      const tabRect = current.getBoundingClientRect();
+      
+      const dir = window.getComputedStyle(tablist).direction;
+      
+      // Calculate offset based on logical position inside the positioned tablist
+      const insetInlineStart = dir === 'rtl' 
+        ? parentRect.right - tabRect.right
+        : tabRect.left - parentRect.left;
+
+      // Update indicator
+      setIndicatorStyle({
+        width: tabRect.width,
+        insetInlineStart: insetInlineStart,
+        opacity: 1
+      });
+    };
+
+    updateIndicator();
+
+    const resizeObserver = new ResizeObserver(() => updateIndicator());
+    resizeObserver.observe(tablist);
+    
+    strip.addEventListener("scroll", updateIndicator, { passive: true });
+
     const current = strip.querySelector<HTMLElement>('[aria-selected="true"]');
-    if (!current) return;
-    if (strip.scrollWidth <= strip.clientWidth + 1) return;
-    current.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
-  }, [active]);
+    if (current && strip.scrollWidth > strip.clientWidth + 1) {
+      current.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
+    }
+
+    return () => {
+      resizeObserver.disconnect();
+      strip.removeEventListener("scroll", updateIndicator);
+    };
+  }, [active, badges]);
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
@@ -56,7 +95,16 @@ export function ShadowTabs({ active, onSelect, badges }: Props) {
   return (
     <div className="sa-tabs-wrap" ref={stripRef}>
       {/* .glass-tabbar is the shared tab-container material. */}
-      <div className="sa-tabs glass-tabbar" role="tablist" aria-label="بخش‌های آربیتراژ آزمایشی" onKeyDown={onKeyDown}>
+      <div className="sa-tabs glass-tabbar sa-pill-tabs" role="tablist" aria-label="بخش‌های آربیتراژ آزمایشی" onKeyDown={onKeyDown}>
+        <div 
+          className="sa-pill-indicator"
+          style={{ 
+            width: indicatorStyle.width,
+            insetInlineStart: indicatorStyle.insetInlineStart,
+            opacity: indicatorStyle.opacity 
+          }}
+          aria-hidden="true"
+        />
         {SHADOW_TABS.map((tab) => {
           const selected = tab.id === active;
           const badge = badges?.[tab.id];

@@ -81,6 +81,7 @@ import {
 import type { ShadowSourceId } from "@/lib/shadowArbitrage/types";
 import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
 import { PAPER_FEE_SETTLEMENT, microsToUsdt, settlementFor, usdtToMicros } from "@/lib/shadowArbitrage/paper/broker";
+import { parseSessionSetupNote } from "@/lib/shadowArbitrage/paper/sessionCapital";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -111,6 +112,43 @@ const FORBIDDEN_FIELDS = [
 ];
 
 const VALID_IDS = new Set<string>(SHADOW_SOURCES.map((s) => s.id));
+
+function durationDaysFromIso(
+  startedAt: string | null | undefined,
+  endsAt: string | null | undefined
+): number | null {
+  if (!startedAt || !endsAt) return null;
+  const a = Date.parse(startedAt);
+  const b = Date.parse(endsAt);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return null;
+  const days = Math.round((b - a) / 86_400_000);
+  return days > 0 ? days : null;
+}
+
+function summaryNum(summary: Record<string, unknown> | null | undefined, key: string): number | null {
+  if (!summary) return null;
+  const v = summary[key];
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function operatorStatusFa(sessionStatus?: string | null, experimentStatus?: string | null): string {
+  const s = (sessionStatus ?? "").toUpperCase();
+  if (s === "RUNNING") return "running";
+  if (s === "PAUSED") return "paused";
+  if (s === "STOPPED") return (experimentStatus ?? "").toUpperCase() === "COMPLETED" ? "completed" : "stopped";
+  const e = (experimentStatus ?? "").toUpperCase();
+  if (e === "ACTIVE") return "running";
+  if (e === "COMPLETED") return "completed";
+  if (e === "SUPERSEDED") return "stopped";
+  if (e === "PENDING") return "paused";
+  if (s === "NOT_STARTED" || s === "CREATED") return "stopped";
+  return "unknown";
+}
 
 function bad(message: string, error = "bad_request", status = 400) {
   return new NextResponse(JSON.stringify({ error, message }), {
@@ -837,12 +875,34 @@ export async function GET(request: Request) {
   });
 
   let experiment: unknown = null;
+  let experimentRows: Array<{
+    id: string;
+    runKey: string;
+    status: string;
+    startedAt: string;
+    endsAt: string;
+    sessionId: string | null;
+    initialCapitalToman: number;
+    summary: Record<string, unknown> | null;
+    policySetKey: string;
+  }> = [];
   try {
     const { getActiveExperiment, listExperiments, formatTehranWithSeconds } = await import(
       "@/db/repositories/shadowExperiments"
     );
     const active = await getActiveExperiment();
     const all = await listExperiments(10);
+    experimentRows = all.map((e) => ({
+      id: e.id,
+      runKey: e.runKey,
+      status: e.status,
+      startedAt: e.startedAt,
+      endsAt: e.endsAt,
+      sessionId: e.sessionId,
+      initialCapitalToman: e.initialCapitalToman,
+      summary: e.summary,
+      policySetKey: e.policySetKey
+    }));
     const pick = active ?? all[0] ?? null;
     if (pick) {
       const avg =
@@ -852,6 +912,15 @@ export async function GET(request: Request) {
       const nowMs = Date.now();
       const endsMs = Date.parse(pick.endsAt);
       const startMs = Date.parse(pick.startedAt);
+      const sessionForPick =
+        history.find((s) => s.id === pick.sessionId || s.experimentRunId === pick.id) ??
+        snap.session ??
+        null;
+      const setup = parseSessionSetupNote(sessionForPick?.note);
+      const configuredDurationDays =
+        setup?.durationDays && setup.durationDays > 0
+          ? setup.durationDays
+          : durationDaysFromIso(pick.startedAt, pick.endsAt);
       experiment = {
         id: pick.id,
         runKey: pick.runKey,
@@ -877,6 +946,11 @@ export async function GET(request: Request) {
         averageUtilizationPercent: avg,
         sessionId: pick.sessionId,
         summary: pick.summary,
+        configuredDurationDays,
+        filled: snap.stats?.filled ?? null,
+        skipped: snap.stats?.skipped ?? null,
+        lastFillAt: snap.stats?.lastFillAt ?? null,
+        lastCycleAt: snap.session?.lastCycleAt ?? null,
         history: all.map((e) => ({
           id: e.id,
           runKey: e.runKey,
@@ -890,6 +964,43 @@ export async function GET(request: Request) {
   } catch {
     experiment = null;
   }
+
+  const sessionHistory = history.map((s) => {
+    const setup = parseSessionSetupNote(s.note);
+    const exp =
+      experimentRows.find((e) => e.id === s.experimentRunId || e.sessionId === s.id) ?? null;
+    const startedAt = s.startedAt ?? setup?.startedAt ?? exp?.startedAt ?? null;
+    const configuredEnds = setup?.endsAt ?? exp?.endsAt ?? null;
+    const endedAt = s.stoppedAt ?? (s.status === "STOPPED" ? configuredEnds : null);
+    const isActive = snap.session?.id === s.id;
+    const acc = isActive ? accounting : null;
+    return {
+      id: s.id,
+      name: s.name ?? null,
+      status: s.status,
+      operatorStatus: operatorStatusFa(s.status, exp?.status ?? null),
+      startedAt,
+      endedAt,
+      configuredEndsAt: configuredEnds,
+      configuredDurationDays:
+        setup?.durationDays && setup.durationDays > 0
+          ? setup.durationDays
+          : durationDaysFromIso(startedAt, configuredEnds),
+      capitalToman: s.totalCapitalToman,
+      tradesExecuted: s.tradesExecuted,
+      skipped: s.candidatesSkipped,
+      realizedEconomicPnlToman: acc
+        ? acc.realizedEconomicPnlToman
+        : summaryNum(exp?.summary, "economicNetPnlToman"),
+      riskAdjustedPnlToman: acc
+        ? acc.realizedRiskAdjustedPnlToman
+        : summaryNum(exp?.summary, "riskAdjustedPnlToman"),
+      cashPnlIrtToman: acc ? acc.realizedCashPnlToman : summaryNum(exp?.summary, "cashPnlIrtToman"),
+      feesToman: acc ? acc.fees.totalFeeTomanEquivalent : summaryNum(exp?.summary, "feeTomanTotal"),
+      experimentId: s.experimentRunId,
+      experimentStatus: exp?.status ?? null
+    };
+  });
 
   // Server-side ledger pagination (no silent 2000-row cap for UI).
   const url = new URL(request.url);
@@ -925,6 +1036,7 @@ export async function GET(request: Request) {
         accounting,
         venueDepthCards,
         experiment,
+        sessionHistory,
         ledgerPage,
         history,
         wizard,

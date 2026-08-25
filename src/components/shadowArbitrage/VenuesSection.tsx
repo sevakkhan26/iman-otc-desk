@@ -1,17 +1,15 @@
 "use client";
 
+import type { ReactNode } from "react";
 /**
- * «وضعیت صرافی‌ها» — health, fees, visible received order-book Bid/Ask volume.
- *
- * v4.2.4: volume = all valid received levels (not slippage-bounded).
- * Never displays usableCapacity / capital / policy caps as book volume.
- * Engine sizing depth is unchanged.
+ * «وضعیت صرافی‌ها» — health, balances, bid/ask, visible book vs executable capacity.
+ * Visible volume is raw received book only. Capacity is labeled separately.
  */
 import { TomanAmount } from "@/components/TomanAmount";
 import { Bidi } from "@/components/shadowArbitrage/Bidi";
 import { toFaDigits } from "@/components/shadowArbitrage/labels";
 import type { VenueFeeEvidence, VenueReadiness } from "@/components/shadowArbitrage/sourcesModel";
-import type { VenueDepthCardView } from "@/components/shadowArbitrage/AccountsSection";
+import type { AccountsAccounting, VenueDepthCardView } from "@/components/shadowArbitrage/AccountsSection";
 import type { NormalizedSourceSnapshot } from "@/lib/shadowArbitrage/types";
 
 type VenueSemanticsRow = {
@@ -39,6 +37,7 @@ type Props = {
   loading: boolean;
   venueSemantics?: VenueSemanticsRow[] | null;
   venueDepthCards?: VenueDepthCardView[] | null;
+  accounting?: AccountsAccounting | null;
 };
 
 type ObservationPayloadLike = {
@@ -74,50 +73,29 @@ function fmtAgeFa(ageMs: number | null | undefined): string | null {
   return `${toFaDigits(sec)} ثانیه`;
 }
 
-/** Visible book volume — never capacity/balance fallback. */
-function VisibleVolumeValue({
+function UsdtOrNa({
   usdt,
-  toman,
-  levels,
+  extra,
   unavailable,
   reasonFa
 }: {
   usdt: number | null | undefined;
-  toman: number | null | undefined;
-  levels: number | null | undefined;
+  extra?: ReactNode;
   unavailable?: boolean;
   reasonFa?: string | null;
 }) {
-  if (
-    unavailable ||
-    usdt === null ||
-    usdt === undefined ||
-    !Number.isFinite(usdt)
-  ) {
+  if (unavailable || usdt === null || usdt === undefined || !Number.isFinite(usdt)) {
     return (
       <span className="sa-unknown" title={reasonFa ?? undefined}>
         {reasonFa && reasonFa.includes("چندسطحی") ? reasonFa : NA_FA}
-        {reasonFa && !reasonFa.includes("چندسطحی") ? (
-          <span className="sa-sub"> — {reasonFa}</span>
-        ) : null}
+        {reasonFa && !reasonFa.includes("چندسطحی") ? <span className="sa-sub"> — {reasonFa}</span> : null}
       </span>
     );
   }
   return (
     <span>
       <Bidi>{toFaDigits(usdt.toFixed(4))}</Bidi> USDT
-      {toman !== null && toman !== undefined && Number.isFinite(toman) ? (
-        <>
-          {" · "}
-          <TomanAmount value={toman} />
-        </>
-      ) : null}
-      {levels !== null && levels !== undefined ? (
-        <span className="sa-sub">
-          {" · "}
-          <Bidi>{toFaDigits(levels)}</Bidi> سطح
-        </span>
-      ) : null}
+      {extra}
     </span>
   );
 }
@@ -129,7 +107,8 @@ export function VenuesSection({
   feeEvidence,
   loading,
   venueSemantics = null,
-  venueDepthCards = null
+  venueDepthCards = null,
+  accounting = null
 }: Props) {
   const healthBy = new Map((health ?? []).map((h) => [h.sourceId, h]));
   const feeBy = new Map(feeEvidence.map((f) => [f.sourceId, f]));
@@ -137,6 +116,8 @@ export function VenuesSection({
   const depthBy = new Map((venueDepthCards ?? []).map((d) => [d.sourceId, d]));
   const semBy = new Map((venueSemantics ?? []).map((s) => [s.sourceId, s]));
   const snapBy = new Map(snapshots.map((s) => [s.sourceId, s]));
+  const balBy = new Map((accounting?.venues ?? []).map((v) => [v.sourceId, v]));
+  const feeBucketBy = new Map((accounting?.fees.byVenue ?? []).map((f) => [f.sourceId, f]));
 
   const orderedIds =
     venues.length > 0
@@ -149,10 +130,10 @@ export function VenuesSection({
         <div className="panel-header sa-panel-header">
           <h3 className="panel-title">وضعیت صرافی‌ها</h3>
           <div className="sa-panel-note">
-            حجم قابل‌مشاهده در دفتر سفارش دریافتی · نه عمق لغزش‌محدود · نه ظرفیت اجرایی
+            حجم دفتر = سطوح دریافتی · ظرفیت اجراپذیر جداست · موجودی از دفتر حسابداری
           </div>
         </div>
-        <div className="panel-body sa-venue-grid sa-venue-grid-compact">
+        <div className="panel-body sa-venue-grid sa-venue-grid-desk">
           {orderedIds.map((id) => {
             const h = healthBy.get(id);
             const fee = feeBy.get(id);
@@ -160,6 +141,8 @@ export function VenuesSection({
             const depth = depthBy.get(id);
             const sem = semBy.get(id);
             const sn = snapBy.get(id as never);
+            const bal = balBy.get(id);
+            const feeBag = feeBucketBy.get(id);
 
             const status =
               h?.status ??
@@ -175,79 +158,190 @@ export function VenuesSection({
 
             const buyFee = fee?.takerFeeBps ?? v?.takerFeeBps ?? null;
             const sellFee = fee?.takerFeeBps ?? v?.takerFeeBps ?? null;
-            const feeMissingFa =
-              fee?.blockerFa ?? fee?.miss ?? "شواهد کارمزد در این چرخه ثبت نشده";
-
-            // buy side of card = Ask volume; sell side = Bid volume.
+            const feeMissingFa = fee?.blockerFa ?? fee?.miss ?? "شواهد کارمزد در این چرخه ثبت نشده";
             const ask = depth?.buy;
             const bid = depth?.sell;
-            const missingDepthFa = depth
-              ? null
-              : "حجم دفتر این صرافی در این چرخه ارسال نشده";
+            const missingDepthFa = depth ? null : "حجم دفتر این صرافی در این چرخه ارسال نشده";
             const ageLabel = fmtAgeFa(depth?.snapshotAgeMs ?? sn?.ageMs ?? null);
             const nameFa = sem?.nameFa ?? v?.nameFa ?? id;
 
+            const buyCapUsdt =
+              ask?.usableCapacityUsdt ??
+              (sem?.buyCapacityUsdtMicros != null ? sem.buyCapacityUsdtMicros / 1e6 : null);
+            const sellCapUsdt =
+              bid?.usableCapacityUsdt ??
+              (sem?.sellCapacityUsdtMicros != null ? sem.sellCapacityUsdtMicros / 1e6 : null);
+
             return (
-              <article key={id} className="panel sa-venue-card-compact">
-                <header className="panel-header sa-venue-card-head">
-                  <div>
-                    <strong className="panel-title">{nameFa}</strong>
-                    {ageLabel ? (
-                      <span className="sa-sub">سن اسنپ‌شات: {ageLabel}</span>
-                    ) : null}
+              <article key={id} className="panel sa-venue-card-desk">
+                <header className="sa-venue-desk-head">
+                  <div className="sa-venue-desk-id">
+                    <strong>{nameFa}</strong>
+                    {ageLabel ? <span className="sa-sub">سن اسنپ‌شات: {ageLabel}</span> : null}
                   </div>
-                  <span className={`sa-chip sa-chip-sm sa-chip-${tone}`}>
-                    {healthFa(status)}
-                  </span>
+                  <span className={`sa-chip sa-chip-sm sa-chip-${tone}`}>{healthFa(status)}</span>
                 </header>
-                <div className="panel-body">
-                  <dl className="sa-venue-card-grid-minimal">
-                    <div>
-                      <dt className="sa-sub">کارمزد خرید (taker)</dt>
-                      <dd>
-                        {buyFee !== null && buyFee !== undefined ? (
-                          <Bidi>{toFaDigits(buyFee)} bps</Bidi>
-                        ) : (
-                          <span className="sa-unknown">{feeMissingFa}</span>
-                        )}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="sa-sub">کارمزد فروش (taker)</dt>
-                      <dd>
-                        {sellFee !== null && sellFee !== undefined ? (
-                          <Bidi>{toFaDigits(sellFee)} bps</Bidi>
-                        ) : (
-                          <span className="sa-unknown">{feeMissingFa}</span>
-                        )}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="sa-sub">حجم خرید (Bid) — قابل‌مشاهده</dt>
-                      <dd>
-                        <VisibleVolumeValue
-                          usdt={bid?.rawDepthUsdt}
-                          toman={bid?.rawDepthToman}
-                          levels={bid?.levelsAccepted}
-                          unavailable={bid?.unavailable || !depth}
-                          reasonFa={bid?.unavailableFa ?? missingDepthFa}
-                        />
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="sa-sub">حجم فروش (Ask) — قابل‌مشاهده</dt>
-                      <dd>
-                        <VisibleVolumeValue
-                          usdt={ask?.rawDepthUsdt}
-                          toman={ask?.rawDepthToman}
-                          levels={ask?.levelsAccepted}
-                          unavailable={ask?.unavailable || !depth}
-                          reasonFa={ask?.unavailableFa ?? missingDepthFa}
-                        />
-                      </dd>
-                    </div>
-                  </dl>
+                <div className="sa-venue-desk-chips">
+                  <span className={`sa-chip sa-chip-sm sa-chip-${sem?.kycComplete ? "good" : "muted"}`}>
+                    KYC {sem?.kycComplete ? "✓" : "—"}
+                  </span>
+                  <span className={`sa-chip sa-chip-sm sa-chip-${sem?.accountEligible ? "good" : "muted"}`}>
+                    حساب {sem?.accountEligible ? "✓" : "—"}
+                  </span>
+                  <span className={`sa-chip sa-chip-sm sa-chip-${sem?.feeConfirmed ? "good" : "warn"}`}>
+                    کارمزد {sem?.feeConfirmed ? "✓" : "✗"}
+                  </span>
+                  <span className={`sa-chip sa-chip-sm sa-chip-${sem?.participates ? "good" : "muted"}`}>
+                    {sem?.participates ? "شرکت‌کننده" : "خارج از مسیر"}
+                  </span>
                 </div>
+                <dl className="sa-venue-desk-grid">
+                  <div>
+                    <dt>موجودی IRT</dt>
+                    <dd>{bal ? <TomanAmount value={bal.irtToman} /> : <span className="sa-unknown">{NA_FA}</span>}</dd>
+                  </div>
+                  <div>
+                    <dt>موجودی USDT</dt>
+                    <dd>
+                      {bal ? (
+                        <Bidi>{toFaDigits(bal.usdt.toFixed(4))}</Bidi>
+                      ) : (
+                        <span className="sa-unknown">{NA_FA}</span>
+                      )}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>بهترین Bid</dt>
+                    <dd>
+                      {bid?.bestPriceToman != null ? (
+                        <TomanAmount value={bid.bestPriceToman} />
+                      ) : (
+                        <span className="sa-unknown">{bid?.unavailableFa ?? NA_FA}</span>
+                      )}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>بهترین Ask</dt>
+                    <dd>
+                      {ask?.bestPriceToman != null ? (
+                        <TomanAmount value={ask.bestPriceToman} />
+                      ) : (
+                        <span className="sa-unknown">{ask?.unavailableFa ?? NA_FA}</span>
+                      )}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>حجم قابل‌مشاهده Bid</dt>
+                    <dd>
+                      <UsdtOrNa
+                        usdt={bid?.rawDepthUsdt}
+                        extra={
+                          bid?.levelsAccepted != null ? (
+                            <span className="sa-sub">
+                              {" · "}
+                              <Bidi>{toFaDigits(bid.levelsAccepted)}</Bidi> سطح
+                            </span>
+                          ) : null
+                        }
+                        unavailable={bid?.unavailable || !depth}
+                        reasonFa={bid?.unavailableFa ?? missingDepthFa}
+                      />
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>حجم قابل‌مشاهده Ask</dt>
+                    <dd>
+                      <UsdtOrNa
+                        usdt={ask?.rawDepthUsdt}
+                        extra={
+                          ask?.levelsAccepted != null ? (
+                            <span className="sa-sub">
+                              {" · "}
+                              <Bidi>{toFaDigits(ask.levelsAccepted)}</Bidi> سطح
+                            </span>
+                          ) : null
+                        }
+                        unavailable={ask?.unavailable || !depth}
+                        reasonFa={ask?.unavailableFa ?? missingDepthFa}
+                      />
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>ظرفیت اجراپذیر فروش</dt>
+                    <dd>
+                      <UsdtOrNa
+                        usdt={sellCapUsdt}
+                        extra={
+                          bid?.limitingLabelFa || sem?.sellLimiter ? (
+                            <span className="sa-sub">
+                              {" · "}
+                              {bid?.limitingLabelFa ?? sem?.sellLimiter}
+                            </span>
+                          ) : null
+                        }
+                        unavailable={sellCapUsdt == null}
+                        reasonFa={bid?.reasonFa ?? "ظرفیت فروش اندازه‌گیری نشد"}
+                      />
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>ظرفیت اجراپذیر خرید</dt>
+                    <dd>
+                      <UsdtOrNa
+                        usdt={buyCapUsdt}
+                        extra={
+                          ask?.limitingLabelFa || sem?.buyLimiter ? (
+                            <span className="sa-sub">
+                              {" · "}
+                              {ask?.limitingLabelFa ?? sem?.buyLimiter}
+                            </span>
+                          ) : null
+                        }
+                        unavailable={buyCapUsdt == null}
+                        reasonFa={ask?.reasonFa ?? "ظرفیت خرید اندازه‌گیری نشد"}
+                      />
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>کارمزد taker</dt>
+                    <dd>
+                      {buyFee !== null && buyFee !== undefined ? (
+                        <Bidi>
+                          خرید {toFaDigits(buyFee)} · فروش {toFaDigits(sellFee ?? buyFee)} bps
+                        </Bidi>
+                      ) : (
+                        <span className="sa-unknown">{feeMissingFa}</span>
+                      )}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>معامله / کارمزد دفتر</dt>
+                    <dd>
+                      {feeBag ? (
+                        <>
+                          <Bidi>{toFaDigits(feeBag.trades)}</Bidi>
+                          {" · "}
+                          {feeBag.feeUsdtValueToman !== null ? (
+                            <TomanAmount value={feeBag.feeToman + feeBag.feeUsdtValueToman} />
+                          ) : (
+                            <TomanAmount value={feeBag.feeToman} />
+                          )}
+                        </>
+                      ) : (
+                        <span className="sa-unknown">{NA_FA}</span>
+                      )}
+                    </dd>
+                  </div>
+                  <div className="sa-venue-desk-wide">
+                    <dt>پاها / مانع</dt>
+                    <dd>
+                      خرید {sem?.buyLegUsable ? "قابل استفاده" : "خیر"} · فروش{" "}
+                      {sem?.sellLegUsable ? "قابل استفاده" : "خیر"}
+                      {sem?.blockerFa ? <span className="sa-sub"> — {sem.blockerFa}</span> : null}
+                      {h?.errorReason ? <span className="sa-sub"> — {h.errorReason}</span> : null}
+                    </dd>
+                  </div>
+                </dl>
               </article>
             );
           })}

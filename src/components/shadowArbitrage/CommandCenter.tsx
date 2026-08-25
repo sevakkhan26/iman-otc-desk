@@ -43,6 +43,14 @@ export type CommandSession = {
   totalCapitalToman: number;
   valuationPriceToman: number;
   openingAllocations: VenueAllocation[];
+  startedAt?: string | null;
+  pausedAt?: string | null;
+  stoppedAt?: string | null;
+  lastCycleAt?: string | null;
+  tradesExecuted?: number;
+  candidatesSkipped?: number;
+  note?: string | null;
+  experimentRunId?: string | null;
 };
 
 export type CommandBalance = { sourceId: string; irtToman: number; usdt: number };

@@ -1,16 +1,20 @@
 "use client";
 
 /**
- * «سرمایه و حساب» — portfolio summary and per-exchange virtual capital.
- *
- * v4.2.1: no experiment panel, no session setup (moved to Settings), no fees,
- * no market depth. Presentation-only from persisted accounting props.
+ * «سرمایه و حساب» — desk accounting from persisted paper.accounting only.
+ * Does not re-derive PnL. Missing mark/fees/unrealized render as N/A, never 0.
  */
 import { TomanAmount } from "@/components/TomanAmount";
 import { formatTehran } from "@/components/format";
 import { Bidi } from "@/components/shadowArbitrage/Bidi";
 import { toFaDigits } from "@/components/shadowArbitrage/labels";
 import { Kpi } from "@/components/shadowArbitrage/panelKit";
+import { ObservationTelemetry } from "@/components/shadowArbitrage/ObservationTelemetry";
+import { SizingWaterfall } from "@/components/shadowArbitrage/SizingWaterfall";
+import type { RouteSizingView } from "@/components/shadowArbitrage/CommandCenter";
+import type { ShadowOpportunity } from "@/components/shadowArbitrage/types";
+import { ExperimentHistoryTable } from "@/components/shadowArbitrage/ExperimentSummary";
+import type { ExperimentHistoryRow } from "@/components/shadowArbitrage/sessionLifecycle";
 
 export type AccountsAccounting = {
   asOf: string;
@@ -76,12 +80,9 @@ export type AccountsAccounting = {
   openPositionsNoteFa?: string;
 };
 
-/** Kept for API compatibility; depth is no longer shown on Accounts. */
 export type VenueDepthSideView = {
   bestPriceToman: number | null;
-  /** Pure market depth USDT (Σ accepted level quantities). */
   rawDepthUsdt: number | null;
-  /** Pure market depth toman (Σ price × qty) — not USDT × best. */
   rawDepthToman: number | null;
   levelsAccepted: number | null;
   levelsExcluded: number | null;
@@ -89,7 +90,6 @@ export type VenueDepthSideView = {
   acceptedPriceMax?: number | null;
   acceptedLevels?: Array<{ priceToman: number; amountUsdt: number }>;
   smartSizeVwapToman: number | null;
-  /** Executable capacity — not market depth. */
   usableCapacityUsdt: number | null;
   usableCapacityToman: number | null;
   limitingKey: string | null;
@@ -136,13 +136,17 @@ export type ExperimentView = {
   peakUtilizationPercent: number | null;
   averageUtilizationPercent: number | null;
   sessionId: string | null;
+  summary?: Record<string, unknown> | null;
+  configuredDurationDays?: number | null;
+  filled?: number | null;
+  skipped?: number | null;
+  lastFillAt?: string | null;
+  lastCycleAt?: string | null;
 };
 
 type Props = {
   accounting: AccountsAccounting | null;
-  /** @deprecated not rendered on Accounts; kept for call-site compatibility */
   venueDepthCards?: VenueDepthCardView[] | null;
-  /** @deprecated experiment panel removed; identity still available elsewhere */
   experiment?: ExperimentView | null;
   session: {
     id: string;
@@ -153,16 +157,35 @@ type Props = {
   } | null;
   loading: boolean;
   serverNow: string | null;
-  /** Total evaluated cycles (from cycle summaries). */
   evaluatedCycleCount?: number | null;
+  opportunities?: ShadowOpportunity[];
+  sizingRoutes?: RouteSizingView[] | null;
+  sessionHistory?: ExperimentHistoryRow[];
 };
 
 const DASH = <span className="sa-unknown">—</span>;
-const UNAVAILABLE = "Unavailable";
+const UNAVAILABLE = "ناموجود";
 
 function pnlClass(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n) || n === 0) return "sa-pnl-zero";
   return n > 0 ? "sa-pos" : "sa-neg";
+}
+
+function kpiTone(n: number | null | undefined): "good" | "warn" | "muted" {
+  if (n === null || n === undefined || !Number.isFinite(n) || n === 0) return "muted";
+  return n > 0 ? "good" : "warn";
+}
+
+function pickOptimizerRoute(routes: RouteSizingView[] | null | undefined): RouteSizingView | null {
+  if (!routes?.length) return null;
+  const sized = routes.filter((r) => r.sizing.status === "SIZED");
+  const pool = sized.length ? sized : routes.filter((r) => r.sizing.candidates.length > 0);
+  if (!pool.length) return routes[0] ?? null;
+  return [...pool].sort((a, b) => {
+    const ap = a.sizing.economics?.riskAdjustedPnlToman ?? Number.NEGATIVE_INFINITY;
+    const bp = b.sizing.economics?.riskAdjustedPnlToman ?? Number.NEGATIVE_INFINITY;
+    return bp - ap;
+  })[0] ?? null;
 }
 
 export function AccountsSection({
@@ -170,8 +193,13 @@ export function AccountsSection({
   session,
   loading,
   serverNow,
-  evaluatedCycleCount = null
+  evaluatedCycleCount = null,
+  opportunities = [],
+  sizingRoutes = null,
+  sessionHistory = []
 }: Props) {
+  const optimizer = pickOptimizerRoute(sizingRoutes);
+
   if (loading && !accounting && !session) {
     return (
       <div className="panel sa-panel">
@@ -190,25 +218,7 @@ export function AccountsSection({
             <h3 className="panel-title">سرمایه و حساب</h3>
           </div>
           <div className="panel-body">
-            <p className="sa-sub">
-              نشست کاغذی فعال نیست. راه‌اندازی نشست از «تنظیمات» انجام می‌شود.
-            </p>
-          </div>
-        </section>
-        <section className="panel sa-panel sa-cycle-card" aria-label="تعداد چرخهٔ ارزیابی">
-          <div className="panel-header sa-panel-header">
-            <h3 className="panel-title">تعداد چرخهٔ ارزیابی‌شده</h3>
-          </div>
-          <div className="panel-body">
-            <p className="sa-cycle-count">
-              <Bidi>
-                {toFaDigits(
-                  evaluatedCycleCount !== null && evaluatedCycleCount !== undefined
-                    ? evaluatedCycleCount
-                    : 0
-                )}
-              </Bidi>
-            </p>
+            <p className="sa-sub">نشست کاغذی فعال نیست. راه‌اندازی نشست از «تنظیمات» انجام می‌شود.</p>
           </div>
         </section>
       </div>
@@ -216,41 +226,44 @@ export function AccountsSection({
   }
 
   const a = accounting;
+  const engaged =
+    (a?.reservedInOrdersToman ?? 0) + (a?.committedToPositionsToman ?? 0);
+  const cycleLabel =
+    evaluatedCycleCount !== null && evaluatedCycleCount !== undefined
+      ? toFaDigits(evaluatedCycleCount)
+      : null;
 
   return (
-    <div className="sa-stack">
-      <section className="panel sa-panel sa-cycle-card" aria-label="تعداد چرخهٔ ارزیابی">
-        <div className="panel-header sa-panel-header">
-          <h3 className="panel-title">تعداد چرخهٔ ارزیابی‌شده</h3>
-        </div>
-        <div className="panel-body">
-          <p className="sa-cycle-count">
-            <Bidi>
-              {toFaDigits(
-                evaluatedCycleCount !== null && evaluatedCycleCount !== undefined
-                  ? evaluatedCycleCount
-                  : 0
-              )}
-            </Bidi>
-          </p>
-        </div>
+    <div className="sa-stack sa-desk">
+      <section className="sa-desk-status" aria-label="برچسب حساب">
+        <span className="sa-sub">
+          as-of{" "}
+          {a?.asOf ? formatTehran(a.asOf) : serverNow ? formatTehran(serverNow) : "—"}
+        </span>
+        {cycleLabel ? (
+          <span className="sa-desk-cycle sa-sub" title="شمارندهٔ تلمتری چرخه — نه سود">
+            چرخه‌های ارزیابی‌شده: <Bidi>{cycleLabel}</Bidi>
+          </span>
+        ) : null}
       </section>
 
       <section className="panel sa-panel sa-port-panel" aria-label="خلاصه پرتفوی کاغذی">
         <div className="panel-header sa-panel-header">
-          <h3 className="panel-title">خلاصه پرتفوی</h3>
+          <h3 className="panel-title">حساب میز</h3>
           <div className="sa-panel-note">
-            {session.name}
-            {" · "}
-            {a?.asOf ? formatTehran(a.asOf) : serverNow ? formatTehran(serverNow) : DASH}
+            از دفتر حسابداری نشست — صفر ساختگی برای ارزش/کارمزد/تحقق‌نیافته گذاشته نمی‌شود
           </div>
         </div>
         <div className="panel-body sa-port-body">
-          <div className="sa-cards">
+          <div className="sa-cards sa-desk-kpis">
             <Kpi
-              label="ارزش فعلی"
-              tone={a?.returnPercent && a.returnPercent < 0 ? "warn" : "good"}
-              hint={`بازده: ${a?.returnPercent ? toFaDigits(a.returnPercent.toFixed(2)) + "٪" : UNAVAILABLE}`}
+              label="ارزش فعلی (حقوق صاحبان)"
+              tone={kpiTone(a?.returnPercent ?? null)}
+              hint={
+                a?.returnPercent !== null && a?.returnPercent !== undefined
+                  ? `بازده ${toFaDigits(a.returnPercent.toFixed(2))}٪ · سرمایهٔ اولیه ثبت‌شده`
+                  : "بدون قیمت مبنا ارزش‌گذاری نمی‌شود"
+              }
               value={
                 a?.equityToman !== null && a?.equityToman !== undefined ? (
                   <TomanAmount value={a.equityToman} />
@@ -260,19 +273,9 @@ export function AccountsSection({
               }
             />
             <Kpi
-              label="سود امروز"
-              tone={a?.todayRealizedPnlToman && a.todayRealizedPnlToman < 0 ? "warn" : a?.todayRealizedPnlToman && a.todayRealizedPnlToman > 0 ? "good" : "muted"}
-              hint="سود و زیان تحقق‌یافته (امروز)"
-              value={
-                <span className={pnlClass(a?.todayRealizedPnlToman ?? 0)}>
-                  <TomanAmount value={a?.todayRealizedPnlToman ?? 0} />
-                </span>
-              }
-            />
-            <Kpi
               label="سرمایهٔ آزاد"
-              tone="good"
-              hint="مجموع نقدینگی در دسترس"
+              tone="muted"
+              hint="نقد قابل استفاده برای خرید جدید"
               value={
                 a?.freeCapitalToman !== null && a?.freeCapitalToman !== undefined ? (
                   <TomanAmount value={a.freeCapitalToman} />
@@ -282,16 +285,121 @@ export function AccountsSection({
               }
             />
             <Kpi
-              label="درگیر / رزرو"
+              label="سرمایهٔ درگیر"
               tone="muted"
-              hint="سرمایه در پوزیشن یا سفارش"
+              hint="رزرو سفارش + درگیر پوزیشن؛ کارگزار کاغذی اتمی است و صفر صادقانه است اگر سفارشی باز نباشد"
+              value={a ? <TomanAmount value={engaged} /> : <span className="sa-unknown">{UNAVAILABLE}</span>}
+            />
+            <Kpi
+              label="IRT آزاد"
+              tone="muted"
+              hint="موجودی تومانی قابل خرید"
+              value={a ? <TomanAmount value={a.availableIrtToman} /> : <span className="sa-unknown">{UNAVAILABLE}</span>}
+            />
+            <Kpi
+              label="USDT آزاد"
+              tone="muted"
+              hint="موجودی تتری قابل فروش"
               value={
-                <TomanAmount value={(a?.reservedInOrdersToman ?? 0) + (a?.committedToPositionsToman ?? 0)} />
+                a ? (
+                  <Bidi>{toFaDigits(a.availableUsdt.toFixed(4))}</Bidi>
+                ) : (
+                  <span className="sa-unknown">{UNAVAILABLE}</span>
+                )
+              }
+            />
+            <Kpi
+              label="سود امروز"
+              tone={kpiTone(a?.todayRealizedPnlToman ?? null)}
+              hint="تحقق‌یافته از نیمه‌شب — رقم دفتر"
+              value={
+                a ? (
+                  <span className={pnlClass(a.todayRealizedPnlToman)}>
+                    <TomanAmount value={a.todayRealizedPnlToman} />
+                  </span>
+                ) : (
+                  <span className="sa-unknown">{UNAVAILABLE}</span>
+                )
+              }
+            />
+            <Kpi
+              label="سود تحقق‌یافته (اقتصادی)"
+              tone={kpiTone(a?.realizedEconomicPnlToman ?? null)}
+              hint="تجمیعی نشست · اقتصاد خالص پس از کارمزد"
+              value={
+                a ? (
+                  <span className={pnlClass(a.realizedEconomicPnlToman)}>
+                    <TomanAmount value={a.realizedEconomicPnlToman} />
+                  </span>
+                ) : (
+                  <span className="sa-unknown">{UNAVAILABLE}</span>
+                )
+              }
+            />
+            <Kpi
+              label="سود تحقق‌نیافته"
+              tone={kpiTone(a?.unrealizedPnlToman ?? null)}
+              hint="حقوق صاحبان − اولیه − تحقق‌یافته اقتصادی؛ بدون مبنا محاسبه نمی‌شود"
+              value={
+                a?.unrealizedPnlToman !== null && a?.unrealizedPnlToman !== undefined ? (
+                  <span className={pnlClass(a.unrealizedPnlToman)}>
+                    <TomanAmount value={a.unrealizedPnlToman} />
+                  </span>
+                ) : (
+                  <span className="sa-unknown" title="قیمت مبنا در دسترس نیست">
+                    {UNAVAILABLE}
+                  </span>
+                )
+              }
+            />
+            <Kpi
+              label="کارمزد پرداخت‌شده"
+              tone="muted"
+              hint="معادل تومانی کارمزد IRT+USDT در دفتر؛ بدون مبنا برای پایهٔ تتری ناموجود است"
+              value={
+                a?.fees.totalFeeTomanEquivalent !== null &&
+                a?.fees.totalFeeTomanEquivalent !== undefined ? (
+                  <TomanAmount value={a.fees.totalFeeTomanEquivalent} />
+                ) : (
+                  <span className="sa-unknown">{UNAVAILABLE}</span>
+                )
               }
             />
           </div>
+
+          <dl className="sa-pnl-triple" aria-label="تفکیک سه سود">
+            <div>
+              <dt>سود نقدی (IRT)</dt>
+              <dd className={pnlClass(a?.realizedCashPnlToman)}>
+                {a ? <TomanAmount value={a.realizedCashPnlToman} /> : DASH}
+              </dd>
+            </div>
+            <div>
+              <dt>سود اقتصادی خالص</dt>
+              <dd className={pnlClass(a?.realizedEconomicPnlToman)}>
+                {a ? <TomanAmount value={a.realizedEconomicPnlToman} /> : DASH}
+              </dd>
+            </div>
+            <div>
+              <dt>سود تعدیل‌شده با ریسک</dt>
+              <dd className={pnlClass(a?.realizedRiskAdjustedPnlToman)}>
+                {a ? <TomanAmount value={a.realizedRiskAdjustedPnlToman} /> : DASH}
+              </dd>
+            </div>
+          </dl>
+          <p className="sa-sub">
+            سرمایهٔ اولیه:{" "}
+            <TomanAmount value={a?.initialCapitalToman ?? session.totalCapitalToman} />
+            {" · "}
+            قیمت مبنا:{" "}
+            {a?.markPriceToman ? <TomanAmount value={a.markPriceToman} /> : <span className="sa-unknown">{UNAVAILABLE}</span>}
+            {a?.markPriceProvisional ? " (موقت)" : ""}
+          </p>
         </div>
       </section>
+
+      <ObservationTelemetry opportunities={opportunities} optimizerRoute={optimizer} />
+      <SizingWaterfall route={optimizer} />
 
       <section className="panel sa-panel" aria-label="موجودی هر صرافی">
         <div className="panel-header sa-panel-header">
@@ -300,72 +408,85 @@ export function AccountsSection({
         <div className="panel-body sa-acct-venues">
           {!a?.venues?.length ? (
             <p className="sa-sub">
-              {loading
-                ? "در حال خواندن…"
-                : "موجودی صرافی‌ها در این چرخه در دسترس نیست."}
+              {loading ? "در حال خواندن…" : "موجودی صرافی‌ها در این چرخه در دسترس نیست."}
             </p>
           ) : (
-            a.venues.map((v) => (
-              <article key={v.sourceId} className="panel sa-panel sa-acct-venue sa-acct-venue-compact">
-                <header className="sa-acct-venue-head panel-header sa-panel-header">
-                  <div className="sa-acct-venue-id">
-                    <strong className="panel-title">{v.sourceId}</strong>
-                  </div>
-                </header>
-                <div className="panel-body sa-acct-venue-body">
-                  <div className="sa-bal-metrics" aria-label="موجودی">
-                    <div className="sa-bal-metric">
-                      <span className="sa-bal-metric-label">IRT</span>
-                      <span className="sa-bal-metric-value">
-                        <TomanAmount value={v.irtToman} />
-                      </span>
+            a.venues.map((v) => {
+              const fee = a.fees.byVenue.find((f) => f.sourceId === v.sourceId);
+              return (
+                <article key={v.sourceId} className="panel sa-panel sa-acct-venue sa-acct-venue-compact">
+                  <header className="sa-acct-venue-head panel-header sa-panel-header">
+                    <div className="sa-acct-venue-id">
+                      <strong className="panel-title">{v.sourceId}</strong>
                     </div>
-                    <div className="sa-bal-metric">
-                      <span className="sa-bal-metric-label">USDT</span>
-                      <span className="sa-bal-metric-value">
-                        <Bidi>{toFaDigits(v.usdt.toFixed(4))}</Bidi>
-                      </span>
-                    </div>
-                    <div className="sa-bal-metric">
-                      <span className="sa-bal-metric-label">ارزش کل</span>
-                      <span className="sa-bal-metric-value">
-                        {v.valuationToman !== null ? (
-                          <TomanAmount value={v.valuationToman} />
+                    {fee ? (
+                      <span className="sa-sub">
+                        {toFaDigits(fee.trades)} معامله · کارمزد{" "}
+                        {fee.feeUsdtValueToman !== null ? (
+                          <TomanAmount value={fee.feeToman + fee.feeUsdtValueToman} />
                         ) : (
-                          <span className="sa-unknown" title="قیمت مبنا برای ارزش‌گذاری موجود نیست">
-                            {UNAVAILABLE}
-                          </span>
+                          <TomanAmount value={fee.feeToman} />
                         )}
                       </span>
-                    </div>
-                    <div className="sa-bal-metric">
-                      <span className="sa-bal-metric-label">آزاد (IRT · USDT)</span>
-                      <span className="sa-bal-metric-value sa-sub">
-                        <TomanAmount value={v.freeIrtToman} /> ·{" "}
-                        <Bidi>{toFaDigits((v.freeUsdtMicros / 1e6).toFixed(4))}</Bidi>
-                      </span>
-                    </div>
-                    <div className="sa-bal-metric">
-                      <span className="sa-bal-metric-label">رزرو (IRT · USDT)</span>
-                      <span className="sa-bal-metric-value sa-sub">
-                        <TomanAmount value={v.reservedIrtToman} /> ·{" "}
-                        <Bidi>{toFaDigits((v.reservedUsdtMicros / 1e6).toFixed(4))}</Bidi>
-                      </span>
-                    </div>
-                    <div className="sa-bal-metric">
-                      <span className="sa-bal-metric-label">درگیر (IRT · USDT)</span>
-                      <span className="sa-bal-metric-value sa-sub">
-                        <TomanAmount value={v.committedIrtToman} /> ·{" "}
-                        <Bidi>{toFaDigits((v.committedUsdtMicros / 1e6).toFixed(4))}</Bidi>
-                      </span>
+                    ) : null}
+                  </header>
+                  <div className="panel-body sa-acct-venue-body">
+                    <div className="sa-bal-metrics" aria-label="موجودی">
+                      <div className="sa-bal-metric">
+                        <span className="sa-bal-metric-label">IRT</span>
+                        <span className="sa-bal-metric-value">
+                          <TomanAmount value={v.irtToman} />
+                        </span>
+                      </div>
+                      <div className="sa-bal-metric">
+                        <span className="sa-bal-metric-label">USDT</span>
+                        <span className="sa-bal-metric-value">
+                          <Bidi>{toFaDigits(v.usdt.toFixed(4))}</Bidi>
+                        </span>
+                      </div>
+                      <div className="sa-bal-metric">
+                        <span className="sa-bal-metric-label">ارزش کل</span>
+                        <span className="sa-bal-metric-value">
+                          {v.valuationToman !== null ? (
+                            <TomanAmount value={v.valuationToman} />
+                          ) : (
+                            <span className="sa-unknown" title="قیمت مبنا برای ارزش‌گذاری موجود نیست">
+                              {UNAVAILABLE}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <div className="sa-bal-metric">
+                        <span className="sa-bal-metric-label">آزاد (IRT · USDT)</span>
+                        <span className="sa-bal-metric-value sa-sub">
+                          <TomanAmount value={v.freeIrtToman} /> ·{" "}
+                          <Bidi>{toFaDigits((v.freeUsdtMicros / 1e6).toFixed(4))}</Bidi>
+                        </span>
+                      </div>
+                      <div className="sa-bal-metric">
+                        <span className="sa-bal-metric-label">رزرو (IRT · USDT)</span>
+                        <span className="sa-bal-metric-value sa-sub">
+                          <TomanAmount value={v.reservedIrtToman} /> ·{" "}
+                          <Bidi>{toFaDigits((v.reservedUsdtMicros / 1e6).toFixed(4))}</Bidi>
+                        </span>
+                      </div>
+                      <div className="sa-bal-metric">
+                        <span className="sa-bal-metric-label">درگیر (IRT · USDT)</span>
+                        <span className="sa-bal-metric-value sa-sub">
+                          <TomanAmount value={v.committedIrtToman} /> ·{" "}
+                          <Bidi>{toFaDigits((v.committedUsdtMicros / 1e6).toFixed(4))}</Bidi>
+                        </span>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </article>
-            ))
+                </article>
+              );
+            })
           )}
         </div>
       </section>
+
+      <ExperimentHistoryTable rows={sessionHistory} loading={loading} />
     </div>
   );
 }

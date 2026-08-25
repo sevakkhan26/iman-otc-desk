@@ -23,6 +23,8 @@ import {
 import { BookSection } from "@/components/shadowArbitrage/BookSection";
 import { VenuesSection } from "@/components/shadowArbitrage/VenuesSection";
 import { ShadowTabs } from "@/components/shadowArbitrage/ShadowTabs";
+import { ExperimentSummary } from "@/components/shadowArbitrage/ExperimentSummary";
+import type { ExperimentHistoryRow } from "@/components/shadowArbitrage/sessionLifecycle";
 import { SHADOW_WARNING_FA } from "@/components/shadowArbitrage/labels";
 import type { PaperLedgerRow } from "@/components/shadowArbitrage/opportunityModel";
 import type {
@@ -53,7 +55,16 @@ import type {
  */
 type PaperPayload = {
   session: CommandSession | null;
-  stats: { filled: number; skipped: number; economicNetPnlToman: number } | null;
+  stats: {
+    filled: number;
+    skipped: number;
+    economicNetPnlToman: number;
+    riskAdjustedPnlToman?: number;
+    cashPnlIrtToman?: number;
+    feeTomanTotal?: number;
+    lastFillAt?: string | null;
+  } | null;
+  sessionHistory?: ExperimentHistoryRow[];
   balances?: CommandBalance[];
   trades?: PaperLedgerRow[];
   transitions?: PaperLedgerRow[];
@@ -370,6 +381,9 @@ export function ShadowArbitrageView() {
   if (readinessSummary && readinessSummary.total > readinessSummary.passed) {
     badges.settings = String(readinessSummary.total - readinessSummary.passed);
   }
+  if (paper?.stats?.filled != null) {
+    badges.activity = String(paper.stats.filled);
+  }
 
   return (
     <div className="sa-page sa-page-tabbed">
@@ -396,6 +410,14 @@ export function ShadowArbitrageView() {
         lastUpdated={matrix?.serverNow ? Date.parse(matrix.serverNow) : null}
       />
 
+      <ExperimentSummary
+        experiment={paper?.experiment ?? null}
+        session={paper?.session ?? null}
+        accounting={paper?.accounting ?? null}
+        stats={paper?.stats ?? null}
+        serverNow={matrix?.serverNow ?? serverNow}
+      />
+
       <ShadowTabs active={tab} onSelect={selectTab} badges={badges} />
 
       {error ? <div className="sa-callout sa-callout-warn">{error}</div> : null}
@@ -417,7 +439,10 @@ export function ShadowArbitrageView() {
             session={paper?.session ?? null}
             loading={loading}
             serverNow={matrix?.serverNow ?? serverNow}
-            evaluatedCycleCount={paper?.cycleSummaries?.length ?? 0}
+            evaluatedCycleCount={paper ? paper.cycleSummaries?.length ?? 0 : null}
+            opportunities={matrix?.opportunities ?? []}
+            sizingRoutes={paper?.sizing?.routes ?? []}
+            sessionHistory={paper?.sessionHistory ?? []}
           />
         ) : null}
 
@@ -462,6 +487,9 @@ export function ShadowArbitrageView() {
                   ).policyParameters?.minRiskAdjustedEdgePercent ?? null)
                 : null
             }
+            opportunities={matrix?.opportunities ?? []}
+            sessionHistory={paper?.sessionHistory ?? []}
+            stats={paper?.stats ?? null}
           />
         ) : null}
 
@@ -474,6 +502,7 @@ export function ShadowArbitrageView() {
             loading={loading}
             venueSemantics={paper?.sizing?.venueSemantics?.matrix ?? null}
             venueDepthCards={paper?.venueDepthCards ?? null}
+            accounting={paper?.accounting ?? null}
           />
         ) : null}
 

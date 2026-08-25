@@ -125,3 +125,45 @@ export function parseShadowSettingsView(
   if (value && SETTINGS_VIEW_IDS.has(value)) return value as ShadowSettingsViewId;
   return DEFAULT_SHADOW_SETTINGS_VIEW;
 }
+
+/* ── Activity: local IA (URL `aview=`) ──────────────────────────────────── */
+
+export type ActivityViewId = "engine" | "executed" | "skipped" | "session";
+
+export type ActivityView = {
+  id: ActivityViewId;
+  labelFa: string;
+  hintFa: string;
+};
+
+export const ACTIVITY_VIEWS: ActivityView[] = [
+  {
+    id: "engine",
+    labelFa: "تصمیم‌های موتور",
+    hintFa: "جریان زندهٔ sizing این چرخه — نه معاملهٔ تکمیل‌شده"
+  },
+  {
+    id: "executed",
+    labelFa: "معاملات اجراشده",
+    hintFa: "پر شدن‌های دفتر این نشست"
+  },
+  {
+    id: "skipped",
+    labelFa: "رد یا ردشده",
+    hintFa: "نامزدهایی که اجرا نشدند و دلیل"
+  },
+  {
+    id: "session",
+    labelFa: "خلاصه نشست",
+    hintFa: "شمارنده‌ها و تاریخچهٔ آزمایش‌ها"
+  }
+];
+
+export const DEFAULT_ACTIVITY_VIEW: ActivityViewId = "engine";
+
+const ACTIVITY_VIEW_IDS = new Set<string>(ACTIVITY_VIEWS.map((v) => v.id));
+
+export function parseActivityView(value: string | null | undefined): ActivityViewId {
+  if (value && ACTIVITY_VIEW_IDS.has(value)) return value as ActivityViewId;
+  return DEFAULT_ACTIVITY_VIEW;
+}

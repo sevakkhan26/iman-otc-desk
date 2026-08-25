@@ -7,9 +7,10 @@ type Props = {
   reasons: [string, number][];
   reasonLabel: (code: string) => string;
   windows: { id: string; labelFa: string; ms: number | null }[];
+  hideOutcome?: boolean;
 };
 
-export function FilterToolbar({ venues, reasons, reasonLabel, windows }: Props) {
+export function FilterToolbar({ venues, reasons, reasonLabel, windows, hideOutcome = false }: Props) {
   const { read, write } = useShadowViewState();
   const venue = read("av", "all");
   const outcome = read("ao", "all");
@@ -37,21 +38,24 @@ export function FilterToolbar({ venues, reasons, reasonLabel, windows }: Props) 
         <FilterChevron />
       </span>
 
-      <span className="sa-filter-toolbar-sep" aria-hidden="true" />
-
-      <span className="sa-filter-toolbar-field">
-        <select
-          className="sa-filter-toolbar-select glass-control"
-          value={outcome}
-          onChange={(e) => setFilter({ ao: e.target.value })}
-          aria-label="نتیجه"
-        >
-          <option value="all">همه نتایج</option>
-          <option value="FILLED">اجراشده</option>
-          <option value="SKIPPED">ردشده</option>
-        </select>
-        <FilterChevron />
-      </span>
+      {hideOutcome ? null : (
+        <>
+          <span className="sa-filter-toolbar-sep" aria-hidden="true" />
+          <span className="sa-filter-toolbar-field">
+            <select
+              className="sa-filter-toolbar-select glass-control"
+              value={outcome}
+              onChange={(e) => setFilter({ ao: e.target.value })}
+              aria-label="نتیجه"
+            >
+              <option value="all">همه نتایج</option>
+              <option value="FILLED">اجراشده</option>
+              <option value="SKIPPED">ردشده</option>
+            </select>
+            <FilterChevron />
+          </span>
+        </>
+      )}
 
       <span className="sa-filter-toolbar-sep" aria-hidden="true" />
 

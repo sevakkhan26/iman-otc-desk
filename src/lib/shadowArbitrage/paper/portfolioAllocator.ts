@@ -5,7 +5,6 @@
  * selects a compatible set that never:
  *   - exceeds portfolio max utilization (default 80%)
  *   - violates min free reserve (default 20%)
- *   - exceeds per-route capital fraction (default 10%)
  *   - exceeds per-venue exposure (default 20%)
  *   - double-spends the same venue balance between routes
  *
@@ -18,7 +17,6 @@ import {
   venueExposureAfter
 } from "@/lib/shadowArbitrage/paper/utilization";
 import {
-  PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT,
   PAPER_4D_MAX_UTILIZATION_PERCENT,
   PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT,
   PAPER_4D_MIN_RESERVE_PERCENT
@@ -72,6 +70,7 @@ export function allocatePaperRoutes(input: {
   availableUsdtMicrosByVenue: Map<string, number>;
   maxUtilizationPercent?: number;
   minReservePercent?: number;
+  /** @deprecated Historical experiment input; not applied as a fixed route cap. */
   maxRouteCapitalPercent?: number;
   maxVenueExposurePercent?: number;
   /** Already reserved within this cycle (normally 0 at start). */
@@ -80,7 +79,6 @@ export function allocatePaperRoutes(input: {
 }): AllocatorResult {
   const maxUtil = input.maxUtilizationPercent ?? PAPER_4D_MAX_UTILIZATION_PERCENT;
   const minReserve = input.minReservePercent ?? PAPER_4D_MIN_RESERVE_PERCENT;
-  const maxRoute = input.maxRouteCapitalPercent ?? PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT;
   const maxVenue = input.maxVenueExposurePercent ?? PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT;
 
   const utilBefore = computeUtilization({
@@ -134,17 +132,6 @@ export function allocatePaperRoutes(input: {
       sellVwapToman: c.sellVwapToman,
       markPriceToman: input.markPriceToman
     });
-    const routeCapToman = Math.floor((input.equityToman * maxRoute) / 100);
-    if (capital > routeCapToman) {
-      rejected.push({
-        lifecycleId: c.lifecycleId,
-        routeKey: c.routeKey,
-        code: "route_capital_cap",
-        reasonFa: `سرمایهٔ مسیر از ${maxRoute}٪ سهام تجاوز می‌کند`
-      });
-      continue;
-    }
-
     const utilNow = computeUtilization({
       equityToman: input.equityToman,
       markPriceToman: input.markPriceToman,

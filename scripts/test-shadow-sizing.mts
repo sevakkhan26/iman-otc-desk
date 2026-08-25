@@ -103,6 +103,7 @@ function snap(
 
 const IRT_FEE = { feeAsset: "IRT", debitMode: "ADD_TO_DEBIT", provenance: "ADMIN_CONFIRMED" } as const;
 const USDT_FEE = { feeAsset: "USDT", debitMode: "ADD_TO_DEBIT", provenance: "ADMIN_CONFIRMED" } as const;
+const SELL_IRT_CREDIT_FEE = { feeAsset: "IRT", debitMode: "DEDUCT_FROM_CREDIT", provenance: "ADMIN_CONFIRMED" } as const;
 
 function input(over: Any = {}): Any {
   return {
@@ -349,7 +350,7 @@ await test("the sell USDT cap is fee-inclusive: the venue is debited size plus f
 
   // With an IRT-settled sell fee the whole balance is deliverable.
   const irtSell = run({
-    sellSettlement: IRT_FEE,
+    sellSettlement: SELL_IRT_CREDIT_FEE,
     balances: [
       { sourceId: "nobitex", irtToman: 1_000_000_000, usdtMicros: 5_000_000_000 },
       { sourceId: "wallex", irtToman: 1_000_000_000, usdtMicros: usdtToMicros(10.035) }
@@ -419,7 +420,7 @@ await test("an edge below the policy floor blocks even when the profit is positi
 await test("every reported figure is an integer and the decomposition adds up", () => {
   const r = run();
   const e = r.economics!;
-  const ratios = ["riskAdjustedEdgePercent", "riskAdjustedReturnBps"];
+  const ratios = ["riskAdjustedEdgePercent", "riskAdjustedReturnBps", "capitalEfficiencyBps"];
   for (const [k, v] of Object.entries(e)) {
     if (ratios.includes(k)) continue;
     assert.equal(Number.isInteger(v), true, `${k} must be an integer, got ${v}`);
@@ -467,7 +468,7 @@ await test("the size is floored to the ledger's own precision", () => {
 });
 
 await test("venue min (not 25 ladder) is the executable floor", () => {
-  assert.equal(SMART_SIZING_POLICY, "CAPITAL_AWARE_MAX_SAFE");
+  assert.equal(SMART_SIZING_POLICY, "MAX_RA_PNL");
   // Ledger quantum is precision only.
   assert.equal(MIN_EXECUTABLE_USDT_MICROS, 100);
 
@@ -571,7 +572,7 @@ await test("ranking is a total order and input order cannot change it", () => {
   const rows = [mk("b->c", 100, 5), mk("a->b", 100, 5), mk("c->d", 900, 5), mk("d->e", 100, 9)];
   const once = rankSizedRoutes(rows as never).map((r) => r.routeKey);
   const twice = rankSizedRoutes([...rows].reverse() as never).map((r) => r.routeKey);
-  assert.deepEqual(once, ["c->d", "d->e", "a->b", "b->c"]);
+  assert.deepEqual(once, ["c->d", "a->b", "b->c", "d->e"]);
   assert.deepEqual(once, twice, "input order must not change the ranking");
   assert.deepEqual(rows.map((r) => r.routeKey), ["b->c", "a->b", "c->d", "d->e"], "input untouched");
 });

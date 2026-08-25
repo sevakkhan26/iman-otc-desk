@@ -55,11 +55,11 @@ await test("targets are 70/80/20 and route/venue 10/20", () => {
   assert.equal(PAPER_4D_RUN_KEY, "paper-experiment-4d-v1");
 });
 
-await test("derived max order USDT floors capital-relative 10%", () => {
-  // 10B equity @ 200_000 toman/USDT → 10% = 1B toman → 5000 USDT exact
-  assert.equal(deriveMaxOrderUsdt({ equityToman: 10_000_000_000, markPriceToman: 200_000 }), 5000);
+await test("derived max order uses dynamic global/venue headroom, not historical route 10%", () => {
+  // Venue headroom (20% one leg) binds before 80% global two-leg headroom.
+  assert.equal(deriveMaxOrderUsdt({ equityToman: 10_000_000_000, markPriceToman: 200_000 }), 10000);
   // floor, never round up
-  assert.equal(deriveMaxOrderUsdt({ equityToman: 10_000_000_000, markPriceToman: 200_001 }), 4999);
+  assert.equal(deriveMaxOrderUsdt({ equityToman: 10_000_000_000, markPriceToman: 200_001 }), 9999);
   assert.equal(deriveMaxOrderUsdt({ equityToman: 0, markPriceToman: 200_000 }), 0);
 });
 
@@ -209,7 +209,7 @@ await test("canonical fingerprint is stable", () => {
   assert.ok(a.includes("hours=96"));
 });
 
-await test("route capital max 10% of equity", () => {
+await test("historical route 10% is not an execution cap", () => {
   const equity = 10_000_000_000;
   const mark = 200_000;
   // size that would use ~12% combined (buy+sell marked) → reject
@@ -240,7 +240,12 @@ await test("route capital max 10% of equity", () => {
     availableUsdtMicrosByVenue: new Map([["b", 1e15]])
   });
   assert.equal(r.selected.length, 0);
-  assert.ok(r.rejected.some((x) => x.code === "route_capital_cap"));
+  assert.ok(!r.rejected.some((x) => x.code === "route_capital_cap"));
+  assert.ok(
+    r.rejected.some(
+      (x) => x.code === "venue_exposure_cap" || x.code === "portfolio_utilization_cap"
+    )
+  );
 });
 
 await test("venue exposure max 20%", () => {

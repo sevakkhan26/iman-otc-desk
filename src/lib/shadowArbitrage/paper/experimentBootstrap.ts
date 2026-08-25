@@ -28,8 +28,11 @@ import {
 } from "@/db/repositories/shadowPaper";
 import { applyRiskPolicySet } from "@/db/repositories/shadowLive";
 import { RELEASE_CAPITAL_TOMAN } from "@/lib/shadowArbitrage/releaseBootstrap";
-import { defaultAllocation } from "@/lib/shadowArbitrage/paper/portfolio";
-import { SHADOW_SOURCES } from "@/lib/shadowArbitrage/config";
+import {
+  buildLiquidityAwarePlan,
+  buildOpeningAllocationEvidence
+} from "@/lib/shadowArbitrage/paper/allocation";
+import type { BookLevel } from "@/lib/shadowArbitrage/types";
 import {
   PAPER_4D_DURATION_MS,
   PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT,
@@ -189,10 +192,51 @@ export async function runPaperExperimentBootstrap(
     }
 
     const capital = RELEASE_CAPITAL_TOMAN;
+    const allocationEvidence = buildOpeningAllocationEvidence(
+      snaps.map((s) => {
+        const feeBps = Number(s.payload?.feeBps);
+        return {
+          sourceId: s.sourceId,
+          stale: s.stale,
+          health: s.health,
+          executionEligible: s.certStatus === "LIVE_VERIFIED",
+          feeCertain: s.certStatus === "LIVE_VERIFIED" && Number.isFinite(feeBps),
+          feeBps: Number.isFinite(feeBps) ? feeBps : null,
+          userBuyToman: s.userBuy,
+          userSellToman: s.userSell,
+          bookAsks: (s.payload?.bookAsks as BookLevel[] | null | undefined) ?? null,
+          bookBids: (s.payload?.bookBids as BookLevel[] | null | undefined) ?? null
+        };
+      })
+    );
+    const allocationPlan = buildLiquidityAwarePlan({
+      totalCapitalToman: capital,
+      valuationPriceToman: valuation,
+      venueIds: allocationEvidence.eligibleVenueIds,
+      observations: allocationEvidence.observations,
+      reservePercent: PAPER_4D_MIN_RESERVE_PERCENT,
+      requireComplementaryVenues: true,
+      minOperableUsdt: 5
+    });
+    if (!allocationPlan.valid) {
+      return {
+        ran: false,
+        reason: "error",
+        error: `liquidity-aware allocation invalid: ${allocationPlan.errorsFa.join("; ")}`
+      };
+    }
+    const allocations = allocationPlan.rows.map((r) => ({
+      sourceId: r.sourceId,
+      irtToman: r.irtToman,
+      usdtUnits: r.usdtUnits
+    }));
+
     const maxOrderUsdt = deriveMaxOrderUsdt({
       equityToman: capital,
       markPriceToman: valuation,
-      routeCapitalPercent: PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT
+      maxUtilizationPercent: PAPER_4D_MAX_UTILIZATION_PERCENT,
+      minReservePercent: PAPER_4D_MIN_RESERVE_PERCENT,
+      maxVenueExposurePercent: PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT
     });
     const canonical = paper4dCanonical({ maxOrderUsdt, markPriceToman: valuation });
     const fingerprint = createHash("sha256").update(canonical).digest("hex").slice(0, 32);
@@ -209,9 +253,6 @@ export async function runPaperExperimentBootstrap(
       validForDays: 4,
       note: `مجموعهٔ ${PAPER_4D_POLICY_SET_KEY} — آزمایش چهارروزه (${fingerprint})`
     });
-
-    const venueIds = SHADOW_SOURCES.map((s) => s.id);
-    const allocations = defaultAllocation(capital, venueIds, valuation);
 
     // Close prior active paper session without deleting it.
     const previous = await getActivePaperSession();

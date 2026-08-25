@@ -56,6 +56,7 @@ type Any = Record<string, unknown>;
 
 const IRT_FEE = { feeAsset: "IRT", debitMode: "ADD_TO_DEBIT", provenance: "ADMIN_CONFIRMED" } as const;
 const USDT_FEE = { feeAsset: "USDT", debitMode: "ADD_TO_DEBIT", provenance: "ADMIN_CONFIRMED" } as const;
+const SELL_IRT_CREDIT_FEE = { feeAsset: "IRT", debitMode: "DEDUCT_FROM_CREDIT", provenance: "ADMIN_CONFIRMED" } as const;
 
 function policies(over: Partial<Record<string, number | undefined>> = {}) {
   const base: Record<string, number> = {
@@ -273,18 +274,14 @@ await test("stale books block against the admin's own freshness budget", () => {
 /* ── 3. nonlinear VWAP and an interior optimum ───────────────────────────── */
 
 await test("the optimum is interior: a larger size can earn less and must lose", () => {
-  /*
-   * CAPITAL_AWARE_MAX_SAFE selects the LARGEST eligible profitable size, not
-   * the interior PnL peak. Larger sizes may earn less per USDT but still trade
-   * if risk-adjusted net is strictly positive and all hard caps clear.
-   */
+  /* MAX_RA_PNL selects the interior endpoint even while a larger point is green. */
   const r = size();
   assert.equal(r.status, "SIZED");
   const eligible = r.candidates.filter((c) => c.eligible);
   assert.ok(eligible.length >= 1);
-  const maxEligible = Math.max(...eligible.map((c) => c.sizeUsdtMicros));
-  assert.equal(r.sizeUsdtMicros, maxEligible, "largest eligible profitable size wins");
-  assert.ok(r.candidates.length > 5, "adaptive densify evaluates more than analysis probes alone");
+  const bestPnl = Math.max(...eligible.map((c) => c.riskAdjustedPnlToman));
+  assert.equal(r.economics?.riskAdjustedPnlToman, bestPnl, "maximum RA PnL wins");
+  assert.ok(Math.max(...eligible.map((c) => c.sizeUsdtMicros)) > r.sizeUsdtMicros!, "a larger green point loses");
   // Every candidate size is ascending and clears the verified venue min (5), not the obsolete 25 ladder.
   for (const c of r.candidates) {
     assert.ok(c.sizeUsdtMicros >= usdtToMicros(5) - 100, `below venue min: ${c.sizeUsdtMicros}`);
@@ -306,10 +303,10 @@ await test("the whole profit curve is reported, ascending and evaluated at break
     assert.ok(c.buyVwapToman > 0 && c.sellVwapToman > 0);
     assert.ok(c.buyLevels >= 1 && c.sellLevels >= 1);
   }
-  // Chosen size is the largest eligible (max-safe), not necessarily max PnL.
+  // Chosen size is the exact maximum-RA endpoint.
   const eligible = r.candidates.filter((c) => c.eligible);
-  const maxEligible = Math.max(...eligible.map((c) => c.sizeUsdtMicros));
-  assert.equal(r.sizeUsdtMicros, maxEligible);
+  const best = [...eligible].sort((a, b) => b.riskAdjustedPnlToman - a.riskAdjustedPnlToman)[0]!;
+  assert.equal(r.sizeUsdtMicros, best.sizeUsdtMicros);
   assert.ok((r.economics?.riskAdjustedPnlToman ?? 0) > 0);
 });
 
@@ -383,7 +380,7 @@ await test("an unmeasurable cap is null and excluded, never treated as zero", ()
 });
 
 await test("fee settlement is honoured on both sides, per venue and per side", () => {
-  const irtSell = size({ sellSettlement: IRT_FEE });
+  const irtSell = size({ sellSettlement: SELL_IRT_CREDIT_FEE });
   assert.equal(irtSell.status, "SIZED");
   // With an IRT-settled sell fee no USDT is consumed by fees at all.
   assert.equal(irtSell.economics?.sellFeeValueToman, 0);
@@ -536,11 +533,14 @@ await test("venue roles come from observed sides, not from a preference", () => 
   assert.equal(byId.get("wallex")?.role, "SELL_SIDE");
   assert.equal(byId.get("bitpin")?.role, "BUY_SIDE");
   assert.equal(byId.get("arzinja")?.role, "EXPLORATION");
-  // A losing route funds nothing.
+  // A raw-cross observation establishes roles but earns no remainder weight.
   const losing = deriveVenueDemand(NINE, [
     { buySourceId: "nobitex", sellSourceId: "wallex", occurrences: 10, riskAdjustedPnlToman: -1, capacityUsdtMicros: 1 }
   ]);
-  assert.ok(losing.every((d) => d.role === "EXPLORATION"));
+  assert.equal(losing.find((d) => d.sourceId === "nobitex")?.role, "BUY_SIDE");
+  assert.equal(losing.find((d) => d.sourceId === "wallex")?.role, "SELL_SIDE");
+  assert.equal(losing.find((d) => d.sourceId === "nobitex")?.buyWeight, 0);
+  assert.equal(losing.find((d) => d.sourceId === "wallex")?.sellWeight, 0);
 });
 
 await test("allocation follows role: buyers hold toman, sellers hold USDT", () => {
@@ -700,7 +700,9 @@ await test("an unset policy blocks the trade but never hides the capacity study"
   // What remains on that side is the capital plan's own share, which is not a
   // risk policy and is still a real ceiling.
   const alloc = r.constraints.find((c) => c.key === "venue_allocation");
-  assert.equal(r.policyMaxUsdtMicros, alloc?.capUsdtMicros, "only the plan share remains");
+  const dynamic = r.constraints.find((c) => c.key === "dynamic_risk_cap");
+  assert.equal(r.policyMaxUsdtMicros, dynamic?.capUsdtMicros, "measured dynamic E remains");
+  assert.ok((r.policyMaxUsdtMicros ?? 0) <= (alloc?.capUsdtMicros ?? Infinity));
 
   // A malformed book still stops everything — that is a data fault, not a decision.
   const badBook = size({

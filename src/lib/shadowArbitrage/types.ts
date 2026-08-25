@@ -162,7 +162,8 @@ export type ShadowOpportunity = {
   sellSourceId: ShadowSourceId;
   buySourceName: string;
   sellSourceName: string;
-  sizeUsdt: ShadowTradeSizeUsdt;
+  /** Optimizer output. The 5/10/20/25 union remains historical-probe only. */
+  sizeUsdt: number;
   buyVwapToman: number;
   sellVwapToman: number;
   rawSpreadPercent: number;

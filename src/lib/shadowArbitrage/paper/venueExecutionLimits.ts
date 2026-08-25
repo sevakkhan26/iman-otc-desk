@@ -89,6 +89,24 @@ export function quantizeDownToStep(micros: number, stepMicros: number): number {
   return Math.floor(micros / step) * step;
 }
 
+function gcd(a: number, b: number): number {
+  let x = Math.abs(Math.round(a));
+  let y = Math.abs(Math.round(b));
+  while (y !== 0) [x, y] = [y, x % y];
+  return x || 1;
+}
+
+/** Common executable quantity step for both venues and the paper ledger. */
+export function commonQuantityStepMicros(...steps: number[]): number {
+  return steps
+    .filter((n) => Number.isFinite(n) && n > 0)
+    .map((n) => Math.round(n))
+    .reduce(
+      (lcm, step) => Math.round((lcm / gcd(lcm, step)) * step),
+      LEDGER_SIZE_QUANTUM_MICROS
+    );
+}
+
 export type PaperFloorBinding = typeof PAPER_POLICY_MIN_KEY | "venue_min";
 
 /**
@@ -138,15 +156,25 @@ export function resolvePaperRouteFloor(
   let stepMicros = LEDGER_SIZE_QUANTUM_MICROS;
 
   if (buy && sell) {
-    stepMicros = Math.max(buy.quantityStepUsdtMicros, sell.quantityStepUsdtMicros);
+    stepMicros = commonQuantityStepMicros(
+      buy.quantityStepUsdtMicros,
+      sell.quantityStepUsdtMicros,
+      LEDGER_SIZE_QUANTUM_MICROS
+    );
     verifiedVenueMinMicros = quantizeUpToStep(
       Math.max(buy.minNotionalUsdtMicros, sell.minNotionalUsdtMicros),
       stepMicros
     );
   } else if (buy) {
-    stepMicros = Math.max(buy.quantityStepUsdtMicros, LEDGER_SIZE_QUANTUM_MICROS);
+    stepMicros = commonQuantityStepMicros(
+      buy.quantityStepUsdtMicros,
+      LEDGER_SIZE_QUANTUM_MICROS
+    );
   } else if (sell) {
-    stepMicros = Math.max(sell.quantityStepUsdtMicros, LEDGER_SIZE_QUANTUM_MICROS);
+    stepMicros = commonQuantityStepMicros(
+      sell.quantityStepUsdtMicros,
+      LEDGER_SIZE_QUANTUM_MICROS
+    );
   }
 
   const rawMin = Math.max(paperPolicyMinMicros, verifiedVenueMinMicros ?? 0);
@@ -191,7 +219,11 @@ export function resolveLiveVenueMinFloor(
   if (missing.length || !buy || !sell) {
     return { ok: false, missingSourceIds: missing };
   }
-  const stepMicros = Math.max(buy.quantityStepUsdtMicros, sell.quantityStepUsdtMicros);
+  const stepMicros = commonQuantityStepMicros(
+    buy.quantityStepUsdtMicros,
+    sell.quantityStepUsdtMicros,
+    LEDGER_SIZE_QUANTUM_MICROS
+  );
   const minMicros = quantizeUpToStep(
     Math.max(buy.minNotionalUsdtMicros, sell.minNotionalUsdtMicros, PAPER_POLICY_MIN_USDT_MICROS),
     stepMicros

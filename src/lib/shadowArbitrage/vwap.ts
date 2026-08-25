@@ -35,8 +35,9 @@ export function executableVwap(
 
   if (filled <= 0) return { vwapToman: null, filledUsdt: 0, fillable: false };
   const vwap = Math.round(notional / filled);
-  // Require ≥99.5% fill to count as fillable for the requested size
-  const fillable = filled + 1e-9 >= sizeUsdt * 0.995;
+  // Decisioning requires a complete fill. Observation may report the partial
+  // quantity, but it may never promote a 99.5% walk to executable.
+  const fillable = filled + 1e-9 >= sizeUsdt;
   return { vwapToman: vwap, filledUsdt: filled, fillable };
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 /**
- * CAPITAL_AWARE_MAX_SAFE — deterministic tests for capital-, depth-,
+ * MAX_RA_PNL — deterministic tests for capital-, depth-,
  * profitability- and inventory-aware position sizing.
  *
  * Pure: no browser, no network, no database. Every risk policy value used here
@@ -128,6 +128,8 @@ function snap(sourceId: string, bids: Any[], asks: Any[], over: Any = {}): Any {
 
 const IRT_FEE = { feeAsset: "IRT", debitMode: "ADD_TO_DEBIT", provenance: "ADMIN_CONFIRMED" } as const;
 const USDT_FEE = { feeAsset: "USDT", debitMode: "ADD_TO_DEBIT", provenance: "ADMIN_CONFIRMED" } as const;
+const BUY_USDT_CREDIT_FEE = { feeAsset: "USDT", debitMode: "DEDUCT_FROM_CREDIT", provenance: "ADMIN_CONFIRMED" } as const;
+const SELL_IRT_CREDIT_FEE = { feeAsset: "IRT", debitMode: "DEDUCT_FROM_CREDIT", provenance: "ADMIN_CONFIRMED" } as const;
 
 /* ── the 10B session, as it actually stands ──────────────────────────────────
  *
@@ -240,10 +242,9 @@ await test("candidates are fractions of the safe max from limiting usable balanc
     set.ladder.filter((l) => l.kept).map((l) => microsToUsdt(l.quantizedMicros)),
     [100, 250, 500, 750, 1000]
   );
-  // Adaptive execution set includes those analysis points and denser midpoints.
+  // Analysis points stay display-only; the execution set is exact endpoints.
   const qs = set.quantities.map((q) => microsToUsdt(q));
-  assert.ok(qs.includes(100) && qs.includes(250) && qs.includes(1000));
-  assert.ok(qs.length > 5, "adaptive densify adds breakpoints between probes");
+  assert.deepEqual(qs, [0.0001, 1000]);
   assert.equal(Math.max(...qs), 1000, "ceiling is always evaluated");
   assert.deepEqual([...CANDIDATE_PERCENTS], [10, 25, 50, 75, 100]);
   assert.equal(CAPITAL_CAP_PERCENT, 100);
@@ -366,7 +367,7 @@ await test("buy-side capacity is funded in toman INCLUDING the toman fee", () =>
 
   // With a USDT-settled buy fee the toman only funds the notional.
   const usdtFee = size({
-    buySettlement: USDT_FEE,
+    buySettlement: BUY_USDT_CREDIT_FEE,
     balances: SESSION_BALANCES.map((b) =>
       b.sourceId === "nobitex" ? { ...b, irtToman: 192_480_000 } : b
     )
@@ -390,7 +391,7 @@ await test("sell-side capacity is deliverable AFTER the USDT fee", () => {
 
   // With an IRT-settled sell fee the whole balance is deliverable.
   const irtFee = size({
-    sellSettlement: IRT_FEE,
+    sellSettlement: SELL_IRT_CREDIT_FEE,
     balances: SESSION_BALANCES.map((b) =>
       b.sourceId === "wallex" ? { ...b, usdtMicros: usdtToMicros(1_003.5) } : b
     )
@@ -468,7 +469,7 @@ await test("a shallow top of book with a flattering price does not win", () => {
     assert.equal(tight.status, "BLOCKED");
   }
 
-  // Wall open: any tradeable size is mostly wall-priced; must not win on flattery alone.
+  // An admin value cannot widen the Phase-3 hard 10bps accepted-depth prefix.
   const wide = size({
     ...trapBook,
     policies: policies({ max_slippage_bps: 5_000 }),
@@ -490,24 +491,20 @@ await test("a shallow top of book with a flattering price does not win", () => {
           b.code === "not_net_positive" ||
           b.code === "edge_below_floor" ||
           b.code === "inventory_limit" ||
-          b.code === "depth_exhausted"
+          b.code === "depth_exhausted" ||
+          b.code === "size_floor"
       ),
       `expected fail-closed block, got ${JSON.stringify(wide.blockers.map((b: Any) => b.code))}`
     );
   }
-  // Any candidate larger than the teaser must not look like pure top-of-book teaser.
+  // Hard 10bps means the far wall is A-only and cannot enter execution candidates.
   const pastTeaser = (wide.candidates as Array<Any>).filter(
     (c) =>
       (c.sizeUsdtMicros as number) > usdtToMicros(2) + 100 &&
       (c.buyVwapToman as number) > 0
   );
-  assert.ok(pastTeaser.length >= 1, "sizes past the teaser were evaluated");
-  for (const c of pastTeaser) {
-    assert.ok(
-      (c.buyVwapToman as number) > 150_000,
-      `must degrade off teaser price, got VWAP ${c.buyVwapToman}`
-    );
-  }
+  assert.equal(pastTeaser.length, 0, "out-of-policy wall never enters the execution set");
+  assert.ok((wide.audit?.waterfall.rawVisibleA.buyUsdtMicros ?? 0) > (wide.audit?.waterfall.acceptedDepthB.buyUsdtMicros ?? 0));
 });
 
 await test("executable depth stops at the admin's slippage ceiling", () => {
@@ -536,7 +533,7 @@ await test("the depth cap uses full slippage-bounded depth of the tighter leg", 
   const r = size({
     buySnapshot: snap("nobitex", [lv(190_000, 5_000)], ladder(192_000, 50, 16, 25))
   });
-  assert.equal(capOf(r, "depth_cap"), usdtToMicros(400), `${DEPTH_CAP_PERCENT}% of 400`);
+  assert.equal(capOf(r, "depth_cap"), usdtToMicros(100), "hard 10bps accepts four levels");
   assert.equal(r.capacity!.depthCapSide, "buy");
   assert.equal(r.status, "SIZED");
   // Final size is limited by min of depth and balances — at least uses multi-level depth.
@@ -546,7 +543,7 @@ await test("the depth cap uses full slippage-bounded depth of the tighter leg", 
 
 await test("a tighter slippage policy shrinks executable depth and the depth cap", () => {
   const wide = size({ policies: policies({ max_slippage_bps: 200 }) });
-  const tight = size({ policies: policies({ max_slippage_bps: 20 }) });
+  const tight = size({ policies: policies({ max_slippage_bps: 5 }) });
   assert.ok(
     (tight.capacity!.buyDepth.depthMicros as number) <
       (wide.capacity!.buyDepth.depthMicros as number),
@@ -711,39 +708,30 @@ await test("unmeasurable inventory fails closed rather than being ignored", () =
 
 /* ══ 5. selection, tie-breaking and the reason it won ═════════════════════ */
 
-await test("the winner is the maximum safe profitable size", () => {
-  // Flat-enough book so several probes remain net-positive.
+await test("the winner maximizes risk-adjusted PnL rather than eligible size", () => {
+  // A hump: later book levels stay positive but have negative marginal RA.
   const r = size({
-    buySnapshot: snap("nobitex", [lv(190_000, 5_000)], ladder(192_000, 50, 40, 50)),
-    sellSnapshot: snap("wallex", ladder(194_500, -50, 40, 50), [lv(200_000, 5_000)]),
-    policies: policies({ max_slippage_bps: 1_000, max_inventory_deviation_percent: 100 }),
+    buySnapshot: snap("nobitex", [lv(190_000, 500)], [lv(192_000, 400), lv(192_190, 100)]),
+    sellSnapshot: snap("wallex", [lv(193_400, 400), lv(193_338, 100)], [lv(200_000, 500)]),
+    policies: policies({ max_slippage_bps: 10, max_inventory_deviation_percent: 100 }),
     inventoryModel: inventoryModel({ maxDeviationPoints: 100 })
   });
-  if (r.status !== "SIZED") {
-    // Still prove selection rule on flat book fixture.
-    const flat = size({
-      buySnapshot: snap("nobitex", [lv(190_000, 5_000)], [lv(192_000, 100_000)]),
-      sellSnapshot: snap("wallex", [lv(194_000, 100_000)], [lv(196_000, 5_000)]),
-      inventoryModel: inventoryModel({ maxDeviationPoints: 100 })
-    });
-    assert.equal(flat.status, "SIZED");
-    const elig = (flat.candidates as Array<Any>).filter((c) => c.eligible);
-    const largest = elig.reduce((a, c) =>
-      (c.sizeUsdtMicros as number) > (a.sizeUsdtMicros as number) ? c : a
-    );
-    assert.equal(flat.sizeUsdtMicros, largest.sizeUsdtMicros);
-    return;
-  }
+  assert.equal(r.status, "SIZED");
   const cands = r.candidates as Array<Any>;
   const eligible = cands.filter((c) => c.eligible);
-  assert.ok(eligible.length >= 1);
-  const largest = eligible.reduce((a, c) =>
-    (c.sizeUsdtMicros as number) > (a.sizeUsdtMicros as number) ? c : a
+  const maxRa = eligible.reduce((a, c) =>
+    (c.riskAdjustedPnlToman as number) > (a.riskAdjustedPnlToman as number) ? c : a
   );
-  assert.equal(r.sizeUsdtMicros, largest.sizeUsdtMicros, "max safe profitable size won");
+  assert.equal(r.sizeUsdtMicros, maxRa.sizeUsdtMicros);
+  assert.ok(
+    eligible.some(
+      (c) => c.sizeUsdtMicros > r.sizeUsdtMicros! && c.riskAdjustedPnlToman > 0
+    ),
+    "a larger green quantity exists but loses to the RA peak"
+  );
 });
 
-await test("ties break on return, then inventory, then the smaller size", () => {
+await test("ties break on capital efficiency, inventory, K, then smaller size", () => {
   // A flat book: every candidate has the same VWAP, so PnL is linear in size
   // and the largest wins outright — no tie to break.
   const flat = size({
@@ -759,23 +747,24 @@ await test("ties break on return, then inventory, then the smaller size", () => 
   );
 
   // The documented tie-break order, exercised directly on the ranking rule.
-  // Max safe size first, then pnl, then bps, then inventory.
   const rank = (a: Any, b: Any) =>
-    (b.q as number) - (a.q as number) ||
     (b.pnl as number) - (a.pnl as number) ||
-    (b.bps as number) - (a.bps as number) ||
-    (a.inv as number) - (b.inv as number);
+    (b.eff as number) - (a.eff as number) ||
+    (a.inv as number) - (b.inv as number) ||
+    (a.k as number) - (b.k as number) ||
+    (a.q as number) - (b.q as number);
 
   const rows = [
-    { name: "big", pnl: 100, bps: 10, inv: 0, q: 200 },
-    { name: "smallSameEverything", pnl: 100, bps: 10, inv: 0, q: 100 },
-    { name: "betterBps", pnl: 100, bps: 12, inv: 5, q: 300 },
-    { name: "betterInventory", pnl: 100, bps: 10, inv: -5, q: 400 }
+    { name: "big", pnl: 100, eff: 10, inv: 0, k: 100, q: 200 },
+    { name: "smallSameEverything", pnl: 100, eff: 10, inv: 0, k: 100, q: 100 },
+    { name: "lowerK", pnl: 100, eff: 10, inv: 0, k: 90, q: 300 },
+    { name: "betterEfficiency", pnl: 100, eff: 12, inv: 5, k: 300, q: 300 },
+    { name: "betterInventory", pnl: 100, eff: 10, inv: -5, k: 400, q: 400 }
   ];
   assert.deepEqual(
     [...rows].sort(rank).map((r) => r.name),
-    ["betterInventory", "betterBps", "big", "smallSameEverything"],
-    "largest size first"
+    ["betterEfficiency", "betterInventory", "lowerK", "smallSameEverything", "big"],
+    "equal economics must end at the smaller quantity, never the larger one"
   );
 });
 
@@ -792,10 +781,7 @@ await test("the selection says why it won and why the next size up did not", () 
   assert.equal(sel.policy, SMART_SIZING_POLICY);
   assert.equal(sel.selectedSizeUsdtMicros, r.sizeUsdtMicros);
   assert.ok((sel.reasonFa as string).length > 40, "the reason is a sentence, not a code");
-  assert.ok(
-    (sel.reasonFa as string).includes("حداکثر") || (sel.reasonFa as string).includes("امن"),
-    "reason mentions max safe size"
-  );
+  assert.ok((sel.reasonFa as string).includes("MAX_RA_PNL"), "reason names the Phase-3 objective");
 });
 
 await test("every documented rejection code is reachable and self-describing", () => {
@@ -806,6 +792,9 @@ await test("every documented rejection code is reachable and self-describing", (
     }
     const next = (r.selection as Any)?.nextLarger as Any | undefined;
     if (next) seen.set(next.code as string, next.detailFa as string);
+    for (const b of (r.blockers as Array<Any>) ?? []) {
+      if (b.code === "inventory_limit") seen.set(b.code, b.detailFa);
+    }
   };
 
   // insufficient_depth — a candidate larger than the book can fill.
@@ -1025,7 +1014,7 @@ function opportunity(over: Any = {}): Any {
   const sellSourceId = (over.sellSourceId as string) ?? "wallex";
   return {
     id: (over.id as string) ?? `lc-${buySourceId}-${sellSourceId}`,
-    routeKey: `${buySourceId}->${sellSourceId}@25`,
+    routeKey: `${buySourceId}->${sellSourceId}`,
     buySourceId,
     sellSourceId,
     buySourceName: buySourceId,
@@ -1400,7 +1389,7 @@ await test("the UI constants match the policy constants exactly", async () => {
     ui.includes(`export const DEPTH_CAP_PERCENT_FA = ${DEPTH_CAP_PERCENT};`),
     "the depth-cap label must match the policy"
   );
-  assert.ok(ui.includes("CAPITAL_AWARE_MAX_SAFE"), "the policy is named on screen");
+  assert.ok(ui.includes("MAX_RA_PNL"), "the policy is named on screen");
   // Ledger quantum remains precision; executable floor comes from venue limits.
   assert.equal(MIN_EXECUTABLE_USDT_MICROS, 100);
   assert.notEqual(MIN_EXECUTABLE_USDT_MICROS, 25_000_000);

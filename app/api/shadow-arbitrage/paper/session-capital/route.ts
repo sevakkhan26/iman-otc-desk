@@ -38,6 +38,8 @@ import { portfolioValueToman } from "@/lib/shadowArbitrage/paper/portfolio";
 import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
 import { loadRiskPolicyValues, recordRiskPolicy } from "@/db/repositories/shadowLive";
 import { buildPolicyState } from "@/lib/shadowArbitrage/live/policy";
+import { buildOpeningAllocationEvidence } from "@/lib/shadowArbitrage/paper/allocation";
+import type { BookLevel } from "@/lib/shadowArbitrage/types";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -76,6 +78,30 @@ function deriveValuationPrice(
 
 function venueIds(): string[] {
   return SHADOW_SOURCES.map((s) => s.id);
+}
+
+function openingAllocationEvidence(
+  snapshots: Awaited<ReturnType<typeof loadLatestSourceSnapshots>>
+) {
+  return buildOpeningAllocationEvidence(
+    snapshots.map((s) => {
+      const payload = s.payload ?? {};
+      const feeBps = Number(payload.feeBps);
+      return {
+        sourceId: s.sourceId,
+        stale: s.stale,
+        health: s.health,
+        executionEligible: s.certStatus === "LIVE_VERIFIED",
+        // LIVE_VERIFIED cert evidence is what confirms the route's fee tier.
+        feeCertain: s.certStatus === "LIVE_VERIFIED" && Number.isFinite(feeBps),
+        feeBps: Number.isFinite(feeBps) ? feeBps : null,
+        userBuyToman: s.userBuy,
+        userSellToman: s.userSell,
+        bookAsks: (payload.bookAsks as BookLevel[] | null | undefined) ?? null,
+        bookBids: (payload.bookBids as BookLevel[] | null | undefined) ?? null
+      };
+    })
+  );
 }
 
 function parseOrderCapChoice(raw: unknown): SessionOrderCapChoice | null {
@@ -217,12 +243,15 @@ export async function POST(request: Request) {
       : null;
 
   const clockMs = Date.now();
+  const allocationEvidence = openingAllocationEvidence(snapshots);
   let preview;
   try {
     preview = buildSessionSetupPreview({
       totalCapitalToman: parsed.value,
       valuationPriceToman: mark,
       venueIds: venueIds(),
+      eligibleVenueIds: allocationEvidence.eligibleVenueIds,
+      allocationObservations: allocationEvidence.observations,
       activeSessionId: active?.id ?? null,
       oldCapitalToman: active?.totalCapitalToman ?? null,
       currentOrderCap,
@@ -264,6 +293,9 @@ export async function POST(request: Request) {
           allocations: preview.allocations,
           allocationSumToman: preview.allocationSumToman,
           residualToman: preview.residualToman,
+          unallocatedReserveToman: preview.unallocatedReserveToman,
+          allocationValid: preview.allocationValid,
+          allocationErrorsFa: preview.allocationErrorsFa,
           perVenue: preview.perVenue,
           limits: preview.limits,
           usableCapitalToman: preview.usableCapitalToman,
@@ -291,6 +323,13 @@ export async function POST(request: Request) {
   if (body.confirm !== true) {
     return bad("اعمال نشست نیازمند confirm: true است", "confirmation_required", 400);
   }
+  if (!preview.allocationValid) {
+    return bad(
+      `تخصیص نقش‌محور اجراپذیر نیست: ${preview.allocationErrorsFa.join("؛ ")}`,
+      "allocation_not_operable",
+      409
+    );
+  }
   const token = typeof body.previewToken === "string" ? body.previewToken : "";
   if (!token || token !== preview.previewToken) {
     return bad(
@@ -308,6 +347,8 @@ export async function POST(request: Request) {
     totalCapitalToman: preview.totalCapitalToman,
     valuationPriceToman: preview.valuationPriceToman,
     venueIds: venueIds(),
+    eligibleVenueIds: allocationEvidence.eligibleVenueIds,
+    allocationObservations: allocationEvidence.observations,
     activeSessionId: active?.id ?? null,
     oldCapitalToman: active?.totalCapitalToman ?? null,
     currentOrderCap,

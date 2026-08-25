@@ -12,12 +12,15 @@ import {
   MIN_CAPITAL_TOMAN
 } from "@/lib/shadowArbitrage/capital";
 import {
-  defaultAllocation,
   portfolioValueToman,
   validateAllocation,
   type AllocationValidation,
   type VenueAllocation
 } from "@/lib/shadowArbitrage/paper/portfolio";
+import {
+  buildLiquidityAwarePlan,
+  type RouteObservation
+} from "@/lib/shadowArbitrage/paper/allocation";
 import {
   PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT,
   PAPER_4D_MAX_UTILIZATION_PERCENT,
@@ -140,10 +143,9 @@ export function classifyOrderCapMode(input: {
 /**
  * Capital-relative order ceiling (USDT, floored).
  *
- * min of:
- *  - usable equity after min reserve / max util (default 20% reserve → 80% usable)
- *  - route capital % of equity (default 10%)
- *  - venue exposure % of equity (default 20%)
+ * min of dynamic opening headrooms:
+ *  - usable equity after reserve/utilization, divided across both funded legs
+ *  - one-leg venue exposure headroom
  * converted at the reference mark. Never invents a mark.
  */
 export function deriveOrderCapUsdt(input: {
@@ -157,14 +159,13 @@ export function deriveOrderCapUsdt(input: {
   if (!(input.equityToman > 0) || !(input.markPriceToman > 0)) return 0;
   const maxUtil = input.maxUtilizationPercent ?? PAPER_4D_MAX_UTILIZATION_PERCENT;
   const minReserve = input.minReservePercent ?? PAPER_4D_MIN_RESERVE_PERCENT;
-  const maxRoute = input.maxRouteCapitalPercent ?? PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT;
   const maxVenue = input.maxVenueExposurePercent ?? PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT;
   const usablePct = Math.min(maxUtil, Math.max(0, 100 - minReserve));
   const usableToman = Math.floor((input.equityToman * usablePct) / 100);
-  const routeToman = Math.floor((input.equityToman * maxRoute) / 100);
   const venueToman = Math.floor((input.equityToman * maxVenue) / 100);
-  const capToman = Math.min(usableToman, routeToman, venueToman);
-  return Math.floor(capToman / input.markPriceToman);
+  const globalQ = usableToman / (2 * input.markPriceToman);
+  const venueQ = venueToman / input.markPriceToman;
+  return Math.floor(Math.min(globalQ, venueQ));
 }
 
 export type CapitalAmountErrorCode =
@@ -272,6 +273,10 @@ export type SessionCapitalPreview = {
   allocations: VenueAllocation[];
   allocationSumToman: number;
   residualToman: number;
+  /** Global reserve deliberately not assigned to any venue. */
+  unallocatedReserveToman: number;
+  allocationValid: boolean;
+  allocationErrorsFa: string[];
   perVenue: AllocationValidation["perVenue"];
   /** Opaque token the apply step must echo. */
   previewToken: string;
@@ -319,30 +324,17 @@ export function buildSessionCapitalPreview(input: {
   durationDays?: number | null;
   /** Clock for endsAt (tests inject; API uses Date.now()). */
   clockMs?: number;
+  /** Same-cycle accepted-depth/RA route evidence for role-aware bootstrap. */
+  allocationObservations?: RouteObservation[];
+  /** Health/fee/freshness filtered venues. Defaults to venueIds for compatibility. */
+  eligibleVenueIds?: string[];
 }): SessionCapitalPreview {
   const total = Math.round(input.totalCapitalToman);
   const mark = Math.round(input.valuationPriceToman);
   if (!Number.isFinite(mark) || mark <= 0) {
     throw new Error("valuation price required");
   }
-  const allocations = defaultAllocation(total, input.venueIds, mark);
-  const validation = validateAllocation({
-    totalCapitalToman: total,
-    allocations,
-    markPriceToman: mark
-  });
-  if (!validation.ok || validation.residualToman !== 0) {
-    throw new Error(
-      `allocation residual not zero: ${validation.residualToman} (${validation.errorsFa.join("; ")})`
-    );
-  }
-  const allocationSumToman = portfolioValueToman(allocations, mark);
-  const residualToman = total - allocationSumToman;
-  if (residualToman !== 0) {
-    throw new Error(`allocation residual not zero: ${residualToman}`);
-  }
-
-  const limits: SessionCapitalLimitsSnapshot = {
+  const preLimits: SessionCapitalLimitsSnapshot = {
     maxUtilizationPercent:
       input.limits?.maxUtilizationPercent ?? PAPER_4D_MAX_UTILIZATION_PERCENT,
     minReservePercent: input.limits?.minReservePercent ?? PAPER_4D_MIN_RESERVE_PERCENT,
@@ -351,6 +343,42 @@ export function buildSessionCapitalPreview(input: {
     maxVenueExposurePercent:
       input.limits?.maxVenueExposurePercent ?? PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT
   };
+  const allocationPlan = buildLiquidityAwarePlan({
+    totalCapitalToman: total,
+    valuationPriceToman: mark,
+    venueIds: input.eligibleVenueIds ?? input.venueIds,
+    observations: input.allocationObservations ?? [],
+    reservePercent: preLimits.minReservePercent,
+    requireComplementaryVenues: true,
+    minOperableUsdt: PAPER_POLICY_MIN_USDT
+  });
+  const allocations: VenueAllocation[] = allocationPlan.rows.map((r) => ({
+    sourceId: r.sourceId,
+    irtToman: r.irtToman,
+    usdtUnits: r.usdtUnits
+  }));
+  const validation = allocations.length
+    ? validateAllocation({
+        totalCapitalToman: allocationPlan.allocatedToman,
+        allocations,
+        markPriceToman: mark,
+        eligibleVenueIds: input.eligibleVenueIds ?? input.venueIds
+      })
+    : {
+        ok: false,
+        totalCapitalToman: 0,
+        allocatedToman: 0,
+        residualToman: 0,
+        perVenue: [],
+        errorsFa: allocationPlan.errorsFa
+      };
+  const allocationSumToman = portfolioValueToman(allocations, mark);
+  const residualToman = total - allocationSumToman - allocationPlan.reserveToman;
+  if (residualToman !== 0) {
+    throw new Error(`allocation residual not zero: ${residualToman}`);
+  }
+
+  const limits = preLimits;
 
   const derivedMaxOrderUsdt = deriveOrderCapUsdt({
     equityToman: total,
@@ -433,6 +461,8 @@ export function buildSessionCapitalPreview(input: {
         String(orderCapChoice ?? "inherit"),
         String(manualCap ?? "none"),
         String(durationDays ?? "none"),
+        String(allocationPlan.reserveToman),
+        String(allocationPlan.valid),
         ...allocations.map((a) => `${a.sourceId}:${a.irtToman}:${a.usdtUnits}`)
       ].join("|")
     )
@@ -444,6 +474,9 @@ export function buildSessionCapitalPreview(input: {
     allocations,
     allocationSumToman,
     residualToman: 0,
+    unallocatedReserveToman: allocationPlan.reserveToman,
+    allocationValid: allocationPlan.valid,
+    allocationErrorsFa: allocationPlan.errorsFa,
     perVenue: validation.perVenue,
     previewToken,
     unit: "toman",
@@ -469,8 +502,12 @@ export function buildSessionCapitalPreview(input: {
       limits.maxUtilizationPercent,
       Math.max(0, 100 - limits.minReservePercent)
     );
-    const usableCapitalToman = Math.floor((total * usablePct) / 100);
-    const reserveCapitalToman = total - usableCapitalToman;
+    const policyUsableCapitalToman = Math.floor((total * usablePct) / 100);
+    const reserveCapitalToman = Math.max(
+      base.unallocatedReserveToman,
+      total - policyUsableCapitalToman
+    );
+    const usableCapitalToman = total - reserveCapitalToman;
     return {
       ...base,
       durationDays: days,
@@ -500,6 +537,8 @@ export function buildSessionSetupPreview(input: {
   manualOrderCapUsdt?: number | null;
   durationDays: number;
   clockMs?: number;
+  allocationObservations?: RouteObservation[];
+  eligibleVenueIds?: string[];
 }): SessionSetupPreview {
   const p = buildSessionCapitalPreview({
     ...input,

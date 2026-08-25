@@ -389,18 +389,18 @@ await test("order cap mode: explicit admin vs capital-derived", () => {
   assert.equal(classifyOrderCapMode({ configured: false, setBy: null }), "capital_derived");
 });
 
-await test("derive order cap respects util/reserve/route/venue", () => {
+await test("derive order cap respects dynamic util/reserve/venue headroom", () => {
   const d = deriveOrderCapUsdt({
     equityToman: 10_000_000_000,
     markPriceToman: 200_000
   });
-  assert.equal(d, 5_000);
+  assert.equal(d, 10_000);
   const d2 = deriveOrderCapUsdt({
     equityToman: 10_000_000_000,
     markPriceToman: 200_000,
     maxRouteCapitalPercent: 5
   });
-  assert.equal(d2, 2_500);
+  assert.equal(d2, 10_000, "historical route percent is deliberately ignored");
 });
 
 await test("capital preview keeps explicit 500 and derives when capital-derived", () => {

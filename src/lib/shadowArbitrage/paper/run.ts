@@ -171,7 +171,15 @@ export async function runPaperExecutionForCycle(input: {
       Math.round(a.irtToman + mulPriceSizeToman(valuationPriceToman, a.usdtUnits))
     ])
   );
-  const portfolioValueToman = [...exposureTomanBySource.values()].reduce((s, v) => s + v, 0);
+  const allocatedPortfolioValueToman = [...exposureTomanBySource.values()].reduce(
+    (s, v) => s + v,
+    0
+  );
+  // Session equity includes the deliberately unallocated global reserve. Venue
+  // balances do not, so the reserve is counted once rather than reserving 20%
+  // again from an already reserve-reduced opening book.
+  const portfolioValueToman =
+    session.totalCapitalToman > 0 ? session.totalCapitalToman : allocatedPortfolioValueToman;
 
   const policies = buildPolicyState(policyValues);
 
@@ -212,7 +220,8 @@ export async function runPaperExecutionForCycle(input: {
 
   /*
    * Portfolio limits are ALWAYS attached on the Paper execution path.
-   * Defaults: util ≤80%, reserve ≥20%, route ≤10%, venue ≤20%.
+   * Defaults: util ≤80%, reserve ≥20%, venue ≤20%.
+   * The stored route percentage is historical comparison metadata only.
    * An open experiment may override the percents; it never removes the layer.
    * Missing session capital / mark fails closed (enabled with zero equity is
    * rejected inside evaluateCycle).
@@ -251,7 +260,7 @@ export async function runPaperExecutionForCycle(input: {
       portfolioLimits = {
         enabled: true,
         equityToman:
-          portfolioValueToman > 0 ? portfolioValueToman : exp.initialCapitalToman,
+          session.totalCapitalToman > 0 ? session.totalCapitalToman : exp.initialCapitalToman,
         markPriceToman: valuationPriceToman > 0 ? valuationPriceToman : portfolioLimits.markPriceToman,
         maxUtilizationPercent: exp.maxUtilizationPercent,
         minReservePercent: exp.minReservePercent,

@@ -12,9 +12,9 @@
  *   2. EVIDENCE — healthy, fresh, two-sided books; confirmed fees/settlement.
  *   3. USABLE BALANCE — fee-inclusive capacity net of reservations this cycle.
  *   4. SAFE MAX — min of balance, full depth, order/venue/allocation caps.
- *   5. CANDIDATES — adaptive densified breakpoints (not percentage probes alone).
+ *   5. CANDIDATES — exact book/cap/crossing endpoints (no midpoint grid).
  *   6. EVALUATION — walk BOTH books (multi-level VWAP); inventory; edge floor.
- *   7. SELECTION — largest eligible (profitable) size; never force utilization.
+ *   7. SELECTION — argmax canonical risk-adjusted PnL; size is output.
  *   8. EXPLANATION — exact winning limiter and full persisted sizing audit.
  *
  * Two rules make the result trustworthy rather than merely plausible:
@@ -33,9 +33,10 @@
  * explains; it never executes. Nothing here can place an order, move funds, or
  * touch a credential.
  */
-import { feeFromBps, mulPriceSizeToman } from "@/lib/shadowArbitrage/money";
+import { feeFromBps } from "@/lib/shadowArbitrage/money";
 import {
   microsToUsdt,
+  settlementCoherent,
   settlementUsable,
   usdtToMicros,
   type SideSettlement,
@@ -80,6 +81,16 @@ import {
   type QuoteCapacityInput
 } from "@/lib/shadowArbitrage/paper/liquidity";
 import type { BookLevel, NormalizedSourceSnapshot } from "@/lib/shadowArbitrage/types";
+import { computeCanonicalEconomics } from "@/lib/shadowArbitrage/paper/canonicalEconomics";
+import { CANONICAL_ECONOMICS_VERSION } from "@/lib/shadowArbitrage/paper/canonicalEconomics";
+import {
+  computeDynamicRiskCap,
+  type DynamicRiskCapResult,
+  type DynamicRiskHeadroomKey,
+  type DynamicRiskNumericHeadroom
+} from "@/lib/shadowArbitrage/paper/dynamicRiskCap";
+
+export { computeDynamicRiskCap } from "@/lib/shadowArbitrage/paper/dynamicRiskCap";
 
 export {
   BASELINE_FIXED_SIZES_USDT,
@@ -125,7 +136,8 @@ export type SizingConstraintKey =
   | "sell_usdt_balance"
   | "venue_allocation"
   | "policy_max_order_size"
-  | "venue_concentration";
+  | "venue_concentration"
+  | "dynamic_risk_cap";
 
 export const SIZING_CONSTRAINT_FA: Record<SizingConstraintKey, string> = {
   capital_cap: "سقف سرمایه/ظرفیت قابل استفادهٔ سمت محدودکننده (پس از کارمزد)",
@@ -135,7 +147,8 @@ export const SIZING_CONSTRAINT_FA: Record<SizingConstraintKey, string> = {
   sell_usdt_balance: "موجودی تتری صرافی فروش (با احتساب کارمزد)",
   venue_allocation: "سهم این صرافی در طرح سرمایه",
   policy_max_order_size: "سقف حجم هر سفارش (سیاست ریسک)",
-  venue_concentration: "سقف تمرکز روی یک صرافی (سیاست ریسک)"
+  venue_concentration: "سقف تمرکز روی یک صرافی (سیاست ریسک)",
+  dynamic_risk_cap: "سقف پویای ریسک E (کمینهٔ فضای عددی اندازه‌گیری‌شده)"
 };
 
 /** One cap, in integer USDT micros. `null` means the cap could not be measured. */
@@ -237,11 +250,21 @@ export const CANDIDATE_REJECTION_FA: Record<CandidateRejectionCode, string> = {
 /** Every figure the detail view shows, all integers unless noted. */
 export type SizingEconomics = {
   capitalInvolvedToman: number;
+  buyDebitIrtToman: number;
+  sellDebitUsdtMicros: number;
+  capitalLockedToman: number;
+  capitalEfficiencyBps: number;
+  buyFeeToman: number;
+  sellFeeToman: number;
+  buyFeeUsdtMicros: number;
+  sellFeeUsdtMicros: number;
   cashPnlIrtToman: number;
   /** Net change in total USDT holdings, in micros. Negative: fees consumed it. */
   inventoryDeltaUsdtMicros: number;
   sellFeeValueToman: number;
   economicNetPnlToman: number;
+  observedImpactToman: number;
+  inventoryPenaltyToman: number;
   slippageBufferToman: number;
   riskAdjustedPnlToman: number;
   /** riskAdjustedPnl ÷ capitalInvolved, in percent. */
@@ -279,6 +302,8 @@ export type SizingCandidate = {
   inventoryDeltaUsdtMicros: number;
   riskAdjustedEdgePercent: number;
   riskAdjustedReturnBps: number;
+  capitalEfficiencyBps: number;
+  capitalLockedToman: number;
   buyLevels: number;
   sellLevels: number;
   bookParticipationPercent: number;
@@ -337,6 +362,8 @@ export type SizingSelection = {
  */
 export type SizingAudit = {
   policy: typeof SMART_SIZING_POLICY;
+  objective: typeof SMART_SIZING_POLICY;
+  economicsVersion: typeof CANONICAL_ECONOMICS_VERSION;
   status: "SIZED" | "BLOCKED";
   /** All numeric hard limits considered (USDT micros unless noted). */
   limits: {
@@ -381,6 +408,51 @@ export type SizingAudit = {
     analysisPointCount: number | null;
   };
   selectionReasonFa: string | null;
+  /** Replayable A→F waterfall; raw visibility is never executable capacity. */
+  waterfall: {
+    rawVisibleA: { buyUsdtMicros: number | null; sellUsdtMicros: number | null };
+    acceptedDepthB: { buyUsdtMicros: number | null; sellUsdtMicros: number | null; hardBps: 10 };
+    twoLegExecutableC: {
+      capacityUsdtMicros: number | null;
+      buyBalanceHeadroomUsdtMicros: number | null;
+      sellBalanceHeadroomUsdtMicros: number | null;
+    };
+    allocationInventoryD: {
+      allocationHeadroomUsdtMicros: number | null;
+      inventoryHeadroomUsdtMicros: number | null;
+      inventoryImpactPoints: number | null;
+      inventoryMeasurable: boolean;
+    };
+    dynamicRiskE: DynamicRiskCapResult | null;
+    optimizerF: {
+      qPreUsdtMicros: number | null;
+      qRoundedUsdtMicros: number | null;
+      chosenUsdtMicros: number | null;
+      roundStepMicros: number | null;
+      bindingConstraints: SizingConstraintKey[];
+      nextLargerRejection: SizingSelection["nextLarger"];
+    };
+  };
+  evaluatedBreakpoints: Array<{
+    sizeUsdtMicros: number;
+    buyVwapToman: number;
+    sellVwapToman: number;
+    riskAdjustedPnlToman: number;
+    economicNetPnlToman: number;
+    netEdgeBps: number;
+    capitalEfficiencyBps: number;
+    eligible: boolean;
+    rejectionCode: CandidateRejectionCode | null;
+  }>;
+  economicsComponents: {
+    buyFeeToman: number | null;
+    sellFeeToman: number | null;
+    buyFeeUsdtMicros: number | null;
+    sellFeeUsdtMicros: number | null;
+    observedImpactToman: number | null;
+    riskBufferToman: number | null;
+    capitalLockedToman: number | null;
+  };
 };
 
 export type SizingResult = {
@@ -407,6 +479,9 @@ export type SizingResult = {
     buyDepth: ReturnType<typeof slippageBoundedDepth>;
     sellDepth: ReturnType<typeof slippageBoundedDepth>;
     ladder: SmartCandidateSet["ladder"];
+    dynamicRiskCap: DynamicRiskCapResult | null;
+    preRoundCeilingMicros: number;
+    roundStepMicros: number;
   } | null;
   /** What liquidity and balances alone would allow, before any risk policy. */
   liquidityMaxUsdtMicros: number | null;
@@ -493,6 +568,22 @@ export type SizingInput = {
    * Unknown mins are recorded for LIVE readiness only.
    */
   venueExecutionLimits?: Map<string, VenueExecutionLimit>;
+  /**
+   * Same-cycle portfolio/concurrency headrooms. All are PAPER values. A later
+   * tighter numeric cap is supplied as `lateNumericCapUsdtMicros` and causes a
+   * fresh optimization over the clipped domain.
+   */
+  dynamicRisk?: {
+    freePaperCapitalToman?: number | null;
+    remainingGlobalUtilizationToman?: number | null;
+    globalReserveHeadroomToman?: number | null;
+    buyConcentrationHeadroomToman?: number | null;
+    sellConcentrationHeadroomToman?: number | null;
+    concurrentReservationHeadroomMicros?: number | null;
+    inventoryHeadroomMicros?: number | null;
+    venueMaxUsdtMicros?: number | null;
+    lateNumericCapUsdtMicros?: number | null;
+  };
 };
 
 function blocker(code: SizingBlockerCode, subject: string, extraFa?: string): SizingBlocker {
@@ -553,7 +644,8 @@ export type SizingDeltas = {
  */
 function priceAt(
   sizeUsdtMicros: number,
-  quote: { buyVwapToman: number; sellVwapToman: number },
+  buyWalk: BookWalk,
+  sellWalk: BookWalk,
   buySourceId: string,
   sellSourceId: string,
   buyFeeBps: number,
@@ -563,66 +655,67 @@ function priceAt(
   markPriceToman: number,
   slippageBufferBps: number
 ): { economics: SizingEconomics; deltas: SizingDeltas } {
-  const sizeUsdt = microsToUsdt(sizeUsdtMicros);
-  const buyNotional = mulPriceSizeToman(quote.buyVwapToman, sizeUsdt);
-  const sellNotional = mulPriceSizeToman(quote.sellVwapToman, sizeUsdt);
-
-  let buyFeeToman = 0;
-  let buyFeeUsdtMicros = 0;
-  if (buySettlement.feeAsset === "IRT") buyFeeToman = feeFromBps(buyNotional, buyFeeBps);
-  else buyFeeUsdtMicros = Math.round((sizeUsdtMicros * buyFeeBps) / 10_000);
-
-  let sellFeeToman = 0;
-  let sellFeeUsdtMicros = 0;
-  if (sellSettlement.feeAsset === "USDT") {
-    sellFeeUsdtMicros = Math.round((sizeUsdtMicros * sellFeeBps) / 10_000);
-  } else if (sellSettlement.feeAsset === "IRT") {
-    sellFeeToman = feeFromBps(sellNotional, sellFeeBps);
-  }
-
-  // Cash only — the USDT the fees consumed is invisible here, which is exactly
-  // why it must not be the gate on its own.
-  const cashPnlIrtToman = -(buyNotional + buyFeeToman) + (sellNotional - sellFeeToman);
-  const feeUsdtMicrosTotal = buyFeeUsdtMicros + sellFeeUsdtMicros;
-  const sellFeeValueToman = mulPriceSizeToman(markPriceToman, microsToUsdt(feeUsdtMicrosTotal));
-
-  const economicNetPnlToman = cashPnlIrtToman - sellFeeValueToman;
-  const slippageBufferToman = feeFromBps(buyNotional, slippageBufferBps);
-  const riskAdjustedPnlToman = economicNetPnlToman - slippageBufferToman;
-  const capitalInvolvedToman = buyNotional + buyFeeToman;
+  const canonical = computeCanonicalEconomics({
+    sizeUsdtMicros,
+    buy: {
+      complete: buyWalk.complete,
+      notionalToman: buyWalk.notionalToman,
+      vwapToman: buyWalk.vwapToman ?? 0,
+      bestPriceToman: buyWalk.bestPriceToman ?? 0
+    },
+    sell: {
+      complete: sellWalk.complete,
+      notionalToman: sellWalk.notionalToman,
+      vwapToman: sellWalk.vwapToman ?? 0,
+      bestPriceToman: sellWalk.bestPriceToman ?? 0
+    },
+    buyFeeBps,
+    sellFeeBps,
+    buySettlement,
+    sellSettlement,
+    capitalMarkPriceToman: markPriceToman,
+    riskBufferBps: slippageBufferBps,
+    inventoryPenaltyToman: 0
+  });
+  if (!canonical.ok) throw new Error(`canonical economics failed: ${canonical.code}`);
+  const e = canonical.economics;
 
   // Same movements the broker's legs produce, so a candidate's inventory effect
   // is measured against exactly what a fill at that size would do.
   const deltas: SizingDeltas = {
     buy: {
       sourceId: buySourceId,
-      deltaIrtToman: -(buyNotional + buyFeeToman),
-      deltaUsdtMicros: sizeUsdtMicros - buyFeeUsdtMicros
+      deltaIrtToman: e.buyDeltaIrtToman,
+      deltaUsdtMicros: e.buyDeltaUsdtMicros
     },
     sell: {
       sourceId: sellSourceId,
-      deltaIrtToman: sellNotional - sellFeeToman,
-      deltaUsdtMicros: -(sizeUsdtMicros + sellFeeUsdtMicros)
+      deltaIrtToman: e.sellDeltaIrtToman,
+      deltaUsdtMicros: e.sellDeltaUsdtMicros
     }
   };
 
   return {
     economics: {
-      capitalInvolvedToman,
-      cashPnlIrtToman,
+      capitalInvolvedToman: e.buyDebitIrtToman,
+      buyDebitIrtToman: e.buyDebitIrtToman,
+      sellDebitUsdtMicros: e.sellDebitUsdtMicros,
+      capitalLockedToman: e.capitalLockedToman,
+      capitalEfficiencyBps: e.capitalEfficiencyBps,
+      buyFeeToman: e.buyFeeToman,
+      sellFeeToman: e.sellFeeToman,
+      buyFeeUsdtMicros: e.buyFeeUsdtMicros,
+      sellFeeUsdtMicros: e.sellFeeUsdtMicros,
+      cashPnlIrtToman: e.cashPnlIrtToman,
       inventoryDeltaUsdtMicros: deltas.buy.deltaUsdtMicros + deltas.sell.deltaUsdtMicros,
-      sellFeeValueToman,
-      economicNetPnlToman,
-      slippageBufferToman,
-      riskAdjustedPnlToman,
-      riskAdjustedEdgePercent:
-        capitalInvolvedToman > 0
-          ? Math.round((riskAdjustedPnlToman / capitalInvolvedToman) * 1_000_000) / 10_000
-          : 0,
-      riskAdjustedReturnBps:
-        capitalInvolvedToman > 0
-          ? Math.round((riskAdjustedPnlToman / capitalInvolvedToman) * 10_000 * 100) / 100
-          : 0
+      sellFeeValueToman: e.usdtFeeValueToman,
+      economicNetPnlToman: e.economicNetPnlToman,
+      observedImpactToman: e.observedImpactToman,
+      inventoryPenaltyToman: e.inventoryPenaltyToman,
+      slippageBufferToman: e.riskBufferToman,
+      riskAdjustedPnlToman: e.riskAdjustedPnlToman,
+      riskAdjustedEdgePercent: e.netEdgeBps / 100,
+      riskAdjustedReturnBps: e.netEdgeBps
     },
     deltas
   };
@@ -650,6 +743,8 @@ function blocked(blockers: SizingBlocker[], constraints: SizingConstraint[] = []
     blockers,
     audit: {
       policy: SMART_SIZING_POLICY,
+      objective: SMART_SIZING_POLICY,
+      economicsVersion: CANONICAL_ECONOMICS_VERSION,
       status: "BLOCKED",
       limits: {
         capitalCapUsdtMicros: null,
@@ -685,7 +780,41 @@ function blocked(blockers: SizingBlocker[], constraints: SizingConstraint[] = []
         executionPointCount: null,
         analysisPointCount: null
       },
-      selectionReasonFa: null
+      selectionReasonFa: null,
+      waterfall: {
+        rawVisibleA: { buyUsdtMicros: null, sellUsdtMicros: null },
+        acceptedDepthB: { buyUsdtMicros: null, sellUsdtMicros: null, hardBps: 10 },
+        twoLegExecutableC: {
+          capacityUsdtMicros: null,
+          buyBalanceHeadroomUsdtMicros: null,
+          sellBalanceHeadroomUsdtMicros: null
+        },
+        allocationInventoryD: {
+          allocationHeadroomUsdtMicros: null,
+          inventoryHeadroomUsdtMicros: null,
+          inventoryImpactPoints: null,
+          inventoryMeasurable: false
+        },
+        dynamicRiskE: null,
+        optimizerF: {
+          qPreUsdtMicros: null,
+          qRoundedUsdtMicros: null,
+          chosenUsdtMicros: null,
+          roundStepMicros: null,
+          bindingConstraints: [],
+          nextLargerRejection: null
+        }
+      },
+      evaluatedBreakpoints: [],
+      economicsComponents: {
+        buyFeeToman: null,
+        sellFeeToman: null,
+        buyFeeUsdtMicros: null,
+        sellFeeUsdtMicros: null,
+        observedImpactToman: null,
+        riskBufferToman: null,
+        capitalLockedToman: null
+      }
     }
   };
 }
@@ -713,6 +842,12 @@ function buildAudit(partial: {
 }): SizingAudit {
   const capOf = (key: SizingConstraintKey) =>
     partial.constraints.find((c) => c.key === key)?.capUsdtMicros ?? null;
+  const dynamicHeadroomOf = (key: DynamicRiskHeadroomKey) => {
+    const dynamic = partial.capacity?.dynamicRiskCap;
+    return dynamic?.ok
+      ? (dynamic.numericHeadrooms.find((h) => h.key === key)?.capUsdtMicros ?? null)
+      : null;
+  };
   const rejectionReason =
     partial.status === "BLOCKED"
       ? partial.blockers.map((b) => b.detailFa || b.code).join(" · ") || null
@@ -724,8 +859,26 @@ function buildAudit(partial: {
             1_000_000
         )
       : null;
+  const chosen = partial.sizeUsdtMicros;
+  const roundStepMicros = partial.capacity?.roundStepMicros ?? SIZE_GRANULARITY_MICROS;
+  const floorToExecutionStep = (micros: number) =>
+    Math.floor(micros / roundStepMicros) * roundStepMicros;
+  const atCeiling =
+    chosen !== null &&
+    partial.capacity !== null &&
+    chosen === partial.capacity.ceilingMicros;
+  const bindingConstraints =
+    chosen === null
+      ? []
+      : partial.constraints
+          .filter(
+            (c) => c.capUsdtMicros !== null && floorToExecutionStep(c.capUsdtMicros) === chosen
+          )
+          .map((c) => c.key);
   return {
     policy: SMART_SIZING_POLICY,
+    objective: SMART_SIZING_POLICY,
+    economicsVersion: CANONICAL_ECONOMICS_VERSION,
     status: partial.status,
     limits: {
       capitalCapUsdtMicros: capOf("capital_cap"),
@@ -765,7 +918,77 @@ function buildAudit(partial: {
       executionPointCount: partial.adaptiveMeta?.executionPointCount ?? null,
       analysisPointCount: partial.adaptiveMeta?.analysisPointCount ?? null
     },
-    selectionReasonFa: partial.selection?.reasonFa ?? null
+    selectionReasonFa: partial.selection?.reasonFa ?? null,
+    waterfall: {
+      rawVisibleA: {
+        buyUsdtMicros: partial.capacity?.buyDepth.totalDepthMicros ?? null,
+        sellUsdtMicros: partial.capacity?.sellDepth.totalDepthMicros ?? null
+      },
+      acceptedDepthB: {
+        buyUsdtMicros: partial.capacity?.buyDepth.depthMicros ?? null,
+        sellUsdtMicros: partial.capacity?.sellDepth.depthMicros ?? null,
+        hardBps: 10
+      },
+      twoLegExecutableC: {
+        capacityUsdtMicros: partial.capacity
+          ? Math.min(
+              partial.capacity.buyDepth.depthMicros,
+              partial.capacity.sellDepth.depthMicros
+            )
+          : null,
+        buyBalanceHeadroomUsdtMicros: partial.capacity?.buyUsableMicros ?? null,
+        sellBalanceHeadroomUsdtMicros: partial.capacity?.sellUsableMicros ?? null
+      },
+      allocationInventoryD: {
+        allocationHeadroomUsdtMicros: capOf("venue_allocation"),
+        inventoryHeadroomUsdtMicros: dynamicHeadroomOf("inventory_band_d"),
+        inventoryImpactPoints: partial.inventory?.measurable ? partial.inventory.impactPoints : null,
+        inventoryMeasurable: partial.inventory?.measurable ?? false
+      },
+      dynamicRiskE: partial.capacity?.dynamicRiskCap ?? null,
+      optimizerF: {
+        qPreUsdtMicros: atCeiling
+          ? (() => {
+              const rawBindingCaps = partial.constraints
+                .filter(
+                  (c) =>
+                    c.key !== "dynamic_risk_cap" &&
+                    c.capUsdtMicros !== null &&
+                    floorToExecutionStep(c.capUsdtMicros) === chosen
+                )
+                .map((c) => c.capUsdtMicros as number);
+              return rawBindingCaps.length
+                ? Math.min(...rawBindingCaps)
+                : partial.capacity?.preRoundCeilingMicros ?? chosen;
+            })()
+          : chosen,
+        qRoundedUsdtMicros: chosen,
+        chosenUsdtMicros: chosen,
+        roundStepMicros: partial.capacity?.roundStepMicros ?? null,
+        bindingConstraints,
+        nextLargerRejection: partial.selection?.nextLarger ?? null
+      }
+    },
+    evaluatedBreakpoints: partial.candidates.map((c) => ({
+      sizeUsdtMicros: c.sizeUsdtMicros,
+      buyVwapToman: c.buyVwapToman,
+      sellVwapToman: c.sellVwapToman,
+      riskAdjustedPnlToman: c.riskAdjustedPnlToman,
+      economicNetPnlToman: c.economicNetPnlToman,
+      netEdgeBps: c.riskAdjustedReturnBps,
+      capitalEfficiencyBps: c.capitalEfficiencyBps,
+      eligible: c.eligible,
+      rejectionCode: c.rejectionCode
+    })),
+    economicsComponents: {
+      buyFeeToman: partial.economics?.buyFeeToman ?? null,
+      sellFeeToman: partial.economics?.sellFeeToman ?? null,
+      buyFeeUsdtMicros: partial.economics?.buyFeeUsdtMicros ?? null,
+      sellFeeUsdtMicros: partial.economics?.sellFeeUsdtMicros ?? null,
+      observedImpactToman: partial.economics?.observedImpactToman ?? null,
+      riskBufferToman: partial.economics?.slippageBufferToman ?? null,
+      capitalLockedToman: partial.economics?.capitalLockedToman ?? null
+    }
   };
 }
 
@@ -817,11 +1040,32 @@ export function computeRouteSize(input: SizingInput): SizingResult {
       )
     );
   }
+  if (
+    (settlementUsable(input.buySettlement) && !settlementCoherent(input.buySettlement, "buy")) ||
+    (settlementUsable(input.sellSettlement) && !settlementCoherent(input.sellSettlement, "sell"))
+  ) {
+    blockers.push(
+      blocker(
+        "settlement_unconfirmed",
+        !settlementCoherent(input.buySettlement, "buy") ? input.buySourceId : input.sellSourceId,
+        "ترکیب دارایی کارمزد و نحوهٔ کسر برای این سمت منسجم نیست."
+      )
+    );
+  }
 
   const buyBalance = input.balances.find((b) => b.sourceId === input.buySourceId);
   const sellBalance = input.balances.find((b) => b.sourceId === input.sellSourceId);
   if (!buyBalance || !sellBalance) {
     blockers.push(blocker("no_balance_record", !buyBalance ? input.buySourceId : input.sellSourceId));
+  }
+  if (
+    input.inventoryModel.valuationPriceToman === null ||
+    !(input.inventoryModel.valuationPriceToman > 0) ||
+    input.inventoryModel.maxDeviationPoints === null ||
+    !input.inventoryModel.targets.some((t) => t.sourceId === input.buySourceId) ||
+    !input.inventoryModel.targets.some((t) => t.sourceId === input.sellSourceId)
+  ) {
+    blockers.push(blocker("inventory_unmeasurable", `${input.buySourceId}→${input.sellSourceId}`));
   }
 
   /* ── 2b. Paper floor = max(paper_policy_min, verified venue min) ─────────
@@ -962,7 +1206,9 @@ export function computeRouteSize(input: SizingInput): SizingResult {
    * one, the study falls back to the full ladder and the result stays BLOCKED
    * on the missing key — the capacity is inspectable, the trade is not allowed.
    */
-  const slippageCeilingBps = maxSlippageBps ?? Number.POSITIVE_INFINITY;
+  // Accepted-depth policy B is a hard 10 bps prefix. An admin policy may be
+  // tighter, never wider for this Phase-3 paper implementation.
+  const slippageCeilingBps = Math.min(10, maxSlippageBps ?? 10);
   const buyDepth = slippageBoundedDepth(buyAsks, "buy", slippageCeilingBps);
   const sellDepth = slippageBoundedDepth(sellBids, "sell", slippageCeilingBps);
 
@@ -989,7 +1235,179 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     concentrationDetail = `سقف ${policy.max_venue_exposure_percent}٪ پرتفوی = ${ceilingToman.toLocaleString("en-US")} تومان، فضای باقی‌مانده ${Math.max(0, headroomToman).toLocaleString("en-US")} تومان`;
   }
 
-  const extraCaps = [allocationCap, orderCap, concentrationCap].filter(
+  const capitalMark = input.inventoryModel.valuationPriceToman as number;
+  const buyDebitPerUsdt =
+    bestBuy * (input.buySettlement.feeAsset === "IRT" ? 1 + buyFeeBps / 10_000 : 1);
+  const sellDebitMarkedPerUsdt =
+    capitalMark * (input.sellSettlement.feeAsset === "USDT" ? 1 + sellFeeBps / 10_000 : 1);
+  const combinedCapitalCapMicros = (headroomToman: number | null | undefined): number | null => {
+    if (headroomToman === null || headroomToman === undefined) return null;
+    if (!(headroomToman >= 0) || !(buyDebitPerUsdt + sellDebitMarkedPerUsdt > 0)) return null;
+    return Math.floor((headroomToman / (buyDebitPerUsdt + sellDebitMarkedPerUsdt)) * 1_000_000);
+  };
+  const buyConcentrationCap = (headroomToman: number | null | undefined): number | null => {
+    if (headroomToman === null || headroomToman === undefined) return null;
+    return Math.floor((Math.max(0, headroomToman) / buyDebitPerUsdt) * 1_000_000);
+  };
+  const sellConcentrationCap = (headroomToman: number | null | undefined): number | null => {
+    if (headroomToman === null || headroomToman === undefined) return null;
+    return Math.floor((Math.max(0, headroomToman) / sellDebitMarkedPerUsdt) * 1_000_000);
+  };
+
+  const inventorySearchCaps = [
+    buyDepth.depthMicros,
+    sellDepth.depthMicros,
+    buyUsableMicros,
+    sellUsableMicros,
+    allocationCap,
+    orderCap,
+    concentrationCap,
+    input.dynamicRisk?.concurrentReservationHeadroomMicros,
+    input.dynamicRisk?.venueMaxUsdtMicros,
+    input.dynamicRisk?.lateNumericCapUsdtMicros
+  ].filter((n): n is number => n !== null && n !== undefined && n >= 0);
+  const inventorySearchCeiling = Math.floor(Math.min(...inventorySearchCaps));
+  const inventoryWithinAt = (q: number): boolean => {
+    const bw = walkBook(buyAsks, q, "buy");
+    const sw = walkBook(sellBids, q, "sell");
+    if (!bw.complete || !sw.complete || bw.vwapToman === null || sw.vwapToman === null) return false;
+    const priced = priceAt(
+      q,
+      bw,
+      sw,
+      input.buySourceId,
+      input.sellSourceId,
+      buyFeeBps,
+      sellFeeBps,
+      input.buySettlement,
+      input.sellSettlement,
+      capitalMark,
+      input.slippageBufferBps
+    );
+    return assessInventory({
+      balances: input.balances,
+      deltas: [priced.deltas.buy, priced.deltas.sell],
+      model: input.inventoryModel
+    }).withinBand;
+  };
+  let measuredInventoryHeadroomMicros: number | null = null;
+  if (inventorySearchCeiling >= routeMinExecutableMicros) {
+    const step = Math.max(sizeStepMicros, SIZE_GRANULARITY_MICROS);
+    const lowIndex = Math.ceil(routeMinExecutableMicros / step);
+    const highIndex = Math.floor(inventorySearchCeiling / step);
+    if (inventoryWithinAt(lowIndex * step)) {
+      if (inventoryWithinAt(highIndex * step)) {
+        // The band does not bind anywhere in the raw numeric domain. Preserve
+        // the pre-round ceiling so q_pre remains distinct from venue rounding.
+        measuredInventoryHeadroomMicros = inventorySearchCeiling;
+      } else {
+        let low = lowIndex;
+        let high = highIndex;
+        while (low + 1 < high) {
+          const mid = Math.floor((low + high) / 2);
+          if (inventoryWithinAt(mid * step)) low = mid;
+          else high = mid;
+        }
+        measuredInventoryHeadroomMicros = low * step;
+      }
+    } else {
+      measuredInventoryHeadroomMicros = 0;
+    }
+  }
+  const inventoryHeadroomMicros =
+    input.dynamicRisk?.inventoryHeadroomMicros === null ||
+    input.dynamicRisk?.inventoryHeadroomMicros === undefined
+      ? measuredInventoryHeadroomMicros
+      : measuredInventoryHeadroomMicros === null
+        ? input.dynamicRisk.inventoryHeadroomMicros
+        : Math.min(measuredInventoryHeadroomMicros, input.dynamicRisk.inventoryHeadroomMicros);
+
+  const dynamicHeadrooms: DynamicRiskNumericHeadroom[] = [
+    { key: "accepted_buy_depth_b", capUsdtMicros: buyDepth.depthMicros },
+    { key: "accepted_sell_depth_b", capUsdtMicros: sellDepth.depthMicros },
+    {
+      key: "two_leg_executable_c",
+      capUsdtMicros: Math.min(buyDepth.depthMicros, sellDepth.depthMicros)
+    },
+    { key: "buy_balance_c", capUsdtMicros: buyUsableMicros },
+    { key: "sell_balance_c", capUsdtMicros: sellUsableMicros },
+    { key: "venue_allocation_d", capUsdtMicros: allocationCap },
+    { key: "inventory_band_d", capUsdtMicros: inventoryHeadroomMicros },
+    {
+      key: "free_paper_capital_e",
+      capUsdtMicros: combinedCapitalCapMicros(input.dynamicRisk?.freePaperCapitalToman)
+    },
+    {
+      key: "global_utilization_e",
+      capUsdtMicros: combinedCapitalCapMicros(input.dynamicRisk?.remainingGlobalUtilizationToman)
+    },
+    {
+      key: "global_reserve_e",
+      capUsdtMicros: combinedCapitalCapMicros(input.dynamicRisk?.globalReserveHeadroomToman)
+    },
+    {
+      key: "buy_concentration_e",
+      capUsdtMicros: buyConcentrationCap(input.dynamicRisk?.buyConcentrationHeadroomToman)
+    },
+    {
+      key: "sell_concentration_e",
+      capUsdtMicros: sellConcentrationCap(input.dynamicRisk?.sellConcentrationHeadroomToman)
+    },
+    {
+      key: "concurrent_reservations_e",
+      capUsdtMicros: input.dynamicRisk?.concurrentReservationHeadroomMicros ?? null
+    },
+    { key: "venue_max_e", capUsdtMicros: input.dynamicRisk?.venueMaxUsdtMicros ?? null },
+    { key: "admin_order_max_e", capUsdtMicros: orderCap },
+    { key: "late_numeric_clip_e", capUsdtMicros: input.dynamicRisk?.lateNumericCapUsdtMicros ?? null }
+  ];
+  const minBuyWalk = walkBook(buyAsks, routeMinExecutableMicros, "buy");
+  const minSellWalk = walkBook(sellBids, routeMinExecutableMicros, "sell");
+  let minRa = 0;
+  if (
+    minBuyWalk.complete &&
+    minSellWalk.complete &&
+    minBuyWalk.vwapToman !== null &&
+    minSellWalk.vwapToman !== null
+  ) {
+    minRa = priceAt(
+      routeMinExecutableMicros,
+      minBuyWalk,
+      minSellWalk,
+      input.buySourceId,
+      input.sellSourceId,
+      buyFeeBps,
+      sellFeeBps,
+      input.buySettlement,
+      input.sellSettlement,
+      capitalMark,
+      input.slippageBufferBps
+    ).economics.riskAdjustedPnlToman;
+  }
+  const dynamicRiskCap = computeDynamicRiskCap({
+    structural: {
+      snapshotsFresh: !buy.stale && !sell.stale,
+      venuesHealthy: buy.health !== "unavailable" && sell.health !== "unavailable",
+      feesCertain: input.buyFeeBps !== null && input.sellFeeBps !== null,
+      settlementKnown: settlementUsable(input.buySettlement) && settlementUsable(input.sellSettlement),
+      requiredDataPresent: true,
+      inventoryMeasurable: capitalMark > 0 && input.inventoryModel.maxDeviationPoints !== null,
+      completeTwoLegWalk: minBuyWalk.complete && minSellWalk.complete
+    },
+    numericHeadrooms: dynamicHeadrooms,
+    riskAdjustedCurve: [{ sizeUsdtMicros: routeMinExecutableMicros, riskAdjustedPnlToman: minRa }]
+  });
+  if (!dynamicRiskCap.ok) {
+    blockers.push(
+      blocker(
+        dynamicRiskCap.code === "inventory_unmeasurable" ? "inventory_unmeasurable" : "no_depth_evidence",
+        dynamicRiskCap.code
+      )
+    );
+    return blocked(blockers);
+  }
+
+  const extraCaps = [allocationCap, orderCap, concentrationCap, dynamicRiskCap.qEMicros].filter(
     (c): c is number => c !== null
   );
 
@@ -1004,8 +1422,7 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     // Step = max(venue steps, ledger quantum). Min = verified venue mins.
     granularityMicros: Math.max(sizeStepMicros, SIZE_GRANULARITY_MICROS),
     minMicros: routeMinExecutableMicros,
-    // Book breakpoints densify the execution set so inventory-tight routes
-    // still find a valid size below the coarse 10% analysis probe.
+    // Book and cap endpoints form the execution set. Analysis probes do not.
     buyLevels: buyAsks,
     sellLevels: sellBids
   });
@@ -1059,7 +1476,12 @@ export function computeRouteSize(input: SizingInput): SizingResult {
         ? "سیاست «حداکثر حجم هر سفارش» تعیین نشده است؛ این سقف اعمال نشد."
         : `سیاست «حداکثر حجم هر سفارش» = ${policy.max_order_size_usdt} تتر`
     ),
-    constraint("venue_concentration", concentrationCap, concentrationDetail)
+    constraint("venue_concentration", concentrationCap, concentrationDetail),
+    constraint(
+      "dynamic_risk_cap",
+      dynamicRiskCap.qEMicros,
+      `E=${usdtFa(dynamicRiskCap.qEMicros)} تتر؛ ${dynamicRiskCap.bindingHeadrooms.join(", ")}`
+    )
   ];
 
   const liquidityKeys: SizingConstraintKey[] = [
@@ -1109,7 +1531,10 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     ceilingMicros: candidateSet.ceilingMicros,
     buyDepth,
     sellDepth,
-    ladder: candidateSet.ladder
+    ladder: candidateSet.ladder,
+    dynamicRiskCap,
+    preRoundCeilingMicros: candidateSet.preRoundCeilingMicros,
+    roundStepMicros: Math.max(sizeStepMicros, SIZE_GRANULARITY_MICROS)
   };
 
   const partialBase = {
@@ -1146,7 +1571,9 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     const floorBlockers: SizingBlocker[] = [
       ...policyBlockers,
       blocker(
-        "size_floor",
+        dynamicRiskCap.bindingHeadrooms.includes("inventory_band_d")
+          ? "inventory_limit"
+          : "size_floor",
         bindingFor(candidateSet.ceilingMicros) ?? "unknown",
         `سقف‌ها به ${usdtFa(candidateSet.ceilingMicros)} تتر می‌رسند که کمتر از کف Paper (${
           routeMinExecutableMicros / 1_000_000
@@ -1199,6 +1626,64 @@ export function computeRouteSize(input: SizingInput): SizingResult {
    */
   const edgeFloorPercent = policy.min_risk_adjusted_edge_percent;
 
+  /*
+   * Eligibility crossings are vertices too. RA itself and
+   *   RA*10_000 - edgeFloorBps*buyDebit
+   * are affine between adjacent book/cap endpoints (before integer rounding),
+   * so interpolate each sign-changing interval and floor the root to the common
+   * execution step. These are not midpoint probes and do not form a grid.
+   */
+  const executionStepMicros = Math.max(sizeStepMicros, SIZE_GRANULARITY_MICROS);
+  const endpointMetrics = (q: number) => {
+    const bw = walkBook(buyAsks, q, "buy");
+    const sw = walkBook(sellBids, q, "sell");
+    if (!bw.complete || !sw.complete || bw.vwapToman === null || sw.vwapToman === null) {
+      return null;
+    }
+    const priced = priceAt(
+      q,
+      bw,
+      sw,
+      input.buySourceId,
+      input.sellSourceId,
+      buyFeeBps,
+      sellFeeBps,
+      input.buySettlement,
+      input.sellSettlement,
+      input.inventoryModel.valuationPriceToman as number,
+      input.slippageBufferBps
+    ).economics;
+    const edgeFloorBps = (edgeFloorPercent ?? 0) * 100;
+    return {
+      ra: priced.riskAdjustedPnlToman,
+      edgeNumerator:
+        priced.riskAdjustedPnlToman * 10_000 - edgeFloorBps * priced.buyDebitIrtToman
+    };
+  };
+  const endpointQuantities = [...candidateSet.quantities].sort((a, b) => a - b);
+  const executionVertices = new Set(endpointQuantities);
+  const addCrossing = (qa: number, qb: number, fa: number, fb: number) => {
+    if (!Number.isFinite(fa) || !Number.isFinite(fb) || fa === fb || fa * fb > 0) return;
+    const raw = qa + ((0 - fa) * (qb - qa)) / (fb - fa);
+    const floored = Math.floor(raw / executionStepMicros) * executionStepMicros;
+    if (floored >= routeMinExecutableMicros && floored <= candidateSet.ceilingMicros) {
+      executionVertices.add(floored);
+    }
+  };
+  for (let i = 0; i < endpointQuantities.length - 1; i += 1) {
+    const qa = endpointQuantities[i]!;
+    const qb = endpointQuantities[i + 1]!;
+    const a = endpointMetrics(qa);
+    const b = endpointMetrics(qb);
+    if (!a || !b) continue;
+    addCrossing(qa, qb, a.ra, b.ra);
+    if (edgeFloorPercent !== undefined) {
+      addCrossing(qa, qb, a.edgeNumerator, b.edgeNumerator);
+    }
+  }
+  candidateSet.quantities = [...executionVertices].sort((a, b) => a - b);
+  candidateSet.adaptive.executionPointCount = candidateSet.quantities.length;
+
   type Evaluated = {
     q: number;
     buyWalk: BookWalk;
@@ -1247,10 +1732,20 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     };
     const zeroEcon: SizingEconomics = {
       capitalInvolvedToman: 0,
+      buyDebitIrtToman: 0,
+      sellDebitUsdtMicros: 0,
+      capitalLockedToman: 0,
+      capitalEfficiencyBps: 0,
+      buyFeeToman: 0,
+      sellFeeToman: 0,
+      buyFeeUsdtMicros: 0,
+      sellFeeUsdtMicros: 0,
       cashPnlIrtToman: 0,
       inventoryDeltaUsdtMicros: 0,
       sellFeeValueToman: 0,
       economicNetPnlToman: 0,
+      observedImpactToman: 0,
+      inventoryPenaltyToman: 0,
       slippageBufferToman: 0,
       riskAdjustedPnlToman: 0,
       riskAdjustedEdgePercent: 0,
@@ -1305,16 +1800,15 @@ export function computeRouteSize(input: SizingInput): SizingResult {
 
     const priced = priceAt(
       q,
-      { buyVwapToman: buyWalk.vwapToman, sellVwapToman: sellWalk.vwapToman },
+      buyWalk,
+      sellWalk,
       input.buySourceId,
       input.sellSourceId,
       buyFeeBps,
       sellFeeBps,
       input.buySettlement,
       input.sellSettlement,
-      // Same rule the broker uses: the executable buy VWAP for this cycle is
-      // the honest replacement cost of the USDT a sell-side fee consumes.
-      buyWalk.vwapToman,
+      input.inventoryModel.valuationPriceToman as number,
       input.slippageBufferBps
     );
 
@@ -1386,6 +1880,8 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     inventoryDeltaUsdtMicros: e.econ.inventoryDeltaUsdtMicros,
     riskAdjustedEdgePercent: e.econ.riskAdjustedEdgePercent,
     riskAdjustedReturnBps: e.econ.riskAdjustedReturnBps,
+    capitalEfficiencyBps: e.econ.capitalEfficiencyBps,
+    capitalLockedToman: e.econ.capitalLockedToman,
     buyLevels: e.buyWalk.fills.length,
     sellLevels: e.sellWalk.fills.length,
     bookParticipationPercent: Math.max(
@@ -1467,23 +1963,18 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     };
   }
 
-  /*
-   * 8a. Final size = maximum safe size that is still economically profitable.
-   *
-   * Among eligible candidates (passed balance, full book walk, inventory,
-   * positive risk-adjusted PnL, edge floor), pick the LARGEST size. Profit
-   * ranking only breaks ties at equal size. Utilization targets never force a
-   * larger size past safety or positive net edge.
-   */
+  /* 8a. F = argmax canonical risk-adjusted PnL over the feasible vertices. */
   const rank = (a: Evaluated, b: Evaluated) =>
-    // 1. maximum safe size that cleared all gates;
-    b.q - a.q ||
-    // 2. better risk-adjusted profit at that size;
+    // 1. primary objective: maximum risk-adjusted PnL;
     b.econ.riskAdjustedPnlToman - a.econ.riskAdjustedPnlToman ||
-    // 3. better return on capital;
-    b.econ.riskAdjustedReturnBps - a.econ.riskAdjustedReturnBps ||
-    // 4. lower inventory impact.
-    a.inventory.impactPoints - b.inventory.impactPoints;
+    // 2. capital efficiency;
+    b.econ.capitalEfficiencyBps - a.econ.capitalEfficiencyBps ||
+    // 3. less inventory-worsening;
+    a.inventory.impactPoints - b.inventory.impactPoints ||
+    // 4. lower simultaneous capital lock;
+    a.econ.capitalLockedToman - b.econ.capitalLockedToman ||
+    // 5. smaller q. Never prefer larger q on an exact PnL tie.
+    a.q - b.q;
 
   const ordered = [...eligible].sort(rank);
   const best = ordered[0];
@@ -1536,13 +2027,15 @@ export function computeRouteSize(input: SizingInput): SizingResult {
   /* ── 8b. why this size, and why not the next one up ─────────────────────── */
   const runnerUp = ordered[1] ?? null;
   let tieBreakFa: string | null = null;
-  if (runnerUp && runnerUp.q === best.q) {
-    if (runnerUp.econ.riskAdjustedPnlToman !== best.econ.riskAdjustedPnlToman) {
-      tieBreakFa = `حجم برابر؛ سود تعدیل‌شدهٔ بالاتر تعیین‌کننده شد.`;
-    } else if (runnerUp.econ.riskAdjustedReturnBps !== best.econ.riskAdjustedReturnBps) {
-      tieBreakFa = `حجم و سود برابر؛ بازده تعدیل‌شدهٔ بالاتر تعیین‌کننده شد.`;
+  if (runnerUp && runnerUp.econ.riskAdjustedPnlToman === best.econ.riskAdjustedPnlToman) {
+    if (runnerUp.econ.capitalEfficiencyBps !== best.econ.capitalEfficiencyBps) {
+      tieBreakFa = `سود برابر؛ کارایی سرمایهٔ بالاتر تعیین‌کننده شد.`;
     } else if (runnerUp.inventory.impactPoints !== best.inventory.impactPoints) {
-      tieBreakFa = `حجم/سود/بازده برابر؛ اثر بهتر بر موجودی تعیین‌کننده شد.`;
+      tieBreakFa = `سود/کارایی برابر؛ اثر بهتر بر موجودی تعیین‌کننده شد.`;
+    } else if (runnerUp.econ.capitalLockedToman !== best.econ.capitalLockedToman) {
+      tieBreakFa = `سود/کارایی/موجودی برابر؛ سرمایهٔ قفل‌شدهٔ کمتر تعیین‌کننده شد.`;
+    } else {
+      tieBreakFa = `همهٔ مقادیر اقتصادی برابر؛ حجم کوچک‌تر تعیین‌کننده شد.`;
     }
   }
 
@@ -1585,7 +2078,7 @@ export function computeRouteSize(input: SizingInput): SizingResult {
     selectedSizeUsdtMicros: best.q,
     selectedPercentOfUsable: percentFor(best.q),
     reasonFa:
-      `حداکثر حجم امن و سودده (حل‌کنندهٔ تطبیقی): ${usdtFa(best.q)} تتر ` +
+      `بیشینهٔ سود تعدیل‌شده (MAX_RA_PNL): ${usdtFa(best.q)} تتر ` +
       `(${eligible.length} حجم واجد شرایط از ${evaluated.length} نامزد؛ ` +
       `سود تعدیل‌شده ${best.econ.riskAdjustedPnlToman.toLocaleString("en-US")} تومان / ${best.econ.riskAdjustedReturnBps} bps)؛ ` +
       `${
@@ -1593,7 +2086,7 @@ export function computeRouteSize(input: SizingInput): SizingResult {
           ? `محدودکنندهٔ برنده: «${SIZING_CONSTRAINT_FA[bindingFor(best.q) as SizingConstraintKey]}»`
           : nextLarger?.code === "inventory_limit"
             ? `حجم زیر سقف ${usdtFa(quantizedCeiling)} تتر به‌خاطر باند موجودی`
-            : `سقف محاسبه‌شده ${usdtFa(quantizedCeiling)} تتر — سودآوری این حجم را تأیید کرد`
+            : `سقف محاسبه‌شده ${usdtFa(quantizedCeiling)} تتر — نقطهٔ بهینه زیر سقف است`
       }؛ اثر موجودی ${best.inventory.impactPoints} واحد.`,
     tieBreakFa,
     nextLarger
@@ -1671,7 +2164,8 @@ function buildBaseline(input: {
 
     const priced = priceAt(
       q,
-      { buyVwapToman: buyWalk.vwapToman, sellVwapToman: sellWalk.vwapToman },
+      buyWalk,
+      sellWalk,
       input.buySourceId,
       input.sellSourceId,
       input.buyFeeBps,
@@ -1805,7 +2299,7 @@ export function rankSizedRoutes<T extends { routeKey: string; sizing: SizingResu
     if (ai !== bi) return ai - bi;
     const as = a.sizing.sizeUsdtMicros ?? 0;
     const bs = b.sizing.sizeUsdtMicros ?? 0;
-    if (bs !== as) return bs - as;
+    if (bs !== as) return as - bs;
     return a.routeKey.localeCompare(b.routeKey);
   });
 }

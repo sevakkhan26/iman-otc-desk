@@ -153,7 +153,7 @@ await commitPaperCycle({
         usdtMicros: b.usdtMicros
       })),
       sizing: {
-        policy: "CAPITAL_AWARE_MAX_SAFE",
+        policy: "MAX_RA_PNL",
         reason: "LOCAL fixture sized at 100 USDT for lifecycle proof",
         limitingSide: "sell",
         limitingSourceId: "wallex",
@@ -170,7 +170,7 @@ await commitPaperCycle({
         nextLargerRejectionReason: null,
         nextLargerMarginalPnlToman: null,
         audit: {
-          policy: "CAPITAL_AWARE_MAX_SAFE",
+          policy: "MAX_RA_PNL",
           status: "SIZED",
           finalSizeUsdtMicros: usdtToMicros(sizeUsdt),
           bindingConstraint: "capital_cap",
@@ -267,7 +267,7 @@ const evidence = {
   economicNetPnlToman: plan.economicNetPnlToman,
   riskAdjustedPnlToman: plan.riskAdjustedPnlToman,
   bindingConstraint: "capital_cap",
-  sizingPolicy: "CAPITAL_AWARE_MAX_SAFE",
+  sizingPolicy: "MAX_RA_PNL",
   ledgerId: fill.id,
   stats,
   accountingSummary: {
@@ -291,7 +291,7 @@ const balsSnap = balsAfter
   .map((b) => ({ sourceId: b.sourceId, irt: b.irtToman, usdt: b.usdtMicros }))
   .sort((a, b) => a.sourceId.localeCompare(b.sourceId));
 assert.ok(fill.sizingAudit, "sizing audit written on fill");
-assert.equal(fill.sizingPolicy, "CAPITAL_AWARE_MAX_SAFE");
+assert.equal(fill.sizingPolicy, "MAX_RA_PNL");
 assert.equal(fill.bindingConstraint, "capital_cap");
 
 await closeDb();
@@ -322,7 +322,7 @@ assert.equal(fillAfter.feeTomanTotal, feeTomanBefore);
 assert.equal(fillAfter.feeUsdtMicrosTotal, feeUsdtBefore);
 assert.equal(fillAfter.buyFeeAsset, "IRT");
 assert.equal(fillAfter.sellFeeAsset, "USDT");
-assert.equal(fillAfter.sizingPolicy, "CAPITAL_AWARE_MAX_SAFE");
+assert.equal(fillAfter.sizingPolicy, "MAX_RA_PNL");
 assert.equal(fillAfter.bindingConstraint, "capital_cap");
 assert.ok(fillAfter.sizingAudit, "sizing audit survives restart for API/UI");
 assert.equal(

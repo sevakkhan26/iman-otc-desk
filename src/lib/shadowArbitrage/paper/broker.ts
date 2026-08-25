@@ -22,6 +22,7 @@
  */
 import { feeFromBps, mulPriceSizeToman } from "@/lib/shadowArbitrage/money";
 import type { ShadowSourceId } from "@/lib/shadowArbitrage/types";
+import { computeCanonicalEconomics } from "@/lib/shadowArbitrage/paper/canonicalEconomics";
 
 /** 1 USDT expressed in the integer unit used for every virtual balance. */
 export const USDT_MICROS = 1_000_000;
@@ -386,38 +387,55 @@ export function planFill(input: FillInputs): FillPlan | FillRejection {
     input.sellSettlement
   );
 
-  const grossSpreadToman = sellLeg.notionalToman - buyLeg.notionalToman;
-
-  // Cash only. The USDT the sell fee consumed never appears in this number,
-  // which is exactly why it must not be the execution gate on its own.
-  const cashPnlIrtToman = buyLeg.deltaIrtToman + sellLeg.deltaIrtToman;
-  const inventoryDeltaUsdtMicros = buyLeg.deltaUsdtMicros + sellLeg.deltaUsdtMicros;
-
   const markPriceToman = Math.round(input.markPriceToman);
-  const totalFeeUsdtMicros = buyLeg.feeUsdtMicros + sellLeg.feeUsdtMicros;
-  const sellFeeValueToman = mulPriceSizeToman(markPriceToman, microsToUsdt(totalFeeUsdtMicros));
-
-  const economicNetPnlToman = cashPnlIrtToman - sellFeeValueToman;
   const slippageBufferToman = Math.max(0, Math.round(input.slippageBufferToman));
-  const riskAdjustedPnlToman = economicNetPnlToman - slippageBufferToman;
+  const canonical = computeCanonicalEconomics({
+    sizeUsdtMicros: usdtToMicros(input.sizeUsdt),
+    buy: {
+      complete: true,
+      notionalToman: buyLeg.notionalToman,
+      vwapToman: input.buyVwapToman,
+      bestPriceToman: input.buyVwapToman
+    },
+    sell: {
+      complete: true,
+      notionalToman: sellLeg.notionalToman,
+      vwapToman: input.sellVwapToman,
+      bestPriceToman: input.sellVwapToman
+    },
+    buyFeeBps: input.buyFeeBps,
+    sellFeeBps: input.sellFeeBps,
+    buySettlement: input.buySettlement,
+    sellSettlement: input.sellSettlement,
+    capitalMarkPriceToman: markPriceToman,
+    riskBufferToman: slippageBufferToman
+  });
+  if (!canonical.ok) {
+    if (canonical.code === "fee_unknown") return reject("fee_unknown");
+    if (canonical.code === "settlement_unknown") return reject("fee_settlement_unknown");
+    if (canonical.code === "settlement_unsupported") return reject("fee_settlement_unsupported");
+    if (canonical.code === "mark_price_unavailable") return reject("mark_price_unavailable");
+    return reject("insufficient_depth");
+  }
+  const e = canonical.economics;
 
   // The gate is risk-adjusted economic profit, never cash PnL.
-  if (riskAdjustedPnlToman <= 0) return reject("not_net_positive");
+  if (e.riskAdjustedPnlToman <= 0) return reject("not_net_positive");
 
   return {
     ok: true,
     buyLeg,
     sellLeg,
-    grossSpreadToman,
-    totalFeeToman: buyLeg.feeToman + sellLeg.feeToman,
-    totalFeeUsdtMicros,
+    grossSpreadToman: e.sellNotionalToman - e.buyNotionalToman,
+    totalFeeToman: e.buyFeeToman + e.sellFeeToman,
+    totalFeeUsdtMicros: e.totalFeeUsdtMicros,
     slippageBufferToman,
     markPriceToman,
-    cashPnlIrtToman,
-    inventoryDeltaUsdtMicros,
-    sellFeeValueToman,
-    economicNetPnlToman,
-    riskAdjustedPnlToman
+    cashPnlIrtToman: e.cashPnlIrtToman,
+    inventoryDeltaUsdtMicros: e.inventoryDeltaUsdtMicros,
+    sellFeeValueToman: e.usdtFeeValueToman,
+    economicNetPnlToman: e.economicNetPnlToman,
+    riskAdjustedPnlToman: e.riskAdjustedPnlToman
   };
 }
 

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { SHADOW_STALE_MS, SHADOW_TRADE_SIZES } from "@/lib/shadowArbitrage/config";
+import { SHADOW_STALE_MS } from "@/lib/shadowArbitrage/config";
 import { computeRouteEconomics } from "@/lib/shadowArbitrage/fees";
 import { isCertifiedExecutable, type CertificationStatus } from "@/lib/shadowArbitrage/certification";
 import type {
@@ -7,10 +7,12 @@ import type {
   NormalizedSourceSnapshot,
   OpportunityEligibility,
   ShadowOpportunity,
-  ShadowSourceId,
-  ShadowTradeSizeUsdt
+  ShadowSourceId
 } from "@/lib/shadowArbitrage/types";
 import { mergeWithTransitions, type LifecycleTransition } from "@/lib/shadowArbitrage/lifecycle";
+import { walkBook } from "@/lib/shadowArbitrage/paper/liquidity";
+import { slippageBoundedDepth } from "@/lib/shadowArbitrage/paper/smartCandidates";
+import { PAPER_POLICY_MIN_USDT_MICROS } from "@/lib/shadowArbitrage/paper/venueExecutionLimits";
 
 /** Reasons that make an "executable now" claim impossible (spec §7). */
 const DISQUALIFYING: BlockedReasonCode[] = [
@@ -29,7 +31,12 @@ const DISQUALIFYING: BlockedReasonCode[] = [
   "market_data_missing"
 ];
 
-export function routeKeyFor(buy: string, sell: string, size: ShadowTradeSizeUsdt): string {
+export function routeKeyFor(buy: string, sell: string): string {
+  return `${buy}->${sell}`;
+}
+
+/** Read-only compatibility key for historical size-qualified rows. */
+export function legacyRouteKeyFor(buy: string, sell: string, size: number): string {
   return `${buy}->${sell}@${size}`;
 }
 
@@ -100,6 +107,8 @@ export type BuildOptions = {
   accountEvidence?: Partial<
     Record<ShadowSourceId, { executionEligible: boolean; kycComplete: boolean }>
   >;
+  /** Confirmed fee-tier discontinuity may justify scanning a non-crossed TOB. */
+  confirmedFeeTierJumpRoutes?: ReadonlySet<string>;
 };
 
 export type BuildResult = {
@@ -115,15 +124,6 @@ export type BuildResult = {
   skippedPairs: number;
 };
 
-/**
- * An opportunity is "material" (worth its own lifecycle row) when the venues
- * actually cross — i.e. selling proceeds exceed the buy price before costs.
- * Everything else is still counted in aggregates, but does not create rows.
- */
-function isMaterial(o: ShadowOpportunity): boolean {
-  return o.rawSpreadPercent > 0;
-}
-
 export function buildOpportunitiesDetailed(
   sources: NormalizedSourceSnapshot[],
   previous: ShadowOpportunity[],
@@ -131,6 +131,7 @@ export function buildOpportunitiesDetailed(
   options: BuildOptions = {}
 ): BuildResult {
   const drafts: ShadowOpportunity[] = [];
+  const materialRouteKeys = new Set<string>();
   const blockedCounts: Record<string, number> = {};
   let skippedPairs = 0;
 
@@ -142,46 +143,107 @@ export function buildOpportunitiesDetailed(
     for (const sell of sources) {
       if (buy.sourceId === sell.sourceId) continue;
 
-      for (const size of SHADOW_TRADE_SIZES) {
-        const buyEx = buy.sizeExecutables.find((x) => x.sizeUsdt === size);
-        const sellEx = sell.sizeExecutables.find((x) => x.sizeUsdt === size);
-        const reasons = new Set<BlockedReasonCode>();
+      const reasons = new Set<BlockedReasonCode>();
+      const rk = routeKeyFor(buy.sourceId, sell.sourceId);
 
-        // Source-level findings (depth, direction, units, rate limit, health).
-        // Snapshots rehydrated from stored payloads may predate these fields.
-        for (const r of buy.sourceBlockedReasons ?? []) reasons.add(r);
-        for (const r of sell.sourceBlockedReasons ?? []) reasons.add(r);
+      // Source-level findings (depth, direction, units, rate limit, health).
+      // Snapshots rehydrated from stored payloads may predate these fields.
+      for (const r of buy.sourceBlockedReasons ?? []) reasons.add(r);
+      for (const r of sell.sourceBlockedReasons ?? []) reasons.add(r);
 
-        if (buy.health === "unavailable" || sell.health === "unavailable") {
-          reasons.add("source_unhealthy");
-        }
-        if (buy.ageMs > SHADOW_STALE_MS || buy.stale) reasons.add("stale_buy_source");
-        if (sell.ageMs > SHADOW_STALE_MS || sell.stale) reasons.add("stale_sell_source");
+      if (buy.health === "unavailable" || sell.health === "unavailable") {
+        reasons.add("source_unhealthy");
+      }
+      if (buy.ageMs > SHADOW_STALE_MS || buy.stale) reasons.add("stale_buy_source");
+      if (sell.ageMs > SHADOW_STALE_MS || sell.stale) reasons.add("stale_sell_source");
 
         // Certification gate — an uncertified venue cannot back execution.
-        const buyCert = options.certStatuses?.[buy.sourceId];
-        const sellCert = options.certStatuses?.[sell.sourceId];
-        if (
-          (buyCert && !isCertifiedExecutable(buyCert)) ||
-          (sellCert && !isCertifiedExecutable(sellCert))
-        ) {
-          reasons.add("source_not_certified");
-        }
+      const buyCert = options.certStatuses?.[buy.sourceId];
+      const sellCert = options.certStatuses?.[sell.sourceId];
+      if (
+        (buyCert && !isCertifiedExecutable(buyCert)) ||
+        (sellCert && !isCertifiedExecutable(sellCert))
+      ) {
+        reasons.add("source_not_certified");
+      }
 
-        const buyVwap = buyEx?.userBuyVwapToman ?? null;
-        const sellVwap = sellEx?.userSellVwapToman ?? null;
-        if (buyVwap === null || !buyEx?.buyFillable) reasons.add("insufficient_buy_depth");
-        if (sellVwap === null || !sellEx?.sellFillable) reasons.add("insufficient_sell_depth");
+      const bestBuy =
+        buy.bookAsks?.filter((l) => l.priceToman > 0 && l.amountUsdt > 0)
+          .reduce<number | null>((p, l) => (p === null ? l.priceToman : Math.min(p, l.priceToman)), null) ??
+        buy.userBuyPriceToman;
+      const bestSell =
+        sell.bookBids?.filter((l) => l.priceToman > 0 && l.amountUsdt > 0)
+          .reduce<number | null>((p, l) => (p === null ? l.priceToman : Math.max(p, l.priceToman)), null) ??
+        sell.userSellPriceToman;
 
-        if (buyVwap === null || sellVwap === null) {
-          // No executable price for this size — nothing to price, count and move on.
-          reasons.add("market_data_missing");
-          bump(reasons);
-          skippedPairs += 1;
-          continue;
-        }
+      if (bestBuy === null || bestSell === null) {
+        reasons.add("market_data_missing");
+        skippedPairs += 1;
+      }
 
-        const econ = computeRouteEconomics({
+      // Size-free existence gate: raw TOB cross or confirmed fee-tier jump.
+      const rawTobCross = bestBuy !== null && bestSell !== null && bestSell > bestBuy;
+      const feeTierJump = options.confirmedFeeTierJumpRoutes?.has(rk) ?? false;
+      if (rawTobCross || feeTierJump) materialRouteKeys.add(rk);
+
+      const buyAccepted = buy.bookAsks
+        ? slippageBoundedDepth(buy.bookAsks, "buy", 10).depthMicros
+        : 0;
+      const sellAccepted = sell.bookBids
+        ? slippageBoundedDepth(sell.bookBids, "sell", 10).depthMicros
+        : 0;
+      const depthCeiling = Math.min(buyAccepted, sellAccepted);
+      const rawVertices = new Set<number>([PAPER_POLICY_MIN_USDT_MICROS, depthCeiling]);
+      let cumulative = 0;
+      for (const level of [...(buy.bookAsks ?? [])].sort((a, b) => a.priceToman - b.priceToman)) {
+        cumulative += Math.round(level.amountUsdt * 1_000_000);
+        if (cumulative <= depthCeiling) rawVertices.add(cumulative);
+      }
+      cumulative = 0;
+      for (const level of [...(sell.bookBids ?? [])].sort((a, b) => b.priceToman - a.priceToman)) {
+        cumulative += Math.round(level.amountUsdt * 1_000_000);
+        if (cumulative <= depthCeiling) rawVertices.add(cumulative);
+      }
+
+      const priced = [...rawVertices]
+        .filter((q) => q >= PAPER_POLICY_MIN_USDT_MICROS && q <= depthCeiling)
+        .sort((a, b) => a - b)
+        .map((q) => {
+          const bw = walkBook(buy.bookAsks ?? [], q, "buy");
+          const sw = walkBook(sell.bookBids ?? [], q, "sell");
+          if (!bw.complete || !sw.complete || bw.vwapToman === null || sw.vwapToman === null) return null;
+          return {
+            q,
+            bw,
+            sw,
+            econ: computeRouteEconomics({
+              buySourceId: buy.sourceId,
+              sellSourceId: sell.sourceId,
+              sizeUsdt: q / 1_000_000,
+              buyVwapToman: bw.vwapToman,
+              sellVwapToman: sw.vwapToman,
+              buyNotionalToman: bw.notionalToman,
+              sellNotionalToman: sw.notionalToman,
+              confirmedFeeBps: options.confirmedFeeBps
+            })
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => x !== null);
+
+      const bestPriced = [...priced].sort(
+        (a, b) => b.econ.netProfitToman - a.econ.netProfitToman || a.q - b.q
+      )[0] ?? null;
+      const size = (bestPriced?.q ?? PAPER_POLICY_MIN_USDT_MICROS) / 1_000_000;
+      const buyVwap = bestPriced?.bw.vwapToman ?? bestBuy ?? 0;
+      const sellVwap = bestPriced?.sw.vwapToman ?? bestSell ?? 0;
+      if (!bestPriced) {
+        reasons.add("insufficient_buy_depth");
+        reasons.add("insufficient_sell_depth");
+      }
+
+      const econ =
+        bestPriced?.econ ??
+        computeRouteEconomics({
           buySourceId: buy.sourceId,
           sellSourceId: sell.sourceId,
           sizeUsdt: size,
@@ -189,71 +251,69 @@ export function buildOpportunitiesDetailed(
           sellVwapToman: sellVwap,
           confirmedFeeBps: options.confirmedFeeBps
         });
-        for (const r of econ.blocked) reasons.add(r);
+      for (const r of econ.blocked) reasons.add(r);
 
-        const { eligibility: baseEl, reasons: elReasons } = baseEligibility(
-          buy,
-          sell,
-          options.accountEvidence
-        );
-        for (const r of elReasons) reasons.add(r);
+      const { eligibility: baseEl, reasons: elReasons } = baseEligibility(
+        buy,
+        sell,
+        options.accountEvidence
+      );
+      for (const r of elReasons) reasons.add(r);
 
-        let eligibility: OpportunityEligibility = baseEl;
-        if (DISQUALIFYING.some((r) => reasons.has(r))) {
-          eligibility = "BLOCKED";
-        } else if (reasons.has("reference_only")) {
-          eligibility = "REFERENCE_ONLY";
-        } else if (reasons.has("account_required")) {
-          eligibility = "ACCOUNT_REQUIRED";
-        } else if (reasons.has("non_positive_net")) {
-          eligibility = "BLOCKED";
-        }
-
-        bump(reasons);
-
-        const rk = routeKeyFor(buy.sourceId, sell.sourceId, size);
-        drafts.push({
-          id: opportunityId(rk, nowIso),
-          routeKey: rk,
-          buySourceId: buy.sourceId,
-          sellSourceId: sell.sourceId,
-          buySourceName: buy.sourceName,
-          sellSourceName: sell.sourceName,
-          sizeUsdt: size,
-          buyVwapToman: buyVwap,
-          sellVwapToman: sellVwap,
-          rawSpreadPercent: econ.rawSpreadPercent,
-          buyFeeToman: econ.buyFeeToman,
-          sellFeeToman: econ.sellFeeToman,
-          buyFeeBps: econ.buyFeeBps,
-          sellFeeBps: econ.sellFeeBps,
-          totalFeePercent: econ.totalFeePercent,
-          slippageBufferToman: econ.slippageBufferToman,
-          rebalanceCostToman: econ.rebalanceCostToman,
-          netProfitToman: econ.netProfitToman,
-          netEdgePercent: econ.netEdgePercent,
-          buyCostToman: econ.buyCostToman,
-          sellProceedsToman: econ.sellProceedsToman,
-          eligibility,
-          blockedReasons: [...reasons],
-          firstSeenAt: nowIso,
-          lastSeenAt: nowIso,
-          endedAt: null,
-          durationMs: 0,
-          maxNetEdgePercent: econ.netEdgePercent,
-          maxNetProfitToman: econ.netProfitToman,
-          maxRawSpreadPercent: econ.rawSpreadPercent,
-          feeUnknown: econ.feeUnknown,
-          observationCount: 1,
-          isActive: true,
-          buyAgeMs: buy.ageMs,
-          sellAgeMs: sell.ageMs
-        });
+      let eligibility: OpportunityEligibility = baseEl;
+      if (DISQUALIFYING.some((r) => reasons.has(r))) {
+        eligibility = "BLOCKED";
+      } else if (reasons.has("reference_only")) {
+        eligibility = "REFERENCE_ONLY";
+      } else if (reasons.has("account_required")) {
+        eligibility = "ACCOUNT_REQUIRED";
+      } else if (reasons.has("non_positive_net")) {
+        eligibility = "BLOCKED";
       }
+
+      bump(reasons);
+
+      drafts.push({
+        id: opportunityId(rk, nowIso),
+        routeKey: rk,
+        buySourceId: buy.sourceId,
+        sellSourceId: sell.sourceId,
+        buySourceName: buy.sourceName,
+        sellSourceName: sell.sourceName,
+        sizeUsdt: size,
+        buyVwapToman: buyVwap,
+        sellVwapToman: sellVwap,
+        rawSpreadPercent: econ.rawSpreadPercent,
+        buyFeeToman: econ.buyFeeToman,
+        sellFeeToman: econ.sellFeeToman,
+        buyFeeBps: econ.buyFeeBps,
+        sellFeeBps: econ.sellFeeBps,
+        totalFeePercent: econ.totalFeePercent,
+        slippageBufferToman: econ.slippageBufferToman,
+        rebalanceCostToman: econ.rebalanceCostToman,
+        netProfitToman: econ.netProfitToman,
+        netEdgePercent: econ.netEdgePercent,
+        buyCostToman: econ.buyCostToman,
+        sellProceedsToman: econ.sellProceedsToman,
+        eligibility,
+        blockedReasons: [...reasons],
+        firstSeenAt: nowIso,
+        lastSeenAt: nowIso,
+        endedAt: null,
+        durationMs: 0,
+        maxNetEdgePercent: econ.netEdgePercent,
+        maxNetProfitToman: econ.netProfitToman,
+        maxRawSpreadPercent: econ.rawSpreadPercent,
+        feeUnknown: econ.feeUnknown,
+        observationCount: 1,
+        isActive: true,
+        buyAgeMs: buy.ageMs,
+        sellAgeMs: sell.ageMs
+      });
     }
   }
 
-  const material = drafts.filter(isMaterial);
+  const material = drafts.filter((o) => materialRouteKeys.has(o.routeKey));
   const { merged, transitions } = mergeWithTransitions(previous, material, nowIso);
   return {
     opportunities: merged,

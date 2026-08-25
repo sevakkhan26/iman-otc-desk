@@ -62,18 +62,30 @@ export const PAPER_4D_RISK_POLICIES: Array<{
 ];
 
 /**
- * Derive the absolute USDT route backstop from equity and the route capital %.
- * Floor (never round up). Returns 0 if the mark is unusable.
+ * Derive a session-opening order maximum from dynamic portfolio/venue
+ * headroom. The historical route percentage is deliberately not applied.
  */
 export function deriveMaxOrderUsdt(input: {
   equityToman: number;
   markPriceToman: number;
+  /** @deprecated Historical comparison input; deliberately ignored. */
   routeCapitalPercent?: number;
+  maxUtilizationPercent?: number;
+  minReservePercent?: number;
+  maxVenueExposurePercent?: number;
 }): number {
-  const pct = input.routeCapitalPercent ?? PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT;
   if (!(input.equityToman > 0) || !(input.markPriceToman > 0)) return 0;
-  const routeToman = (input.equityToman * pct) / 100;
-  return Math.floor(routeToman / input.markPriceToman);
+  const usablePct = Math.min(
+    input.maxUtilizationPercent ?? PAPER_4D_MAX_UTILIZATION_PERCENT,
+    100 - (input.minReservePercent ?? PAPER_4D_MIN_RESERVE_PERCENT)
+  );
+  const globalQ = (input.equityToman * usablePct) / 100 / (2 * input.markPriceToman);
+  const venueQ =
+    (input.equityToman *
+      (input.maxVenueExposurePercent ?? PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT)) /
+    100 /
+    input.markPriceToman;
+  return Math.floor(Math.min(globalQ, venueQ));
 }
 
 export function paper4dCanonical(input: {
@@ -87,7 +99,7 @@ export function paper4dCanonical(input: {
     `targetUtil=${PAPER_4D_TARGET_UTILIZATION_PERCENT}`,
     `maxUtil=${PAPER_4D_MAX_UTILIZATION_PERCENT}`,
     `minReserve=${PAPER_4D_MIN_RESERVE_PERCENT}`,
-    `maxRoute=${PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT}`,
+    `historicalMaxRouteNotApplied=${PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT}`,
     `maxVenue=${PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT}`,
     `maxOrderUsdt=${input.maxOrderUsdt}`,
     `mark=${input.markPriceToman}`,

@@ -19,6 +19,30 @@ import { portfolioValueToman } from "../src/lib/shadowArbitrage/paper/portfolio.
 let passed = 0;
 let failed = 0;
 
+const ELIGIBLE_VENUES = ["nobitex", "wallex"];
+const OPENING_OBSERVATIONS = [
+  {
+    buySourceId: "nobitex",
+    sellSourceId: "wallex",
+    occurrences: 1,
+    riskAdjustedPnlToman: 100_000,
+    capacityUsdtMicros: 1_000_000_000
+  }
+];
+
+function liquidityAwarePreview(input: {
+  totalCapitalToman: number;
+  valuationPriceToman: number;
+  venueIds: string[];
+  activeSessionId: string | null;
+}) {
+  return buildSessionCapitalPreview({
+    ...input,
+    eligibleVenueIds: ELIGIBLE_VENUES,
+    allocationObservations: OPENING_OBSERVATIONS
+  });
+}
+
 async function test(name: string, fn: () => void | Promise<void>) {
   try {
     await fn();
@@ -50,15 +74,17 @@ await test("preview residual is exactly zero for 100M and 10B", () => {
   const venues = SHADOW_SOURCES.map((s) => s.id);
   const mark = 200_000;
   for (const cap of [100_000_000, 10_000_000_000] as const) {
-    const p = buildSessionCapitalPreview({
+    const p = liquidityAwarePreview({
       totalCapitalToman: cap,
       valuationPriceToman: mark,
       venueIds: venues,
       activeSessionId: null
     });
     assert.equal(p.residualToman, 0, `residual for ${cap}`);
-    assert.equal(p.allocationSumToman, cap);
-    assert.equal(portfolioValueToman(p.allocations, mark), cap);
+    assert.equal(p.allocationValid, true);
+    assert.equal(p.allocationSumToman + p.unallocatedReserveToman, cap);
+    assert.equal(p.unallocatedReserveToman, Math.floor(cap * 0.2));
+    assert.equal(portfolioValueToman(p.allocations, mark), p.allocationSumToman);
     assert.ok(p.previewToken.length >= 32);
     assert.equal(p.unit, "toman");
   }
@@ -90,7 +116,7 @@ const MARK = 200_000;
 async function proveCapital(cap: number, label: string) {
   const prev = await getActivePaperSession();
   const prevId = prev?.id ?? null;
-  const preview = buildSessionCapitalPreview({
+  const preview = liquidityAwarePreview({
     totalCapitalToman: cap,
     valuationPriceToman: MARK,
     venueIds: venues,
@@ -118,12 +144,13 @@ async function proveCapital(cap: number, label: string) {
   assert.equal(actives[0]!.id, r1.newSession.id);
 
   const bals = await loadPaperBalances(r1.newSession.id);
-  assert.equal(bals.length, venues.length);
+  assert.equal(bals.length, ELIGIBLE_VENUES.length);
   const balsTotal = bals.reduce(
     (s, b) => s + b.irtToman + Math.round((b.usdtMicros / 1e6) * MARK),
     0
   );
-  assert.equal(balsTotal, cap, "balances mark to capital");
+  assert.equal(balsTotal, preview.allocationSumToman, "balances exclude the global reserve");
+  assert.equal(balsTotal + preview.unallocatedReserveToman, cap);
 
   // Idempotent second apply with same token
   const r2 = await replaceActivePaperSessionCapital({
@@ -162,7 +189,7 @@ await test("100M replace: exact capital, residual 0, one RUNNING, idempotent", a
     mode: "APPROVED_PLAN",
     totalCapitalToman: 50_000_000,
     valuationPriceToman: MARK,
-    openingAllocations: buildSessionCapitalPreview({
+    openingAllocations: liquidityAwarePreview({
       totalCapitalToman: 50_000_000,
       valuationPriceToman: MARK,
       venueIds: venues,

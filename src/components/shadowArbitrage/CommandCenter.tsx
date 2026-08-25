@@ -734,15 +734,15 @@ export function CommandCenter({
       {sizing && !sizing.missingPolicies.length ? (
         <div className="sa-callout sa-callout-muted" role="status">
           <span className="sa-chip sa-chip-sm sa-chip-good sa-sz-policy-chip">
-            {sizing.policy ?? "CAPITAL_AWARE_MAX_SAFE"}
+            {sizing.policy ?? "MAX_RA_PNL"}
           </span>{" "}
-          حجم سرمایه‌آگاه فعال است — {toFaDigits(sizedCount)} مسیر از{" "}
+          بهینه‌سازی بیشینهٔ سود تعدیل‌شده با ریسک فعال است — {toFaDigits(sizedCount)} مسیر از{" "}
           {toFaDigits(sizing.routes.length)} مسیر بررسی‌شده حجم گرفت.
           {sizing.policyParameters ? (
             <span className="sa-sub">
               {" "}
-              حجم نهایی = min(موجودی، عمق VWAP، سقف سفارش، تمرکز، سهم سرمایه) با سود خالص
-              مثبت. فقط حجم هوشمند، سقف امن و محدودیت‌کننده نمایش داده می‌شود.
+              دامنهٔ مجاز از موجودی، عمق پذیرفته‌شده، سقف پویا، تمرکز و سهم سرمایه ساخته
+              می‌شود؛ سپس اندازه‌ای که بیشترین سود تعدیل‌شده با ریسک را دارد انتخاب می‌شود.
               {typeof sizing.policyParameters.ledgerSizeQuantumUsdt === "number" ? (
                 <>
                   {" "}

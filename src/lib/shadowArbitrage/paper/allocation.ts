@@ -28,6 +28,8 @@
  * Pure module: no database, no network, no clock. It proposes; it never saves.
  */
 import { usdtToMicros, microsToUsdt } from "@/lib/shadowArbitrage/paper/liquidity";
+import { slippageBoundedDepth } from "@/lib/shadowArbitrage/paper/smartCandidates";
+import type { BookLevel } from "@/lib/shadowArbitrage/types";
 
 /**
  * EXPLORATION replaces the old UNUSED label.
@@ -59,6 +61,75 @@ export type RouteObservation = {
   /** Largest quantity both books supported, in micros. Caps a venue's need. */
   capacityUsdtMicros: number;
 };
+
+export type OpeningAllocationSnapshot = {
+  sourceId: string;
+  stale: boolean;
+  health: string;
+  executionEligible: boolean;
+  feeCertain: boolean;
+  feeBps: number | null;
+  userBuyToman: number | null;
+  userSellToman: number | null;
+  bookAsks: BookLevel[] | null;
+  bookBids: BookLevel[] | null;
+};
+
+/**
+ * Build the fresh-session evidence from size-free TOB crosses. Weight is the
+ * accepted HARD-10-bps two-leg depth times fee/risk-adjusted TOB economics.
+ * A raw cross still establishes BUY/SELL roles when that weight is zero.
+ */
+export function buildOpeningAllocationEvidence(
+  snapshots: readonly OpeningAllocationSnapshot[]
+): { eligibleVenueIds: string[]; observations: RouteObservation[] } {
+  const eligible = snapshots
+    .filter(
+      (s) =>
+        s.executionEligible &&
+        !s.stale &&
+        s.health !== "unavailable" &&
+        s.feeCertain &&
+        s.feeBps !== null &&
+        s.bookAsks?.length &&
+        s.bookBids?.length
+    )
+    .sort((a, b) => a.sourceId.localeCompare(b.sourceId));
+  const observations: RouteObservation[] = [];
+  for (const buy of eligible) {
+    const buyDepth = slippageBoundedDepth(buy.bookAsks ?? [], "buy", 10);
+    const bestAsk = buyDepth.bestPriceToman ?? buy.userBuyToman;
+    if (!(bestAsk && bestAsk > 0) || buyDepth.depthMicros <= 0) continue;
+    for (const sell of eligible) {
+      if (buy.sourceId === sell.sourceId) continue;
+      const sellDepth = slippageBoundedDepth(sell.bookBids ?? [], "sell", 10);
+      const bestBid = sellDepth.bestPriceToman ?? sell.userSellToman;
+      if (!(bestBid && bestBid > bestAsk) || sellDepth.depthMicros <= 0) continue;
+      const capacityUsdtMicros = Math.min(buyDepth.depthMicros, sellDepth.depthMicros);
+      const buyFeePerUsdt = (bestAsk * (buy.feeBps as number)) / 10_000;
+      // Canonical mixed settlement marks the sell-side USDT fee at THIS-q buy VWAP.
+      const sellFeePerUsdt = (bestAsk * (sell.feeBps as number)) / 10_000;
+      const riskPerUsdt = (bestAsk * 5) / 10_000;
+      const adjustedEdgePerUsdt = Math.max(
+        0,
+        bestBid - bestAsk - buyFeePerUsdt - sellFeePerUsdt - riskPerUsdt
+      );
+      observations.push({
+        buySourceId: buy.sourceId,
+        sellSourceId: sell.sourceId,
+        occurrences: 1,
+        riskAdjustedPnlToman: Math.round(
+          adjustedEdgePerUsdt * (capacityUsdtMicros / 1_000_000)
+        ),
+        capacityUsdtMicros
+      });
+    }
+  }
+  return {
+    eligibleVenueIds: eligible.map((s) => s.sourceId),
+    observations
+  };
+}
 
 export type VenueDemand = {
   sourceId: string;
@@ -92,6 +163,10 @@ export type AllocationPlan = {
   allocatedToman: number;
   /** allocated − total. Zero is the only acceptable value. */
   residualToman: number;
+  /** Global PAPER reserve held outside venue balances. */
+  reserveToman: number;
+  /** False when complementary roles/min-operable funding cannot be proven. */
+  valid: boolean;
   demands: VenueDemand[];
   errorsFa: string[];
 };
@@ -128,9 +203,10 @@ export function deriveVenueDemand(
   );
 
   for (const o of observations) {
-    // A losing route earns no capital; it is observed, not funded.
+    if (o.occurrences <= 0 || o.capacityUsdtMicros <= 0) continue;
+    // A non-positive route establishes its venue roles but receives zero
+    // remainder weight; it is funded only through the discovery floor.
     const profit = Math.max(0, o.riskAdjustedPnlToman);
-    if (profit <= 0 || o.occurrences <= 0) continue;
 
     const buy = demand.get(o.buySourceId);
     if (buy) {
@@ -147,8 +223,8 @@ export function deriveVenueDemand(
   }
 
   for (const d of demand.values()) {
-    const buys = d.buyWeight > 0;
-    const sells = d.sellWeight > 0;
+    const buys = d.occurrencesAsBuy > 0;
+    const sells = d.occurrencesAsSell > 0;
     d.role = buys && sells ? "BOTH" : buys ? "BUY_SIDE" : sells ? "SELL_SIDE" : "EXPLORATION";
   }
 
@@ -168,6 +244,12 @@ export function buildLiquidityAwarePlan(input: {
   valuationPriceToman: number;
   venueIds: readonly string[];
   observations: readonly RouteObservation[];
+  /** Explicit global reserve, not assigned to a venue. Defaults to zero. */
+  reservePercent?: number;
+  /** Session bootstrap requires at least one proven buy and one sell role. */
+  requireComplementaryVenues?: boolean;
+  /** Paper/venue route floor used for the min-operable check. */
+  minOperableUsdt?: number;
 }): AllocationPlan {
   const errorsFa: string[] = [];
   const total = Math.round(input.totalCapitalToman);
@@ -186,12 +268,37 @@ export function buildLiquidityAwarePlan(input: {
       rows: [],
       allocatedToman: 0,
       residualToman: -total,
+      reserveToman: Math.max(0, total),
+      valid: false,
       demands: [],
       errorsFa
     };
   }
 
   const demands = deriveVenueDemand(venueIds, input.observations);
+  const complementary =
+    demands.some((d) => d.occurrencesAsBuy > 0) &&
+    demands.some((d) => d.occurrencesAsSell > 0);
+  if (input.requireComplementaryVenues && !complementary) {
+    errorsFa.push(
+      "کمتر از دو نقش مکمل خرید/فروش اثبات شده است؛ سرمایه در ذخیرهٔ سراسری می‌ماند."
+    );
+    return {
+      totalCapitalToman: total,
+      valuationPriceToman: price,
+      rows: [],
+      allocatedToman: 0,
+      residualToman: 0,
+      reserveToman: total,
+      valid: false,
+      demands,
+      errorsFa
+    };
+  }
+
+  const reservePercent = Math.max(0, Math.min(100, input.reservePercent ?? 0));
+  const reserveToman = Math.floor((total * reservePercent) / 100);
+  const allocatableTotal = total - reserveToman;
 
   /*
    * Shares: a discovery floor for everyone, and the remainder distributed by
@@ -199,8 +306,8 @@ export function buildLiquidityAwarePlan(input: {
    * floor, which then sums to less than the total — the leftover is spread
    * evenly and the plan says plainly that it is uninformed.
    */
-  const floorToman = Math.floor((total * DISCOVERY_FLOOR_PERCENT) / 100);
-  const weightPool = Math.max(0, total - floorToman * venueIds.length);
+  const floorToman = Math.floor((allocatableTotal * DISCOVERY_FLOOR_PERCENT) / 100);
+  const weightPool = Math.max(0, allocatableTotal - floorToman * venueIds.length);
   const totalWeight = demands.reduce((s, d) => s + d.buyWeight + d.sellWeight, 0);
 
   if (totalWeight <= 0) {
@@ -225,7 +332,7 @@ export function buildLiquidityAwarePlan(input: {
    * the total and always sums the same way.
    */
   const assigned = [...shareToman.values()].reduce((s, v) => s + v, 0);
-  const drift = total - assigned;
+  const drift = allocatableTotal - assigned;
   if (drift !== 0) {
     const first = venueIds[0];
     shareToman.set(first, (shareToman.get(first) ?? 0) + drift);
@@ -277,14 +384,28 @@ export function buildLiquidityAwarePlan(input: {
   let allocatedToman = Math.round(irtTotal + microsToUsdt(microsTotal) * price);
 
   // One deterministic correction so the aggregate reading is exact too.
-  const aggregateDrift = total - allocatedToman;
+  const aggregateDrift = allocatableTotal - allocatedToman;
   if (aggregateDrift !== 0 && rows.length) {
     rows[0] = {
       ...rows[0],
       irtToman: rows[0].irtToman + aggregateDrift,
       valueToman: rows[0].valueToman + aggregateDrift
     };
-    allocatedToman = total;
+    allocatedToman = allocatableTotal;
+  }
+
+  const minOperableUsdt = Math.max(0, input.minOperableUsdt ?? 5);
+  const buyOperable = rows.some(
+    (r) => (r.role === "BUY_SIDE" || r.role === "BOTH") && r.irtToman >= minOperableUsdt * price
+  );
+  const sellOperable = rows.some(
+    (r) => (r.role === "SELL_SIDE" || r.role === "BOTH") && r.usdtUnits >= minOperableUsdt
+  );
+  const minOperable = buyOperable && sellOperable;
+  if (!minOperable) {
+    errorsFa.push(
+      `تخصیص حداقل عملیاتی ${minOperableUsdt} تتر را هم‌زمان برای یک سمت خرید و یک سمت فروش تأمین نمی‌کند.`
+    );
   }
 
   return {
@@ -292,7 +413,9 @@ export function buildLiquidityAwarePlan(input: {
     valuationPriceToman: price,
     rows,
     allocatedToman,
-    residualToman: allocatedToman - total,
+    residualToman: allocatedToman + reserveToman - total,
+    reserveToman,
+    valid: minOperable && complementary,
     demands,
     errorsFa
   };

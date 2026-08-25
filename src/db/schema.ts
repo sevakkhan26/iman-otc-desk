@@ -871,7 +871,7 @@ export const shadowPaperLedger = pgTable(
     nextLargerRejectionReason: text("next_larger_rejection_reason"),
     nextLargerMarginalPnlToman: bigint("next_larger_marginal_pnl_toman", { mode: "number" }),
     /**
-     * Complete final sizing audit (CAPITAL_AWARE_MAX_SAFE). Restart-stable:
+     * Complete final sizing audit (MAX_RA_PNL). Restart-stable:
      * limits, ceiling, final size, binding constraint, depth/VWAP, fees,
      * predicted risk-adjusted net, inventory effect, rejection reason.
      */

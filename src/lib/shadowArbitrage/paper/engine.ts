@@ -50,7 +50,6 @@ import {
   venueExposureAfter
 } from "@/lib/shadowArbitrage/paper/utilization";
 import {
-  PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT,
   PAPER_4D_MAX_UTILIZATION_PERCENT,
   PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT,
   PAPER_4D_MIN_RESERVE_PERCENT
@@ -376,10 +375,8 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       skip(c, ["insufficient_depth"]);
       continue;
     }
-    if (c.netProfitToman <= 0) {
-      skip(c, ["net_non_positive"]);
-      continue;
-    }
+    // Discovery economics are only a size-free route observation. A red legacy
+    // probe must not gate a route whose canonical curve becomes eligible later.
     viable.push(c);
   }
 
@@ -422,7 +419,10 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
   const ledger: ReservationBook = createReservationBook(input.balances);
   const sizingByRoute = new Map<string, SizingResult>();
 
-  const sizeRoute = (c: PaperCandidate): SizingResult =>
+  const sizeRoute = (
+    c: PaperCandidate,
+    dynamicRisk?: Parameters<typeof computeRouteSize>[0]["dynamicRisk"]
+  ): SizingResult =>
     computeRouteSize({
       buySourceId: c.buySourceId,
       sellSourceId: c.sellSourceId,
@@ -440,6 +440,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       policies: input.sizing.policies,
       slippageBufferBps: input.sizing.slippageBufferBps,
       inventoryModel: input.sizing.inventoryModel,
+      dynamicRisk,
       buyQuote: input.sizing.quoteBySource?.get(c.buySourceId),
       sellQuote: input.sizing.quoteBySource?.get(c.sellSourceId)
     });
@@ -456,8 +457,13 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
   const rankedRoutes = [...provisional].sort(
     (a, b) =>
       (b.sizing.economics?.riskAdjustedPnlToman ?? 0) - (a.sizing.economics?.riskAdjustedPnlToman ?? 0) ||
-      (b.sizing.economics?.riskAdjustedReturnBps ?? 0) - (a.sizing.economics?.riskAdjustedReturnBps ?? 0) ||
+      (b.sizing.economics?.capitalEfficiencyBps ?? 0) -
+        (a.sizing.economics?.capitalEfficiencyBps ?? 0) ||
       (a.sizing.inventory?.impactPoints ?? 0) - (b.sizing.inventory?.impactPoints ?? 0) ||
+      (a.sizing.economics?.capitalLockedToman ?? Number.MAX_SAFE_INTEGER) -
+        (b.sizing.economics?.capitalLockedToman ?? Number.MAX_SAFE_INTEGER) ||
+      (a.sizing.sizeUsdtMicros ?? Number.MAX_SAFE_INTEGER) -
+        (b.sizing.sizeUsdtMicros ?? Number.MAX_SAFE_INTEGER) ||
       a.c.routeKey.localeCompare(b.c.routeKey) ||
       a.c.lifecycleId.localeCompare(b.c.lifecycleId)
   );
@@ -501,8 +507,6 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
           input.portfolioLimits?.maxUtilizationPercent ?? PAPER_4D_MAX_UTILIZATION_PERCENT,
         minReservePercent:
           input.portfolioLimits?.minReservePercent ?? PAPER_4D_MIN_RESERVE_PERCENT,
-        maxRouteCapitalPercent:
-          input.portfolioLimits?.maxRouteCapitalPercent ?? PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT,
         maxVenueExposurePercent:
           input.portfolioLimits?.maxVenueExposurePercent ?? PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT
       }
@@ -526,7 +530,6 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
   }
   const maxUtil = limits?.maxUtilizationPercent ?? PAPER_4D_MAX_UTILIZATION_PERCENT;
   const minReserve = limits?.minReservePercent ?? PAPER_4D_MIN_RESERVE_PERCENT;
-  const maxRoute = limits?.maxRouteCapitalPercent ?? PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT;
   const maxVenue = limits?.maxVenueExposurePercent ?? PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT;
   // Running reserved capital across concurrent selections this cycle.
   let reservedBuyIrt = 0;
@@ -536,7 +539,68 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
 
   for (const { c } of rankedRoutes) {
     const venuePairKey = `${c.buySourceId}->${c.sellSourceId}`;
-    const sizing = sizeRoute(c);
+    const freeBalances = availableBalances(ledger);
+    const freeBuy = freeBalances.find((b) => b.sourceId === c.buySourceId);
+    const freeSell = freeBalances.find((b) => b.sourceId === c.sellSourceId);
+    const buySnapshot = sourceForSizing(c.buySourceId);
+    const bestAsk = buySnapshot?.bookAsks
+      ?.filter((l) => l.priceToman > 0 && l.amountUsdt > 0)
+      .reduce<number | null>(
+        (best, l) => (best === null ? l.priceToman : Math.min(best, l.priceToman)),
+        null
+      );
+    const buyFeeFactor =
+      settlementFor(c.buySourceId, "buy").feeAsset === "IRT"
+        ? 1 + (c.buyFeeBps ?? 0) / 10_000
+        : 1;
+    const sellFeeFactor =
+      settlementFor(c.sellSourceId, "sell").feeAsset === "USDT"
+        ? 1 + (c.sellFeeBps ?? 0) / 10_000
+        : 1;
+    const reservationHeadroomMicros =
+      freeBuy && freeSell && bestAsk && bestAsk > 0
+        ? Math.min(
+            Math.floor((freeBuy.irtToman / (bestAsk * buyFeeFactor)) * 1_000_000),
+            Math.floor(freeSell.usdtMicros / sellFeeFactor)
+          )
+        : null;
+    const utilBefore = limits
+      ? computeUtilization({
+          equityToman: limits.equityToman,
+          markPriceToman: limits.markPriceToman,
+          reservedBuyIrtToman: reservedBuyIrt,
+          reservedSellUsdtMicros
+        })
+      : null;
+    const allowedUtilPercent = Math.min(maxUtil, Math.max(0, 100 - minReserve));
+    const allowedUtilToman = limits
+      ? Math.floor((limits.equityToman * allowedUtilPercent) / 100)
+      : null;
+    const remainingUtilToman =
+      utilBefore && allowedUtilToman !== null
+        ? Math.max(0, allowedUtilToman - utilBefore.utilizedToman)
+        : null;
+    const dynamicRisk = {
+      concurrentReservationHeadroomMicros: reservationHeadroomMicros,
+      ...(limits
+        ? {
+            freePaperCapitalToman: utilBefore?.freeToman ?? null,
+            remainingGlobalUtilizationToman: remainingUtilToman,
+            globalReserveHeadroomToman: remainingUtilToman,
+            buyConcentrationHeadroomToman: Math.max(
+              0,
+              Math.floor((limits.equityToman * maxVenue) / 100) -
+                (liveExposure.get(c.buySourceId) ?? 0)
+            ),
+            sellConcentrationHeadroomToman: Math.max(
+              0,
+              Math.floor((limits.equityToman * maxVenue) / 100) -
+                (liveExposure.get(c.sellSourceId) ?? 0)
+            )
+          }
+        : {})
+    };
+    let sizing = sizeRoute(c, dynamicRisk);
     sizingByRoute.set(venuePairKey, sizing);
 
     if (sizing.status !== "SIZED" || sizing.sizeUsdtMicros === null || !sizing.quote || !sizing.economics) {
@@ -546,14 +610,14 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
 
     // From here the candidate carries the CALCULATED size, not the probe size,
     // so the ledger records what actually traded.
-    const sizedCandidate: PaperCandidate = {
+    let sizedCandidate: PaperCandidate = {
       ...c,
       sizeUsdt: microsToUsdt(sizing.sizeUsdtMicros),
       buyVwapToman: sizing.quote.buyVwapToman,
       sellVwapToman: sizing.quote.sellVwapToman,
       slippageBufferToman: sizing.economics.slippageBufferToman
     };
-    const plan = planFill({
+    let plan = planFill({
       buySourceId: sizedCandidate.buySourceId,
       sellSourceId: sizedCandidate.sellSourceId,
       sizeUsdt: sizedCandidate.sizeUsdt,
@@ -584,71 +648,109 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
      * Applied after sizing and economic plan so we never force deployment and
      * never lower the edge threshold to hit a utilization target.
      */
-    if (limits) {
-      const capital = routeCapitalToman({
+    if (limits && plan.ok) {
+      let capital = routeCapitalToman({
         sizeUsdt: sizedCandidate.sizeUsdt,
         buyVwapToman: sizedCandidate.buyVwapToman,
         sellVwapToman: sizedCandidate.sellVwapToman,
         markPriceToman: limits.markPriceToman
       });
-      const routeCapToman = Math.floor((limits.equityToman * maxRoute) / 100);
-      if (capital > routeCapToman) {
-        decisions.push({
-          kind: "SKIP",
-          candidate: sizedCandidate,
-          code: "route_capital_cap",
-          codes: ["route_capital_cap"],
-          reasonFa: reasonLabel("route_capital_cap"),
-          requiredRebalance: null
-        });
-        continue;
-      }
       const utilNow = computeUtilization({
         equityToman: limits.equityToman,
         markPriceToman: limits.markPriceToman,
         reservedBuyIrtToman: reservedBuyIrt,
         reservedSellUsdtMicros
       });
-      if (utilNow.wouldBreach(capital, maxUtil, minReserve)) {
-        decisions.push({
-          kind: "SKIP",
-          candidate: sizedCandidate,
-          code: "portfolio_utilization_cap",
-          codes: ["portfolio_utilization_cap"],
-          reasonFa: reasonLabel("portfolio_utilization_cap"),
-          requiredRebalance: null
-        });
-        continue;
-      }
-      const buyAdd = Math.round(plan.buyLeg.notionalToman);
-      const sellAdd = Math.round(
+      let buyAdd = Math.round(plan.buyLeg.notionalToman);
+      let sellAdd = Math.round(
         sizedCandidate.sizeUsdt * (sizedCandidate.sellVwapToman || limits.markPriceToman)
       );
       const buyExp = liveExposure.get(sizedCandidate.buySourceId) ?? 0;
       const sellExp = liveExposure.get(sizedCandidate.sellSourceId) ?? 0;
-      if (
-        !venueExposureAfter({
+      const utilBreached = utilNow.wouldBreach(capital, maxUtil, minReserve);
+      const buyVenueBreached = !venueExposureAfter({
           currentExposureToman: buyExp,
           addToman: buyAdd,
           equityToman: limits.equityToman,
           maxVenuePercent: maxVenue
-        }) ||
-        !venueExposureAfter({
+        });
+      const sellVenueBreached = !venueExposureAfter({
           currentExposureToman: sellExp,
           addToman: sellAdd,
           equityToman: limits.equityToman,
           maxVenuePercent: maxVenue
-        })
-      ) {
-        decisions.push({
-          kind: "SKIP",
-          candidate: sizedCandidate,
-          code: "venue_exposure_cap",
-          codes: ["venue_exposure_cap"],
-          reasonFa: reasonLabel("venue_exposure_cap"),
-          requiredRebalance: null
         });
-        continue;
+
+      // Numeric cap became tighter than the selected point: clip the domain
+      // once and solve F again. Structural failures never enter this path.
+      if (utilBreached || buyVenueBreached || sellVenueBreached) {
+        const q = sizing.sizeUsdtMicros as number;
+        const caps: number[] = [];
+        if (utilBreached && capital > 0) {
+          const utilHeadroom = Math.max(0, (allowedUtilToman ?? 0) - utilNow.utilizedToman);
+          caps.push(Math.floor((q * utilHeadroom) / capital));
+        }
+        const venueCeiling = Math.floor((limits.equityToman * maxVenue) / 100);
+        if (buyVenueBreached && buyAdd > 0) {
+          caps.push(Math.floor((q * Math.max(0, venueCeiling - buyExp)) / buyAdd));
+        }
+        if (sellVenueBreached && sellAdd > 0) {
+          caps.push(Math.floor((q * Math.max(0, venueCeiling - sellExp)) / sellAdd));
+        }
+        const lateNumericCapUsdtMicros = Math.min(...caps);
+        sizing = sizeRoute(c, { ...dynamicRisk, lateNumericCapUsdtMicros });
+        sizingByRoute.set(venuePairKey, sizing);
+        if (
+          sizing.status !== "SIZED" ||
+          sizing.sizeUsdtMicros === null ||
+          !sizing.quote ||
+          !sizing.economics
+        ) {
+          skip(c, [utilBreached ? "portfolio_utilization_cap" : "venue_exposure_cap"]);
+          continue;
+        }
+        sizedCandidate = {
+          ...c,
+          sizeUsdt: microsToUsdt(sizing.sizeUsdtMicros),
+          buyVwapToman: sizing.quote.buyVwapToman,
+          sellVwapToman: sizing.quote.sellVwapToman,
+          slippageBufferToman: sizing.economics.slippageBufferToman
+        };
+        plan = planFill({
+          buySourceId: sizedCandidate.buySourceId,
+          sellSourceId: sizedCandidate.sellSourceId,
+          sizeUsdt: sizedCandidate.sizeUsdt,
+          buyVwapToman: sizedCandidate.buyVwapToman,
+          sellVwapToman: sizedCandidate.sellVwapToman,
+          buyFeeBps: sizedCandidate.buyFeeBps,
+          sellFeeBps: sizedCandidate.sellFeeBps,
+          buySettlement: settlementFor(sizedCandidate.buySourceId, "buy"),
+          sellSettlement: settlementFor(sizedCandidate.sellSourceId, "sell"),
+          markPriceToman: sizing.quote.markPriceToman,
+          slippageBufferToman: sizedCandidate.slippageBufferToman
+        });
+        if (!plan.ok) {
+          skip(c, [fromBrokerCode(plan.code)]);
+          continue;
+        }
+        capital = routeCapitalToman({
+          sizeUsdt: sizedCandidate.sizeUsdt,
+          buyVwapToman: sizedCandidate.buyVwapToman,
+          sellVwapToman: sizedCandidate.sellVwapToman,
+          markPriceToman: limits.markPriceToman
+        });
+        buyAdd = Math.round(plan.buyLeg.notionalToman);
+        sellAdd = Math.round(
+          sizedCandidate.sizeUsdt * (sizedCandidate.sellVwapToman || limits.markPriceToman)
+        );
+        if (
+          utilNow.wouldBreach(capital, maxUtil, minReserve) ||
+          !venueExposureAfter({ currentExposureToman: buyExp, addToman: buyAdd, equityToman: limits.equityToman, maxVenuePercent: maxVenue }) ||
+          !venueExposureAfter({ currentExposureToman: sellExp, addToman: sellAdd, equityToman: limits.equityToman, maxVenuePercent: maxVenue })
+        ) {
+          skip(c, [utilBreached ? "portfolio_utilization_cap" : "venue_exposure_cap"]);
+          continue;
+        }
       }
     }
 
@@ -664,14 +766,18 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       { sourceId: plan.sellLeg.sourceId, irtToman: 0, usdtMicros: -plan.sellLeg.deltaUsdtMicros }
     ]);
     if (!held.ok) {
-      const code: PaperReasonCode =
-        held.code === "insufficient_usdt"
-          ? "insufficient_usdt"
-          : held.code === "no_balance_record"
+      const transferWouldBeRequired =
+        held.code !== "no_balance_record" &&
+        (held.shortfallIrtToman > 0 || held.shortfallUsdtMicros > 0);
+      const code: PaperReasonCode = transferWouldBeRequired
+        ? "rebalance_required_unpriced"
+        : held.code === "no_balance_record"
             ? "no_balance_record"
             : held.code === "duplicate_hold"
               ? "lifecycle_already_processed"
-              : "insufficient_irt";
+              : held.code === "insufficient_usdt"
+                ? "insufficient_usdt"
+                : "insufficient_irt";
       decisions.push({
         kind: "SKIP",
         candidate: sizedCandidate,

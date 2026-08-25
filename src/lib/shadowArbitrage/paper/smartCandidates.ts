@@ -12,8 +12,8 @@
  *     orderCap, venueCap, inventoryCap (extra hard ceilings from caller)
  *   )
  *
- * Execution quantities come from the adaptive densified solver (integer micros +
- * book breakpoints + midpoints). Percentage probes and fixed 5/10/20/25 are
+ * Execution quantities come from exact vertices (integer micros + book
+ * breakpoints + hard caps). Percentage probes and fixed 5/10/20/25 are
  * analysis-only: they never determine or cap execution size.
  *
  * Pure module: no database, no network, no clock, no exchange client.
@@ -27,7 +27,9 @@ import {
 } from "@/lib/shadowArbitrage/paper/adaptiveSizeSolver";
 
 /** The name this sizing policy is recorded and displayed under. */
-export const SMART_SIZING_POLICY = "CAPITAL_AWARE_MAX_SAFE" as const;
+export const SMART_SIZING_POLICY = "MAX_RA_PNL" as const;
+/** @deprecated Historical label only; it is not an active policy. */
+export const DEPRECATED_CAPITAL_AWARE_MAX_SAFE = "CAPITAL_AWARE_MAX_SAFE" as const;
 
 /**
  * Ledger accounting precision only (numeric(12,4) → 1e-4 USDT).
@@ -152,9 +154,8 @@ export function slippageBoundedDepth(
 
 export type SmartCandidateSet = {
   /**
-   * Execution quantities to evaluate, ascending, densified adaptive points
-   * (not percentage probes alone). Analysis fractions are included only when
-   * they land on a quantized micros value inside [min, ceiling].
+   * Exact execution vertices to evaluate, ascending. Analysis fractions are
+   * excluded from this set.
    */
   quantities: number[];
   /** min(usable buy side, usable sell side), before any cap. */
@@ -170,6 +171,8 @@ export type SmartCandidateSet = {
   depthCapSide: "buy" | "sell";
   /** The binding minimum of every cap supplied, including the two above. */
   ceilingMicros: number;
+  /** Same ceiling before safe venue-step flooring. */
+  preRoundCeilingMicros: number;
   /** True when the ceiling itself is below the ledger quantum floor. */
   belowFloor: boolean;
   /**
@@ -190,8 +193,8 @@ export type SmartCandidateSet = {
  * Build the candidate set for one route.
  *
  * Safe maximum = min of balance, depth, and hard policy caps. Execution
- * quantities are densified adaptive breakpoints so inventory-tight routes still
- * find a smaller valid size when 10% of the ceiling would violate the band.
+ * quantities are exact book/cap endpoints. Inventory/capital crossings supplied
+ * by the caller are hard-cap vertices; no midpoint grid is used as a solver.
  * Analysis probes remain labeled fractions of the ceiling only.
  */
 export function buildSmartCandidates(input: {
@@ -209,7 +212,7 @@ export function buildSmartCandidates(input: {
   extraCapsMicros: number[];
   granularityMicros: number;
   minMicros?: number;
-  /** Order-book levels for breakpoint densification (optional but preferred). */
+  /** Order-book levels whose cumulative endpoints form exact vertices. */
   buyLevels?: BookLevel[];
   sellLevels?: BookLevel[];
 }): SmartCandidateSet {
@@ -262,7 +265,7 @@ export function buildSmartCandidates(input: {
     analysisFractions: ANALYSIS_PROBE_FRACTIONS
   });
 
-  // Execution set = adaptive densified points (includes analysis points that land in range).
+  // Execution set = endpoints only. Analysis points never enter decisioning.
   const quantities = adaptive.allPoints;
 
   return {
@@ -273,7 +276,8 @@ export function buildSmartCandidates(input: {
     capitalCapMicros,
     depthCapMicros,
     depthCapSide,
-    ceilingMicros: rawCeiling,
+    ceilingMicros,
+    preRoundCeilingMicros: rawCeiling,
     belowFloor: ceilingMicros < minMicros,
     ladder,
     adaptive: {

@@ -741,13 +741,13 @@ await test("pair generation and lifecycle de-dup", () => {
   ];
   const t1 = "2026-07-28T10:00:00.000Z";
   const first = buildOpportunities(sources, [], t1);
-  const active1 = first.filter((o) => o.isActive && o.routeKey === "nobitex->wallex@5");
+  const active1 = first.filter((o) => o.isActive && o.routeKey === "nobitex->wallex");
   assert.equal(active1.length, 1);
   const id1 = active1[0]!.id;
 
   const t2 = "2026-07-28T10:00:30.000Z";
   const second = buildOpportunities(sources, first, t2);
-  const active2 = second.filter((o) => o.isActive && o.routeKey === "nobitex->wallex@5");
+  const active2 = second.filter((o) => o.isActive && o.routeKey === "nobitex->wallex");
   assert.equal(active2.length, 1, "one lifecycle, not a new row per cycle");
   assert.equal(active2[0]!.id, id1);
   assert.equal(active2[0]!.firstSeenAt, t1);
@@ -768,7 +768,7 @@ await test("only material (crossing) routes create lifecycles", () => {
   );
   assert.ok([...routes].some((r) => r.startsWith("wallex->nobitex")));
   // Every evaluated pair is still represented in the aggregate drafts.
-  assert.equal(built.drafts.length, 2 * 4);
+  assert.equal(built.drafts.length, 2, "one draft per ordered pair, not four size probes");
 });
 
 await test("lifecycle start / end / reappearance", () => {
@@ -782,7 +782,7 @@ await test("lifecycle start / end / reappearance", () => {
 
   const t2 = "2026-07-28T10:01:00.000Z";
   const closed = mergeWithTransitions(opened.opportunities, [], t2);
-  const ended = closed.merged.find((m) => m.routeKey === "nobitex->wallex@5")!;
+  const ended = closed.merged.find((m) => m.routeKey === "nobitex->wallex")!;
   assert.equal(ended.isActive, false);
   assert.ok(ended.endedAt);
   assert.ok(closed.transitions.some((t) => t.eventType === "closed"));
@@ -793,7 +793,7 @@ await test("lifecycle start / end / reappearance", () => {
     again.transitions.some((t) => t.eventType === "reappeared"),
     "closed route returning must be recorded as reappeared"
   );
-  const fresh = again.opportunities.find((o) => o.routeKey === "nobitex->wallex@5" && o.isActive)!;
+  const fresh = again.opportunities.find((o) => o.routeKey === "nobitex->wallex" && o.isActive)!;
   assert.equal(fresh.firstSeenAt, t3, "reappearance opens a new lifecycle");
   assert.notEqual(fresh.id, ended.id);
 });
@@ -802,7 +802,7 @@ await test("merge ends missing routes", () => {
   const prev: ShadowOpportunity[] = [
     {
       id: "abc",
-      routeKey: "nobitex->wallex@5",
+      routeKey: "nobitex->wallex",
       buySourceId: "nobitex",
       sellSourceId: "wallex",
       buySourceName: "ن",
@@ -839,7 +839,7 @@ await test("merge ends missing routes", () => {
     }
   ];
   const merged = mergeOpportunityLifecycle(prev, [], "2026-07-28T10:01:00.000Z");
-  const ended = merged.find((m) => m.routeKey === "nobitex->wallex@5");
+  const ended = merged.find((m) => m.routeKey === "nobitex->wallex");
   assert.equal(ended?.isActive, false);
   assert.ok(ended?.endedAt);
 });
@@ -881,7 +881,7 @@ await test("stale / uncertified sources block executability", () => {
     new Date().toISOString(),
     { certStatuses: { nobitex: "LIVE_DEGRADED", wallex: "LIVE_VERIFIED" } }
   );
-  const gated = uncertified.opportunities.find((o) => o.routeKey === "nobitex->wallex@5")!;
+  const gated = uncertified.opportunities.find((o) => o.routeKey === "nobitex->wallex")!;
   assert.ok(gated.blockedReasons.includes("source_not_certified"));
   assert.equal(gated.eligibility, "BLOCKED");
 });
@@ -1306,7 +1306,7 @@ const capPlan = (allocations: CapitalPlanInput["allocations"], total = 50_000_00
 
 const CAP_ROUTES: RouteEvidence[] = [
   {
-    routeKey: "nobitex->wallex@25",
+    routeKey: "nobitex->wallex",
     buySourceId: "nobitex",
     sellSourceId: "wallex",
     sizeUsdt: 25,
@@ -1316,7 +1316,7 @@ const CAP_ROUTES: RouteEvidence[] = [
     feeUnknown: false
   },
   {
-    routeKey: "wallex->nobitex@25",
+    routeKey: "wallex->nobitex",
     buySourceId: "wallex",
     sellSourceId: "nobitex",
     sizeUsdt: 25,
@@ -1326,7 +1326,7 @@ const CAP_ROUTES: RouteEvidence[] = [
     feeUnknown: false
   },
   {
-    routeKey: "bitpin->nobitex@25",
+    routeKey: "bitpin->nobitex",
     buySourceId: "bitpin",
     sellSourceId: "nobitex",
     sizeUsdt: 25,
@@ -1979,7 +1979,7 @@ function paperOpportunity(over: Partial<ShadowOpportunity> = {}): ShadowOpportun
   const now = new Date(CAP_NOW).toISOString();
   const size = (over.sizeUsdt ?? 25) as 5 | 10 | 20 | 25;
   return {
-    id: over.id ?? `lc-${over.routeKey ?? "nobitex->wallex@25"}`,
+    id: over.id ?? `lc-${over.routeKey ?? "nobitex->wallex"}`,
     routeKey: over.routeKey ?? `nobitex->wallex@${size}`,
     buySourceId: "nobitex",
     sellSourceId: "wallex",
@@ -2152,11 +2152,15 @@ await test("Phase 6 gates on risk-adjusted economic PnL, never on cash PnL alone
   const feeValue = 8_750;
   assert.ok(cashOnly - feeValue <= 0, "economic PnL was not");
 
-  // A higher mark price makes the same fee more expensive and can flip a trade.
+  // A session capital mark cannot reprice USDT fees: THIS-q buy VWAP is canonical.
   const cheapMark = confirmedFill({ sellVwapToman: 101_000, slippageBufferToman: 0, markPriceToman: 100_000 });
   const dearMark = confirmedFill({ sellVwapToman: 101_000, slippageBufferToman: 0, markPriceToman: 300_000 });
   assert.equal(cheapMark.ok, true);
-  assert.equal(dearMark.ok, false, "valuing the USDT fee higher can block the trade");
+  assert.equal(dearMark.ok, true);
+  if (cheapMark.ok && dearMark.ok) {
+    assert.equal(dearMark.sellFeeValueToman, cheapMark.sellFeeValueToman);
+    assert.equal(dearMark.riskAdjustedPnlToman, cheapMark.riskAdjustedPnlToman);
+  }
 });
 
 await test("Phase 6 blocks when the same-cycle mark price is missing", () => {
@@ -2378,12 +2382,12 @@ await test("Phase 6 applies the best-ranked candidate first when balances are sc
 
   const rich = paperOpportunity({
     id: "lc-rich",
-    routeKey: "nobitex->wallex@25",
+    routeKey: "nobitex->wallex",
     sellVwapToman: 104_000
   });
   const poor = paperOpportunity({
     id: "lc-poor",
-    routeKey: "nobitex->tabdeal@25",
+    routeKey: "nobitex->tabdeal",
     sellSourceId: "tabdeal",
     sellVwapToman: 100_500
   });
@@ -2494,7 +2498,7 @@ await test("Phase 6 skips stale data, thin depth and ineligible venues with a re
 
   // A venue with no usable account can never be traded, even with a live book.
   const ineligible = evaluateCycle({ sizing: paperSizing(),
-    opportunities: [paperOpportunity({ sellSourceId: "bitpin", routeKey: "nobitex->bitpin@25" })],
+    opportunities: [paperOpportunity({ sellSourceId: "bitpin", routeKey: "nobitex->bitpin" })],
     sources: [...paperSources(), mockSource("bitpin", "بیت‌پین", 103_000, 102_000)],
     venueStates: states,
     executedLifecycleIds: new Set(),
@@ -2631,7 +2635,7 @@ await test("Phase 6 never runs on a venue outside the nine Shadow sources", () =
     opportunities: [
       paperOpportunity({
         buySourceId: "ompfinex" as ShadowSourceId,
-        routeKey: "ompfinex->wallex@25",
+        routeKey: "ompfinex->wallex",
         id: "lc-omp"
       })
     ],
@@ -2744,7 +2748,7 @@ await test("v4.9.1 the engine reports the exact upstream cause on every skip", (
   );
   const refOnly = evaluateCycle({ sizing: paperSizing(),
     opportunities: [
-      paperOpportunity({ id: "lc-ref", sellSourceId: "arzinja", routeKey: "nobitex->arzinja@25" })
+      paperOpportunity({ id: "lc-ref", sellSourceId: "arzinja", routeKey: "nobitex->arzinja" })
     ],
     sources: [...paperSources(), mockSource("arzinja", "ارزینجا", 103_000, 102_000)],
     venueStates: referenceStates,
@@ -3197,7 +3201,7 @@ function fakePlan(): ExecutionPlan {
   return {
     planId: "plan-abc",
     lifecycleId: "lc-abc",
-    routeKey: "nobitex->wallex@25",
+    routeKey: "nobitex->wallex",
     surface: "FAKE",
     state: "APPROVED",
     buyLeg: {

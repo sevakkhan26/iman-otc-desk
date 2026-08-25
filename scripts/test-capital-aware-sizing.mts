@@ -150,7 +150,7 @@ function sizeAtCapital(capitalToman: number, depthUsdtPerLevel = 500, levels = 2
 }
 
 await test("policy constants: full capital/depth, no 5/10/20/25 execution cap", () => {
-  assert.equal(SMART_SIZING_POLICY, "CAPITAL_AWARE_MAX_SAFE");
+  assert.equal(SMART_SIZING_POLICY, "MAX_RA_PNL");
   assert.equal(CAPITAL_CAP_PERCENT, 100);
   assert.equal(DEPTH_CAP_PERCENT, 100);
   // Precision constant only — not the trade floor.
@@ -336,7 +336,7 @@ await test("10B with order cap 500: final ≤500 and order_cap binds", () => {
   );
 });
 
-await test("tight inventory selects largest smaller valid size (adaptive)", () => {
+await test("tight inventory clips the domain and re-optimizes on exact vertices", () => {
   const bals = sessionBalances(10_000_000_000);
   const buy = bals.find((b) => b.sourceId === "nobitex")!;
   const sell = bals.find((b) => b.sourceId === "wallex")!;
@@ -384,13 +384,18 @@ await test("tight inventory selects largest smaller valid size (adaptive)", () =
   assert.equal(tight.status, "SIZED", JSON.stringify(tight.blockers));
   assert.ok(tight.sizeUsdtMicros! < wide.sizeUsdtMicros!);
   assert.ok(tight.sizeUsdtMicros! >= MIN_EXECUTABLE_USDT_MICROS);
-  assert.ok((tight.audit?.adaptive.candidateCount ?? 0) > 5, "adaptive densify");
+  assert.ok((tight.audit?.adaptive.candidateCount ?? 0) >= 2, "exact vertices evaluated");
+  assert.ok(
+    (tight.audit?.waterfall.allocationInventoryD.inventoryHeadroomUsdtMicros ?? Infinity) <
+      (wide.maxFeasibleUsdtMicros ?? 0),
+    "inventory headroom is the numeric D clip"
+  );
   console.log(
     `        tight inventory size=${microsToUsdt(tight.sizeUsdtMicros!)} vs wide=${microsToUsdt(wide.sizeUsdtMicros!)}`
   );
 });
 
-await test("adaptive densify: more execution points than analysis probes alone", () => {
+await test("endpoint union can contain more vertices than analysis probes", () => {
   const set = buildSmartCandidates({
     buyUsableMicros: usdtToMicros(5_000),
     sellUsableMicros: usdtToMicros(5_000),

@@ -1,12 +1,12 @@
 /**
  * Deterministic adaptive size solver for paper execution.
  *
- * Finds the largest valid USDT size in [minExecutable, hardCeiling] using:
+ * Builds the exact endpoint set in [minExecutable, hardCeiling] using:
  *  - integer micros + ledger granularity
  *  - order-book cumulative breakpoints (both legs)
- *  - densified midpoints so inventory-tight routes still find a smaller valid size
  *
- * Percentage probes and fixed 5/10/20/25 are NOT used as the execution selector.
+ * Midpoints and percentage probes are NOT execution candidates. Between book
+ * vertices canonical RA is affine, so an optimum is at an endpoint.
  * Pure: no I/O, no clock, no network.
  */
 import { orderedLevels, usdtToMicros, type BookSide } from "@/lib/shadowArbitrage/paper/liquidity";
@@ -40,8 +40,8 @@ export function cumulativeBookBreakpoints(
 }
 
 /**
- * Densify a sorted unique list of breakpoints so large gaps get midpoints.
- * Stops when every adjacent gap is ≤ maxGapMicros (or min steps reached).
+ * @deprecated Analysis/display helper only. Execution candidate construction
+ * never calls this midpoint sampler.
  */
 export function densifyBreakpoints(
   points: number[],
@@ -82,8 +82,8 @@ export function densifyBreakpoints(
 }
 
 /**
- * Build the execution candidate set for the adaptive solver.
- * Analysis-only fractions may be appended for UI but do not define the ceiling.
+ * Build the execution vertex set. Analysis fractions are returned separately
+ * for display only and are never appended to `executionPoints`/`allPoints`.
  */
 export function buildAdaptiveExecutionPoints(input: {
   ceilingMicros: number;
@@ -116,13 +116,15 @@ export function buildAdaptiveExecutionPoints(input: {
 
   const buyBp = cumulativeBookBreakpoints(input.buyLevels, "buy", ceiling, gran);
   const sellBp = cumulativeBookBreakpoints(input.sellLevels, "sell", ceiling, gran);
-  const densified = densifyBreakpoints(
-    [...buyBp, ...sellBp],
-    minMicros,
-    ceiling,
-    gran,
-    Math.max(gran * 100, Math.floor(ceiling / 32))
-  );
+  const vertices = new Set<number>();
+  const addVertex = (raw: number) => {
+    const q = quantizeMicros(raw, gran);
+    if (q >= minMicros && q <= ceiling) vertices.add(q);
+  };
+  addVertex(minMicros);
+  addVertex(ceiling);
+  for (const point of buyBp) addVertex(point);
+  for (const point of sellBp) addVertex(point);
 
   const analysisPoints: number[] = [];
   for (const f of input.analysisFractions ?? [0.1, 0.25, 0.5, 0.75, 1.0]) {
@@ -130,9 +132,8 @@ export function buildAdaptiveExecutionPoints(input: {
     if (q >= minMicros && q <= ceiling) analysisPoints.push(q);
   }
 
-  const executionPoints = densified;
-  const all = new Set([...executionPoints, ...analysisPoints, ceiling, minMicros]);
-  const allPoints = [...all].filter((q) => q >= minMicros && q <= ceiling).sort((a, b) => a - b);
+  const executionPoints = [...vertices].sort((a, b) => a - b);
+  const allPoints = executionPoints;
 
   return {
     minMicros,
@@ -144,8 +145,7 @@ export function buildAdaptiveExecutionPoints(input: {
 }
 
 /**
- * Given evaluated points with eligibility, pick the largest valid size.
- * Pure selection — evaluation is the caller's job.
+ * @deprecated Historical comparison helper. Never use for execution.
  */
 export function selectLargestValid(
   evaluated: Array<{ sizeUsdtMicros: number; eligible: boolean }>
@@ -156,4 +156,25 @@ export function selectLargestValid(
     if (best === null || e.sizeUsdtMicros > best) best = e.sizeUsdtMicros;
   }
   return best;
+}
+
+/** Canonical objective selector; execution callers must use this, not largest-q. */
+export function selectMaxRiskAdjustedPnl<T extends {
+  sizeUsdtMicros: number;
+  eligible: boolean;
+  riskAdjustedPnlToman: number;
+  capitalEfficiencyBps: number;
+  inventoryImpactPoints: number;
+  capitalLockedToman: number;
+}>(evaluated: T[]): T | null {
+  const eligible = evaluated.filter((e) => e.eligible);
+  if (!eligible.length) return null;
+  return [...eligible].sort(
+    (a, b) =>
+      b.riskAdjustedPnlToman - a.riskAdjustedPnlToman ||
+      b.capitalEfficiencyBps - a.capitalEfficiencyBps ||
+      a.inventoryImpactPoints - b.inventoryImpactPoints ||
+      a.capitalLockedToman - b.capitalLockedToman ||
+      a.sizeUsdtMicros - b.sizeUsdtMicros
+  )[0]!;
 }

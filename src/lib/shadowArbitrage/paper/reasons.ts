@@ -30,6 +30,7 @@ export type PaperReasonCode =
   | "same_venue"
   // paper-engine state
   | "mark_price_unavailable"
+  | "rebalance_required_unpriced"
   | "insufficient_irt"
   | "insufficient_usdt"
   | "negative_balance_guard"
@@ -59,6 +60,8 @@ export const PAPER_REASON_FA: Record<PaperReasonCode, string> = {
   rate_limited: "محدودیت نرخ درخواست منبع",
   same_venue: "خرید و فروش روی یک صرافی",
   mark_price_unavailable: "قیمت مرجع تتر در همین چرخه در دسترس یا تازه نیست",
+  rebalance_required_unpriced:
+    "انتقال/بازتوازن لازم است اما هزینهٔ اقتصادی آن تأیید نشده؛ مسیر بسته می‌ماند",
   insufficient_irt: "موجودی تومانی صرافی خرید کافی نیست",
   insufficient_usdt: "موجودی تتری صرافی فروش کافی نیست",
   negative_balance_guard: "این معامله موجودی را منفی می‌کرد",
@@ -121,6 +124,7 @@ const PRIORITY: PaperReasonCode[] = [
   "insufficient_depth",
   "mark_price_unavailable",
   "net_non_positive",
+  "rebalance_required_unpriced",
   "insufficient_irt",
   "insufficient_usdt",
   "negative_balance_guard",

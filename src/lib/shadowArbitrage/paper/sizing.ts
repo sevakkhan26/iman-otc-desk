@@ -397,6 +397,13 @@ export type SizingAudit = {
   grossSpreadToman: number | null;
   buyFeeBps: number | null;
   sellFeeBps: number | null;
+  /** Canonical settlement inputs persisted with the decision diagnostics. */
+  canonicalInputs: {
+    buySettlement: SideSettlement | null;
+    sellSettlement: SideSettlement | null;
+    capitalMarkPriceToman: number | null;
+    riskBufferBps: number | null;
+  };
   predictedRiskAdjustedNetToman: number | null;
   riskAdjustedReturnBps: number | null;
   inventoryEffectPoints: number | null;
@@ -452,6 +459,10 @@ export type SizingAudit = {
     observedImpactToman: number | null;
     riskBufferToman: number | null;
     capitalLockedToman: number | null;
+    buyDebitIrtToman: number | null;
+    sellDebitUsdtMicros: number | null;
+    economicNetPnlToman: number | null;
+    riskAdjustedPnlToman: number | null;
   };
 };
 
@@ -770,6 +781,12 @@ function blocked(blockers: SizingBlocker[], constraints: SizingConstraint[] = []
       grossSpreadToman: null,
       buyFeeBps: null,
       sellFeeBps: null,
+      canonicalInputs: {
+        buySettlement: null,
+        sellSettlement: null,
+        capitalMarkPriceToman: null,
+        riskBufferBps: null
+      },
       predictedRiskAdjustedNetToman: null,
       riskAdjustedReturnBps: null,
       inventoryEffectPoints: null,
@@ -813,7 +830,11 @@ function blocked(blockers: SizingBlocker[], constraints: SizingConstraint[] = []
         sellFeeUsdtMicros: null,
         observedImpactToman: null,
         riskBufferToman: null,
-        capitalLockedToman: null
+        capitalLockedToman: null,
+        buyDebitIrtToman: null,
+        sellDebitUsdtMicros: null,
+        economicNetPnlToman: null,
+        riskAdjustedPnlToman: null
       }
     }
   };
@@ -834,6 +855,10 @@ function buildAudit(partial: {
   adaptiveMeta: SmartCandidateSet["adaptive"] | null;
   buyFeeBps: number | null;
   sellFeeBps: number | null;
+  buySettlement: SideSettlement;
+  sellSettlement: SideSettlement;
+  capitalMarkPriceToman: number;
+  riskBufferBps: number;
   /** Effective Paper floor. Not ledger quantum. */
   minExecutableUsdtMicros?: number | null;
   paperPolicyMinUsdtMicros?: number | null;
@@ -908,6 +933,12 @@ function buildAudit(partial: {
     grossSpreadToman,
     buyFeeBps: partial.buyFeeBps,
     sellFeeBps: partial.sellFeeBps,
+    canonicalInputs: {
+      buySettlement: partial.buySettlement,
+      sellSettlement: partial.sellSettlement,
+      capitalMarkPriceToman: partial.capitalMarkPriceToman,
+      riskBufferBps: partial.riskBufferBps
+    },
     predictedRiskAdjustedNetToman: partial.economics?.riskAdjustedPnlToman ?? null,
     riskAdjustedReturnBps: partial.economics?.riskAdjustedReturnBps ?? null,
     inventoryEffectPoints: partial.inventory?.measurable ? partial.inventory.impactPoints : null,
@@ -987,7 +1018,11 @@ function buildAudit(partial: {
       sellFeeUsdtMicros: partial.economics?.sellFeeUsdtMicros ?? null,
       observedImpactToman: partial.economics?.observedImpactToman ?? null,
       riskBufferToman: partial.economics?.slippageBufferToman ?? null,
-      capitalLockedToman: partial.economics?.capitalLockedToman ?? null
+      capitalLockedToman: partial.economics?.capitalLockedToman ?? null,
+      buyDebitIrtToman: partial.economics?.buyDebitIrtToman ?? null,
+      sellDebitUsdtMicros: partial.economics?.sellDebitUsdtMicros ?? null,
+      economicNetPnlToman: partial.economics?.economicNetPnlToman ?? null,
+      riskAdjustedPnlToman: partial.economics?.riskAdjustedPnlToman ?? null
     }
   };
 }
@@ -1612,6 +1647,10 @@ export function computeRouteSize(input: SizingInput): SizingResult {
         adaptiveMeta: candidateSet.adaptive,
         buyFeeBps,
         sellFeeBps,
+        buySettlement: input.buySettlement,
+        sellSettlement: input.sellSettlement,
+        capitalMarkPriceToman: capitalMark,
+        riskBufferBps: input.slippageBufferBps,
         minExecutableUsdtMicros: routeMinExecutableMicros,
         ...paperFloorMeta
       })
@@ -1728,7 +1767,8 @@ export function computeRouteSize(input: SizingInput): SizingResult {
       impactPoints: 0,
       withinBand: false,
       breachedSourceId: null,
-      breachDetailFa: null
+      breachDetailFa: null,
+      freeze: null
     };
     const zeroEcon: SizingEconomics = {
       capitalInvolvedToman: 0,
@@ -1957,6 +1997,10 @@ export function computeRouteSize(input: SizingInput): SizingResult {
         adaptiveMeta: candidateSet.adaptive,
         buyFeeBps,
         sellFeeBps,
+        buySettlement: input.buySettlement,
+        sellSettlement: input.sellSettlement,
+        capitalMarkPriceToman: capitalMark,
+        riskBufferBps: input.slippageBufferBps,
         minExecutableUsdtMicros: routeMinExecutableMicros,
         ...paperFloorMeta
       })
@@ -2018,6 +2062,10 @@ export function computeRouteSize(input: SizingInput): SizingResult {
         adaptiveMeta: candidateSet.adaptive,
         buyFeeBps,
         sellFeeBps,
+        buySettlement: input.buySettlement,
+        sellSettlement: input.sellSettlement,
+        capitalMarkPriceToman: capitalMark,
+        riskBufferBps: input.slippageBufferBps,
         minExecutableUsdtMicros: routeMinExecutableMicros,
         ...paperFloorMeta
       })
@@ -2118,6 +2166,10 @@ export function computeRouteSize(input: SizingInput): SizingResult {
       adaptiveMeta: candidateSet.adaptive,
       buyFeeBps,
       sellFeeBps,
+      buySettlement: input.buySettlement,
+      sellSettlement: input.sellSettlement,
+      capitalMarkPriceToman: capitalMark,
+      riskBufferBps: input.slippageBufferBps,
       minExecutableUsdtMicros: routeMinExecutableMicros,
       ...paperFloorMeta
     })

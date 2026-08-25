@@ -138,6 +138,12 @@ export type InventoryAssessment = {
   /** The venue the trade would push out of band. Null when none would be. */
   breachedSourceId: string | null;
   breachDetailFa: string | null;
+  /** Explicit one-side freeze when a depleted venue would be drained further. */
+  freeze: {
+    sourceId: string;
+    depletedSide: "SELL_USDT" | "BUY_IRT";
+    detailFa: string;
+  } | null;
 };
 
 function unmeasurable(reason: InventoryReason): InventoryAssessment {
@@ -151,7 +157,8 @@ function unmeasurable(reason: InventoryReason): InventoryAssessment {
     // Fail closed: an inventory limit that cannot be measured is not satisfied.
     withinBand: false,
     breachedSourceId: null,
-    breachDetailFa: INVENTORY_REASON_FA[reason]
+    breachDetailFa: INVENTORY_REASON_FA[reason],
+    freeze: null
   };
 }
 
@@ -223,9 +230,66 @@ export function assessInventory(input: {
         withinBand: false,
         breachedSourceId: src,
         breachDetailFa:
-          "باند موجودی بسته است (انحراف مجاز ۰)؛ هیچ تغییری در موجودی — حتی در حد گرد — مجاز نیست."
+          "باند موجودی بسته است (انحراف مجاز ۰)؛ هیچ تغییری در موجودی — حتی در حد گرد — مجاز نیست.",
+        freeze: null
       };
     }
+  }
+
+  /*
+   * Adaptive one-side freeze. At either inventory boundary, only movement back
+   * toward the target remains legal: a USDT-light venue may BUY but may not
+   * SELL, and an IRT-light (USDT-heavy) venue may SELL but may not BUY. The
+   * delta signs come from canonical settlement, so fee denomination cannot
+   * accidentally reverse the classification. The 0.01% endpoints also cover
+   * physically depleted inventory even when a very wide target band was set.
+   */
+  let freeze: InventoryAssessment["freeze"] = null;
+  for (let i = 0; i < before.length; i += 1) {
+    const b = before[i];
+    const delta = input.deltas[i];
+    const lightBoundary = b.targetUsdtSharePercent - input.model.maxDeviationPoints;
+    const heavyBoundary = b.targetUsdtSharePercent + input.model.maxDeviationPoints;
+    const usdtLight = b.usdtSharePercent <= lightBoundary || b.usdtSharePercent <= 0.01;
+    const irtLight = b.usdtSharePercent >= heavyBoundary || b.usdtSharePercent >= 99.99;
+    const drainsUsdt = delta.deltaUsdtMicros < 0 && delta.deltaIrtToman >= 0;
+    const drainsIrt = delta.deltaIrtToman < 0 && delta.deltaUsdtMicros >= 0;
+
+    if (usdtLight && drainsUsdt) {
+      freeze = {
+        sourceId: b.sourceId,
+        depletedSide: "SELL_USDT",
+        detailFa:
+          `${b.sourceId}: سهم تتر ${b.usdtSharePercent.toFixed(2)}٪ در/بیرون مرز کمبود تتر ` +
+          `${lightBoundary.toFixed(2)}٪ است؛ فروش بیشتر منجمد است اما خریدِ ترمیمی مجاز می‌ماند.`
+      };
+      break;
+    }
+    if (irtLight && drainsIrt) {
+      freeze = {
+        sourceId: b.sourceId,
+        depletedSide: "BUY_IRT",
+        detailFa:
+          `${b.sourceId}: سهم تتر ${b.usdtSharePercent.toFixed(2)}٪ در/بیرون مرز کمبود تومان ` +
+          `${heavyBoundary.toFixed(2)}٪ است؛ خرید بیشتر منجمد است اما فروشِ ترمیمی مجاز می‌ماند.`
+      };
+      break;
+    }
+  }
+
+  if (freeze) {
+    return {
+      measurable: true,
+      reason: "ok",
+      reasonFa: INVENTORY_REASON_FA.ok,
+      before,
+      after,
+      impactPoints,
+      withinBand: false,
+      breachedSourceId: freeze.sourceId,
+      breachDetailFa: freeze.detailFa,
+      freeze
+    };
   }
 
   /*
@@ -258,7 +322,8 @@ export function assessInventory(input: {
     impactPoints,
     withinBand: breachedSourceId === null,
     breachedSourceId,
-    breachDetailFa
+    breachDetailFa,
+    freeze: null
   };
 }
 

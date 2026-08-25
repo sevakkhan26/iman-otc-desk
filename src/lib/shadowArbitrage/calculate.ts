@@ -11,7 +11,10 @@ import type {
 } from "@/lib/shadowArbitrage/types";
 import { mergeWithTransitions, type LifecycleTransition } from "@/lib/shadowArbitrage/lifecycle";
 import { walkBook } from "@/lib/shadowArbitrage/paper/liquidity";
-import { slippageBoundedDepth } from "@/lib/shadowArbitrage/paper/smartCandidates";
+import {
+  settlementFor,
+  type SideSettlement
+} from "@/lib/shadowArbitrage/paper/broker";
 import { PAPER_POLICY_MIN_USDT_MICROS } from "@/lib/shadowArbitrage/paper/venueExecutionLimits";
 
 /** Reasons that make an "executable now" claim impossible (spec §7). */
@@ -109,6 +112,8 @@ export type BuildOptions = {
   >;
   /** Confirmed fee-tier discontinuity may justify scanning a non-crossed TOB. */
   confirmedFeeTierJumpRoutes?: ReadonlySet<string>;
+  /** Test seam; production discovery uses the Paper broker's venue/side map. */
+  settlementResolver?: (sourceId: ShadowSourceId, side: "buy" | "sell") => SideSettlement;
 };
 
 export type BuildResult = {
@@ -134,6 +139,7 @@ export function buildOpportunitiesDetailed(
   const materialRouteKeys = new Set<string>();
   const blockedCounts: Record<string, number> = {};
   let skippedPairs = 0;
+  const resolveSettlement = options.settlementResolver ?? settlementFor;
 
   const bump = (reasons: Iterable<BlockedReasonCode>) => {
     for (const r of reasons) blockedCounts[r] = (blockedCounts[r] ?? 0) + 1;
@@ -186,53 +192,37 @@ export function buildOpportunitiesDetailed(
       const feeTierJump = options.confirmedFeeTierJumpRoutes?.has(rk) ?? false;
       if (rawTobCross || feeTierJump) materialRouteKeys.add(rk);
 
-      const buyAccepted = buy.bookAsks
-        ? slippageBoundedDepth(buy.bookAsks, "buy", 10).depthMicros
-        : 0;
-      const sellAccepted = sell.bookBids
-        ? slippageBoundedDepth(sell.bookBids, "sell", 10).depthMicros
-        : 0;
-      const depthCeiling = Math.min(buyAccepted, sellAccepted);
-      const rawVertices = new Set<number>([PAPER_POLICY_MIN_USDT_MICROS, depthCeiling]);
-      let cumulative = 0;
-      for (const level of [...(buy.bookAsks ?? [])].sort((a, b) => a.priceToman - b.priceToman)) {
-        cumulative += Math.round(level.amountUsdt * 1_000_000);
-        if (cumulative <= depthCeiling) rawVertices.add(cumulative);
-      }
-      cumulative = 0;
-      for (const level of [...(sell.bookBids ?? [])].sort((a, b) => b.priceToman - a.priceToman)) {
-        cumulative += Math.round(level.amountUsdt * 1_000_000);
-        if (cumulative <= depthCeiling) rawVertices.add(cumulative);
-      }
-
-      const priced = [...rawVertices]
-        .filter((q) => q >= PAPER_POLICY_MIN_USDT_MICROS && q <= depthCeiling)
-        .sort((a, b) => a - b)
-        .map((q) => {
-          const bw = walkBook(buy.bookAsks ?? [], q, "buy");
-          const sw = walkBook(sell.bookBids ?? [], q, "sell");
-          if (!bw.complete || !sw.complete || bw.vwapToman === null || sw.vwapToman === null) return null;
-          return {
-            q,
-            bw,
-            sw,
-            econ: computeRouteEconomics({
-              buySourceId: buy.sourceId,
-              sellSourceId: sell.sourceId,
-              sizeUsdt: q / 1_000_000,
-              buyVwapToman: bw.vwapToman,
-              sellVwapToman: sw.vwapToman,
-              buyNotionalToman: bw.notionalToman,
-              sellNotionalToman: sw.notionalToman,
-              confirmedFeeBps: options.confirmedFeeBps
-            })
-          };
-        })
-        .filter((x): x is NonNullable<typeof x> => x !== null);
-
-      const bestPriced = [...priced].sort(
-        (a, b) => b.econ.netProfitToman - a.econ.netProfitToman || a.q - b.q
-      )[0] ?? null;
+      /*
+       * Observation telemetry is deliberately cheap and size-free: price one
+       * policy-minimum vertex, but never use its PnL as the route-existence or
+       * execution-size gate. The canonical optimizer owns the complete curve.
+       */
+      const observationQ = PAPER_POLICY_MIN_USDT_MICROS;
+      const observationBuyWalk = walkBook(buy.bookAsks ?? [], observationQ, "buy");
+      const observationSellWalk = walkBook(sell.bookBids ?? [], observationQ, "sell");
+      const bestPriced =
+        observationBuyWalk.complete &&
+        observationSellWalk.complete &&
+        observationBuyWalk.vwapToman !== null &&
+        observationSellWalk.vwapToman !== null
+          ? {
+              q: observationQ,
+              bw: observationBuyWalk,
+              sw: observationSellWalk,
+              econ: computeRouteEconomics({
+                buySourceId: buy.sourceId,
+                sellSourceId: sell.sourceId,
+                sizeUsdt: observationQ / 1_000_000,
+                buyVwapToman: observationBuyWalk.vwapToman,
+                sellVwapToman: observationSellWalk.vwapToman,
+                buyNotionalToman: observationBuyWalk.notionalToman,
+                sellNotionalToman: observationSellWalk.notionalToman,
+                confirmedFeeBps: options.confirmedFeeBps,
+                buySettlement: resolveSettlement(buy.sourceId, "buy"),
+                sellSettlement: resolveSettlement(sell.sourceId, "sell")
+              })
+            }
+          : null;
       const size = (bestPriced?.q ?? PAPER_POLICY_MIN_USDT_MICROS) / 1_000_000;
       const buyVwap = bestPriced?.bw.vwapToman ?? bestBuy ?? 0;
       const sellVwap = bestPriced?.sw.vwapToman ?? bestSell ?? 0;
@@ -249,7 +239,9 @@ export function buildOpportunitiesDetailed(
           sizeUsdt: size,
           buyVwapToman: buyVwap,
           sellVwapToman: sellVwap,
-          confirmedFeeBps: options.confirmedFeeBps
+          confirmedFeeBps: options.confirmedFeeBps,
+          buySettlement: resolveSettlement(buy.sourceId, "buy"),
+          sellSettlement: resolveSettlement(sell.sourceId, "sell")
         });
       for (const r of econ.blocked) reasons.add(r);
 
@@ -267,8 +259,6 @@ export function buildOpportunitiesDetailed(
         eligibility = "REFERENCE_ONLY";
       } else if (reasons.has("account_required")) {
         eligibility = "ACCOUNT_REQUIRED";
-      } else if (reasons.has("non_positive_net")) {
-        eligibility = "BLOCKED";
       }
 
       bump(reasons);

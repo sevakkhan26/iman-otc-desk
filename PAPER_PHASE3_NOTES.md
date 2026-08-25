@@ -8,6 +8,12 @@ This change implements simulated PAPER/FAKE discovery, pricing, sizing, reservat
 
 `PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT` remains historical experiment metadata. It is not applied by the Phase-3 sizing domain, engine, portfolio allocator, or derived order-cap calculation.
 
+## R1 engine-path corrections
+
+- Discovery now preserves a structurally valid `buySourceId->sellSourceId` identity from a raw TOB cross or confirmed fee-tier jump and records only a cheap policy-minimum economics observation. A `non_positive_net` result at that observation is telemetry, not an eligibility or `evaluateCycle` gate; the canonical optimizer alone decides profitability, materiality, and q-star over its legal breakpoints.
+- `PAPER_FEE_SETTLEMENT` through `settlementFor(sourceId, side)` is the settlement source of truth for discovery, sizing, broker planning, and persisted sizing diagnostics. The old discovery-only IRT-buy/USDT-sell constants were removed. Exact fee asset/amount, debits, EconomicNet, RiskAdjustedPnL, and canonical settlement inputs now reconcile at the selected quantity; unknown or incoherent settlement still fails closed.
+- Inventory keeps the hard percentage-point band, closed-band prohibition, and unmeasurable fail-closed behavior. At or beyond the USDT-light boundary, further sells are frozen while repairing buys remain legal; at or beyond the IRT-light/USDT-heavy boundary, further buys are frozen while repairing sells remain legal. This shapes the feasible domain with `inventory_limit`; it does not add an inventory PnL bonus, and `inventoryPenaltyToman` remains non-negative.
+
 ## Files changed
 
 Core economics, discovery, and types:

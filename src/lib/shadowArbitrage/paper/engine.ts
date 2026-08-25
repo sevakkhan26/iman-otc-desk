@@ -55,6 +55,7 @@ import {
   PAPER_4D_MIN_RESERVE_PERCENT
 } from "@/lib/shadowArbitrage/paper/experimentPolicy";
 import type {
+  BlockedReasonCode,
   NormalizedSourceSnapshot,
   ShadowOpportunity,
   ShadowSourceId
@@ -68,6 +69,9 @@ import type {
 export type PaperSkipCode = PaperReasonCode;
 
 export const PAPER_SKIP_FA: Record<string, string> = { ...PAPER_REJECTION_FA };
+
+/** Discovery-point telemetry that the full canonical optimizer must re-price. */
+const OBSERVATION_ONLY_BLOCKED_REASONS = new Set<BlockedReasonCode>(["non_positive_net"]);
 
 /** Broker rejection codes translated to the shared exact-reason vocabulary. */
 const FROM_BROKER: Record<PaperRejectionCode, PaperReasonCode> = {
@@ -314,12 +318,28 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
     const buyState = stateById.get(c.buySourceId);
     const sellState = stateById.get(c.sellSourceId);
 
-    // Carry the upstream causes through verbatim — this is the whole point.
-    if (!o || o.eligibility !== "EXECUTABLE_NOW" || o.blockedReasons.length > 0) {
+    /*
+     * Carry structural upstream causes through verbatim. Observation PnL is
+     * different: a single cheap q can be red while a later legal breakpoint is
+     * positive, so `non_positive_net` must reach computeRouteSize. Accept the
+     * legacy persisted shape (`BLOCKED` solely for that code) as well as the new
+     * EXECUTABLE_NOW shape emitted by discovery.
+     */
+    const structuralBlockedReasons =
+      o?.blockedReasons.filter((reason) => !OBSERVATION_ONLY_BLOCKED_REASONS.has(reason)) ?? [];
+    const legacyObservationOnlyBlock =
+      o?.eligibility === "BLOCKED" &&
+      o.blockedReasons.length > 0 &&
+      structuralBlockedReasons.length === 0;
+    if (
+      !o ||
+      structuralBlockedReasons.length > 0 ||
+      (o.eligibility !== "EXECUTABLE_NOW" && !legacyObservationOnlyBlock)
+    ) {
       const causes = o
         ? reasonsFromOpportunity({
             eligibility: o.eligibility,
-            blockedReasons: o.blockedReasons,
+            blockedReasons: structuralBlockedReasons,
             feeUnknown: o.feeUnknown,
             buyFeeStale: buyState?.feeStale,
             sellFeeStale: sellState?.feeStale

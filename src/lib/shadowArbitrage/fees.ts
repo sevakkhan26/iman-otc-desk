@@ -3,30 +3,36 @@ import { SLIPPAGE_BUFFER_BPS, getSourceConfig } from "@/lib/shadowArbitrage/conf
 import type { BlockedReasonCode, ShadowSourceId } from "@/lib/shadowArbitrage/types";
 import {
   computeCanonicalEconomics,
-  type CanonicalSettlement
+  type CanonicalFeeAsset
 } from "@/lib/shadowArbitrage/paper/canonicalEconomics";
-
-const BUY_IRT_SETTLEMENT: CanonicalSettlement = {
-  feeAsset: "IRT",
-  debitMode: "ADD_TO_DEBIT",
-  provenance: "ADMIN_CONFIRMED"
-};
-const SELL_USDT_SETTLEMENT: CanonicalSettlement = {
-  feeAsset: "USDT",
-  debitMode: "ADD_TO_DEBIT",
-  provenance: "ADMIN_CONFIRMED"
-};
+import {
+  settlementCoherent,
+  settlementFor,
+  settlementUsable,
+  type SideSettlement
+} from "@/lib/shadowArbitrage/paper/broker";
 
 export type RouteFeeBreakdown = {
   buyCostToman: number;
   sellProceedsToman: number;
   buyFeeToman: number;
   sellFeeToman: number;
+  /** Exact fee denomination and amount (IRT units or USDT micros). */
+  buyFeeAsset: CanonicalFeeAsset;
+  sellFeeAsset: CanonicalFeeAsset;
+  buyFeeAmount: number;
+  sellFeeAmount: number;
+  buyFeeUsdtMicros: number;
+  sellFeeUsdtMicros: number;
   buyFeeBps: number;
   sellFeeBps: number;
   totalFeePercent: number;
   slippageBufferToman: number;
   rebalanceCostToman: number;
+  buyDebitIrtToman: number;
+  sellDebitUsdtMicros: number;
+  economicNetPnlToman: number;
+  riskAdjustedPnlToman: number;
   netProfitToman: number;
   netEdgePercent: number;
   rawSpreadPercent: number;
@@ -55,6 +61,9 @@ export function computeRouteEconomics(input: {
    * configured value.
    */
   confirmedFeeBps?: Partial<Record<ShadowSourceId, number | null>>;
+  /** Venue/side settlement used by discovery, sizing, and the Paper broker. */
+  buySettlement?: SideSettlement;
+  sellSettlement?: SideSettlement;
 }): RouteFeeBreakdown {
   const buyCfg = getSourceConfig(input.buySourceId);
   const sellCfg = getSourceConfig(input.sellSourceId);
@@ -84,10 +93,17 @@ export function computeRouteEconomics(input: {
     resolvedSellFee < 0;
   const buyFeeBps = resolvedBuyFee ?? 0;
   const sellFeeBps = resolvedSellFee ?? 0;
+  const buySettlement = input.buySettlement ?? settlementFor(input.buySourceId, "buy");
+  const sellSettlement = input.sellSettlement ?? settlementFor(input.sellSourceId, "sell");
+  const settlementUnknown =
+    !settlementUsable(buySettlement) || !settlementUsable(sellSettlement);
+  const settlementUnsupported =
+    !settlementUnknown &&
+    (!settlementCoherent(buySettlement, "buy") || !settlementCoherent(sellSettlement, "sell"));
   const rawSpreadPercent = round4(percentOf(input.sellVwapToman - input.buyVwapToman, input.buyVwapToman));
   const slippage = feeFromBps(buyCost, SLIPPAGE_BUFFER_BPS);
 
-  const canonical = feeUnknown
+  const canonical = feeUnknown || settlementUnknown || settlementUnsupported
     ? null
     : computeCanonicalEconomics({
         sizeUsdtMicros: Math.round(input.sizeUsdt * 1_000_000),
@@ -105,28 +121,45 @@ export function computeRouteEconomics(input: {
         },
         buyFeeBps,
         sellFeeBps,
-        buySettlement: BUY_IRT_SETTLEMENT,
-        sellSettlement: SELL_USDT_SETTLEMENT,
+        buySettlement,
+        sellSettlement,
         capitalMarkPriceToman: input.buyVwapToman,
         riskBufferBps: SLIPPAGE_BUFFER_BPS
       });
   const econ = canonical?.ok ? canonical.economics : null;
-  const buyFee = econ?.buyFeeToman ?? 0;
-  // Legacy field is toman-valued for display; canonical settlement stays USDT.
-  const sellFee = econ?.usdtFeeValueToman ?? 0;
+  const buyFeeUsdtValue = econ
+    ? mulPriceSizeToman(input.buyVwapToman, econ.buyFeeUsdtMicros / 1_000_000)
+    : 0;
+  const sellFeeUsdtValue = econ
+    ? mulPriceSizeToman(input.buyVwapToman, econ.sellFeeUsdtMicros / 1_000_000)
+    : 0;
+  // Legacy display fields remain toman-valued; exact denomination and amount
+  // are carried separately below and are never treated as two toman fees.
+  const buyFee = (econ?.buyFeeToman ?? 0) + buyFeeUsdtValue;
+  const sellFee = (econ?.sellFeeToman ?? 0) + sellFeeUsdtValue;
   const netProfit = econ?.riskAdjustedPnlToman ?? 0;
   const netEdgePercent = econ ? round4(econ.netEdgeBps / 100) : 0;
   const totalFeePercent = round4(percentOf(buyFee + sellFee, buyCost));
 
   const blocked: BlockedReasonCode[] = [];
-  if (feeUnknown) blocked.push("fee_unknown");
-  if (!feeUnknown && (!econ || netProfit <= 0)) blocked.push("non_positive_net");
+  if (feeUnknown || settlementUnknown || settlementUnsupported) blocked.push("fee_unknown");
+  if (!feeUnknown && !settlementUnknown && !settlementUnsupported && (!econ || netProfit <= 0)) {
+    blocked.push("non_positive_net");
+  }
 
   return {
     buyCostToman: buyCost,
     sellProceedsToman: sellProceeds,
     buyFeeToman: buyFee,
     sellFeeToman: sellFee,
+    buyFeeAsset: buySettlement.feeAsset,
+    sellFeeAsset: sellSettlement.feeAsset,
+    buyFeeAmount:
+      buySettlement.feeAsset === "IRT" ? (econ?.buyFeeToman ?? 0) : (econ?.buyFeeUsdtMicros ?? 0),
+    sellFeeAmount:
+      sellSettlement.feeAsset === "IRT" ? (econ?.sellFeeToman ?? 0) : (econ?.sellFeeUsdtMicros ?? 0),
+    buyFeeUsdtMicros: econ?.buyFeeUsdtMicros ?? 0,
+    sellFeeUsdtMicros: econ?.sellFeeUsdtMicros ?? 0,
     buyFeeBps,
     sellFeeBps,
     totalFeePercent,
@@ -134,10 +167,14 @@ export function computeRouteEconomics(input: {
     // No transfer is required by an ordinary round trip. A transfer-dependent
     // path is priced separately and fails closed when its cost is unknown.
     rebalanceCostToman: 0,
+    buyDebitIrtToman: econ?.buyDebitIrtToman ?? 0,
+    sellDebitUsdtMicros: econ?.sellDebitUsdtMicros ?? 0,
+    economicNetPnlToman: econ?.economicNetPnlToman ?? 0,
+    riskAdjustedPnlToman: econ?.riskAdjustedPnlToman ?? 0,
     netProfitToman: Math.round(netProfit),
     netEdgePercent,
     rawSpreadPercent,
-    feeUnknown,
+    feeUnknown: feeUnknown || settlementUnknown || settlementUnsupported,
     blocked
   };
 }

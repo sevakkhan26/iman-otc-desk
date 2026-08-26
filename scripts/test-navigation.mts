@@ -3115,5 +3115,37 @@ await test("8E the decision-desk CSS is layout only and responsive", () => {
   for (const sel of selectors) assert.ok(/\.sa-/.test(sel), `selector escapes scope: ${sel}`);
 });
 
+
+await test("Shadow Light theme uses paper desk tokens; Dark keeps the cool navy", () => {
+  const css = read("app/globals.css");
+  const desk = css.slice(css.indexOf("SHADOW-TASK-005 desk remediaiton"));
+  assert.ok(desk.includes(':root[data-theme="dark"] .sa-page {'), "dark desk tokens must be scoped");
+  assert.ok(
+    desk.includes(':root[data-theme="dark"] .sa-page.sa-page-tabbed'),
+    "the navy page canvas is dark-only"
+  );
+  assert.ok(desk.includes("--sa-desk-bg: #07090d"), "dark canvas value is preserved");
+  assert.ok(desk.includes("--sa-desk-panel: #10141c"), "dark panel value is preserved");
+
+  const lightTokens = desk.slice(desk.indexOf(".sa-page {"), desk.indexOf(':root[data-theme="dark"] .sa-page {'));
+  assert.ok(lightTokens.includes("--sa-desk-bg: var(--bg)"), "Light canvas aliases --bg");
+  assert.ok(lightTokens.includes("--sa-desk-panel: var(--card)"), "Light panel aliases --card");
+  assert.ok(lightTokens.includes("--sa-desk-line: var(--line-soft)"), "Light line aliases --line-soft");
+  assert.equal(lightTokens.includes("#07090d"), false, "Light must not hardcode the navy canvas");
+  assert.equal(lightTokens.includes("#10141c"), false, "Light must not hardcode the navy panel");
+
+  assert.ok(desk.includes("var(--sa-desk-mix"), "waterfall mix uses a theme token");
+  assert.equal(
+    /color-mix\(in srgb, var\(--card\) 88%, #0b1018\)/.test(desk),
+    false,
+    "waterfall must not mix toward a hardcoded dark hex"
+  );
+  assert.ok(desk.includes(':root[data-theme="light"] .sa-page .sa-exp-strip'), "session strip has a Light surface");
+  assert.ok(desk.includes(':root[data-theme="light"] .sa-page .sa-pill-indicator'), "selected tab is visible on paper");
+
+  const capability = read("src/lib/shadowArbitrage/live/capability.ts");
+  assert.ok(capability.includes("export const LIVE_EXECUTION_IMPLEMENTED = false as const"));
+});
+
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

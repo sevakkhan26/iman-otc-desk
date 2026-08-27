@@ -15,6 +15,12 @@ import { fetchRamzinexBook } from "@/lib/shadowArbitrage/adapters/ramzinex";
 import { fetchTetherlandBook } from "@/lib/shadowArbitrage/adapters/tetherland";
 import { fetchBit24Book } from "@/lib/shadowArbitrage/adapters/bit24";
 import { fetchArzinjaReference } from "@/lib/shadowArbitrage/adapters/arzinja";
+import {
+  latestPaperStreamSnapshot,
+  paperStreamTelemetry,
+  registerRestStreamRecovery
+} from "@/lib/shadowArbitrage/streaming/runtime";
+import { VENUE_STREAMING_COVERAGE } from "@/lib/shadowArbitrage/streaming/venueAdapters";
 
 type Fetcher = (cfg: ShadowSourceConfig) => Promise<AdapterResult>;
 
@@ -39,6 +45,8 @@ async function runOne(id: ShadowSourceId): Promise<NormalizedSourceSnapshot> {
   if (!cfg.enabled) {
     return unavailableSnapshot(cfg, receivedAt, "منبع در تنظیمات غیرفعال است");
   }
+  const streamed = latestPaperStreamSnapshot(id, Date.parse(receivedAt));
+  if (streamed) return streamed;
 
   try {
     const result = await FETCHERS[id](cfg);
@@ -52,7 +60,19 @@ async function runOne(id: ShadowSourceId): Promise<NormalizedSourceSnapshot> {
      * judged by the same checks as the rest: certification decides, not a
      * hard-coded exception.
      */
-    return snapshotFromResult(cfg, result, receivedAt);
+    const snapshot = snapshotFromResult(cfg, result, receivedAt);
+    const coverage = VENUE_STREAMING_COVERAGE.find((row) => row.sourceId === id);
+    const priorStream = paperStreamTelemetry(id, Date.parse(receivedAt));
+    const transport =
+      coverage?.mode !== "WS_FIRST"
+        ? "REST_FALLBACK"
+        : priorStream &&
+            (priorStream.gapCount > 0 ||
+              priorStream.reconnectCount > 0 ||
+              priorStream.resyncCount > 0)
+          ? "REST_RECOVERY"
+          : "REST_BOOTSTRAP";
+    return registerRestStreamRecovery(snapshot, transport);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     if (error instanceof ShadowSourceError) {

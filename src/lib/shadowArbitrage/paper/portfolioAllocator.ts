@@ -21,6 +21,7 @@ import {
   PAPER_PORTFOLIO_MAX_UTILIZATION_PERCENT,
   PAPER_PORTFOLIO_MIN_RESERVE_PERCENT
 } from "@/lib/shadowArbitrage/paper/experimentPolicy";
+import type { CandidateScoreBreakdown } from "@/lib/shadowArbitrage/paper/executionScoring";
 
 export type AllocatorCandidate = {
   lifecycleId: string;
@@ -34,6 +35,9 @@ export type AllocatorCandidate = {
   sellVwapToman: number;
   riskAdjustedPnlToman: number;
   economicNetPnlToman: number;
+  /** Paper capture/execution/inventory objective; canonical RA remains above. */
+  adjustedScoreToman?: number;
+  scoreBreakdown?: CandidateScoreBreakdown;
   /** Buy notional (IRT required). */
   buyNotionalToman: number;
   /** USDT micros required on sell venue (including fee pad when known). */
@@ -91,6 +95,7 @@ export type PaperIdleReason =
   | "inventory"
   | "reservation_conflict"
   | "readiness_freshness_fee_block"
+  | "optimizer_budget"
   | "global_90_percent_cap";
 
 export type PaperPortfolioTelemetry = {
@@ -102,6 +107,19 @@ export type PaperPortfolioTelemetry = {
   utilizationPercent: number;
   selectedPortfolioRiskAdjustedPnlToman: number;
   selectedPortfolioEconomicNetPnlToman: number;
+  selectedPortfolioAdjustedScoreToman: number;
+  selectedCaptureAdjustmentToman: number;
+  selectedExecutionAdjustmentToman: number;
+  selectedInventoryOpportunityCostToman: number;
+  optimizerSolveTimeMs: number;
+  optimizerOptionsConsidered: number;
+  optimizerNodesVisited: number;
+  optimizerPrunedNodes: number;
+  optimizerProofStatus: "EXACT_PROVEN" | "BUDGET_EXHAUSTED_FAIL_CLOSED";
+  optimizerFailClosedReason:
+    | "option_budget_exceeded"
+    | "node_budget_exceeded"
+    | null;
   profitableExecutableCapacityToman: number;
   allocatedProfitableCapacityToman: number;
   unallocatedProfitableCapacityToman: number;
@@ -128,8 +146,22 @@ export type PortfolioAllocatorResult = AllocatorResult & {
   algorithm: "EXACT_BRANCH_AND_BOUND_V1";
   telemetry: PaperPortfolioTelemetry;
   dynamicVenueCaps: DynamicVenueCap[];
-  search: { candidates: number; nodesVisited: number; prunedNodes: number };
+  search: {
+    candidates: number;
+    optionsConsidered: number;
+    nodesVisited: number;
+    prunedNodes: number;
+    solveTimeMs: number;
+    maxOptions: number;
+    maxNodes: number;
+    budgetProvenance: "DEFAULT_PAPER_POLICY" | "CALLER_OVERRIDE";
+    proofStatus: "EXACT_PROVEN" | "BUDGET_EXHAUSTED_FAIL_CLOSED";
+    failClosedReason: "option_budget_exceeded" | "node_budget_exceeded" | null;
+  };
 };
+
+export const PAPER_ALLOCATOR_DEFAULT_MAX_OPTIONS = 128;
+export const PAPER_ALLOCATOR_DEFAULT_MAX_NODES = 250_000;
 
 export type PaperAllocatorInput = {
   candidates: AllocatorCandidate[];
@@ -155,6 +187,14 @@ export type PaperAllocatorInput = {
    * canonical inventory model; direct allocator fixtures may omit it.
    */
   inventoryFeasible?: (candidates: AllocatorCandidate[]) => boolean;
+  /**
+   * Deterministic proof budget. Exhaustion invalidates every partial incumbent
+   * and returns zero selections with an explicit Paper diagnostic.
+   */
+  searchBudget?: {
+    maxOptions?: number;
+    maxNodes?: number;
+  };
 };
 
 /**
@@ -336,6 +376,7 @@ const IDLE_REASONS: PaperIdleReason[] = [
   "inventory",
   "reservation_conflict",
   "readiness_freshness_fee_block",
+  "optimizer_budget",
   "global_90_percent_cap"
 ];
 
@@ -350,6 +391,8 @@ function emptyIdleReasons(): PaperPortfolioTelemetry["idleReasons"] {
 
 function deterministicCandidateOrder(a: Prepared, b: Prepared): number {
   return (
+    (b.candidate.adjustedScoreToman ?? b.candidate.riskAdjustedPnlToman) -
+      (a.candidate.adjustedScoreToman ?? a.candidate.riskAdjustedPnlToman) ||
     b.candidate.riskAdjustedPnlToman - a.candidate.riskAdjustedPnlToman ||
     b.candidate.economicNetPnlToman - a.candidate.economicNetPnlToman ||
     (a.candidate.inventoryImpactPoints ?? 0) - (b.candidate.inventoryImpactPoints ?? 0) ||
@@ -380,6 +423,17 @@ function allocationKey(candidate: AllocatorCandidate): string {
  * immediate resource checks prune normal Paper snapshots. Memory is O(M + V).
  */
 export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAllocatorResult {
+  const solveStartedAt = performance.now();
+  const maxOptions = Math.max(
+    1,
+    Math.floor(input.searchBudget?.maxOptions ?? PAPER_ALLOCATOR_DEFAULT_MAX_OPTIONS)
+  );
+  const maxNodes = Math.max(
+    1,
+    Math.floor(input.searchBudget?.maxNodes ?? PAPER_ALLOCATOR_DEFAULT_MAX_NODES)
+  );
+  const budgetProvenance =
+    input.searchBudget === undefined ? "DEFAULT_PAPER_POLICY" : "CALLER_OVERRIDE";
   const maxUtil =
     input.maxUtilizationPercent ?? PAPER_PORTFOLIO_MAX_UTILIZATION_PERCENT;
   const minReserve =
@@ -448,6 +502,18 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
         candidate,
         "net_non_positive",
         "سود اقتصادی تعدیل‌شده مثبت نیست — تخصیص صفر",
+        "no_positive_edge",
+        capital
+      );
+      continue;
+    }
+    if (
+      !((candidate.adjustedScoreToman ?? candidate.riskAdjustedPnlToman) > 0)
+    ) {
+      reject(
+        candidate,
+        "adjusted_score_non_positive",
+        "اقتصاد خام مثبت است اما امتیاز موردانتظار Paper پس از تعدیلات مثبت نیست",
         "no_positive_edge",
         capital
       );
@@ -562,24 +628,39 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
     );
   }
 
-  const suffixRa = new Array<number>(prepared.length + 1).fill(0);
+  const suffixAdjusted = new Array<number>(prepared.length + 1).fill(0);
   const suffixCapital = new Array<number>(prepared.length + 1).fill(0);
   for (let i = prepared.length - 1; i >= 0; i -= 1) {
-    suffixRa[i] = suffixRa[i + 1] + prepared[i].candidate.riskAdjustedPnlToman;
+    suffixAdjusted[i] =
+      suffixAdjusted[i + 1] +
+      (prepared[i].candidate.adjustedScoreToman ??
+        prepared[i].candidate.riskAdjustedPnlToman);
     suffixCapital[i] = suffixCapital[i + 1] + prepared[i].capital;
   }
 
   type Best = {
     rows: Prepared[];
+    adjusted: number;
     ra: number;
     economic: number;
     capital: number;
     signature: string;
   };
-  let best: Best = { rows: [], ra: 0, economic: 0, capital: 0, signature: "" };
+  let best: Best = {
+    rows: [],
+    adjusted: 0,
+    ra: 0,
+    economic: 0,
+    capital: 0,
+    signature: ""
+  };
   let maxCapacity: Best = best;
   let nodesVisited = 0;
   let prunedNodes = 0;
+  let failClosedReason:
+    | "option_budget_exceeded"
+    | "node_budget_exceeded"
+    | null = prepared.length > maxOptions ? "option_budget_exceeded" : null;
   const irtUsed = new Map(initialIrt);
   const usdtUsed = new Map(initialUsdt);
   const venueUsed = new Map<string, number>();
@@ -591,14 +672,19 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
       .map((p) => allocationKey(p.candidate))
       .sort()
       .join(",");
-  const betterObjective = (candidate: Best, incumbent: Best) =>
-    candidate.ra > incumbent.ra ||
-    (candidate.ra === incumbent.ra &&
-      (candidate.economic > incumbent.economic ||
-        (candidate.economic === incumbent.economic &&
-          (candidate.capital < incumbent.capital ||
-            (candidate.capital === incumbent.capital &&
-              candidate.signature.localeCompare(incumbent.signature) < 0)))));
+  const betterObjective = (candidate: Best, incumbent: Best) => {
+    if (candidate.adjusted !== incumbent.adjusted) {
+      return candidate.adjusted > incumbent.adjusted;
+    }
+    if (candidate.ra !== incumbent.ra) return candidate.ra > incumbent.ra;
+    if (candidate.economic !== incumbent.economic) {
+      return candidate.economic > incumbent.economic;
+    }
+    if (candidate.capital !== incumbent.capital) {
+      return candidate.capital < incumbent.capital;
+    }
+    return candidate.signature.localeCompare(incumbent.signature) < 0;
+  };
   const betterCapacity = (candidate: Best, incumbent: Best) =>
     candidate.capital > incumbent.capital ||
     (candidate.capital === incumbent.capital &&
@@ -636,10 +722,28 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
     return true;
   };
 
-  const search = (index: number, ra: number, economic: number, capital: number) => {
+  const search = (
+    index: number,
+    adjusted: number,
+    ra: number,
+    economic: number,
+    capital: number
+  ) => {
+    if (failClosedReason) return;
+    if (nodesVisited >= maxNodes) {
+      failClosedReason = "node_budget_exceeded";
+      return;
+    }
     nodesVisited += 1;
     const signature = signatureOf(chosen);
-    const current: Best = { rows: [...chosen], ra, economic, capital, signature };
+    const current: Best = {
+      rows: [...chosen],
+      adjusted,
+      ra,
+      economic,
+      capital,
+      signature
+    };
     // Only legal final portfolios may become incumbents. Do not prune the DFS
     // merely because an intermediate prefix is inventory-infeasible: a later
     // route can repair the aggregate venue/asset position.
@@ -649,7 +753,7 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
     }
     if (index >= prepared.length) return;
     if (
-      ra + suffixRa[index] < best.ra &&
+      adjusted + suffixAdjusted[index] < best.adjusted &&
       capital + suffixCapital[index] <= maxCapacity.capital
     ) {
       prunedNodes += 1;
@@ -668,6 +772,9 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
       venueUsed.set(sell, (venueUsed.get(sell) ?? 0) + p.sellVenueCapital);
       search(
         index + 1,
+        adjusted +
+          (p.candidate.adjustedScoreToman ??
+            p.candidate.riskAdjustedPnlToman),
         ra + p.candidate.riskAdjustedPnlToman,
         economic + p.candidate.economicNetPnlToman,
         capital + p.capital
@@ -679,16 +786,29 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
       routeUsed.delete(p.candidate.routeKey);
       chosen.pop();
     }
-    search(index + 1, ra, economic, capital);
+    if (failClosedReason) return;
+    search(index + 1, adjusted, ra, economic, capital);
   };
-  search(0, 0, 0, 0);
+  if (!failClosedReason) search(0, 0, 0, 0, 0);
+  const solveTimeMs = Math.max(0, performance.now() - solveStartedAt);
+  const exactProven = failClosedReason === null;
+  const emptyBest: Best = {
+    rows: [],
+    adjusted: 0,
+    ra: 0,
+    economic: 0,
+    capital: 0,
+    signature: ""
+  };
+  const solvedBest = exactProven ? best : emptyBest;
+  const solvedMaxCapacity = exactProven ? maxCapacity : emptyBest;
 
   const selectedKeys = new Set(
-    best.rows.map((p) => allocationKey(p.candidate))
+    solvedBest.rows.map((p) => allocationKey(p.candidate))
   );
   const selected: AllocatorSelection[] = [];
   let runningCapital = initialEngaged;
-  for (const p of [...best.rows].sort(deterministicCandidateOrder)) {
+  for (const p of [...solvedBest.rows].sort(deterministicCandidateOrder)) {
     const before = totalCapital > 0 ? (runningCapital / totalCapital) * 100 : 0;
     runningCapital += p.capital;
     selected.push({
@@ -704,7 +824,7 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
   const selectedUsdt = new Map(initialUsdt);
   const selectedVenue = new Map<string, number>();
   const selectedRoutes = new Set<string>();
-  for (const p of best.rows) {
+  for (const p of solvedBest.rows) {
     selectedRoutes.add(p.candidate.routeKey);
     selectedIrt.set(
       p.candidate.buySourceId,
@@ -727,13 +847,25 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
   for (const p of prepared) {
     const key = allocationKey(p.candidate);
     if (selectedKeys.has(key)) continue;
+    if (failClosedReason) {
+      reject(
+        p.candidate,
+        "optimizer_budget_exhausted",
+        failClosedReason === "option_budget_exceeded"
+          ? `بودجهٔ قطعی گزینه‌های بهینه‌ساز (${maxOptions}) کافی نیست — تخصیص بسته شد`
+          : `بودجهٔ قطعی گره‌های بهینه‌ساز (${maxNodes}) تمام شد — تخصیص بسته شد`,
+        "optimizer_budget",
+        p.capital
+      );
+      continue;
+    }
     // Other legal quantities of a selected route are counterfactual sizing
     // points, not idle portfolio capacity and not rejected routes.
     if (selectedRoutes.has(p.candidate.routeKey)) continue;
     let idle: PaperIdleReason = "reservation_conflict";
     let code = "portfolio_not_selected";
     let reasonFa = "ترکیب دیگری سود تعدیل‌شدهٔ کل بیشتری دارد";
-    if (best.capital + p.capital > globalHeadroom) {
+    if (solvedBest.capital + p.capital > globalHeadroom) {
       idle = "global_90_percent_cap";
       code = "portfolio_utilization_cap";
       reasonFa = `سقف جهانی ${allowedPercent}٪ یک سقف است، نه سهمیهٔ اجباری`;
@@ -759,7 +891,7 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
       idle = "venue_concentration";
       code = "venue_exposure_cap";
       reasonFa = "سقف پویای تمرکز صرافی برای افزودن این مسیر کافی نیست";
-    } else if (!inventoryOk([...best.rows, p])) {
+    } else if (!inventoryOk([...solvedBest.rows, p])) {
       idle = "inventory";
       code = "inventory_limit";
       reasonFa = "ترکیب مسیرها باند موجودی را بدتر و نقض می‌کند";
@@ -767,8 +899,8 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
     reject(p.candidate, code, reasonFa, idle, p.capital);
   }
 
-  const selectedBuy = best.rows.reduce((sum, p) => sum + p.buyIrt, 0);
-  const selectedSell = best.rows.reduce(
+  const selectedBuy = solvedBest.rows.reduce((sum, p) => sum + p.buyIrt, 0);
+  const selectedSell = solvedBest.rows.reduce(
     (sum, p) => sum + p.sellUsdtMicros,
     0
   );
@@ -778,10 +910,10 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
     reservedBuyIrtToman: initialBuyReserved + selectedBuy,
     reservedSellUsdtMicros: initialSellReserved + selectedSell
   });
-  const engagedCapital = Math.min(maxDeployable, initialEngaged + best.capital);
+  const engagedCapital = Math.min(maxDeployable, initialEngaged + solvedBest.capital);
   const freeCapital = Math.max(0, maxDeployable - engagedCapital);
-  const profitableCapacity = maxCapacity.capital;
-  const allocatedCapacity = best.capital;
+  const profitableCapacity = solvedMaxCapacity.capital;
+  const allocatedCapacity = solvedBest.capital;
 
   return {
     selected,
@@ -796,8 +928,17 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
     dynamicVenueCaps,
     search: {
       candidates: prepared.length,
+      optionsConsidered: prepared.length,
       nodesVisited,
-      prunedNodes
+      prunedNodes,
+      solveTimeMs,
+      maxOptions,
+      maxNodes,
+      budgetProvenance,
+      proofStatus: exactProven
+        ? "EXACT_PROVEN"
+        : "BUDGET_EXHAUSTED_FAIL_CLOSED",
+      failClosedReason
     },
     telemetry: {
       totalCapitalToman: totalCapital,
@@ -807,8 +948,33 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
       freeCapitalToman: freeCapital,
       utilizationPercent:
         totalCapital > 0 ? (engagedCapital / totalCapital) * 100 : 0,
-      selectedPortfolioRiskAdjustedPnlToman: best.ra,
-      selectedPortfolioEconomicNetPnlToman: best.economic,
+      selectedPortfolioRiskAdjustedPnlToman: solvedBest.ra,
+      selectedPortfolioEconomicNetPnlToman: solvedBest.economic,
+      selectedPortfolioAdjustedScoreToman: solvedBest.adjusted,
+      selectedCaptureAdjustmentToman: solvedBest.rows.reduce(
+        (sum, row) =>
+          sum + (row.candidate.scoreBreakdown?.captureAdjustmentToman ?? 0),
+        0
+      ),
+      selectedExecutionAdjustmentToman: solvedBest.rows.reduce(
+        (sum, row) =>
+          sum + (row.candidate.scoreBreakdown?.executionAdjustmentToman ?? 0),
+        0
+      ),
+      selectedInventoryOpportunityCostToman: solvedBest.rows.reduce(
+        (sum, row) =>
+          sum +
+          (row.candidate.scoreBreakdown?.inventoryOpportunityCostToman ?? 0),
+        0
+      ),
+      optimizerSolveTimeMs: solveTimeMs,
+      optimizerOptionsConsidered: prepared.length,
+      optimizerNodesVisited: nodesVisited,
+      optimizerPrunedNodes: prunedNodes,
+      optimizerProofStatus: exactProven
+        ? "EXACT_PROVEN"
+        : "BUDGET_EXHAUSTED_FAIL_CLOSED",
+      optimizerFailClosedReason: failClosedReason,
       profitableExecutableCapacityToman: profitableCapacity,
       allocatedProfitableCapacityToman: allocatedCapacity,
       unallocatedProfitableCapacityToman: Math.max(
@@ -818,9 +984,9 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
       idleCapitalToman: freeCapital,
       idleReasons,
       returnOnTotalCapital:
-        totalCapital > 0 ? best.ra / totalCapital : null,
+        totalCapital > 0 ? solvedBest.ra / totalCapital : null,
       returnOnEngagedCapital:
-        engagedCapital > 0 ? best.ra / engagedCapital : null
+        engagedCapital > 0 ? solvedBest.ra / engagedCapital : null
     }
   };
 }

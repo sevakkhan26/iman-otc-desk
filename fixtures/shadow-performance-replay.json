@@ -1,0 +1,74 @@
+{
+  "fixtureVersion": 1,
+  "description": "Saved deterministic Paper order-book trace; normalized IRT levels, no account data.",
+  "events": [
+    {
+      "sourceId": "nobitex",
+      "kind": "SNAPSHOT",
+      "sequence": 100,
+      "sourceEventTimestampMs": 1000000,
+      "receiveTimestampMs": 1000018,
+      "transport": "WS",
+      "endpoint": "saved://nobitex",
+      "bids": [{ "priceToman": 99900, "amountUsdt": 10000 }],
+      "asks": [{ "priceToman": 100000, "amountUsdt": 10000 }]
+    },
+    {
+      "sourceId": "tabdeal",
+      "kind": "SNAPSHOT",
+      "sequence": null,
+      "sourceEventTimestampMs": 1000005,
+      "receiveTimestampMs": 1000025,
+      "transport": "WS",
+      "endpoint": "saved://tabdeal",
+      "bids": [{ "priceToman": 101000, "amountUsdt": 10000 }],
+      "asks": [{ "priceToman": 101100, "amountUsdt": 10000 }]
+    },
+    {
+      "sourceId": "nobitex",
+      "kind": "DELTA",
+      "sequence": 101,
+      "sourceEventTimestampMs": 1001000,
+      "receiveTimestampMs": 1001022,
+      "transport": "WS",
+      "endpoint": "saved://nobitex",
+      "bids": [{ "priceToman": 99950, "amountUsdt": 5000 }],
+      "asks": []
+    },
+    {
+      "sourceId": "nobitex",
+      "kind": "DELTA",
+      "sequence": 103,
+      "sourceEventTimestampMs": 1002000,
+      "receiveTimestampMs": 1002025,
+      "transport": "WS",
+      "endpoint": "saved://nobitex",
+      "bids": [{ "priceToman": 99960, "amountUsdt": 5000 }],
+      "asks": []
+    },
+    {
+      "sourceId": "nobitex",
+      "kind": "DELTA",
+      "sequence": 104,
+      "sourceEventTimestampMs": 1002100,
+      "receiveTimestampMs": 1002125,
+      "transport": "WS",
+      "endpoint": "saved://nobitex",
+      "bids": [{ "priceToman": 99970, "amountUsdt": 5000 }],
+      "asks": []
+    },
+    {
+      "sourceId": "nobitex",
+      "kind": "SNAPSHOT",
+      "sequence": 200,
+      "sourceEventTimestampMs": 1002200,
+      "receiveTimestampMs": 1002240,
+      "transport": "REST_RECOVERY",
+      "endpoint": "saved://nobitex-rest",
+      "bids": [{ "priceToman": 99980, "amountUsdt": 10000 }],
+      "asks": [{ "priceToman": 100020, "amountUsdt": 10000 }]
+    }
+  ],
+  "eventDecisionLatencyMs": [7, 9, 11, 12, 14, 15, 18, 20, 24, 31, 42, 65, 90, 140, 220, 350, 520, 780, 1100, 1800],
+  "pollingDecisionLatencyMs": [15000, 16000, 17000, 18000, 19000, 20000, 21000, 22000, 23000, 24000, 25000, 26000, 27000, 28000, 29000, 30000]
+}

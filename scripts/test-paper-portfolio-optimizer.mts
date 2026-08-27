@@ -283,16 +283,16 @@ await test("I) identical snapshot produces byte-stable selection and telemetry",
     JSON.stringify({
       selected: first.selected,
       rejected: first.rejected,
-      telemetry: first.telemetry,
+      telemetry: { ...first.telemetry, optimizerSolveTimeMs: 0 },
       caps: first.dynamicVenueCaps,
-      search: first.search
+      search: { ...first.search, solveTimeMs: 0 }
     }),
     JSON.stringify({
       selected: second.selected,
       rejected: second.rejected,
-      telemetry: second.telemetry,
+      telemetry: { ...second.telemetry, optimizerSolveTimeMs: 0 },
       caps: second.dynamicVenueCaps,
-      search: second.search
+      search: { ...second.search, solveTimeMs: 0 }
     })
   );
 });
@@ -323,6 +323,52 @@ await test("J) exact allocator aggregate RA is at least historical greedy", () =
   assert.ok(exact.telemetry.selectedPortfolioRiskAdjustedPnlToman >= greedyRa);
   assert.equal(exact.telemetry.selectedPortfolioRiskAdjustedPnlToman, 120);
   assert.equal(greedyRa, 100);
+});
+
+await test("K) option budget fails closed without selecting a partial incumbent", () => {
+  const rows = Array.from({ length: 6 }, (_, index) =>
+    candidate({
+      id: `budget-option-${index}`,
+      buy: `buy-${index}`,
+      sell: `sell-${index}`,
+      capital: 10_000_000,
+      ra: 100 - index
+    })
+  );
+  const result = allocatePaperRoutes(
+    allocatorInput(rows, 1_000_000_000, {
+      searchBudget: { maxOptions: 5, maxNodes: 10_000 }
+    })
+  );
+  assert.equal(result.selected.length, 0);
+  assert.equal(result.search.proofStatus, "BUDGET_EXHAUSTED_FAIL_CLOSED");
+  assert.equal(result.search.failClosedReason, "option_budget_exceeded");
+  assert.equal(result.search.nodesVisited, 0);
+  assert.ok(
+    result.rejected.every((row) => row.code === "optimizer_budget_exhausted")
+  );
+});
+
+await test("L) node budget exhaustion is deterministic and fails closed", () => {
+  const rows = Array.from({ length: 8 }, (_, index) =>
+    candidate({
+      id: `budget-node-${index}`,
+      buy: `buy-${index}`,
+      sell: `sell-${index}`,
+      capital: 10_000_000,
+      ra: 100 - index
+    })
+  );
+  const input = allocatorInput(rows, 1_000_000_000, {
+    searchBudget: { maxOptions: 20, maxNodes: 3 }
+  });
+  const first = allocatePaperRoutes(input);
+  const second = allocatePaperRoutes(input);
+  assert.equal(first.selected.length, 0);
+  assert.equal(first.search.failClosedReason, "node_budget_exceeded");
+  assert.equal(first.search.nodesVisited, 3);
+  assert.deepEqual(first.selected, second.selected);
+  assert.deepEqual(first.rejected, second.rejected);
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

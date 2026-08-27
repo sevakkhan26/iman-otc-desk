@@ -26,6 +26,9 @@ export type PaperReasonCode =
   | "stale_market_data"
   | "market_data_missing"
   | "market_data_unverified"
+  | "market_data_sequence_gap"
+  | "market_data_resync"
+  | "market_data_time_incoherent"
   | "rate_limited"
   | "same_venue"
   // paper-engine state
@@ -45,6 +48,8 @@ export type PaperReasonCode =
   | "inventory_limit"
   | "reservation_conflict"
   | "portfolio_not_selected"
+  | "optimizer_budget_exhausted"
+  | "adjusted_score_non_positive"
   | "experiment_closed";
 
 export const PAPER_REASON_FA: Record<PaperReasonCode, string> = {
@@ -60,6 +65,9 @@ export const PAPER_REASON_FA: Record<PaperReasonCode, string> = {
   stale_market_data: "دادهٔ بازار کهنه است",
   market_data_missing: "دادهٔ بازار برای این حجم موجود نیست",
   market_data_unverified: "واحد یا جهت قیمت تأیید نشده است",
+  market_data_sequence_gap: "شکاف توالی دادهٔ بازار؛ snapshot جدید لازم است",
+  market_data_resync: "همگام‌سازی مجدد snapshot هنوز کامل نشده است",
+  market_data_time_incoherent: "زمان رویداد دو سمت مسیر همگام نیست",
   rate_limited: "محدودیت نرخ درخواست منبع",
   same_venue: "خرید و فروش روی یک صرافی",
   mark_price_unavailable: "قیمت مرجع تتر در همین چرخه در دسترس یا تازه نیست",
@@ -79,6 +87,8 @@ export const PAPER_REASON_FA: Record<PaperReasonCode, string> = {
   inventory_limit: "ترکیب انتخابی باند موجودی را نقض می‌کند",
   reservation_conflict: "ظرفیت شبیه‌سازی‌شده قبلاً برای مسیر دیگری رزرو شده است",
   portfolio_not_selected: "ترکیب دیگری سود تعدیل‌شدهٔ کل بیشتری دارد",
+  optimizer_budget_exhausted: "بودجهٔ اثبات دقیق تمام شد؛ تخصیص به‌صورت بسته رد شد",
+  adjusted_score_non_positive: "اقتصاد خام مثبت است اما امتیاز موردانتظار Paper مثبت نیست",
   experiment_closed: "مهلت آزمایش Paper به پایان رسیده — معاملهٔ جدید باز نمی‌شود"
 };
 
@@ -103,6 +113,9 @@ const FROM_UPSTREAM: Record<BlockedReasonCode, PaperReasonCode> = {
   quote_max_unverified: "insufficient_depth",
   units_ambiguous: "market_data_unverified",
   rate_limited: "rate_limited",
+  sequence_gap: "market_data_sequence_gap",
+  snapshot_resync: "market_data_resync",
+  incoherent_event_time: "market_data_time_incoherent",
   source_not_certified: "source_unhealthy"
 };
 
@@ -125,6 +138,9 @@ const PRIORITY: PaperReasonCode[] = [
   "source_unhealthy",
   "rate_limited",
   "stale_market_data",
+  "market_data_sequence_gap",
+  "market_data_resync",
+  "market_data_time_incoherent",
   "market_data_missing",
   "market_data_unverified",
   "insufficient_depth",
@@ -142,6 +158,8 @@ const PRIORITY: PaperReasonCode[] = [
   "venue_exposure_cap",
   "inventory_limit",
   "reservation_conflict",
+  "optimizer_budget_exhausted",
+  "adjusted_score_non_positive",
   "portfolio_not_selected",
   "sizing_blocked",
   "size_not_selected"

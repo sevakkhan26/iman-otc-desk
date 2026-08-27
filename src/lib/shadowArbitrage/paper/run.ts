@@ -43,6 +43,23 @@ export type PaperCycleOutcome = {
   duplicates?: number;
   eligibleCandidates?: number;
   portfolio?: PaperPortfolioTelemetry | null;
+  marketData?: {
+    decisionTimestampMs: number;
+    coherentRouteCount: number;
+    blockedRouteCount: number;
+    eventToDecisionLatencyMs: number[];
+    venues: Array<{
+      sourceId: string;
+      transport: string;
+      sourceEventAgeMs: number;
+      latencyEstimateMs: number | null;
+      jitterMs: number | null;
+      reconnectCount: number;
+      gapCount: number;
+      resyncCount: number;
+      snapshotResyncState: string;
+    }>;
+  };
   /** Detailed rows this cycle wrote — normally 0 once the market is steady. */
   detailedEventsWritten?: number;
   error?: string;
@@ -299,7 +316,8 @@ export async function runPaperExecutionForCycle(input: {
        */
       quoteBySource
     },
-    portfolioLimits
+    portfolioLimits,
+    decisionTimestampMs: Date.parse(input.occurredAt)
   });
 
   const fills: PaperFillRecord[] = [];
@@ -485,7 +503,8 @@ export async function runPaperExecutionForCycle(input: {
     duplicates: committed.duplicates,
     detailedEventsWritten: committed.detailedEventsWritten,
     eligibleCandidates: evaluation.eligibleCandidates,
-    portfolio: evaluation.portfolio
+    portfolio: evaluation.portfolio,
+    marketData: evaluation.marketData
   };
 }
 

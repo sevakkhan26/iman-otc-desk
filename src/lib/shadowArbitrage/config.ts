@@ -22,6 +22,13 @@ export const SHADOW_POLL_MAX_MS = 300_000;
 /** Snapshot older than this is stale for executable routes. */
 export const SHADOW_STALE_MS = 90_000;
 
+/**
+ * Maximum source-event skew between route legs in the event fabric.
+ * Policy value is configurable at the pure engine seam; this is the Paper
+ * default, not an exchange-economic input.
+ */
+export const SHADOW_EVENT_COHERENCE_MAX_SKEW_MS = 2_500;
+
 /** Retention for opportunity history (spec minimum: 14 days). */
 export const SHADOW_RETENTION_DAYS = 14;
 

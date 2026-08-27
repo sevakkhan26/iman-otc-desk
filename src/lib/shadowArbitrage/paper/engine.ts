@@ -10,7 +10,10 @@
  * cycle, their VWAP depth for the traded size, fees that are known and fresh,
  * the slippage buffer, account readiness and the virtual balances.
  */
-import { SHADOW_STALE_MS } from "@/lib/shadowArbitrage/config";
+import {
+  SHADOW_EVENT_COHERENCE_MAX_SKEW_MS,
+  SHADOW_STALE_MS
+} from "@/lib/shadowArbitrage/config";
 import type { RiskPolicyState } from "@/lib/shadowArbitrage/live/policy";
 import { computeRouteSize, type SizingResult } from "@/lib/shadowArbitrage/paper/sizing";
 import {
@@ -61,6 +64,14 @@ import {
   allocatePaperRoutes,
   type PaperPortfolioTelemetry
 } from "@/lib/shadowArbitrage/paper/portfolioAllocator";
+import {
+  applyInventoryShadowPrices,
+  deriveInventoryShadowPrices,
+  scorePaperCandidate,
+  type CandidateScoreBreakdown
+} from "@/lib/shadowArbitrage/paper/executionScoring";
+import { estimateFromLifecycle } from "@/lib/shadowArbitrage/paper/opportunitySurvival";
+import { assessCrossVenueCoherence } from "@/lib/shadowArbitrage/streaming/eventFabric";
 import type {
   BlockedReasonCode,
   NormalizedSourceSnapshot,
@@ -115,6 +126,7 @@ export type PaperCandidate = {
   slippageBufferToman: number;
   buyFeeBps: number | null;
   sellFeeBps: number | null;
+  scoring?: CandidateScoreBreakdown;
 };
 
 export type PaperDecision =
@@ -160,6 +172,23 @@ export type CycleEvaluation = {
   peakUtilizationPercent: number | null;
   /** Canonical management output from the outer Paper portfolio optimizer. */
   portfolio: PaperPortfolioTelemetry | null;
+  marketData: {
+    decisionTimestampMs: number;
+    coherentRouteCount: number;
+    blockedRouteCount: number;
+    eventToDecisionLatencyMs: number[];
+    venues: Array<{
+      sourceId: string;
+      transport: string;
+      sourceEventAgeMs: number;
+      latencyEstimateMs: number | null;
+      jitterMs: number | null;
+      reconnectCount: number;
+      gapCount: number;
+      resyncCount: number;
+      snapshotResyncState: string;
+    }>;
+  };
 };
 
 /** Same-cycle freshness: the snapshot must be inside the staleness budget. */
@@ -167,6 +196,7 @@ function snapshotUsable(s: NormalizedSourceSnapshot | undefined): boolean {
   if (!s) return false;
   if (s.stale) return false;
   if (s.health === "unavailable") return false;
+  if (s.marketData?.snapshotResyncState === "AWAITING_SNAPSHOT") return false;
   return s.ageMs <= SHADOW_STALE_MS;
 }
 
@@ -274,6 +304,9 @@ export type EvaluateInput = {
   balances: VenueBalance[];
   sizing: SizingContext;
   portfolioLimits?: PortfolioLimits;
+  /** Supplied by replay/collector so event-to-decision latency stays deterministic. */
+  decisionTimestampMs?: number;
+  maxCrossVenueSkewMs?: number;
 };
 
 /**
@@ -286,6 +319,30 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
   const sourceById = new Map(input.sources.map((s) => [s.sourceId as string, s]));
   const stateById = new Map(input.venueStates.map((v) => [v.sourceId as string, v]));
   const decisions: PaperDecision[] = [];
+  const decisionTimestampMs =
+    input.decisionTimestampMs ??
+    Math.max(
+      0,
+      ...input.sources.map((source) => Date.parse(source.receivedAt)).filter(Number.isFinite)
+    );
+  const eventToDecisionLatencyMs: number[] = [];
+  let coherentRouteCount = 0;
+  let blockedRouteCount = 0;
+  const venueMarketData = [...input.sources]
+    .sort((a, b) => a.sourceId.localeCompare(b.sourceId))
+    .map((source) => ({
+      sourceId: source.sourceId,
+      transport: source.marketData?.transport ?? "REST_FALLBACK",
+      sourceEventAgeMs: source.marketData?.sourceEventAgeMs ?? source.ageMs,
+      latencyEstimateMs:
+        source.marketData?.latencyEstimateMs ?? source.meta.latencyMs,
+      jitterMs: source.marketData?.jitterMs ?? null,
+      reconnectCount: source.marketData?.reconnectCount ?? 0,
+      gapCount: source.marketData?.gapCount ?? 0,
+      resyncCount: source.marketData?.resyncCount ?? 0,
+      snapshotResyncState:
+        source.marketData?.snapshotResyncState ?? "SYNCHRONIZED"
+    }));
 
   /** Records a skip with every exact cause, never a generic substitute. */
   const skip = (candidate: PaperCandidate, causes: PaperReasonCode[]): void => {
@@ -392,6 +449,31 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
     }
     const buySnap = sourceById.get(c.buySourceId);
     const sellSnap = sourceById.get(c.sellSourceId);
+    if (buySnap?.marketData || sellSnap?.marketData) {
+      const coherence = assessCrossVenueCoherence({
+        buy: buySnap,
+        sell: sellSnap,
+        decisionTimestampMs,
+        maxAgeMs: SHADOW_STALE_MS,
+        maxSourceSkewMs:
+          input.maxCrossVenueSkewMs ?? SHADOW_EVENT_COHERENCE_MAX_SKEW_MS
+      });
+      if (!coherence.coherent) {
+        blockedRouteCount += 1;
+        skip(c, [
+          coherence.reason === "awaiting_resync"
+            ? "market_data_resync"
+            : coherence.reason === "cross_venue_time_skew"
+              ? "market_data_time_incoherent"
+              : "stale_market_data"
+        ]);
+        continue;
+      }
+      coherentRouteCount += 1;
+      if (coherence.eventToDecisionLatencyMs !== null) {
+        eventToDecisionLatencyMs.push(coherence.eventToDecisionLatencyMs);
+      }
+    }
     if (!snapshotUsable(buySnap) || !snapshotUsable(sellSnap)) {
       const unhealthy = [buySnap, sellSnap].some((x) => x?.health === "unavailable");
       skip(c, unhealthy ? ["source_unhealthy"] : ["stale_market_data"]);
@@ -563,7 +645,14 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
         .map(([routeKey, result]) => ({ routeKey, result })),
       reservations: totalReserved(ledger),
       peakUtilizationPercent: null,
-      portfolio: null
+      portfolio: null,
+      marketData: {
+        decisionTimestampMs,
+        coherentRouteCount,
+        blockedRouteCount,
+        eventToDecisionLatencyMs,
+        venues: venueMarketData
+      }
     };
   }
   const maxUtil =
@@ -579,6 +668,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
   const liveExposure = new Map<string, number>();
   let portfolioTelemetry: PaperPortfolioTelemetry | null = null;
   const sizingByAllocationKey = new Map<string, SizingResult>();
+  const scoringByAllocationKey = new Map<string, CandidateScoreBreakdown>();
   const selectedAllocationKeyByLifecycleId = new Map<string, string>();
 
   /*
@@ -602,7 +692,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       0
     );
   if (allocatorMark > 0 && allocatorEquity > 0) {
-    const allocatorRows = provisional.flatMap((row) => {
+    let allocatorRows = provisional.flatMap((row) => {
       const { c } = row;
       const initialDeployableToman = limits
         ? Math.floor(
@@ -697,7 +787,58 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
         });
         if (!plan.ok) return [];
         const candidateAllocationKey = `${c.lifecycleId}@${option.sizeUsdtMicros}`;
+        const opportunity = byId.get(c.lifecycleId);
+        const buyMarket = sourceForSizing(c.buySourceId);
+        const sellMarket = sourceForSizing(c.sellSourceId);
+        const survival = opportunity
+          ? estimateFromLifecycle({
+              routeKey: opportunity.routeKey,
+              firstSeenAt: opportunity.firstSeenAt,
+              lastSeenAt: opportunity.lastSeenAt,
+              durationMs: opportunity.durationMs,
+              observationCount: opportunity.observationCount
+            })
+          : estimateFromLifecycle({
+              routeKey: c.routeKey,
+              firstSeenAt: new Date(decisionTimestampMs).toISOString(),
+              lastSeenAt: new Date(decisionTimestampMs).toISOString(),
+              durationMs: 0,
+              observationCount: 0
+            });
+        const sourceAgeMs = Math.max(
+          buyMarket?.ageMs ?? SHADOW_STALE_MS,
+          sellMarket?.ageMs ?? SHADOW_STALE_MS
+        );
+        const venueLatencyMs = Math.max(
+          buyMarket?.marketData?.latencyEstimateMs ??
+            buyMarket?.meta.latencyMs ??
+            0,
+          sellMarket?.marketData?.latencyEstimateMs ??
+            sellMarket?.meta.latencyMs ??
+            0
+        );
+        const venueJitterMs = Math.max(
+          buyMarket?.marketData?.jitterMs ?? 0,
+          sellMarket?.marketData?.jitterMs ?? 0
+        );
+        const scoring = scorePaperCandidate({
+          canonicalRiskAdjustedPnlToman:
+            option.economics!.riskAdjustedPnlToman,
+          survival,
+          fillConfidence: 1,
+          fillConfidenceProvenance:
+            "CANONICAL_FULL_BOOK_WALK_FILLABLE_AT_SELECTED_SIZE",
+          sourceAgeMs,
+          venueLatencyMs,
+          venueJitterMs,
+          buyIrtRequiredToman: Math.max(0, -plan.buyLeg.deltaIrtToman),
+          sellUsdtMicros: Math.max(0, -plan.sellLeg.deltaUsdtMicros),
+          buySourceId: c.buySourceId,
+          sellSourceId: c.sellSourceId,
+          inventoryImpactPoints: option.inventory?.impactPoints ?? 0
+        });
         sizingByAllocationKey.set(candidateAllocationKey, option);
+        scoringByAllocationKey.set(candidateAllocationKey, scoring);
         return [{
           lifecycleId: c.lifecycleId,
           allocationKey: candidateAllocationKey,
@@ -709,6 +850,8 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
           sellVwapToman: sized.sellVwapToman,
           riskAdjustedPnlToman: option.economics!.riskAdjustedPnlToman,
           economicNetPnlToman: option.economics!.economicNetPnlToman,
+          adjustedScoreToman: scoring.adjustedObjectiveToman,
+          scoreBreakdown: scoring,
           buyNotionalToman: plan.buyLeg.notionalToman,
           buyIrtRequiredToman: Math.max(0, -plan.buyLeg.deltaIrtToman),
           sellUsdtMicros: Math.max(0, -plan.sellLeg.deltaUsdtMicros),
@@ -735,6 +878,75 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
           readiness: { healthy: true, fresh: true, feeCertain: true }
         }];
       });
+    });
+    const largestOptionByLifecycle = new Map<
+      string,
+      (typeof allocatorRows)[number]
+    >();
+    for (const candidate of allocatorRows) {
+      const current = largestOptionByLifecycle.get(candidate.lifecycleId);
+      if (
+        !current ||
+        candidate.capitalLockedToman! > current.capitalLockedToman!
+      ) {
+        largestOptionByLifecycle.set(candidate.lifecycleId, candidate);
+      }
+    }
+    const inventoryAvailable = new Map<string, number>();
+    for (const balance of input.balances) {
+      inventoryAvailable.set(
+        `${balance.sourceId}|IRT`,
+        Math.max(0, balance.irtToman)
+      );
+      inventoryAvailable.set(
+        `${balance.sourceId}|USDT_MICRO`,
+        Math.max(0, balance.usdtMicros)
+      );
+    }
+    const inventoryShadowPrices = deriveInventoryShadowPrices({
+      availableUnits: inventoryAvailable,
+      futureDemand: [...largestOptionByLifecycle.values()].flatMap(
+        (candidate) => [
+          {
+            sourceId: candidate.buySourceId,
+            asset: "IRT" as const,
+            requiredUnits: candidate.buyIrtRequiredToman ?? 0,
+            canonicalRiskAdjustedPnlToman:
+              candidate.riskAdjustedPnlToman,
+            captureConfidence:
+              candidate.scoreBreakdown?.captureFactor ?? 0
+          },
+          {
+            sourceId: candidate.sellSourceId,
+            asset: "USDT_MICRO" as const,
+            requiredUnits: candidate.sellUsdtMicros,
+            canonicalRiskAdjustedPnlToman:
+              candidate.riskAdjustedPnlToman,
+            captureConfidence:
+              candidate.scoreBreakdown?.captureFactor ?? 0
+          }
+        ]
+      )
+    });
+    allocatorRows = allocatorRows.map((candidate) => {
+      if (!candidate.scoreBreakdown) return candidate;
+      const scoreBreakdown = applyInventoryShadowPrices({
+        score: candidate.scoreBreakdown,
+        shadowPrices: inventoryShadowPrices,
+        buySourceId: candidate.buySourceId,
+        sellSourceId: candidate.sellSourceId,
+        buyIrtRequiredToman: candidate.buyIrtRequiredToman ?? 0,
+        sellUsdtMicros: candidate.sellUsdtMicros,
+        inventoryImpactPoints: candidate.inventoryImpactPoints ?? 0
+      });
+      if (candidate.allocationKey) {
+        scoringByAllocationKey.set(candidate.allocationKey, scoreBreakdown);
+      }
+      return {
+        ...candidate,
+        adjustedScoreToman: scoreBreakdown.adjustedObjectiveToman,
+        scoreBreakdown
+      };
     });
     const allocation = allocatePaperRoutes({
       candidates: allocatorRows,
@@ -898,7 +1110,10 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
     let sizedCandidate: PaperCandidate = {
       ...c,
       ...(selectedAllocationKey
-        ? { allocationKey: selectedAllocationKey }
+        ? {
+            allocationKey: selectedAllocationKey,
+            scoring: scoringByAllocationKey.get(selectedAllocationKey)
+          }
         : {}),
       sizeUsdt: microsToUsdt(sizing.sizeUsdtMicros),
       buyVwapToman: sizing.quote.buyVwapToman,
@@ -1176,6 +1391,29 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       (sum, decision) => sum + decision.plan.economicNetPnlToman,
       0
     );
+    const actualAdjusted = executed.reduce(
+      (sum, decision) =>
+        sum +
+        (decision.candidate.scoring?.adjustedObjectiveToman ??
+          decision.plan.riskAdjustedPnlToman),
+      0
+    );
+    const actualCaptureAdjustment = executed.reduce(
+      (sum, decision) =>
+        sum + (decision.candidate.scoring?.captureAdjustmentToman ?? 0),
+      0
+    );
+    const actualExecutionAdjustment = executed.reduce(
+      (sum, decision) =>
+        sum + (decision.candidate.scoring?.executionAdjustmentToman ?? 0),
+      0
+    );
+    const actualInventoryCost = executed.reduce(
+      (sum, decision) =>
+        sum +
+        (decision.candidate.scoring?.inventoryOpportunityCostToman ?? 0),
+      0
+    );
     const previouslyEngaged = Math.max(
       0,
       portfolioTelemetry.engagedCapitalToman -
@@ -1202,6 +1440,10 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
           : 0,
       selectedPortfolioRiskAdjustedPnlToman: actualRa,
       selectedPortfolioEconomicNetPnlToman: actualEconomic,
+      selectedPortfolioAdjustedScoreToman: actualAdjusted,
+      selectedCaptureAdjustmentToman: actualCaptureAdjustment,
+      selectedExecutionAdjustmentToman: actualExecutionAdjustment,
+      selectedInventoryOpportunityCostToman: actualInventoryCost,
       profitableExecutableCapacityToman: actualProfitableCapacity,
       allocatedProfitableCapacityToman: actualCapital,
       unallocatedProfitableCapacityToman: Math.max(
@@ -1231,7 +1473,16 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       .map(([routeKey, result]) => ({ routeKey, result })),
     reservations: totalReserved(ledger),
     peakUtilizationPercent,
-    portfolio: portfolioTelemetry
+    portfolio: portfolioTelemetry,
+    marketData: {
+      decisionTimestampMs,
+      coherentRouteCount,
+      blockedRouteCount,
+      eventToDecisionLatencyMs: [...eventToDecisionLatencyMs].sort(
+        (a, b) => a - b
+      ),
+      venues: venueMarketData
+    }
   };
 }
 

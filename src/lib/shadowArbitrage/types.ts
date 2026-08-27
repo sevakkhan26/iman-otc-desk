@@ -35,6 +35,9 @@ export type BlockedReasonCode =
   | "units_ambiguous"
   /** Public endpoint returned a rate-limit response this cycle. */
   | "rate_limited"
+  | "sequence_gap"
+  | "snapshot_resync"
+  | "incoherent_event_time"
   /** Source is not LIVE_VERIFIED, so execution cannot be claimed. */
   | "source_not_certified";
 
@@ -55,6 +58,9 @@ export const BLOCKED_REASON_FA: Record<BlockedReasonCode, string> = {
   quote_max_unverified: "حد اجرای OTC تأییدنشده",
   units_ambiguous: "واحد قیمت مبهم",
   rate_limited: "محدودیت نرخ درخواست",
+  sequence_gap: "شکاف توالی دادهٔ بازار",
+  snapshot_resync: "همگام‌سازی مجدد snapshot در جریان است",
+  incoherent_event_time: "زمان دو سمت بازار همگام نیست",
   source_not_certified: "منبع گواهی‌نشده"
 };
 
@@ -108,6 +114,24 @@ export type SourceResponseMeta = {
   normalizationNote: string | null;
 };
 
+export type MarketDataTransport = "WS" | "REST_BOOTSTRAP" | "REST_RECOVERY" | "REST_FALLBACK";
+
+/** Event-fabric state attached without changing canonical book economics. */
+export type MarketDataTelemetry = {
+  transport: MarketDataTransport;
+  sequence: number | null;
+  sourceEventTimestamp: string | null;
+  receiveTimestamp: string;
+  sourceEventAgeMs: number;
+  latencyEstimateMs: number | null;
+  jitterMs: number | null;
+  reconnectCount: number;
+  gapCount: number;
+  outOfOrderCount: number;
+  resyncCount: number;
+  snapshotResyncState: "SYNCHRONIZED" | "AWAITING_SNAPSHOT";
+};
+
 export type NormalizedSourceSnapshot = {
   sourceId: ShadowSourceId;
   sourceName: string;
@@ -149,6 +173,8 @@ export type NormalizedSourceSnapshot = {
   /** Snapshot age exceeded SHADOW_STALE_MS at collection time. */
   stale: boolean;
   meta: SourceResponseMeta;
+  /** Present when the snapshot came through the event-driven fabric. */
+  marketData?: MarketDataTelemetry;
   /** Reasons this source cannot back an executable claim this cycle. */
   sourceBlockedReasons: BlockedReasonCode[];
   /** Diagnostic only — truncated raw summary */

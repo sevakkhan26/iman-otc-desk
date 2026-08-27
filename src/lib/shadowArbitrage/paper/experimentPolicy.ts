@@ -25,6 +25,24 @@ export const PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT = 10;
 export const PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT = 20;
 
 /**
+ * Portfolio allocator policy for Paper sessions created after the portfolio
+ * optimizer shipped. The 4D constants above are historical V1 snapshot values
+ * and deliberately remain unchanged so old experiment rows keep their meaning.
+ */
+export const PAPER_PORTFOLIO_POLICY_SET_KEY = "PAPER_PORTFOLIO_90_10_V2" as const;
+export const PAPER_PORTFOLIO_MAX_UTILIZATION_PERCENT = 90;
+export const PAPER_PORTFOLIO_MIN_RESERVE_PERCENT = 10;
+/**
+ * Catastrophic concentration backstop, not a target and not the venue cap
+ * normally reached by the optimizer. 65% lets a genuinely deep two-leg route
+ * engage roughly 45% of capital on either venue at the 90% global ceiling,
+ * while ensuring no single venue can represent nearly the whole portfolio.
+ * The effective cap is dynamically tightened by balances, accepted depth,
+ * readiness, inventory and remaining global headroom.
+ */
+export const PAPER_PORTFOLIO_FAILSAFE_VENUE_PERCENT = 65;
+
+/**
  * Risk policies shared with SMART_CAPITAL_DEPTH (values match PAPER_BALANCED_10B_V1
  * except max_order_size_usdt, which is replaced by the capital-relative freeze
  * written at experiment start).

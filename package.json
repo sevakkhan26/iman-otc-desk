@@ -38,6 +38,7 @@
     "test:paper-browser": "npx --yes tsx scripts/test-paper-browser.mts",
     "test:paper-drawer": "npx --yes tsx scripts/test-paper-drawer-browser.mts",
     "test:paper-acceptance": "npx --yes tsx scripts/test-paper-acceptance.mts",
+    "test:paper-portfolio": "npx --yes tsx scripts/test-paper-portfolio-optimizer.mts",
     "test:migration-0013": "npx --yes tsx scripts/test-migration-0013.mts",
     "test:copy-plan": "npx --yes tsx scripts/test-copy-from-session.mts",
     "test:release-bootstrap": "npx --yes tsx scripts/test-release-bootstrap.mts",

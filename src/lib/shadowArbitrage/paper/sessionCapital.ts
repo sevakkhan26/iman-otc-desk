@@ -23,9 +23,9 @@ import {
 } from "@/lib/shadowArbitrage/paper/allocation";
 import {
   PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT,
-  PAPER_4D_MAX_UTILIZATION_PERCENT,
-  PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT,
-  PAPER_4D_MIN_RESERVE_PERCENT
+  PAPER_PORTFOLIO_FAILSAFE_VENUE_PERCENT,
+  PAPER_PORTFOLIO_MAX_UTILIZATION_PERCENT,
+  PAPER_PORTFOLIO_MIN_RESERVE_PERCENT
 } from "@/lib/shadowArbitrage/paper/experimentPolicy";
 import {
   PAPER_POLICY_MIN_KEY,
@@ -157,9 +157,12 @@ export function deriveOrderCapUsdt(input: {
   maxVenueExposurePercent?: number;
 }): number {
   if (!(input.equityToman > 0) || !(input.markPriceToman > 0)) return 0;
-  const maxUtil = input.maxUtilizationPercent ?? PAPER_4D_MAX_UTILIZATION_PERCENT;
-  const minReserve = input.minReservePercent ?? PAPER_4D_MIN_RESERVE_PERCENT;
-  const maxVenue = input.maxVenueExposurePercent ?? PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT;
+  const maxUtil =
+    input.maxUtilizationPercent ?? PAPER_PORTFOLIO_MAX_UTILIZATION_PERCENT;
+  const minReserve =
+    input.minReservePercent ?? PAPER_PORTFOLIO_MIN_RESERVE_PERCENT;
+  const maxVenue =
+    input.maxVenueExposurePercent ?? PAPER_PORTFOLIO_FAILSAFE_VENUE_PERCENT;
   const usablePct = Math.min(maxUtil, Math.max(0, 100 - minReserve));
   const usableToman = Math.floor((input.equityToman * usablePct) / 100);
   const venueToman = Math.floor((input.equityToman * maxVenue) / 100);
@@ -336,12 +339,15 @@ export function buildSessionCapitalPreview(input: {
   }
   const preLimits: SessionCapitalLimitsSnapshot = {
     maxUtilizationPercent:
-      input.limits?.maxUtilizationPercent ?? PAPER_4D_MAX_UTILIZATION_PERCENT,
-    minReservePercent: input.limits?.minReservePercent ?? PAPER_4D_MIN_RESERVE_PERCENT,
+      input.limits?.maxUtilizationPercent ??
+      PAPER_PORTFOLIO_MAX_UTILIZATION_PERCENT,
+    minReservePercent:
+      input.limits?.minReservePercent ?? PAPER_PORTFOLIO_MIN_RESERVE_PERCENT,
     maxRouteCapitalPercent:
       input.limits?.maxRouteCapitalPercent ?? PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT,
     maxVenueExposurePercent:
-      input.limits?.maxVenueExposurePercent ?? PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT
+      input.limits?.maxVenueExposurePercent ??
+      PAPER_PORTFOLIO_FAILSAFE_VENUE_PERCENT
   };
   const allocationPlan = buildLiquidityAwarePlan({
     totalCapitalToman: total,

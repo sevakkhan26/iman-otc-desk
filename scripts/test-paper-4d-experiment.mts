@@ -22,7 +22,9 @@ import {
   computeUtilization,
   routeCapitalToman
 } from "../src/lib/shadowArbitrage/paper/utilization.ts";
-import { allocatePaperRoutes } from "../src/lib/shadowArbitrage/paper/portfolioAllocator.ts";
+import {
+  allocatePaperRoutesGreedy as allocatePaperRoutes
+} from "../src/lib/shadowArbitrage/paper/portfolioAllocator.ts";
 
 let passed = 0;
 let failed = 0;

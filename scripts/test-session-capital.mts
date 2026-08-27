@@ -70,7 +70,7 @@ await test("parseWholeTomanCapital accepts 100M and 10B, rejects bad values", ()
   assert.equal(parseWholeTomanCapital(MAX_CAPITAL_TOMAN + 1).ok, false);
 });
 
-await test("preview residual is exactly zero for 100M and 10B", () => {
+await test("new-session preview preserves 10% reserve for 100M and 10B", () => {
   const venues = SHADOW_SOURCES.map((s) => s.id);
   const mark = 200_000;
   for (const cap of [100_000_000, 10_000_000_000] as const) {
@@ -83,7 +83,7 @@ await test("preview residual is exactly zero for 100M and 10B", () => {
     assert.equal(p.residualToman, 0, `residual for ${cap}`);
     assert.equal(p.allocationValid, true);
     assert.equal(p.allocationSumToman + p.unallocatedReserveToman, cap);
-    assert.equal(p.unallocatedReserveToman, Math.floor(cap * 0.2));
+    assert.equal(p.unallocatedReserveToman, Math.floor(cap * 0.1));
     assert.equal(portfolioValueToman(p.allocations, mark), p.allocationSumToman);
     assert.ok(p.previewToken.length >= 32);
     assert.equal(p.unit, "toman");

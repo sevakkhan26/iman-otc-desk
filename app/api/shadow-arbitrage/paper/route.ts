@@ -62,6 +62,7 @@ import {
 } from "@/lib/shadowArbitrage/paper/sizing";
 import { listVenueExecutionLimits } from "@/lib/shadowArbitrage/paper/venueExecutionLimits";
 import {
+  assessInventory,
   targetsFromAllocations,
   type InventoryModel
 } from "@/lib/shadowArbitrage/paper/inventory";
@@ -82,6 +83,12 @@ import type { ShadowSourceId } from "@/lib/shadowArbitrage/types";
 import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
 import { PAPER_FEE_SETTLEMENT, microsToUsdt, settlementFor, usdtToMicros } from "@/lib/shadowArbitrage/paper/broker";
 import { parseSessionSetupNote } from "@/lib/shadowArbitrage/paper/sessionCapital";
+import { allocatePaperRoutes } from "@/lib/shadowArbitrage/paper/portfolioAllocator";
+import {
+  PAPER_PORTFOLIO_FAILSAFE_VENUE_PERCENT,
+  PAPER_PORTFOLIO_MAX_UTILIZATION_PERCENT,
+  PAPER_PORTFOLIO_MIN_RESERVE_PERCENT
+} from "@/lib/shadowArbitrage/paper/experimentPolicy";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -599,6 +606,116 @@ export async function GET(request: Request) {
     inventoryModel,
     quoteBySource
   });
+  const portfolioAllocation =
+    valuationPriceToman !== null &&
+    valuationPriceToman > 0 &&
+    snap.session &&
+    sizingBalances.length
+      ? allocatePaperRoutes({
+          candidates: sizingRoutes.flatMap((route) => {
+            const sized = route.sizing;
+            if (
+              sized.status !== "SIZED" ||
+              sized.sizeUsdt === null ||
+              !sized.quote ||
+              !sized.economics
+            ) {
+              return [];
+            }
+            const economics = sized.economics;
+            return [
+              {
+                lifecycleId: route.routeKey,
+                routeKey: route.routeKey,
+                buySourceId: route.buySourceId,
+                sellSourceId: route.sellSourceId,
+                sizeUsdt: sized.sizeUsdt,
+                buyVwapToman: sized.quote.buyVwapToman,
+                sellVwapToman: sized.quote.sellVwapToman,
+                riskAdjustedPnlToman: economics.riskAdjustedPnlToman,
+                economicNetPnlToman: economics.economicNetPnlToman,
+                buyNotionalToman: sized.quote.buyWalk.notionalToman,
+                buyIrtRequiredToman: economics.buyDebitIrtToman,
+                sellUsdtMicros: economics.sellDebitUsdtMicros,
+                capitalLockedToman: economics.capitalLockedToman,
+                buyAcceptedDepthToman:
+                  microsToUsdt(sized.capacity?.buyDepth.depthMicros ?? 0) *
+                  sized.quote.buyVwapToman,
+                sellAcceptedDepthToman:
+                  microsToUsdt(sized.capacity?.sellDepth.depthMicros ?? 0) *
+                  valuationPriceToman,
+                inventoryImpactPoints: sized.inventory?.impactPoints ?? 0,
+                inventoryDeltas: [
+                  {
+                    sourceId: route.buySourceId,
+                    deltaIrtToman: -economics.buyDebitIrtToman,
+                    deltaUsdtMicros:
+                      Math.round(sized.sizeUsdt * 1_000_000) -
+                      economics.buyFeeUsdtMicros
+                  },
+                  {
+                    sourceId: route.sellSourceId,
+                    deltaIrtToman:
+                      sized.quote.sellWalk.notionalToman -
+                      economics.sellFeeToman,
+                    deltaUsdtMicros: -economics.sellDebitUsdtMicros
+                  }
+                ],
+                readiness: { healthy: true, fresh: true, feeCertain: true }
+              }
+            ];
+          }),
+          equityToman: snap.session.totalCapitalToman,
+          markPriceToman: valuationPriceToman,
+          venueExposureToman: new Map(),
+          availableIrtByVenue: new Map(
+            sizingBalances.map((balance) => [
+              balance.sourceId as string,
+              balance.irtToman
+            ])
+          ),
+          availableUsdtMicrosByVenue: new Map(
+            sizingBalances.map((balance) => [
+              balance.sourceId as string,
+              balance.usdtMicros
+            ])
+          ),
+          maxUtilizationPercent: PAPER_PORTFOLIO_MAX_UTILIZATION_PERCENT,
+          minReservePercent: PAPER_PORTFOLIO_MIN_RESERVE_PERCENT,
+          maxVenueExposurePercent:
+            PAPER_PORTFOLIO_FAILSAFE_VENUE_PERCENT,
+          inventoryFeasible(candidates) {
+            const deltas = new Map<
+              string,
+              {
+                sourceId: string;
+                deltaIrtToman: number;
+                deltaUsdtMicros: number;
+              }
+            >();
+            for (const candidate of candidates) {
+              for (const delta of candidate.inventoryDeltas ?? []) {
+                const aggregate = deltas.get(delta.sourceId) ?? {
+                  sourceId: delta.sourceId,
+                  deltaIrtToman: 0,
+                  deltaUsdtMicros: 0
+                };
+                aggregate.deltaIrtToman += delta.deltaIrtToman;
+                aggregate.deltaUsdtMicros += delta.deltaUsdtMicros;
+                deltas.set(delta.sourceId, aggregate);
+              }
+            }
+            return (
+              !deltas.size ||
+              assessInventory({
+                balances: sizingBalances,
+                deltas: [...deltas.values()],
+                model: inventoryModel
+              }).withinBand
+            );
+          }
+        })
+      : null;
 
   /*
    * Four DIFFERENT facts, counted separately.
@@ -716,6 +833,21 @@ export async function GET(request: Request) {
       maxDeviationPoints: inventoryModel.maxDeviationPoints,
       targets: inventoryModel.targets
     },
+    portfolio: portfolioAllocation
+      ? {
+          algorithm: portfolioAllocation.algorithm,
+          ...portfolioAllocation.telemetry,
+          selectedRoutes: portfolioAllocation.selected.map((selection) => ({
+            routeKey: selection.candidate.routeKey,
+            sizeUsdt: selection.candidate.sizeUsdt,
+            allocatedCapitalToman: selection.capitalUsedToman,
+            riskAdjustedPnlToman:
+              selection.candidate.riskAdjustedPnlToman
+          })),
+          rejectedRoutes: portfolioAllocation.rejected,
+          dynamicVenueCaps: portfolioAllocation.dynamicVenueCaps
+        }
+      : null,
     routes: sizingRoutes
   };
 

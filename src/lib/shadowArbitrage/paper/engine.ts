@@ -13,7 +13,10 @@
 import { SHADOW_STALE_MS } from "@/lib/shadowArbitrage/config";
 import type { RiskPolicyState } from "@/lib/shadowArbitrage/live/policy";
 import { computeRouteSize, type SizingResult } from "@/lib/shadowArbitrage/paper/sizing";
-import type { InventoryModel } from "@/lib/shadowArbitrage/paper/inventory";
+import {
+  assessInventory,
+  type InventoryModel
+} from "@/lib/shadowArbitrage/paper/inventory";
 import {
   availableBalances,
   commitHold,
@@ -50,10 +53,14 @@ import {
   venueExposureAfter
 } from "@/lib/shadowArbitrage/paper/utilization";
 import {
-  PAPER_4D_MAX_UTILIZATION_PERCENT,
-  PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT,
-  PAPER_4D_MIN_RESERVE_PERCENT
+  PAPER_PORTFOLIO_FAILSAFE_VENUE_PERCENT,
+  PAPER_PORTFOLIO_MAX_UTILIZATION_PERCENT,
+  PAPER_PORTFOLIO_MIN_RESERVE_PERCENT
 } from "@/lib/shadowArbitrage/paper/experimentPolicy";
+import {
+  allocatePaperRoutes,
+  type PaperPortfolioTelemetry
+} from "@/lib/shadowArbitrage/paper/portfolioAllocator";
 import type {
   BlockedReasonCode,
   NormalizedSourceSnapshot,
@@ -149,6 +156,8 @@ export type CycleEvaluation = {
   reservations: { irtToman: number; usdtMicros: number; holds: number };
   /** Peak concurrent reserved utilization this cycle (null when limits off). */
   peakUtilizationPercent: number | null;
+  /** Canonical management output from the outer Paper portfolio optimizer. */
+  portfolio: PaperPortfolioTelemetry | null;
 };
 
 /** Same-cycle freshness: the snapshot must be inside the staleness budget. */
@@ -240,7 +249,8 @@ export type SizingContext = {
  * that pass neither portfolioLimits nor portfolioValueToman skip only the
  * portfolio-layer checks (risk policies still bind).
  *
- * Defaults: max util 80%, min reserve 20%, max route 10%, max venue 20%.
+ * New-session defaults: max util 90%, min reserve 10%; dynamic venue cap with
+ * a configurable 65% fail-safe concentration ceiling.
  * Missing limits on the live Paper path fail closed — never permissive.
  */
 export type PortfolioLimits = {
@@ -461,6 +471,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       slippageBufferBps: input.sizing.slippageBufferBps,
       inventoryModel: input.sizing.inventoryModel,
       dynamicRisk,
+      portfolioAllocatorMode: "DYNAMIC_PORTFOLIO",
       buyQuote: input.sizing.quoteBySource?.get(c.buySourceId),
       sellQuote: input.sizing.quoteBySource?.get(c.sellSourceId)
     });
@@ -474,7 +485,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
    * rather than whichever route happened to be evaluated first.
    */
   const provisional = representatives.map((c) => ({ c, sizing: sizeRoute(c) }));
-  const rankedRoutes = [...provisional].sort(
+  let rankedRoutes = [...provisional].sort(
     (a, b) =>
       (b.sizing.economics?.riskAdjustedPnlToman ?? 0) - (a.sizing.economics?.riskAdjustedPnlToman ?? 0) ||
       (b.sizing.economics?.capitalEfficiencyBps ?? 0) -
@@ -524,11 +535,14 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
         equityToman: equityToman as number,
         markPriceToman: markPriceToman as number,
         maxUtilizationPercent:
-          input.portfolioLimits?.maxUtilizationPercent ?? PAPER_4D_MAX_UTILIZATION_PERCENT,
+          input.portfolioLimits?.maxUtilizationPercent ??
+          PAPER_PORTFOLIO_MAX_UTILIZATION_PERCENT,
         minReservePercent:
-          input.portfolioLimits?.minReservePercent ?? PAPER_4D_MIN_RESERVE_PERCENT,
+          input.portfolioLimits?.minReservePercent ??
+          PAPER_PORTFOLIO_MIN_RESERVE_PERCENT,
         maxVenueExposurePercent:
-          input.portfolioLimits?.maxVenueExposurePercent ?? PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT
+          input.portfolioLimits?.maxVenueExposurePercent ??
+          PAPER_PORTFOLIO_FAILSAFE_VENUE_PERCENT
       }
     : null;
   // Fail closed when the caller required portfolio limits but capital is missing.
@@ -545,17 +559,255 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([routeKey, result]) => ({ routeKey, result })),
       reservations: totalReserved(ledger),
-      peakUtilizationPercent: null
+      peakUtilizationPercent: null,
+      portfolio: null
     };
   }
-  const maxUtil = limits?.maxUtilizationPercent ?? PAPER_4D_MAX_UTILIZATION_PERCENT;
-  const minReserve = limits?.minReservePercent ?? PAPER_4D_MIN_RESERVE_PERCENT;
-  const maxVenue = limits?.maxVenueExposurePercent ?? PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT;
+  const maxUtil =
+    limits?.maxUtilizationPercent ?? PAPER_PORTFOLIO_MAX_UTILIZATION_PERCENT;
+  const minReserve =
+    limits?.minReservePercent ?? PAPER_PORTFOLIO_MIN_RESERVE_PERCENT;
+  const maxVenue =
+    limits?.maxVenueExposurePercent ?? PAPER_PORTFOLIO_FAILSAFE_VENUE_PERCENT;
   // Running reserved capital across concurrent selections this cycle.
   let reservedBuyIrt = 0;
   let reservedSellUsdtMicros = 0;
   // Venue exposure snapshot that grows with selections (no double-count of same capital).
-  const liveExposure = new Map(input.sizing.exposureTomanBySource);
+  const liveExposure = new Map<string, number>();
+  let portfolioTelemetry: PaperPortfolioTelemetry | null = null;
+
+  /*
+   * 4b. Exact outer allocation over the inner solver's q* rows.
+   *
+   * This is deliberately before any reservation or settlement. Every route is
+   * priced from the same snapshot and full free Paper book, then the allocator
+   * chooses the globally best compatible subset. The authoritative pass below
+   * rechecks and atomically settles only that subset.
+   */
+  const allocatorMark =
+    limits?.markPriceToman ??
+    (typeof markPriceToman === "number" && markPriceToman > 0 ? markPriceToman : 0);
+  const allocatorEquity =
+    limits?.equityToman ??
+    input.balances.reduce(
+      (sum, balance) =>
+        sum +
+        balance.irtToman +
+        Math.round(microsToUsdt(balance.usdtMicros) * allocatorMark),
+      0
+    );
+  if (allocatorMark > 0 && allocatorEquity > 0) {
+    const allocatorRows = provisional.flatMap((row) => {
+      const { c } = row;
+      const initialDeployableToman = limits
+        ? Math.floor(
+            (limits.equityToman *
+              Math.min(
+                limits.maxUtilizationPercent,
+                Math.max(0, 100 - limits.minReservePercent)
+              )) /
+              100
+          )
+        : null;
+      const initialVenueHeadroomToman = limits
+        ? Math.floor(
+            (limits.equityToman * limits.maxVenueExposurePercent) / 100
+          )
+        : null;
+      const initialDynamicRisk =
+        limits && initialDeployableToman !== null
+          ? {
+              freePaperCapitalToman: initialDeployableToman,
+              remainingGlobalUtilizationToman: initialDeployableToman,
+              globalReserveHeadroomToman: initialDeployableToman,
+              buyConcentrationHeadroomToman: initialVenueHeadroomToman,
+              sellConcentrationHeadroomToman: initialVenueHeadroomToman
+            }
+          : undefined;
+      const sizing =
+        limits && initialDeployableToman !== null
+          ? sizeRoute(c, initialDynamicRisk)
+          : row.sizing;
+      row.sizing = sizing;
+      const venuePairKey = `${c.buySourceId}->${c.sellSourceId}`;
+      sizingByRoute.set(venuePairKey, sizing);
+      if (
+        sizing.status !== "SIZED" ||
+        sizing.sizeUsdtMicros === null ||
+        !sizing.quote ||
+        !sizing.economics
+      ) {
+        return [];
+      }
+      /*
+       * Keep q* as the inner objective, but expose every already-legal,
+       * canonical profitable breakpoint down to the route floor as a
+       * multiple-choice option. This lets two routes share a balance instead
+       * of forcing an all-or-nothing choice between their independent q*s.
+       */
+      const optionCaps = [
+        sizing.sizeUsdtMicros,
+        ...sizing.candidates
+          .filter((candidate) => candidate.eligible)
+          .map((candidate) => candidate.sizeUsdtMicros)
+      ];
+      const options = new Map<number, SizingResult>();
+      for (const cap of [...new Set(optionCaps)].sort((a, b) => b - a)) {
+        const option =
+          cap === sizing.sizeUsdtMicros
+            ? sizing
+            : sizeRoute(c, {
+                ...initialDynamicRisk,
+                lateNumericCapUsdtMicros: cap
+              });
+        if (
+          option.status === "SIZED" &&
+          option.sizeUsdtMicros !== null &&
+          option.quote &&
+          option.economics
+        ) {
+          options.set(option.sizeUsdtMicros, option);
+        }
+      }
+      return [...options.values()].flatMap((option) => {
+        const sized = {
+          ...c,
+          sizeUsdt: microsToUsdt(option.sizeUsdtMicros as number),
+          buyVwapToman: option.quote!.buyVwapToman,
+          sellVwapToman: option.quote!.sellVwapToman,
+          slippageBufferToman: option.economics!.slippageBufferToman
+        };
+        const plan = planFill({
+          buySourceId: sized.buySourceId,
+          sellSourceId: sized.sellSourceId,
+          sizeUsdt: sized.sizeUsdt,
+          buyVwapToman: sized.buyVwapToman,
+          sellVwapToman: sized.sellVwapToman,
+          buyFeeBps: sized.buyFeeBps,
+          sellFeeBps: sized.sellFeeBps,
+          buySettlement: settlementFor(sized.buySourceId, "buy"),
+          sellSettlement: settlementFor(sized.sellSourceId, "sell"),
+          markPriceToman: option.quote!.markPriceToman,
+          slippageBufferToman: sized.slippageBufferToman
+        });
+        if (!plan.ok) return [];
+        return [{
+          lifecycleId: c.lifecycleId,
+          allocationKey: `${c.lifecycleId}@${option.sizeUsdtMicros}`,
+          routeKey: c.routeKey,
+          buySourceId: c.buySourceId,
+          sellSourceId: c.sellSourceId,
+          sizeUsdt: sized.sizeUsdt,
+          buyVwapToman: sized.buyVwapToman,
+          sellVwapToman: sized.sellVwapToman,
+          riskAdjustedPnlToman: option.economics!.riskAdjustedPnlToman,
+          economicNetPnlToman: option.economics!.economicNetPnlToman,
+          buyNotionalToman: plan.buyLeg.notionalToman,
+          buyIrtRequiredToman: Math.max(0, -plan.buyLeg.deltaIrtToman),
+          sellUsdtMicros: Math.max(0, -plan.sellLeg.deltaUsdtMicros),
+          capitalLockedToman: option.economics!.capitalLockedToman,
+          buyAcceptedDepthToman:
+            microsToUsdt(option.capacity?.buyDepth.depthMicros ?? 0) *
+            sized.buyVwapToman,
+          sellAcceptedDepthToman:
+            microsToUsdt(option.capacity?.sellDepth.depthMicros ?? 0) *
+            allocatorMark,
+          inventoryImpactPoints: option.inventory?.impactPoints ?? 0,
+          inventoryDeltas: [
+            {
+              sourceId: plan.buyLeg.sourceId,
+              deltaIrtToman: plan.buyLeg.deltaIrtToman,
+              deltaUsdtMicros: plan.buyLeg.deltaUsdtMicros
+            },
+            {
+              sourceId: plan.sellLeg.sourceId,
+              deltaIrtToman: plan.sellLeg.deltaIrtToman,
+              deltaUsdtMicros: plan.sellLeg.deltaUsdtMicros
+            }
+          ],
+          readiness: { healthy: true, fresh: true, feeCertain: true }
+        }];
+      });
+    });
+    const allocation = allocatePaperRoutes({
+      candidates: allocatorRows,
+      equityToman: allocatorEquity,
+      markPriceToman: allocatorMark,
+      venueExposureToman: new Map(),
+      availableIrtByVenue: new Map(
+        input.balances.map((balance) => [balance.sourceId as string, balance.irtToman])
+      ),
+      availableUsdtMicrosByVenue: new Map(
+        input.balances.map((balance) => [
+          balance.sourceId as string,
+          balance.usdtMicros
+        ])
+      ),
+      maxUtilizationPercent: limits?.maxUtilizationPercent ?? 100,
+      minReservePercent: limits?.minReservePercent ?? 0,
+      maxVenueExposurePercent: limits?.maxVenueExposurePercent ?? 100,
+      inventoryFeasible(candidates) {
+        const aggregate = new Map<
+          string,
+          { sourceId: string; deltaIrtToman: number; deltaUsdtMicros: number }
+        >();
+        for (const candidate of candidates) {
+          for (const delta of candidate.inventoryDeltas ?? []) {
+            const current = aggregate.get(delta.sourceId) ?? {
+              sourceId: delta.sourceId,
+              deltaIrtToman: 0,
+              deltaUsdtMicros: 0
+            };
+            current.deltaIrtToman += delta.deltaIrtToman;
+            current.deltaUsdtMicros += delta.deltaUsdtMicros;
+            aggregate.set(delta.sourceId, current);
+          }
+        }
+        if (!aggregate.size) return true;
+        return assessInventory({
+          balances: input.balances,
+          deltas: [...aggregate.values()],
+          model: input.sizing.inventoryModel
+        }).withinBand;
+      }
+    });
+    portfolioTelemetry = allocation.telemetry;
+    const selectedIds = new Set(
+      allocation.selected.map((row) => row.candidate.lifecycleId)
+    );
+    const allocatorRejected = new Map(
+      allocation.rejected.map((row) => [row.lifecycleId, row])
+    );
+    for (const row of provisional) {
+      if (selectedIds.has(row.c.lifecycleId) || row.sizing.status !== "SIZED") {
+        continue;
+      }
+      const rejection = allocatorRejected.get(row.c.lifecycleId);
+      const code = (
+        rejection?.code === "invalid_size"
+          ? "sizing_blocked"
+          : rejection?.code ?? "portfolio_not_selected"
+      ) as PaperReasonCode;
+      skip(row.c, [code]);
+    }
+    const selectedOrder = new Map(
+      allocation.selected.map((selection, index) => [
+        selection.candidate.lifecycleId,
+        index
+      ])
+    );
+    rankedRoutes = rankedRoutes
+      .filter(
+        (row) =>
+          selectedIds.has(row.c.lifecycleId) || row.sizing.status !== "SIZED"
+      )
+      .sort(
+        (a, b) =>
+          (selectedOrder.get(a.c.lifecycleId) ?? Number.MAX_SAFE_INTEGER) -
+            (selectedOrder.get(b.c.lifecycleId) ?? Number.MAX_SAFE_INTEGER) ||
+          a.c.routeKey.localeCompare(b.c.routeKey)
+      );
+  }
 
   for (const { c } of rankedRoutes) {
     const venuePairKey = `${c.buySourceId}->${c.sellSourceId}`;
@@ -880,6 +1132,67 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
           reservedSellUsdtMicros
         }).utilizationPercent
       : null;
+  if (portfolioTelemetry) {
+    const executed = decisions.filter(
+      (decision): decision is Extract<PaperDecision, { kind: "EXECUTE" }> =>
+        decision.kind === "EXECUTE"
+    );
+    const actualCapital = executed.reduce(
+      (sum, decision) =>
+        sum + (decision.sizing.economics?.capitalLockedToman ?? 0),
+      0
+    );
+    const actualRa = executed.reduce(
+      (sum, decision) => sum + decision.plan.riskAdjustedPnlToman,
+      0
+    );
+    const actualEconomic = executed.reduce(
+      (sum, decision) => sum + decision.plan.economicNetPnlToman,
+      0
+    );
+    const previouslyEngaged = Math.max(
+      0,
+      portfolioTelemetry.engagedCapitalToman -
+        portfolioTelemetry.allocatedProfitableCapacityToman
+    );
+    const engaged = Math.min(
+      portfolioTelemetry.maxDeployableCapitalToman,
+      previouslyEngaged + actualCapital
+    );
+    const actualProfitableCapacity = Math.max(
+      portfolioTelemetry.profitableExecutableCapacityToman,
+      actualCapital
+    );
+    portfolioTelemetry = {
+      ...portfolioTelemetry,
+      engagedCapitalToman: engaged,
+      freeCapitalToman: Math.max(
+        0,
+        portfolioTelemetry.maxDeployableCapitalToman - engaged
+      ),
+      utilizationPercent:
+        portfolioTelemetry.totalCapitalToman > 0
+          ? (engaged / portfolioTelemetry.totalCapitalToman) * 100
+          : 0,
+      selectedPortfolioRiskAdjustedPnlToman: actualRa,
+      selectedPortfolioEconomicNetPnlToman: actualEconomic,
+      profitableExecutableCapacityToman: actualProfitableCapacity,
+      allocatedProfitableCapacityToman: actualCapital,
+      unallocatedProfitableCapacityToman: Math.max(
+        0,
+        actualProfitableCapacity - actualCapital
+      ),
+      idleCapitalToman: Math.max(
+        0,
+        portfolioTelemetry.maxDeployableCapitalToman - engaged
+      ),
+      returnOnTotalCapital:
+        portfolioTelemetry.totalCapitalToman > 0
+          ? actualRa / portfolioTelemetry.totalCapitalToman
+          : null,
+      returnOnEngagedCapital: engaged > 0 ? actualRa / engaged : null
+    };
+  }
 
   return {
     decisions,
@@ -891,7 +1204,8 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([routeKey, result]) => ({ routeKey, result })),
     reservations: totalReserved(ledger),
-    peakUtilizationPercent
+    peakUtilizationPercent,
+    portfolio: portfolioTelemetry
   };
 }
 

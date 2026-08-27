@@ -31,6 +31,7 @@ import { describeRebalance, evaluateCycle } from "@/lib/shadowArbitrage/paper/en
 import { targetsFromAllocations, type InventoryModel } from "@/lib/shadowArbitrage/paper/inventory";
 import { microsToUsdt, type VenueBalance } from "@/lib/shadowArbitrage/paper/broker";
 import type { QuoteCapacityInput } from "@/lib/shadowArbitrage/paper/liquidity";
+import type { PaperPortfolioTelemetry } from "@/lib/shadowArbitrage/paper/portfolioAllocator";
 import type { NormalizedSourceSnapshot, ShadowOpportunity, ShadowSourceId } from "@/lib/shadowArbitrage/types";
 
 export type PaperCycleOutcome = {
@@ -41,6 +42,7 @@ export type PaperCycleOutcome = {
   skipped?: number;
   duplicates?: number;
   eligibleCandidates?: number;
+  portfolio?: PaperPortfolioTelemetry | null;
   /** Detailed rows this cycle wrote — normally 0 once the market is steady. */
   detailedEventsWritten?: number;
   error?: string;
@@ -220,17 +222,19 @@ export async function runPaperExecutionForCycle(input: {
 
   /*
    * Portfolio limits are ALWAYS attached on the Paper execution path.
-   * Defaults: util ≤80%, reserve ≥20%, venue ≤20%.
+   * New-session defaults: util ≤90%, reserve ≥10%; venue concentration is a
+   * dynamic cap with a 65% fail-safe ceiling. Stored experiments override
+   * these values, preserving historical policy snapshots.
    * The stored route percentage is historical comparison metadata only.
    * An open experiment may override the percents; it never removes the layer.
    * Missing session capital / mark fails closed (enabled with zero equity is
    * rejected inside evaluateCycle).
    */
   const {
-    PAPER_4D_MAX_UTILIZATION_PERCENT,
-    PAPER_4D_MIN_RESERVE_PERCENT,
     PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT,
-    PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT
+    PAPER_PORTFOLIO_FAILSAFE_VENUE_PERCENT,
+    PAPER_PORTFOLIO_MAX_UTILIZATION_PERCENT,
+    PAPER_PORTFOLIO_MIN_RESERVE_PERCENT
   } = await import("@/lib/shadowArbitrage/paper/experimentPolicy");
   let portfolioLimits: {
     enabled: boolean;
@@ -244,10 +248,10 @@ export async function runPaperExecutionForCycle(input: {
     enabled: true,
     equityToman: portfolioValueToman > 0 ? portfolioValueToman : 0,
     markPriceToman: valuationPriceToman > 0 ? valuationPriceToman : 0,
-    maxUtilizationPercent: PAPER_4D_MAX_UTILIZATION_PERCENT,
-    minReservePercent: PAPER_4D_MIN_RESERVE_PERCENT,
+    maxUtilizationPercent: PAPER_PORTFOLIO_MAX_UTILIZATION_PERCENT,
+    minReservePercent: PAPER_PORTFOLIO_MIN_RESERVE_PERCENT,
     maxRouteCapitalPercent: PAPER_4D_MAX_ROUTE_CAPITAL_PERCENT,
-    maxVenueExposurePercent: PAPER_4D_MAX_VENUE_EXPOSURE_PERCENT
+    maxVenueExposurePercent: PAPER_PORTFOLIO_FAILSAFE_VENUE_PERCENT
   };
   let activeExperimentId: string | null = null;
   try {
@@ -480,7 +484,8 @@ export async function runPaperExecutionForCycle(input: {
     skipped: committed.skipped,
     duplicates: committed.duplicates,
     detailedEventsWritten: committed.detailedEventsWritten,
-    eligibleCandidates: evaluation.eligibleCandidates
+    eligibleCandidates: evaluation.eligibleCandidates,
+    portfolio: evaluation.portfolio
   };
 }
 

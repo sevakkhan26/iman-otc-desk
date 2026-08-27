@@ -580,6 +580,12 @@ export type SizingInput = {
    */
   venueExecutionLimits?: Map<string, VenueExecutionLimit>;
   /**
+   * The outer portfolio optimizer owns allocation/concentration in this mode.
+   * The inner q* solver still requires the policies and applies every other
+   * canonical readiness, depth, fee, slippage, balance and inventory check.
+   */
+  portfolioAllocatorMode?: "DYNAMIC_PORTFOLIO";
+  /**
    * Same-cycle portfolio/concurrency headrooms. All are PAPER values. A later
    * tighter numeric cap is supplied as `lateNumericCapUsdtMicros` and causes a
    * fresh optimization over the clipped domain.
@@ -1248,6 +1254,7 @@ export function computeRouteSize(input: SizingInput): SizingResult {
   const sellDepth = slippageBoundedDepth(sellBids, "sell", slippageCeilingBps);
 
   const allocationCap =
+    input.portfolioAllocatorMode === "DYNAMIC_PORTFOLIO" ||
     input.buyVenueAllocationToman === null
       ? null
       : tomanCeilingMicros(input.buyVenueAllocationToman, bestBuy);
@@ -1259,7 +1266,10 @@ export function computeRouteSize(input: SizingInput): SizingResult {
 
   let concentrationCap: number | null = null;
   let concentrationDetail = "ارزش پرتفوی یا سهم فعلی این صرافی در دسترس نیست؛ این سقف اندازه‌گیری نشد.";
-  if (policy.max_venue_exposure_percent === undefined) {
+  if (input.portfolioAllocatorMode === "DYNAMIC_PORTFOLIO") {
+    concentrationDetail =
+      "سقف تخصیص و تمرکز توسط بهینه‌ساز پویای پرتفوی اعمال می‌شود.";
+  } else if (policy.max_venue_exposure_percent === undefined) {
     concentrationDetail = "سیاست «سقف تمرکز روی یک صرافی» تعیین نشده است؛ این سقف اعمال نشد.";
   } else if (input.portfolioValueToman !== null && input.buyVenueExposureToman !== null) {
     const ceilingToman = Math.floor(
@@ -2320,6 +2330,7 @@ export function computeAllRouteSizes(input: {
           policies: input.policies,
           slippageBufferBps: input.slippageBufferBps,
           inventoryModel: input.inventoryModel,
+          portfolioAllocatorMode: "DYNAMIC_PORTFOLIO",
           buyQuote: input.quoteBySource?.get(buySourceId),
           sellQuote: input.quoteBySource?.get(sellSourceId)
         })

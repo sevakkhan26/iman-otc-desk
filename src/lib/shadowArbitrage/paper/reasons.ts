@@ -42,6 +42,9 @@ export type PaperReasonCode =
   | "portfolio_utilization_cap"
   | "route_capital_cap"
   | "venue_exposure_cap"
+  | "inventory_limit"
+  | "reservation_conflict"
+  | "portfolio_not_selected"
   | "experiment_closed";
 
 export const PAPER_REASON_FA: Record<PaperReasonCode, string> = {
@@ -73,6 +76,9 @@ export const PAPER_REASON_FA: Record<PaperReasonCode, string> = {
   portfolio_utilization_cap: "تخصیص از سقف استفادهٔ پرتفوی یا کف نقدینگی آزاد عبور می‌کند",
   route_capital_cap: "سرمایهٔ ترکیبی مسیر از سقف نسبی سهام تجاوز می‌کند",
   venue_exposure_cap: "تمرکز سرمایه روی یک صرافی از سقف نسبی سهام تجاوز می‌کند",
+  inventory_limit: "ترکیب انتخابی باند موجودی را نقض می‌کند",
+  reservation_conflict: "ظرفیت شبیه‌سازی‌شده قبلاً برای مسیر دیگری رزرو شده است",
+  portfolio_not_selected: "ترکیب دیگری سود تعدیل‌شدهٔ کل بیشتری دارد",
   experiment_closed: "مهلت آزمایش Paper به پایان رسیده — معاملهٔ جدید باز نمی‌شود"
 };
 
@@ -134,6 +140,9 @@ const PRIORITY: PaperReasonCode[] = [
   "portfolio_utilization_cap",
   "route_capital_cap",
   "venue_exposure_cap",
+  "inventory_limit",
+  "reservation_conflict",
+  "portfolio_not_selected",
   "sizing_blocked",
   "size_not_selected"
 ];

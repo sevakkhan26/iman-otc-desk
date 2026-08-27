@@ -9,7 +9,8 @@
  *
  *   utilizationPercent = utilized / currentPaperEquity × 100
  *
- * Free reserve = equity − utilized. Target 70%, hard max 80%, min free 20%.
+ * Free reserve = equity − utilized. New Paper sessions use a hard max of 90%
+ * and retain at least 10%; historical callers pass their frozen percentages.
  * Pure: no I/O.
  */
 import { microsToUsdt } from "@/lib/shadowArbitrage/paper/broker";

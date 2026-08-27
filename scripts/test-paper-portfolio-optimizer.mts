@@ -371,5 +371,76 @@ await test("L) node budget exhaustion is deterministic and fails closed", () => 
   assert.deepEqual(first.rejected, second.rejected);
 });
 
+await test("M) negative-adjusted repair option may unlock a better legal portfolio", () => {
+  const worsening = {
+    ...candidate({
+      id: "positive-worsening",
+      buy: "a",
+      sell: "b",
+      capital: 100_000_000,
+      ra: 100,
+      inventoryImpactPoints: 10
+    }),
+    adjustedScoreToman: 100
+  };
+  const repairing = {
+    ...candidate({
+      id: "negative-repair",
+      buy: "c",
+      sell: "d",
+      capital: 100_000_000,
+      ra: 10,
+      inventoryImpactPoints: -10
+    }),
+    adjustedScoreToman: -10
+  };
+  const result = allocatePaperRoutes(
+    allocatorInput([worsening, repairing], 1_000_000_000, {
+      inventoryFeasible: (rows) =>
+        rows.reduce(
+          (sum, row) => sum + (row.inventoryImpactPoints ?? 0),
+          0
+        ) <= 0
+    })
+  );
+  assert.deepEqual(
+    result.selected.map((row) => row.candidate.lifecycleId).sort(),
+    ["negative-repair", "positive-worsening"]
+  );
+  assert.equal(result.telemetry.selectedPortfolioAdjustedScoreToman, 90);
+});
+
+await test("N) malformed budget overrides fail closed instead of disabling limits", () => {
+  const result = allocatePaperRoutes(
+    allocatorInput(
+      [candidate({ id: "invalid-budget", buy: "a", sell: "b", capital: 10, ra: 1 })],
+      1_000,
+      { searchBudget: { maxOptions: Number.NaN, maxNodes: Number.POSITIVE_INFINITY } }
+    )
+  );
+  assert.equal(result.selected.length, 0);
+  assert.equal(result.search.failClosedReason, "invalid_search_budget");
+});
+
+await test("O) engine preflight option count can fail closed before DFS", () => {
+  const result = allocatePaperRoutes(
+    allocatorInput(
+      [candidate({ id: "preflight", buy: "a", sell: "b", capital: 10, ra: 1 })],
+      1_000,
+      {
+        searchBudget: {
+          maxOptions: 128,
+          maxNodes: 250_000,
+          optionsConsidered: 1_000
+        }
+      }
+    )
+  );
+  assert.equal(result.selected.length, 0);
+  assert.equal(result.search.optionsConsidered, 1_000);
+  assert.equal(result.search.nodesVisited, 0);
+  assert.equal(result.search.failClosedReason, "option_budget_exceeded");
+});
+
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

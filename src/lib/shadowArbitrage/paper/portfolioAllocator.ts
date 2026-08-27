@@ -119,6 +119,7 @@ export type PaperPortfolioTelemetry = {
   optimizerFailClosedReason:
     | "option_budget_exceeded"
     | "node_budget_exceeded"
+    | "invalid_search_budget"
     | null;
   profitableExecutableCapacityToman: number;
   allocatedProfitableCapacityToman: number;
@@ -156,12 +157,34 @@ export type PortfolioAllocatorResult = AllocatorResult & {
     maxNodes: number;
     budgetProvenance: "DEFAULT_PAPER_POLICY" | "CALLER_OVERRIDE";
     proofStatus: "EXACT_PROVEN" | "BUDGET_EXHAUSTED_FAIL_CLOSED";
-    failClosedReason: "option_budget_exceeded" | "node_budget_exceeded" | null;
+    failClosedReason:
+      | "option_budget_exceeded"
+      | "node_budget_exceeded"
+      | "invalid_search_budget"
+      | null;
   };
 };
 
 export const PAPER_ALLOCATOR_DEFAULT_MAX_OPTIONS = 128;
 export const PAPER_ALLOCATOR_DEFAULT_MAX_NODES = 250_000;
+
+function positiveSafeInteger(value: number): number | null {
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function budgetFailureReasonFa(
+  reason: PortfolioAllocatorResult["search"]["failClosedReason"],
+  maxOptions: number,
+  maxNodes: number
+): string {
+  if (reason === "option_budget_exceeded") {
+    return `بودجهٔ قطعی گزینه‌های بهینه‌ساز (${maxOptions}) کافی نیست — تخصیص بسته شد`;
+  }
+  if (reason === "node_budget_exceeded") {
+    return `بودجهٔ قطعی گره‌های بهینه‌ساز (${maxNodes}) تمام شد — تخصیص بسته شد`;
+  }
+  return "پیکربندی بودجهٔ بهینه‌ساز نامعتبر است — تخصیص بسته شد";
+}
 
 export type PaperAllocatorInput = {
   candidates: AllocatorCandidate[];
@@ -194,6 +217,8 @@ export type PaperAllocatorInput = {
   searchBudget?: {
     maxOptions?: number;
     maxNodes?: number;
+    /** Preflight count from the engine before legal-option re-solving. */
+    optionsConsidered?: number;
   };
 };
 
@@ -424,16 +449,26 @@ function allocationKey(candidate: AllocatorCandidate): string {
  */
 export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAllocatorResult {
   const solveStartedAt = performance.now();
-  const maxOptions = Math.max(
-    1,
-    Math.floor(input.searchBudget?.maxOptions ?? PAPER_ALLOCATOR_DEFAULT_MAX_OPTIONS)
-  );
-  const maxNodes = Math.max(
-    1,
-    Math.floor(input.searchBudget?.maxNodes ?? PAPER_ALLOCATOR_DEFAULT_MAX_NODES)
-  );
+  const suppliedMaxOptions = input.searchBudget?.maxOptions;
+  const suppliedMaxNodes = input.searchBudget?.maxNodes;
+  const maxOptions =
+    positiveSafeInteger(
+      suppliedMaxOptions ?? PAPER_ALLOCATOR_DEFAULT_MAX_OPTIONS
+    ) ?? 0;
+  const maxNodes =
+    positiveSafeInteger(
+      suppliedMaxNodes ?? PAPER_ALLOCATOR_DEFAULT_MAX_NODES
+    ) ?? 0;
+  const invalidBudget =
+    maxOptions === 0 ||
+    maxNodes === 0 ||
+    (input.searchBudget?.optionsConsidered !== undefined &&
+      (!Number.isSafeInteger(input.searchBudget.optionsConsidered) ||
+        input.searchBudget.optionsConsidered < 0));
   const budgetProvenance =
-    input.searchBudget === undefined ? "DEFAULT_PAPER_POLICY" : "CALLER_OVERRIDE";
+    suppliedMaxOptions === undefined && suppliedMaxNodes === undefined
+      ? "DEFAULT_PAPER_POLICY"
+      : "CALLER_OVERRIDE";
   const maxUtil =
     input.maxUtilizationPercent ?? PAPER_PORTFOLIO_MAX_UTILIZATION_PERCENT;
   const minReserve =
@@ -502,18 +537,6 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
         candidate,
         "net_non_positive",
         "سود اقتصادی تعدیل‌شده مثبت نیست — تخصیص صفر",
-        "no_positive_edge",
-        capital
-      );
-      continue;
-    }
-    if (
-      !((candidate.adjustedScoreToman ?? candidate.riskAdjustedPnlToman) > 0)
-    ) {
-      reject(
-        candidate,
-        "adjusted_score_non_positive",
-        "اقتصاد خام مثبت است اما امتیاز موردانتظار Paper پس از تعدیلات مثبت نیست",
         "no_positive_edge",
         capital
       );
@@ -628,13 +651,22 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
     );
   }
 
+  const optionsConsidered = invalidBudget
+    ? prepared.length
+    : Math.max(
+        prepared.length,
+        input.searchBudget?.optionsConsidered ?? prepared.length
+      );
   const suffixAdjusted = new Array<number>(prepared.length + 1).fill(0);
   const suffixCapital = new Array<number>(prepared.length + 1).fill(0);
   for (let i = prepared.length - 1; i >= 0; i -= 1) {
     suffixAdjusted[i] =
       suffixAdjusted[i + 1] +
-      (prepared[i].candidate.adjustedScoreToman ??
-        prepared[i].candidate.riskAdjustedPnlToman);
+      Math.max(
+        0,
+        prepared[i].candidate.adjustedScoreToman ??
+          prepared[i].candidate.riskAdjustedPnlToman
+      );
     suffixCapital[i] = suffixCapital[i + 1] + prepared[i].capital;
   }
 
@@ -660,7 +692,12 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
   let failClosedReason:
     | "option_budget_exceeded"
     | "node_budget_exceeded"
-    | null = prepared.length > maxOptions ? "option_budget_exceeded" : null;
+    | "invalid_search_budget"
+    | null = invalidBudget
+    ? "invalid_search_budget"
+    : optionsConsidered > maxOptions
+      ? "option_budget_exceeded"
+      : null;
   const irtUsed = new Map(initialIrt);
   const usdtUsed = new Map(initialUsdt);
   const venueUsed = new Map<string, number>();
@@ -851,9 +888,7 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
       reject(
         p.candidate,
         "optimizer_budget_exhausted",
-        failClosedReason === "option_budget_exceeded"
-          ? `بودجهٔ قطعی گزینه‌های بهینه‌ساز (${maxOptions}) کافی نیست — تخصیص بسته شد`
-          : `بودجهٔ قطعی گره‌های بهینه‌ساز (${maxNodes}) تمام شد — تخصیص بسته شد`,
+        budgetFailureReasonFa(failClosedReason, maxOptions, maxNodes),
         "optimizer_budget",
         p.capital
       );
@@ -928,7 +963,7 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
     dynamicVenueCaps,
     search: {
       candidates: prepared.length,
-      optionsConsidered: prepared.length,
+      optionsConsidered,
       nodesVisited,
       prunedNodes,
       solveTimeMs,
@@ -968,7 +1003,7 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
         0
       ),
       optimizerSolveTimeMs: solveTimeMs,
-      optimizerOptionsConsidered: prepared.length,
+      optimizerOptionsConsidered: optionsConsidered,
       optimizerNodesVisited: nodesVisited,
       optimizerPrunedNodes: prunedNodes,
       optimizerProofStatus: exactProven

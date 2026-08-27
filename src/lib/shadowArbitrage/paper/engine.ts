@@ -62,6 +62,7 @@ import {
 } from "@/lib/shadowArbitrage/paper/experimentPolicy";
 import {
   allocatePaperRoutes,
+  PAPER_ALLOCATOR_DEFAULT_MAX_OPTIONS,
   type PaperPortfolioTelemetry
 } from "@/lib/shadowArbitrage/paper/portfolioAllocator";
 import {
@@ -692,7 +693,10 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       0
     );
   if (allocatorMark > 0 && allocatorEquity > 0) {
+    let optionCapsConsidered = 0;
+    let optionGenerationBudgetExceeded = false;
     let allocatorRows = provisional.flatMap((row) => {
+      if (optionGenerationBudgetExceeded) return [];
       const { c } = row;
       const initialDeployableToman = limits
         ? Math.floor(
@@ -746,8 +750,16 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
           .filter((candidate) => candidate.eligible)
           .map((candidate) => candidate.sizeUsdtMicros)
       ];
+      const uniqueOptionCaps = [...new Set(optionCaps)].sort(
+        (a, b) => b - a
+      );
+      optionCapsConsidered += uniqueOptionCaps.length;
+      if (optionCapsConsidered > PAPER_ALLOCATOR_DEFAULT_MAX_OPTIONS) {
+        optionGenerationBudgetExceeded = true;
+        return [];
+      }
       const options = new Map<number, SizingResult>();
-      for (const cap of [...new Set(optionCaps)].sort((a, b) => b - a)) {
+      for (const cap of uniqueOptionCaps) {
         const option =
           cap === sizing.sizeUsdtMicros
             ? sizing
@@ -965,6 +977,9 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       maxUtilizationPercent: limits?.maxUtilizationPercent ?? 100,
       minReservePercent: limits?.minReservePercent ?? 0,
       maxVenueExposurePercent: limits?.maxVenueExposurePercent ?? 100,
+      searchBudget: {
+        optionsConsidered: optionCapsConsidered
+      },
       inventoryFeasible(candidates) {
         const aggregate = new Map<
           string,
@@ -1001,13 +1016,17 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
     const allocatorRejected = new Map(
       allocation.rejected.map((row) => [row.lifecycleId, row])
     );
+    const optimizerFailedClosed =
+      allocation.search.proofStatus === "BUDGET_EXHAUSTED_FAIL_CLOSED";
     for (const row of provisional) {
       if (selectedIds.has(row.c.lifecycleId) || row.sizing.status !== "SIZED") {
         continue;
       }
       const rejection = allocatorRejected.get(row.c.lifecycleId);
       const code = (
-        rejection?.code === "invalid_size"
+        optimizerFailedClosed
+          ? "optimizer_budget_exhausted"
+          : rejection?.code === "invalid_size"
           ? "sizing_blocked"
           : rejection?.code ?? "portfolio_not_selected"
       ) as PaperReasonCode;

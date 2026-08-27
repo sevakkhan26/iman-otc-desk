@@ -372,8 +372,11 @@ function allocationKey(candidate: AllocatorCandidate): string {
  * Each input is the canonical q* chosen by the inner route solver. The search
  * chooses zero or one q* per route and maximizes Σ canonical RA PnL under
  * global utilization, per-venue IRT/USDT, dynamic venue and aggregate inventory
- * constraints. For M legal route/quantity options and V venues, worst-case
- * time is O(2^M * (M + V)); one-option-per-route checks, suffix-PnL bounds and
+ * constraints. Inventory is evaluated when a prefix is considered as a
+ * candidate solution, not as an include-pruning condition: a temporarily
+ * worsening route may still be completed by a complementary repair. For M
+ * legal route/quantity options and V venues, worst-case time is
+ * O(2^M * (M + V)); one-option-per-route checks, suffix-PnL bounds and
  * immediate resource checks prune normal Paper snapshots. Memory is O(M + V).
  */
 export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAllocatorResult {
@@ -477,7 +480,7 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
       sellUsdtMicros,
       buyVenueCapital: buyIrt,
       sellVenueCapital: Math.round(
-        (sellUsdtMicros / 1_000_000) * input.markPriceToman
+        candidate.sizeUsdt * candidate.sellVwapToman
       )
     });
   }
@@ -630,15 +633,20 @@ export function allocatePaperRoutes(input: PaperAllocatorInput): PortfolioAlloca
     ) {
       return false;
     }
-    return inventoryOk([...chosen, p]);
+    return true;
   };
 
   const search = (index: number, ra: number, economic: number, capital: number) => {
     nodesVisited += 1;
     const signature = signatureOf(chosen);
     const current: Best = { rows: [...chosen], ra, economic, capital, signature };
-    if (betterObjective(current, best)) best = current;
-    if (betterCapacity(current, maxCapacity)) maxCapacity = current;
+    // Only legal final portfolios may become incumbents. Do not prune the DFS
+    // merely because an intermediate prefix is inventory-infeasible: a later
+    // route can repair the aggregate venue/asset position.
+    if (inventoryOk(chosen)) {
+      if (betterObjective(current, best)) best = current;
+      if (betterCapacity(current, maxCapacity)) maxCapacity = current;
+    }
     if (index >= prepared.length) return;
     if (
       ra + suffixRa[index] < best.ra &&

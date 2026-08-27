@@ -103,6 +103,8 @@ export function fromBrokerCode(code: PaperRejectionCode): PaperReasonCode {
 
 export type PaperCandidate = {
   lifecycleId: string;
+  /** Exact outer-allocator route/quantity option selected for settlement. */
+  allocationKey?: string;
   routeKey: string;
   buySourceId: ShadowSourceId;
   sellSourceId: ShadowSourceId;
@@ -500,11 +502,12 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
   );
 
   /*
-   * 5. Authoritative pass — size, reserve, plan, commit, in rank order.
+   * 5. Authoritative pass — reserve, plan, commit, in selected-option order.
    *
-   * The size is recalculated here against the capacity that is still free, so
-   * the number that reaches the ledger is the number that was actually
-   * affordable at the moment it was taken.
+   * Once the exact outer allocator runs, its allocationKey and canonical
+   * sizing are pinned through settlement. The ledger and limit checks remain
+   * authoritative safety guards, but they must not independently re-optimize
+   * a selected route and consume capacity assigned to another selected option.
    */
   let executedCount = 0;
   let eligibleCandidates = 0;
@@ -575,6 +578,8 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
   // Venue exposure snapshot that grows with selections (no double-count of same capital).
   const liveExposure = new Map<string, number>();
   let portfolioTelemetry: PaperPortfolioTelemetry | null = null;
+  const sizingByAllocationKey = new Map<string, SizingResult>();
+  const selectedAllocationKeyByLifecycleId = new Map<string, string>();
 
   /*
    * 4b. Exact outer allocation over the inner solver's q* rows.
@@ -691,9 +696,11 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
           slippageBufferToman: sized.slippageBufferToman
         });
         if (!plan.ok) return [];
+        const candidateAllocationKey = `${c.lifecycleId}@${option.sizeUsdtMicros}`;
+        sizingByAllocationKey.set(candidateAllocationKey, option);
         return [{
           lifecycleId: c.lifecycleId,
-          allocationKey: `${c.lifecycleId}@${option.sizeUsdtMicros}`,
+          allocationKey: candidateAllocationKey,
           routeKey: c.routeKey,
           buySourceId: c.buySourceId,
           sellSourceId: c.sellSourceId,
@@ -772,9 +779,13 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       }
     });
     portfolioTelemetry = allocation.telemetry;
-    const selectedIds = new Set(
-      allocation.selected.map((row) => row.candidate.lifecycleId)
-    );
+    const selectedOptions = allocation.selected.flatMap((row) => {
+      const key = row.candidate.allocationKey;
+      if (!key || !sizingByAllocationKey.has(key)) return [];
+      selectedAllocationKeyByLifecycleId.set(row.candidate.lifecycleId, key);
+      return [{ lifecycleId: row.candidate.lifecycleId, allocationKey: key }];
+    });
+    const selectedIds = new Set(selectedOptions.map((row) => row.lifecycleId));
     const allocatorRejected = new Map(
       allocation.rejected.map((row) => [row.lifecycleId, row])
     );
@@ -791,10 +802,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       skip(row.c, [code]);
     }
     const selectedOrder = new Map(
-      allocation.selected.map((selection, index) => [
-        selection.candidate.lifecycleId,
-        index
-      ])
+      selectedOptions.map((selection, index) => [selection.lifecycleId, index])
     );
     rankedRoutes = rankedRoutes
       .filter(
@@ -811,6 +819,11 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
 
   for (const { c } of rankedRoutes) {
     const venuePairKey = `${c.buySourceId}->${c.sellSourceId}`;
+    const selectedAllocationKey =
+      selectedAllocationKeyByLifecycleId.get(c.lifecycleId);
+    const pinnedSizing = selectedAllocationKey
+      ? sizingByAllocationKey.get(selectedAllocationKey)
+      : undefined;
     const freeBalances = availableBalances(ledger);
     const freeBuy = freeBalances.find((b) => b.sourceId === c.buySourceId);
     const freeSell = freeBalances.find((b) => b.sourceId === c.sellSourceId);
@@ -872,7 +885,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
           }
         : {})
     };
-    let sizing = sizeRoute(c, dynamicRisk);
+    let sizing = pinnedSizing ?? sizeRoute(c, dynamicRisk);
     sizingByRoute.set(venuePairKey, sizing);
 
     if (sizing.status !== "SIZED" || sizing.sizeUsdtMicros === null || !sizing.quote || !sizing.economics) {
@@ -884,6 +897,9 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
     // so the ledger records what actually traded.
     let sizedCandidate: PaperCandidate = {
       ...c,
+      ...(selectedAllocationKey
+        ? { allocationKey: selectedAllocationKey }
+        : {}),
       sizeUsdt: microsToUsdt(sizing.sizeUsdtMicros),
       buyVwapToman: sizing.quote.buyVwapToman,
       sellVwapToman: sizing.quote.sellVwapToman,
@@ -954,8 +970,18 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
         });
 
       // Numeric cap became tighter than the selected point: clip the domain
-      // once and solve F again. Structural failures never enter this path.
+      // once and solve F again only when no exact outer option was selected.
+      // A selected option is indivisible here: clipping it would discard the
+      // exact portfolio and could starve a partner route.
       if (utilBreached || buyVenueBreached || sellVenueBreached) {
+        if (selectedAllocationKey) {
+          skip(sizedCandidate, [
+            utilBreached
+              ? "portfolio_utilization_cap"
+              : "venue_exposure_cap"
+          ]);
+          continue;
+        }
         const q = sizing.sizeUsdtMicros as number;
         const caps: number[] = [];
         if (utilBreached && capital > 0) {

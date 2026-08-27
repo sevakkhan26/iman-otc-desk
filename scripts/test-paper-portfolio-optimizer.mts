@@ -209,6 +209,39 @@ await test("G) profitable inventory-repairing route remains eligible", () => {
   assert.equal(result.selected[0].candidate.lifecycleId, "repair");
 });
 
+await test("G2) complementary repair can legalize a worsening DFS prefix", () => {
+  const worsening = candidate({
+    id: "worsen-first",
+    buy: "a",
+    sell: "b",
+    capital: 100_000_000,
+    ra: 100,
+    inventoryImpactPoints: 10
+  });
+  const repairing = candidate({
+    id: "repair-second",
+    buy: "c",
+    sell: "d",
+    capital: 100_000_000,
+    ra: 60,
+    inventoryImpactPoints: -10
+  });
+  const result = allocatePaperRoutes(
+    allocatorInput([worsening, repairing], 1_000_000_000, {
+      inventoryFeasible: (rows) =>
+        rows.reduce(
+          (sum, row) => sum + (row.inventoryImpactPoints ?? 0),
+          0
+        ) <= 0
+    })
+  );
+  assert.deepEqual(
+    result.selected.map((row) => row.candidate.lifecycleId).sort(),
+    ["repair-second", "worsen-first"]
+  );
+  assert.equal(result.telemetry.selectedPortfolioRiskAdjustedPnlToman, 160);
+});
+
 await test("H) existing reservations preserve 90% ceiling and prevent double allocation", () => {
   const rows = [
     candidate({ id: "h1", buy: "shared", sell: "s1", capital: 400_000_000, buyIrt: 200_000_000, ra: 100 }),

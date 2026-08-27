@@ -756,6 +756,134 @@ await test("evaluateCycle built opportunities cannot double-reserve shared simul
   assert.equal(evaluation.reservations.holds, 0);
 });
 
+await test("evaluateCycle settles the exact C/J-style shared-balance option set without starving its partner", () => {
+  const sources = [
+    snap(
+      "nobitex",
+      [lv(99_900, 5_000)],
+      [lv(100_000, 900), lv(101_500, 5_000)]
+    ),
+    snap(
+      "tabdeal",
+      [lv(99_850, 5_000)],
+      [lv(99_950, 900), lv(101_400, 5_000)]
+    ),
+    snap(
+      "wallex",
+      [lv(100_900, 1_200), lv(100_700, 5_000)],
+      [lv(100_950, 5_000)]
+    )
+  ];
+  const balances = [
+    {
+      sourceId: "nobitex",
+      irtToman: 500_000_000_000,
+      usdtMicros: usdtToMicros(50_000)
+    },
+    {
+      sourceId: "tabdeal",
+      irtToman: 500_000_000_000,
+      usdtMicros: usdtToMicros(50_000)
+    },
+    {
+      sourceId: "wallex",
+      irtToman: 500_000_000_000,
+      usdtMicros: usdtToMicros(1_200)
+    }
+  ];
+  const allOpportunities = [
+    opportunity("rA", "nobitex", "wallex"),
+    opportunity("rB", "tabdeal", "wallex")
+  ];
+  const run = (opportunities: Any[]) =>
+    evaluateCycle({
+      opportunities,
+      sources,
+      venueStates: ["nobitex", "tabdeal", "wallex"].map((sourceId) => ({
+        sourceId,
+        executable: true,
+        capitalClass: "EXECUTABLE",
+        takerFeeBps: 25,
+        feeProvenance: "ADMIN_CONFIRMED",
+        feeStale: false
+      })),
+      executedLifecycleIds: new Set(),
+      balances,
+      sizing: {
+        policies: policies({ max_order_size_usdt: 5_000 }),
+        allocationTomanBySource: new Map([
+          ["nobitex", 500_000_000_000],
+          ["tabdeal", 500_000_000_000],
+          ["wallex", 500_000_000_000]
+        ]),
+        portfolioValueToman: 1_000_000_000,
+        exposureTomanBySource: new Map([
+          ["nobitex", 0],
+          ["tabdeal", 0],
+          ["wallex", 0]
+        ]),
+        slippageBufferBps: 5,
+        inventoryModel: {
+          valuationPriceToman: 100_000,
+          targets: balances.map((balance) => ({
+            sourceId: balance.sourceId,
+            targetUsdtSharePercent: 50
+          })),
+          maxDeviationPoints: 100
+        }
+      },
+      portfolioLimits: {
+        enabled: true,
+        equityToman: 1_000_000_000,
+        markPriceToman: 100_000,
+        maxUtilizationPercent: 90,
+        minReservePercent: 10,
+        maxVenueExposurePercent: 65
+      }
+    } as never);
+
+  const evaluation = run(allOpportunities);
+  const fills = evaluation.decisions.filter(
+    (decision): decision is Extract<(typeof evaluation.decisions)[number], { kind: "EXECUTE" }> =>
+      decision.kind === "EXECUTE"
+  );
+  assert.equal(fills.length, 2);
+  assert.deepEqual(
+    fills.map((fill) => fill.candidate.lifecycleId).sort(),
+    ["rA", "rB"]
+  );
+  for (const fill of fills) {
+    assert.equal(
+      fill.candidate.allocationKey,
+      `${fill.candidate.lifecycleId}@${usdtToMicros(fill.candidate.sizeUsdt)}`
+    );
+  }
+
+  const realizedRa = fills.reduce(
+    (sum, fill) => sum + fill.plan.riskAdjustedPnlToman,
+    0
+  );
+  const greedyRa = Math.max(
+    ...allOpportunities.map((row) => {
+      const single = run([row]);
+      return single.decisions.reduce(
+        (sum, decision) =>
+          sum +
+          (decision.kind === "EXECUTE"
+            ? decision.plan.riskAdjustedPnlToman
+            : 0),
+        0
+      );
+    })
+  );
+  assert.ok(realizedRa >= greedyRa);
+  assert.equal(
+    evaluation.portfolio?.selectedPortfolioRiskAdjustedPnlToman,
+    realizedRa
+  );
+  assert.equal(evaluation.reservations.holds, 0);
+});
+
 await test("depleted sell-USDT freezes worsening sells and keeps repairing buys eligible", () => {
   const worseningBuy = snap("nobitex", [lv(99_900, 200)], [lv(100_000, 200)]);
   const depletedSell = snap("wallex", [lv(100_800, 200)], [lv(100_900, 200)]);

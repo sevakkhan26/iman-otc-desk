@@ -14,8 +14,10 @@ export const DEFAULT_EXECUTION_SCORING_POLICY: ExecutionScoringPolicy = {
   latencyBudgetMs: 2_000,
   jitterBudgetMs: 1_000,
   defaultFillConfidence: 0.75,
-  defaultPartialFillRisk: 0.25,
-  provenance: "PAPER_POLICY_V1:configurable conservative execution priors"
+  // One auditable unknown-fill prior lives in defaultFillConfidence. Do not
+  // stack a second 25% haircut under a differently named default.
+  defaultPartialFillRisk: 0,
+  provenance: "PAPER_POLICY_V2:single provenance-based unknown-fill prior"
 };
 
 export type InventoryShadowPrice = {
@@ -120,11 +122,14 @@ export type CandidateScoreBreakdown = {
 };
 
 function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
   return Math.min(1, Math.max(0, value));
 }
 
 function budgetFactor(observed: number, budget: number): number {
-  if (!(budget > 0)) return 0;
+  if (!Number.isFinite(observed) || observed < 0 || !Number.isFinite(budget) || !(budget > 0)) {
+    return 0;
+  }
   return clamp01(1 - Math.max(0, observed) / budget);
 }
 
@@ -151,7 +156,11 @@ export function scorePaperCandidate(input: {
   policy?: ExecutionScoringPolicy;
 }): CandidateScoreBreakdown {
   const policy = input.policy ?? DEFAULT_EXECUTION_SCORING_POLICY;
-  const raw = input.canonicalRiskAdjustedPnlToman;
+  const raw =
+    Number.isFinite(input.canonicalRiskAdjustedPnlToman) &&
+    input.canonicalRiskAdjustedPnlToman > 0
+      ? input.canonicalRiskAdjustedPnlToman
+      : 0;
   const captureFactor = clamp01(input.survival.captureFactor);
   const fillConfidence = clamp01(
     input.fillConfidence ?? policy.defaultFillConfidence

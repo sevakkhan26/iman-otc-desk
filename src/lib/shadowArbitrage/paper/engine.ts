@@ -6,9 +6,9 @@
  * no exchange adapter, no credentials, no real orders or transfers. A
  * structural test enforces the import restriction.
  *
- * Decisions use only same-cycle inputs: the order books collected in this
- * cycle, their VWAP depth for the traded size, fees that are known and fresh,
- * the slippage buffer, account readiness and the virtual balances.
+ * Canonical execution inputs remain same-cycle books/fees/balances. The outer
+ * Paper ranking may additionally consume explicit session-scoped persistence
+ * evidence; it never mutates canonical economics or execution feasibility.
  */
 import {
   SHADOW_EVENT_COHERENCE_MAX_SKEW_MS,
@@ -71,7 +71,10 @@ import {
   scorePaperCandidate,
   type CandidateScoreBreakdown
 } from "@/lib/shadowArbitrage/paper/executionScoring";
-import { estimateFromLifecycle } from "@/lib/shadowArbitrage/paper/opportunitySurvival";
+import {
+  estimateFromLifecycle,
+  type OpportunitySurvivalTracker
+} from "@/lib/shadowArbitrage/paper/opportunitySurvival";
 import { assessCrossVenueCoherence } from "@/lib/shadowArbitrage/streaming/eventFabric";
 import type {
   BlockedReasonCode,
@@ -175,8 +178,13 @@ export type CycleEvaluation = {
   portfolio: PaperPortfolioTelemetry | null;
   marketData: {
     decisionTimestampMs: number;
+    decisionCompletedTimestampMs: number;
     coherentRouteCount: number;
     blockedRouteCount: number;
+    sourceEventLatencyMs: number[];
+    receiveAgeMs: number[];
+    ingestToDecisionLatencyMs: number[];
+    /** Backward-compatible alias for ingestToDecisionLatencyMs. */
     eventToDecisionLatencyMs: number[];
     venues: Array<{
       sourceId: string;
@@ -187,7 +195,10 @@ export type CycleEvaluation = {
       reconnectCount: number;
       gapCount: number;
       resyncCount: number;
+      resyncProvenance: string | null;
       snapshotResyncState: string;
+      sourceEventLatencyMs: number | null;
+      receiveAgeAtDecisionMs: number | null;
     }>;
   };
 };
@@ -307,6 +318,10 @@ export type EvaluateInput = {
   portfolioLimits?: PortfolioLimits;
   /** Supplied by replay/collector so event-to-decision latency stays deterministic. */
   decisionTimestampMs?: number;
+  /** Deterministic test/replay completion clock; production defaults to Date.now. */
+  decisionClock?: () => number;
+  /** Process/session persistence evidence populated before this evaluation. */
+  survivalTracker?: OpportunitySurvivalTracker;
   maxCrossVenueSkewMs?: number;
 };
 
@@ -317,16 +332,20 @@ export type EvaluateInput = {
  * result, which is what keeps the engine testable without a database.
  */
 export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
+  const decisionClock = input.decisionClock ?? Date.now;
   const sourceById = new Map(input.sources.map((s) => [s.sourceId as string, s]));
   const stateById = new Map(input.venueStates.map((v) => [v.sourceId as string, v]));
   const decisions: PaperDecision[] = [];
-  const decisionTimestampMs =
+  const observedDecisionTimestampMs =
     input.decisionTimestampMs ??
-    Math.max(
-      0,
-      ...input.sources.map((source) => Date.parse(source.receivedAt)).filter(Number.isFinite)
-    );
-  const eventToDecisionLatencyMs: number[] = [];
+    decisionClock();
+  const decisionTimestampValid =
+    Number.isFinite(observedDecisionTimestampMs) &&
+    observedDecisionTimestampMs >= 0;
+  const decisionTimestampMs = decisionTimestampValid
+    ? observedDecisionTimestampMs
+    : 0;
+  const coherentRouteReceiveTimestampMs: number[] = [];
   let coherentRouteCount = 0;
   let blockedRouteCount = 0;
   const venueMarketData = [...input.sources]
@@ -341,9 +360,66 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       reconnectCount: source.marketData?.reconnectCount ?? 0,
       gapCount: source.marketData?.gapCount ?? 0,
       resyncCount: source.marketData?.resyncCount ?? 0,
+      resyncProvenance: source.marketData?.resyncProvenance ?? null,
       snapshotResyncState:
-        source.marketData?.snapshotResyncState ?? "SYNCHRONIZED"
+        source.marketData?.snapshotResyncState ?? "SYNCHRONIZED",
+      sourceEventLatencyMs: (() => {
+        const eventMs = Date.parse(
+          source.marketData?.sourceEventTimestamp ??
+            source.sourceTimestamp ??
+            source.receivedAt
+        );
+        const receiveMs = Date.parse(
+          source.marketData?.receiveTimestamp ?? source.receivedAt
+        );
+        return Number.isFinite(eventMs) && Number.isFinite(receiveMs)
+          ? Math.max(0, receiveMs - eventMs)
+          : null;
+      })(),
+      receiveTimestampMs: Date.parse(
+        source.marketData?.receiveTimestamp ?? source.receivedAt
+      )
     }));
+  const marketDataAtCompletion = () => {
+    const observedCompletion = decisionClock();
+    const decisionCompletedTimestampMs =
+      Number.isFinite(observedCompletion) &&
+      observedCompletion >= decisionTimestampMs
+        ? observedCompletion
+        : decisionTimestampMs;
+    const venues = venueMarketData.map(
+      ({ receiveTimestampMs, ...venue }) => ({
+        ...venue,
+        receiveAgeAtDecisionMs: Number.isFinite(receiveTimestampMs)
+          ? Math.max(0, decisionCompletedTimestampMs - receiveTimestampMs)
+          : null
+      })
+    );
+    const sourceEventLatencyMs = venues
+      .map((venue) => venue.sourceEventLatencyMs)
+      .filter((value): value is number => value !== null)
+      .sort((a, b) => a - b);
+    const receiveAgeMs = venues
+      .map((venue) => venue.receiveAgeAtDecisionMs)
+      .filter((value): value is number => value !== null)
+      .sort((a, b) => a - b);
+    const ingestToDecisionLatencyMs = coherentRouteReceiveTimestampMs
+      .map((receiveTimestampMs) =>
+        Math.max(0, decisionCompletedTimestampMs - receiveTimestampMs)
+      )
+      .sort((a, b) => a - b);
+    return {
+      decisionTimestampMs,
+      decisionCompletedTimestampMs,
+      coherentRouteCount,
+      blockedRouteCount,
+      sourceEventLatencyMs,
+      receiveAgeMs,
+      ingestToDecisionLatencyMs,
+      eventToDecisionLatencyMs: ingestToDecisionLatencyMs,
+      venues
+    };
+  };
 
   /** Records a skip with every exact cause, never a generic substitute. */
   const skip = (candidate: PaperCandidate, causes: PaperReasonCode[]): void => {
@@ -381,6 +457,11 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
 
   for (const c of raw) {
     const o = byId.get(c.lifecycleId);
+    if (!decisionTimestampValid) {
+      blockedRouteCount += 1;
+      skip(c, ["stale_market_data"]);
+      continue;
+    }
     if (input.executedLifecycleIds.has(c.lifecycleId)) {
       skip(c, ["lifecycle_already_processed"]);
       continue;
@@ -471,8 +552,12 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
         continue;
       }
       coherentRouteCount += 1;
-      if (coherence.eventToDecisionLatencyMs !== null) {
-        eventToDecisionLatencyMs.push(coherence.eventToDecisionLatencyMs);
+      const latestReceiveMs = Math.max(
+        Date.parse(buySnap?.marketData?.receiveTimestamp ?? buySnap?.receivedAt ?? ""),
+        Date.parse(sellSnap?.marketData?.receiveTimestamp ?? sellSnap?.receivedAt ?? "")
+      );
+      if (Number.isFinite(latestReceiveMs)) {
+        coherentRouteReceiveTimestampMs.push(latestReceiveMs);
       }
     }
     if (!snapshotUsable(buySnap) || !snapshotUsable(sellSnap)) {
@@ -647,13 +732,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       reservations: totalReserved(ledger),
       peakUtilizationPercent: null,
       portfolio: null,
-      marketData: {
-        decisionTimestampMs,
-        coherentRouteCount,
-        blockedRouteCount,
-        eventToDecisionLatencyMs,
-        venues: venueMarketData
-      }
+      marketData: marketDataAtCompletion()
     };
   }
   const maxUtil =
@@ -670,6 +749,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
   let portfolioTelemetry: PaperPortfolioTelemetry | null = null;
   const sizingByAllocationKey = new Map<string, SizingResult>();
   const scoringByAllocationKey = new Map<string, CandidateScoreBreakdown>();
+  const scoringByLifecycleId = new Map<string, CandidateScoreBreakdown>();
   const selectedAllocationKeyByLifecycleId = new Map<string, string>();
 
   /*
@@ -802,7 +882,9 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
         const opportunity = byId.get(c.lifecycleId);
         const buyMarket = sourceForSizing(c.buySourceId);
         const sellMarket = sourceForSizing(c.sellSourceId);
-        const survival = opportunity
+        const survival = input.survivalTracker
+          ? input.survivalTracker.estimate(c.routeKey, decisionTimestampMs)
+          : opportunity
           ? estimateFromLifecycle({
               routeKey: opportunity.routeKey,
               firstSeenAt: opportunity.firstSeenAt,
@@ -840,6 +922,9 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
           fillConfidence: 1,
           fillConfidenceProvenance:
             "CANONICAL_FULL_BOOK_WALK_FILLABLE_AT_SELECTED_SIZE",
+          partialFillRisk: 0,
+          partialFillRiskProvenance:
+            "CANONICAL_ALL_OR_NOTHING_BOOK_WALK_NO_PARTIAL_FILL_ASSUMED",
           sourceAgeMs,
           venueLatencyMs,
           venueJitterMs,
@@ -851,6 +936,14 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
         });
         sizingByAllocationKey.set(candidateAllocationKey, option);
         scoringByAllocationKey.set(candidateAllocationKey, scoring);
+        const priorLifecycleScore = scoringByLifecycleId.get(c.lifecycleId);
+        if (
+          !priorLifecycleScore ||
+          scoring.adjustedObjectiveToman >
+            priorLifecycleScore.adjustedObjectiveToman
+        ) {
+          scoringByLifecycleId.set(c.lifecycleId, scoring);
+        }
         return [{
           lifecycleId: c.lifecycleId,
           allocationKey: candidateAllocationKey,
@@ -954,6 +1047,16 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       if (candidate.allocationKey) {
         scoringByAllocationKey.set(candidate.allocationKey, scoreBreakdown);
       }
+      const priorLifecycleScore = scoringByLifecycleId.get(
+        candidate.lifecycleId
+      );
+      if (
+        !priorLifecycleScore ||
+        scoreBreakdown.adjustedObjectiveToman >
+          priorLifecycleScore.adjustedObjectiveToman
+      ) {
+        scoringByLifecycleId.set(candidate.lifecycleId, scoreBreakdown);
+      }
       return {
         ...candidate,
         adjustedScoreToman: scoreBreakdown.adjustedObjectiveToman,
@@ -1030,7 +1133,13 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
           ? "sizing_blocked"
           : rejection?.code ?? "portfolio_not_selected"
       ) as PaperReasonCode;
-      skip(row.c, [code]);
+      skip(
+        {
+          ...row.c,
+          scoring: scoringByLifecycleId.get(row.c.lifecycleId)
+        },
+        [code]
+      );
     }
     const selectedOrder = new Map(
       selectedOptions.map((selection, index) => [selection.lifecycleId, index])
@@ -1493,15 +1602,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
     reservations: totalReserved(ledger),
     peakUtilizationPercent,
     portfolio: portfolioTelemetry,
-    marketData: {
-      decisionTimestampMs,
-      coherentRouteCount,
-      blockedRouteCount,
-      eventToDecisionLatencyMs: [...eventToDecisionLatencyMs].sort(
-        (a, b) => a - b
-      ),
-      venues: venueMarketData
-    }
+    marketData: marketDataAtCompletion()
   };
 }
 

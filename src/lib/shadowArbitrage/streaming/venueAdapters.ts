@@ -23,8 +23,8 @@ export const VENUE_STREAMING_COVERAGE: VenueStreamingCoverage[] = [
     sourceId: "nobitex",
     mode: "WS_FIRST",
     publicEndpoint: "wss://ws.nobitex.ir/connection/websocket",
-    sequencePolicy: "STRICT_INCREMENT",
-    reason: "Official public Centrifugo orderbook channel; publication offset gaps force REST snapshot recovery."
+    sequencePolicy: "MONOTONIC_VERSION",
+    reason: "Official public Centrifugo full-book publications; offsets are monotonic versions, not delta sequence numbers."
   },
   {
     sourceId: "wallex",
@@ -113,6 +113,7 @@ export function parseNobitexPublication(
   message: unknown,
   receiveTimestampMs: number
 ): NormalizedBookEvent | null {
+  if (!Number.isFinite(receiveTimestampMs) || receiveTimestampMs < 0) return null;
   const root = record(message);
   const push = record(root?.push);
   const publication = record(push?.pub);
@@ -136,11 +137,22 @@ export function parseNobitexPublication(
     "rial"
   ).levels;
   if (!bids.length || !asks.length) return null;
+  const sequence = finiteNumber(publication.offset);
+  const sourceEventTimestampMs = finiteNumber(payload.lastUpdate);
+  if (
+    sequence === null ||
+    !Number.isSafeInteger(sequence) ||
+    sequence < 0 ||
+    sourceEventTimestampMs === null ||
+    sourceEventTimestampMs < 0
+  ) {
+    return null;
+  }
   return {
     sourceId: "nobitex",
     kind: "SNAPSHOT",
-    sequence: finiteNumber(publication.offset),
-    sourceEventTimestampMs: finiteNumber(payload.lastUpdate),
+    sequence,
+    sourceEventTimestampMs,
     receiveTimestampMs,
     bids,
     asks,
@@ -153,6 +165,7 @@ export function parseTabdealDepth(
   message: unknown,
   receiveTimestampMs: number
 ): NormalizedBookEvent | null {
+  if (!Number.isFinite(receiveTimestampMs) || receiveTimestampMs < 0) return null;
   const root = record(message);
   const payload = record(root?.data) ?? root;
   if (!payload) return null;
@@ -168,11 +181,15 @@ export function parseTabdealDepth(
     "toman"
   ).levels;
   if (!bids.length || !asks.length) return null;
+  const sourceEventTimestampMs = finiteNumber(payload.E);
+  // Tabdeal documents no sequence/version. A finite exchange event timestamp is
+  // therefore mandatory and becomes the fail-closed ordering watermark.
+  if (sourceEventTimestampMs === null || sourceEventTimestampMs < 0) return null;
   return {
     sourceId: "tabdeal",
     kind: "SNAPSHOT",
     sequence: null,
-    sourceEventTimestampMs: finiteNumber(payload.E),
+    sourceEventTimestampMs,
     receiveTimestampMs,
     bids,
     asks,
@@ -206,9 +223,27 @@ export class WallexDepthAssembler {
   private asks: { levels: BookLevel[]; receivedAt: number } | null = null;
   private version = 0;
 
-  constructor(private readonly maxPairSkewMs: number) {}
+  constructor(
+    private readonly maxPairSkewMs: number,
+    private readonly requestRestRecovery: (reason: string) => void = () => undefined
+  ) {}
+
+  /**
+   * Socket close/open and explicit session boundaries invalidate both sides.
+   * The monotonic local publication counter intentionally survives so a new
+   * coherent pair cannot look older than a pair emitted before reconnect.
+   */
+  reset(): void {
+    this.bids = null;
+    this.asks = null;
+  }
 
   ingest(message: unknown, receiveTimestampMs: number): NormalizedBookEvent | null {
+    if (!Number.isFinite(receiveTimestampMs) || receiveTimestampMs < 0) {
+      this.reset();
+      this.requestRestRecovery("wallex_invalid_receive_timestamp");
+      return null;
+    }
     if (!Array.isArray(message) || message.length < 2) return null;
     const channel = String(message[0]);
     const levels = wallexLevels(message[1]);
@@ -222,17 +257,26 @@ export class WallexDepthAssembler {
     }
     if (!this.bids || !this.asks) return null;
     if (Math.abs(this.bids.receivedAt - this.asks.receivedAt) > this.maxPairSkewMs) {
+      // Do not leave either unmatched side available for a later publication:
+      // that would make the next pair's session/time provenance ambiguous.
+      this.reset();
+      this.requestRestRecovery("wallex_side_pair_skew");
       return null;
     }
+    const bids = this.bids;
+    const asks = this.asks;
+    this.reset();
     this.version += 1;
     return {
       sourceId: "wallex",
       kind: "SNAPSHOT",
       sequence: this.version,
-      sourceEventTimestampMs: null,
-      receiveTimestampMs: Math.max(this.bids.receivedAt, this.asks.receivedAt),
-      bids: this.bids.levels,
-      asks: this.asks.levels,
+      // Wallex does not provide a side event timestamp. Local receive time is
+      // the explicit coherence proxy, rather than mixing it with null silently.
+      sourceEventTimestampMs: Math.max(bids.receivedAt, asks.receivedAt),
+      receiveTimestampMs: Math.max(bids.receivedAt, asks.receivedAt),
+      bids: bids.levels,
+      asks: asks.levels,
       transport: "WS",
       endpoint: "wss://api.wallex.ir/ws"
     };

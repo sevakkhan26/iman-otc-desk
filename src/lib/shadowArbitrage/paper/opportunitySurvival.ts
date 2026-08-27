@@ -51,6 +51,7 @@ export type SurvivalEstimate = {
 };
 
 function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
   return Math.min(1, Math.max(0, value));
 }
 
@@ -71,6 +72,7 @@ export class OpportunitySurvivalTracker {
   private readonly histories = new Map<string, RouteHistory>();
 
   observe(point: OpportunityTracePoint): void {
+    if (!Number.isFinite(point.observedAtMs) || point.observedAtMs < 0) return;
     const history = this.histories.get(point.routeKey) ?? {
       firstSeenAtMs: null,
       lastSeenAtMs: null,
@@ -111,13 +113,37 @@ export class OpportunitySurvivalTracker {
     this.histories.set(point.routeKey, history);
   }
 
+  /**
+   * Record one complete decision cycle. Routes seen in prior cycles but absent
+   * now receive an explicit inactive observation, so disappearance evidence is
+   * not lost merely because discovery stopped returning the route.
+   */
+  observeCycle(
+    points: Array<{ routeKey: string; active: boolean }>,
+    observedAtMs: number
+  ): void {
+    if (!Number.isFinite(observedAtMs) || observedAtMs < 0) return;
+    const current = new Map<string, boolean>();
+    for (const point of points) {
+      current.set(point.routeKey, (current.get(point.routeKey) ?? false) || point.active);
+    }
+    for (const routeKey of this.histories.keys()) {
+      if (!current.has(routeKey)) {
+        this.observe({ routeKey, observedAtMs, active: false });
+      }
+    }
+    for (const [routeKey, active] of current) {
+      this.observe({ routeKey, observedAtMs, active });
+    }
+  }
+
   estimate(
     routeKey: string,
     nowMs: number,
     policy: SurvivalPolicy = DEFAULT_SURVIVAL_POLICY
   ): SurvivalEstimate {
     const history = this.histories.get(routeKey);
-    if (!history) {
+    if (!history || !Number.isFinite(nowMs) || nowMs < 0) {
       return emptyEstimate(routeKey, policy);
     }
     const continuousAgeMs =
@@ -202,19 +228,30 @@ export function estimateFromLifecycle(input: {
   policy?: SurvivalPolicy;
 }): SurvivalEstimate {
   const policy = input.policy ?? DEFAULT_SURVIVAL_POLICY;
-  const durationMs = Math.max(0, input.durationMs);
+  const durationMs =
+    Number.isFinite(input.durationMs) && input.durationMs > 0
+      ? input.durationMs
+      : 0;
+  const observations =
+    Number.isSafeInteger(input.observationCount) && input.observationCount > 0
+      ? input.observationCount
+      : 0;
   const confidence = clamp01(
-    input.observationCount / Math.max(1, policy.minimumObservations)
+    observations / Math.max(1, policy.minimumObservations)
   );
   const observedSurvival = clamp01(
     durationMs / Math.max(1, policy.decisionHorizonMs)
   );
   return {
     routeKey: input.routeKey,
-    firstSeenAtMs: Date.parse(input.firstSeenAt),
-    lastSeenAtMs: Date.parse(input.lastSeenAt),
+    firstSeenAtMs: Number.isFinite(Date.parse(input.firstSeenAt))
+      ? Date.parse(input.firstSeenAt)
+      : null,
+    lastSeenAtMs: Number.isFinite(Date.parse(input.lastSeenAt))
+      ? Date.parse(input.lastSeenAt)
+      : null,
     continuousAgeMs: durationMs,
-    observations: input.observationCount,
+    observations,
     recurrenceCount: 0,
     disappearanceCount: 0,
     disappearanceRatePerSecond: null,
@@ -225,7 +262,7 @@ export function estimateFromLifecycle(input: {
         observedSurvival * confidence
     ),
     confidence,
-    insufficientHistory: input.observationCount < policy.minimumObservations,
+    insufficientHistory: observations < policy.minimumObservations,
     provenance: "LIFECYCLE_RIGHT_CENSORED_PROXY",
     policy
   };

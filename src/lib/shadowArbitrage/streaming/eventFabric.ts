@@ -57,6 +57,7 @@ type VenueState = {
   latencyEstimateMs: number | null;
   jitterMs: number | null;
   latencySamples: number;
+  resyncProvenance: string | null;
 };
 
 export type FabricIngestResult = {
@@ -68,7 +69,8 @@ export type FabricIngestResult = {
     | "awaiting_snapshot"
     | "sequence_gap"
     | "out_of_order"
-    | "invalid_book";
+    | "invalid_book"
+    | "invalid_timestamp";
   snapshot: NormalizedSourceSnapshot | null;
 };
 
@@ -116,7 +118,8 @@ export class PaperMarketDataFabric {
         resyncCount: 0,
         latencyEstimateMs: null,
         jitterMs: null,
-        latencySamples: 0
+        latencySamples: 0,
+        resyncProvenance: null
       });
     }
   }
@@ -126,19 +129,53 @@ export class PaperMarketDataFabric {
     state.reconnectCount += 1;
     state.resyncCount += 1;
     state.synchronized = false;
-    state.sequence = null;
+    // Keep the last exchange/local version as a high-water mark. A REST
+    // recovery may replace the book, but it must not make delayed WS versions
+    // look new merely by silently erasing sequence provenance.
+    state.resyncProvenance = "SOCKET_SESSION_BOUNDARY_VERSION_WATERMARK_PRESERVED";
+    state.bids.clear();
+    state.asks.clear();
+  }
+
+  requestResync(sourceId: ShadowSourceId, provenance: string): void {
+    const state = this.requireState(sourceId);
+    state.resyncCount += 1;
+    state.synchronized = false;
+    state.resyncProvenance = provenance;
     state.bids.clear();
     state.asks.clear();
   }
 
   ingest(event: NormalizedBookEvent): FabricIngestResult {
     const state = this.requireState(event.sourceId);
-    if (
+    const invalidTimestamp =
       !Number.isFinite(event.receiveTimestampMs) ||
       event.receiveTimestampMs < 0 ||
+      event.sourceEventTimestampMs === null ||
+      !Number.isFinite(event.sourceEventTimestampMs) ||
+      event.sourceEventTimestampMs < 0;
+    if (
+      invalidTimestamp ||
+      (event.transport === "WS" &&
+        state.policy.sequencePolicy !== "FULL_SNAPSHOT_NO_SEQUENCE" &&
+        (event.sequence === null ||
+          !Number.isSafeInteger(event.sequence) ||
+          event.sequence < 0)) ||
       (event.kind === "SNAPSHOT" && (!event.bids.length || !event.asks.length))
     ) {
-      return this.result(state, false, "invalid_book");
+      this.requestResync(
+        event.sourceId,
+        invalidTimestamp
+          ? "INVALID_TIMESTAMP_REST_RECOVERY_REQUIRED"
+          : "INVALID_BOOK_REST_RECOVERY_REQUIRED"
+      );
+      return this.result(
+        state,
+        false,
+        invalidTimestamp
+          ? "invalid_timestamp"
+          : "invalid_book"
+      );
     }
 
     if (event.kind === "DELTA" && !state.synchronized) {
@@ -158,11 +195,22 @@ export class PaperMarketDataFabric {
         state.gapCount += 1;
         state.resyncCount += 1;
         state.synchronized = false;
-        state.sequence = null;
+        state.resyncProvenance =
+          "STRICT_DELTA_GAP_VERSION_WATERMARK_PRESERVED_REST_RECOVERY_REQUIRED";
         state.bids.clear();
         state.asks.clear();
         return this.result(state, false, "sequence_gap");
       }
+    }
+    if (
+      (state.policy.sequencePolicy === "FULL_SNAPSHOT_NO_SEQUENCE" ||
+        event.sequence === null) &&
+      state.sourceEventTimestampMs !== null &&
+      event.sourceEventTimestampMs !== null &&
+      event.sourceEventTimestampMs <= state.sourceEventTimestampMs
+    ) {
+      state.outOfOrderCount += 1;
+      return this.result(state, false, "out_of_order");
     }
 
     if (event.kind === "SNAPSHOT") {
@@ -174,15 +222,29 @@ export class PaperMarketDataFabric {
       applyDelta(state.asks, event.asks);
     }
 
-    state.sequence = event.sequence;
+    // A sequence-less REST snapshot replaces the book but preserves any
+    // meaningful WS version watermark. The next WS publication must still be
+    // newer. This is the explicit reset policy for fallback/resync.
+    if (event.sequence !== null) {
+      state.sequence = event.sequence;
+    }
     state.sourceEventTimestampMs = event.sourceEventTimestampMs;
     state.receiveTimestampMs = event.receiveTimestampMs;
     state.transport = event.transport;
+    if (event.transport !== "WS") {
+      state.resyncProvenance =
+        state.sequence === null
+          ? `${event.transport}_NO_PRIOR_VERSION_WATERMARK`
+          : `${event.transport}_BOOK_REPLACED_VERSION_WATERMARK_PRESERVED`;
+    } else if (state.resyncProvenance !== null) {
+      state.resyncProvenance = "WS_FULL_SNAPSHOT_RESYNCHRONIZED";
+    }
     this.updateLatency(state, event);
 
     if (!state.bids.size || !state.asks.size) {
       state.synchronized = false;
       state.resyncCount += 1;
+      state.resyncProvenance = "EMPTY_BOOK_REST_RECOVERY_REQUIRED";
       return this.result(state, false, "invalid_book");
     }
     return this.result(state, true, "accepted", event.endpoint);
@@ -205,7 +267,10 @@ export class PaperMarketDataFabric {
   }
 
   private updateLatency(state: VenueState, event: NormalizedBookEvent): void {
-    if (event.sourceEventTimestampMs === null) return;
+    if (
+      event.sourceEventTimestampMs === null ||
+      !Number.isFinite(event.sourceEventTimestampMs)
+    ) return;
     const sample = Math.max(0, event.receiveTimestampMs - event.sourceEventTimestampMs);
     const previous = state.latencyEstimateMs;
     state.latencySamples += 1;
@@ -238,6 +303,7 @@ export class PaperMarketDataFabric {
       gapCount: state.gapCount,
       outOfOrderCount: state.outOfOrderCount,
       resyncCount: state.resyncCount,
+      resyncProvenance: state.resyncProvenance,
       snapshotResyncState: state.synchronized ? "SYNCHRONIZED" : "AWAITING_SNAPSHOT"
     };
   }
@@ -333,7 +399,8 @@ export class PaperMarketDataFabric {
       resyncRequested:
         reason === "sequence_gap" ||
         reason === "awaiting_snapshot" ||
-        reason === "invalid_book",
+        reason === "invalid_book" ||
+        reason === "invalid_timestamp",
       reason,
       snapshot
     };
@@ -347,9 +414,12 @@ export type CoherenceResult = {
     | "missing_snapshot"
     | "stale_snapshot"
     | "awaiting_resync"
+    | "invalid_timestamp"
     | "cross_venue_time_skew";
   sourceSkewMs: number | null;
   eventToDecisionLatencyMs: number | null;
+  sourceEventLatencyMs: number | null;
+  receiveAgeMs: number | null;
 };
 
 /** Both legs must be fresh, synchronized and inside one deterministic time window. */
@@ -366,7 +436,9 @@ export function assessCrossVenueCoherence(input: {
       coherent: false,
       reason: "missing_snapshot",
       sourceSkewMs: null,
-      eventToDecisionLatencyMs: null
+      eventToDecisionLatencyMs: null,
+      sourceEventLatencyMs: null,
+      receiveAgeMs: null
     };
   }
   if (
@@ -377,7 +449,9 @@ export function assessCrossVenueCoherence(input: {
       coherent: false,
       reason: "awaiting_resync",
       sourceSkewMs: null,
-      eventToDecisionLatencyMs: null
+      eventToDecisionLatencyMs: null,
+      sourceEventLatencyMs: null,
+      receiveAgeMs: null
     };
   }
   const buyEventMs = Date.parse(
@@ -389,6 +463,24 @@ export function assessCrossVenueCoherence(input: {
   const buyReceiveMs = Date.parse(buy.marketData?.receiveTimestamp ?? buy.receivedAt);
   const sellReceiveMs = Date.parse(sell.marketData?.receiveTimestamp ?? sell.receivedAt);
   if (
+    !Number.isFinite(input.decisionTimestampMs) ||
+    !Number.isFinite(input.maxAgeMs) ||
+    !Number.isFinite(input.maxSourceSkewMs) ||
+    !Number.isFinite(buyEventMs) ||
+    !Number.isFinite(sellEventMs) ||
+    !Number.isFinite(buyReceiveMs) ||
+    !Number.isFinite(sellReceiveMs)
+  ) {
+    return {
+      coherent: false,
+      reason: "invalid_timestamp",
+      sourceSkewMs: null,
+      eventToDecisionLatencyMs: null,
+      sourceEventLatencyMs: null,
+      receiveAgeMs: null
+    };
+  }
+  if (
     buy.stale ||
     sell.stale ||
     input.decisionTimestampMs - buyEventMs > input.maxAgeMs ||
@@ -398,7 +490,9 @@ export function assessCrossVenueCoherence(input: {
       coherent: false,
       reason: "stale_snapshot",
       sourceSkewMs: Math.abs(buyEventMs - sellEventMs),
-      eventToDecisionLatencyMs: null
+      eventToDecisionLatencyMs: null,
+      sourceEventLatencyMs: null,
+      receiveAgeMs: null
     };
   }
   const sourceSkewMs = Math.abs(buyEventMs - sellEventMs);
@@ -407,7 +501,9 @@ export function assessCrossVenueCoherence(input: {
       coherent: false,
       reason: "cross_venue_time_skew",
       sourceSkewMs,
-      eventToDecisionLatencyMs: null
+      eventToDecisionLatencyMs: null,
+      sourceEventLatencyMs: null,
+      receiveAgeMs: null
     };
   }
   return {
@@ -417,6 +513,16 @@ export function assessCrossVenueCoherence(input: {
     eventToDecisionLatencyMs: Math.max(
       0,
       input.decisionTimestampMs - Math.max(buyReceiveMs, sellReceiveMs)
+    ),
+    sourceEventLatencyMs: Math.max(
+      0,
+      buyReceiveMs - buyEventMs,
+      sellReceiveMs - sellEventMs
+    ),
+    receiveAgeMs: Math.max(
+      0,
+      input.decisionTimestampMs - buyReceiveMs,
+      input.decisionTimestampMs - sellReceiveMs
     )
   };
 }

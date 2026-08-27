@@ -32,6 +32,7 @@ import { targetsFromAllocations, type InventoryModel } from "@/lib/shadowArbitra
 import { microsToUsdt, type VenueBalance } from "@/lib/shadowArbitrage/paper/broker";
 import type { QuoteCapacityInput } from "@/lib/shadowArbitrage/paper/liquidity";
 import type { PaperPortfolioTelemetry } from "@/lib/shadowArbitrage/paper/portfolioAllocator";
+import { OpportunitySurvivalTracker } from "@/lib/shadowArbitrage/paper/opportunitySurvival";
 import type { NormalizedSourceSnapshot, ShadowOpportunity, ShadowSourceId } from "@/lib/shadowArbitrage/types";
 
 export type PaperCycleOutcome = {
@@ -45,8 +46,12 @@ export type PaperCycleOutcome = {
   portfolio?: PaperPortfolioTelemetry | null;
   marketData?: {
     decisionTimestampMs: number;
+    decisionCompletedTimestampMs: number;
     coherentRouteCount: number;
     blockedRouteCount: number;
+    sourceEventLatencyMs: number[];
+    receiveAgeMs: number[];
+    ingestToDecisionLatencyMs: number[];
     eventToDecisionLatencyMs: number[];
     venues: Array<{
       sourceId: string;
@@ -57,13 +62,19 @@ export type PaperCycleOutcome = {
       reconnectCount: number;
       gapCount: number;
       resyncCount: number;
+      resyncProvenance: string | null;
       snapshotResyncState: string;
+      sourceEventLatencyMs: number | null;
+      receiveAgeAtDecisionMs: number | null;
     }>;
   };
   /** Detailed rows this cycle wrote — normally 0 once the market is steady. */
   detailedEventsWritten?: number;
   error?: string;
 };
+
+/** In-process Paper evidence is isolated per immutable session id. */
+const survivalTrackersBySession = new Map<string, OpportunitySurvivalTracker>();
 
 /**
  * Run the paper engine for one completed collection cycle.
@@ -293,6 +304,17 @@ export async function runPaperExecutionForCycle(input: {
     /* migration not yet applied — keep hard-coded defaults above */
   }
 
+  const survivalTracker =
+    survivalTrackersBySession.get(session.id) ?? new OpportunitySurvivalTracker();
+  survivalTrackersBySession.set(session.id, survivalTracker);
+  const observedAtMs = Date.parse(input.occurredAt);
+  survivalTracker.observeCycle(
+    input.opportunities.map((opportunity) => ({
+      routeKey: opportunity.routeKey,
+      active: opportunity.isActive
+    })),
+    Number.isFinite(observedAtMs) ? observedAtMs : Date.now()
+  );
   const evaluation = evaluateCycle({
     opportunities: input.opportunities,
     sources: input.sources,
@@ -317,7 +339,10 @@ export async function runPaperExecutionForCycle(input: {
       quoteBySource
     },
     portfolioLimits,
-    decisionTimestampMs: Date.parse(input.occurredAt)
+    // The decision clock starts after cycle collection/DB reads and completes
+    // inside evaluateCycle; source receive timestamps remain the ingest origin.
+    decisionTimestampMs: Date.now(),
+    survivalTracker
   });
 
   const fills: PaperFillRecord[] = [];

@@ -54,6 +54,7 @@ function refreshedCachedSnapshot(
       snapshot.sourceTimestamp ??
       snapshot.receivedAt
   );
+  if (!Number.isFinite(nowMs) || !Number.isFinite(eventMs)) return null;
   const ageMs = Math.max(0, nowMs - eventMs);
   if (ageMs > SHADOW_STALE_MS) return null;
   return {

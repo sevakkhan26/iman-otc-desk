@@ -18,7 +18,10 @@ import {
   SHADOW_EVENT_DECISION_MIN_MS
 } from "@/lib/shadowArbitrage/config";
 import { startPublicPaperWebSockets } from "@/lib/shadowArbitrage/streaming/publicWsDriver";
-import { subscribePaperMarketDecisions } from "@/lib/shadowArbitrage/streaming/runtime";
+import {
+  subscribePaperMarketDecisions,
+  subscribePaperRestRecoveryRequests
+} from "@/lib/shadowArbitrage/streaming/runtime";
 
 export type CollectorHandle = {
   /** Resolves once the loop has stopped and the lease is released. */
@@ -158,6 +161,7 @@ export async function startShadowCollector(
   let wake: (() => void) | null = null;
   let regularBootstrapComplete = false;
   let eventPending = false;
+  let recoveryPending = false;
   let lastEventDecisionAt = 0;
   let nextRegularCycleAt = 0;
 
@@ -183,6 +187,14 @@ export async function startShadowCollector(
       wake?.();
     }
   });
+  const unsubscribeRecovery = subscribePaperRestRecoveryRequests(
+    (sourceId, reason) => {
+      if (!regularBootstrapComplete || stopping) return;
+      recoveryPending = true;
+      log(`public WS ${sourceId} requested REST recovery`, reason);
+      wake?.();
+    }
+  );
   const streamDriver = startPublicPaperWebSockets({
     onError: (sourceId, error) =>
       log(`public WS ${sourceId} degraded — REST recovery remains active`, error)
@@ -193,13 +205,20 @@ export async function startShadowCollector(
     log("WebSocket runtime unavailable — explicit REST fallback active");
   }
 
-  async function cycle(index: number, eventDriven: boolean): Promise<void> {
+  async function cycle(
+    index: number,
+    eventDriven: boolean,
+    recoveryDriven = false
+  ): Promise<void> {
     const result = await runCollectionCycle({
       workerId,
       pollIntervalMs: pollMs,
       runRetention: !eventDriven && index % retentionEvery === 1,
       ownsHeartbeat: true,
-      force: eventDriven,
+      // REST recovery must bypass the regular interval idempotency bucket;
+      // otherwise a coherence failure just after a regular cycle is a duplicate
+      // and never performs the requested bootstrap.
+      force: eventDriven || recoveryDriven,
       eventDriven
     });
 
@@ -233,17 +252,25 @@ export async function startShadowCollector(
     let index = 0;
     while (!stopping) {
       index += 1;
+      const recoveryDriven =
+        regularBootstrapComplete &&
+        Date.now() < nextRegularCycleAt &&
+        recoveryPending;
       const eventDriven =
         regularBootstrapComplete &&
         Date.now() < nextRegularCycleAt &&
+        !recoveryDriven &&
         eventPending &&
         Date.now() - lastEventDecisionAt >= SHADOW_EVENT_DECISION_MIN_MS;
+      if (recoveryDriven) {
+        recoveryPending = false;
+      }
       if (eventDriven) {
         eventPending = false;
         lastEventDecisionAt = Date.now();
       }
       try {
-        await cycle(index, eventDriven);
+        await cycle(index, eventDriven, recoveryDriven);
       } catch (e) {
         log("cycle exception", e instanceof Error ? (e.stack ?? e.message) : e);
       }
@@ -264,10 +291,12 @@ export async function startShadowCollector(
               (Date.now() - lastEventDecisionAt)
           )
         : Number.POSITIVE_INFINITY;
-      await sleep(Math.min(untilRegular, untilEvent));
+      const untilRecovery = recoveryPending ? 1 : Number.POSITIVE_INFINITY;
+      await sleep(Math.min(untilRegular, untilEvent, untilRecovery));
     }
 
     unsubscribeEvents();
+    unsubscribeRecovery();
     streamDriver.stop();
     await touchHeartbeat({ workerId, status: "stopped", pollIntervalMs: pollMs }).catch(
       () => undefined

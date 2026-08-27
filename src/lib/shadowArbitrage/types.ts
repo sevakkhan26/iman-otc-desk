@@ -129,6 +129,8 @@ export type MarketDataTelemetry = {
   gapCount: number;
   outOfOrderCount: number;
   resyncCount: number;
+  /** Why continuity was broken/restored; REST never silently clears a version watermark. */
+  resyncProvenance: string | null;
   snapshotResyncState: "SYNCHRONIZED" | "AWAITING_SNAPSHOT";
 };
 

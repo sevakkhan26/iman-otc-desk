@@ -29,6 +29,9 @@ export const SHADOW_STALE_MS = 90_000;
  */
 export const SHADOW_EVENT_COHERENCE_MAX_SKEW_MS = 2_500;
 
+/** Maximum Paper decision frequency for public stream events. */
+export const SHADOW_EVENT_DECISION_MIN_MS = 1_000;
+
 /** Retention for opportunity history (spec minimum: 14 days). */
 export const SHADOW_RETENTION_DAYS = 14;
 

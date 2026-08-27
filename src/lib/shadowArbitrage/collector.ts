@@ -117,6 +117,8 @@ async function runCycleLocked(input: {
   ignorePause: boolean;
   /** Only the real collector owns the heartbeat; API refreshes must not. */
   ownsHeartbeat: boolean;
+  /** Stream-triggered cycle: cached REST recovery books only, no new polling. */
+  eventDriven: boolean;
 }): Promise<CycleResult> {
   const { workerId, pollIntervalMs, force } = input;
 
@@ -170,7 +172,7 @@ async function runCycleLocked(input: {
 
   try {
     // Per-source failures are isolated inside collectAllShadowSources.
-    sources = await collectAllShadowSources();
+    sources = await collectAllShadowSources({ eventDriven: input.eventDriven });
   } catch (e) {
     cycleError = e instanceof Error ? e.message : String(e);
     sources = [];
@@ -362,6 +364,8 @@ export async function runCollectionCycle(input?: {
   ignorePause?: boolean;
   /** True only for the background collector loop. */
   ownsHeartbeat?: boolean;
+  /** Triggered by a synchronized public order-book event. */
+  eventDriven?: boolean;
 }): Promise<CycleResult> {
   const workerId = input?.workerId ?? `manual-${process.pid}`;
   const pollIntervalMs = clampPollInterval(input?.pollIntervalMs ?? SHADOW_POLL_INTERVAL_MS);
@@ -387,7 +391,8 @@ export async function runCollectionCycle(input?: {
           pollIntervalMs,
           force: Boolean(input?.force),
           ignorePause: Boolean(input?.ignorePause),
-          ownsHeartbeat: Boolean(input?.ownsHeartbeat)
+          ownsHeartbeat: Boolean(input?.ownsHeartbeat),
+          eventDriven: Boolean(input?.eventDriven)
         })
       );
       if (!locked.acquired) {

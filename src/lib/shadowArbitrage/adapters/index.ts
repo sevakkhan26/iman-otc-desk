@@ -1,4 +1,9 @@
-import { getSourceConfig, SHADOW_SOURCES, type ShadowSourceConfig } from "@/lib/shadowArbitrage/config";
+import {
+  getSourceConfig,
+  SHADOW_SOURCES,
+  SHADOW_STALE_MS,
+  type ShadowSourceConfig
+} from "@/lib/shadowArbitrage/config";
 import type { NormalizedSourceSnapshot, ShadowSourceId } from "@/lib/shadowArbitrage/types";
 import {
   ShadowSourceError,
@@ -35,11 +40,36 @@ const FETCHERS: Record<ShadowSourceId, Fetcher> = {
   bit24: fetchBit24Book,
   arzinja: fetchArzinjaReference
 };
+const lastRegularSnapshot = new Map<ShadowSourceId, NormalizedSourceSnapshot>();
 
 /** Deviation from the cross-source median that trips a unit/outlier flag. */
 const CROSS_CHECK_TOLERANCE = 0.08;
 
-async function runOne(id: ShadowSourceId): Promise<NormalizedSourceSnapshot> {
+function refreshedCachedSnapshot(
+  snapshot: NormalizedSourceSnapshot,
+  nowMs: number
+): NormalizedSourceSnapshot | null {
+  const eventMs = Date.parse(
+    snapshot.marketData?.sourceEventTimestamp ??
+      snapshot.sourceTimestamp ??
+      snapshot.receivedAt
+  );
+  const ageMs = Math.max(0, nowMs - eventMs);
+  if (ageMs > SHADOW_STALE_MS) return null;
+  return {
+    ...snapshot,
+    ageMs,
+    stale: false,
+    marketData: snapshot.marketData
+      ? { ...snapshot.marketData, sourceEventAgeMs: ageMs }
+      : undefined
+  };
+}
+
+async function runOne(
+  id: ShadowSourceId,
+  eventDriven: boolean
+): Promise<NormalizedSourceSnapshot> {
   const cfg = getSourceConfig(id);
   const receivedAt = new Date().toISOString();
   if (!cfg.enabled) {
@@ -47,6 +77,20 @@ async function runOne(id: ShadowSourceId): Promise<NormalizedSourceSnapshot> {
   }
   const streamed = latestPaperStreamSnapshot(id, Date.parse(receivedAt));
   if (streamed) return streamed;
+  if (eventDriven) {
+    const cached = lastRegularSnapshot.get(id);
+    const refreshed = cached
+      ? refreshedCachedSnapshot(cached, Date.parse(receivedAt))
+      : null;
+    return (
+      refreshed ??
+      unavailableSnapshot(
+        cfg,
+        receivedAt,
+        "event-driven cycle has no coherently fresh cached snapshot"
+      )
+    );
+  }
 
   try {
     const result = await FETCHERS[id](cfg);
@@ -133,8 +177,12 @@ export function crossCheckUnits(sources: NormalizedSourceSnapshot[]): Normalized
  * Fetch all configured shadow sources concurrently.
  * Failures are isolated per source: one dead venue cannot abort the cycle.
  */
-export async function collectAllShadowSources(): Promise<NormalizedSourceSnapshot[]> {
-  const settled = await Promise.allSettled(SHADOW_SOURCES.map((s) => runOne(s.id)));
+export async function collectAllShadowSources(input?: {
+  eventDriven?: boolean;
+}): Promise<NormalizedSourceSnapshot[]> {
+  const settled = await Promise.allSettled(
+    SHADOW_SOURCES.map((s) => runOne(s.id, Boolean(input?.eventDriven)))
+  );
   const results = settled.map((outcome, i) => {
     const cfg = SHADOW_SOURCES[i]!;
     if (outcome.status === "fulfilled") return outcome.value;
@@ -145,5 +193,13 @@ export async function collectAllShadowSources(): Promise<NormalizedSourceSnapsho
       reason instanceof Error ? reason.message : String(reason)
     );
   });
-  return crossCheckUnits(results);
+  const checked = crossCheckUnits(results);
+  if (!input?.eventDriven) {
+    for (const snapshot of checked) {
+      if (snapshot.health !== "unavailable") {
+        lastRegularSnapshot.set(snapshot.sourceId, snapshot);
+      }
+    }
+  }
+  return checked;
 }

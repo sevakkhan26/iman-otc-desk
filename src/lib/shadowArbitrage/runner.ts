@@ -13,7 +13,12 @@
  */
 import { runCollectionCycle } from "@/lib/shadowArbitrage/collector";
 import { claimWorkerLease, releaseWorkerLease, touchHeartbeat } from "@/db/repositories/shadowArbitrage";
-import { clampPollInterval } from "@/lib/shadowArbitrage/config";
+import {
+  clampPollInterval,
+  SHADOW_EVENT_DECISION_MIN_MS
+} from "@/lib/shadowArbitrage/config";
+import { startPublicPaperWebSockets } from "@/lib/shadowArbitrage/streaming/publicWsDriver";
+import { subscribePaperMarketDecisions } from "@/lib/shadowArbitrage/streaming/runtime";
 
 export type CollectorHandle = {
   /** Resolves once the loop has stopped and the lease is released. */
@@ -151,6 +156,10 @@ export async function startShadowCollector(
     }
   }
   let wake: (() => void) | null = null;
+  let regularBootstrapComplete = false;
+  let eventPending = false;
+  let lastEventDecisionAt = 0;
+  let nextRegularCycleAt = 0;
 
   const sleep = (ms: number) =>
     new Promise<void>((resolve) => {
@@ -167,12 +176,31 @@ export async function startShadowCollector(
       };
     });
 
-  async function cycle(index: number): Promise<void> {
+  const unsubscribeEvents = subscribePaperMarketDecisions(() => {
+    if (!regularBootstrapComplete || stopping) return;
+    eventPending = true;
+    if (Date.now() - lastEventDecisionAt >= SHADOW_EVENT_DECISION_MIN_MS) {
+      wake?.();
+    }
+  });
+  const streamDriver = startPublicPaperWebSockets({
+    onError: (sourceId, error) =>
+      log(`public WS ${sourceId} degraded — REST recovery remains active`, error)
+  });
+  if (streamDriver.started) {
+    log("public order-book WebSockets started for Paper market data");
+  } else {
+    log("WebSocket runtime unavailable — explicit REST fallback active");
+  }
+
+  async function cycle(index: number, eventDriven: boolean): Promise<void> {
     const result = await runCollectionCycle({
       workerId,
       pollIntervalMs: pollMs,
-      runRetention: index % retentionEvery === 1,
-      ownsHeartbeat: true
+      runRetention: !eventDriven && index % retentionEvery === 1,
+      ownsHeartbeat: true,
+      force: eventDriven,
+      eventDriven
     });
 
     if (!result.acquired) {
@@ -205,20 +233,42 @@ export async function startShadowCollector(
     let index = 0;
     while (!stopping) {
       index += 1;
-      const t0 = Date.now();
+      const eventDriven =
+        regularBootstrapComplete &&
+        Date.now() < nextRegularCycleAt &&
+        eventPending &&
+        Date.now() - lastEventDecisionAt >= SHADOW_EVENT_DECISION_MIN_MS;
+      if (eventDriven) {
+        eventPending = false;
+        lastEventDecisionAt = Date.now();
+      }
       try {
-        await cycle(index);
+        await cycle(index, eventDriven);
       } catch (e) {
         log("cycle exception", e instanceof Error ? (e.stack ?? e.message) : e);
+      }
+      if (!eventDriven) {
+        regularBootstrapComplete = true;
+        nextRegularCycleAt = Date.now() + pollMs;
       }
       if (maxCycles && index >= maxCycles) {
         log(`reached max cycles (${maxCycles})`);
         break;
       }
       if (stopping) break;
-      await sleep(Math.max(1_000, pollMs - (Date.now() - t0)));
+      const untilRegular = Math.max(1, nextRegularCycleAt - Date.now());
+      const untilEvent = eventPending
+        ? Math.max(
+            1,
+            SHADOW_EVENT_DECISION_MIN_MS -
+              (Date.now() - lastEventDecisionAt)
+          )
+        : Number.POSITIVE_INFINITY;
+      await sleep(Math.min(untilRegular, untilEvent));
     }
 
+    unsubscribeEvents();
+    streamDriver.stop();
     await touchHeartbeat({ workerId, status: "stopped", pollIntervalMs: pollMs }).catch(
       () => undefined
     );

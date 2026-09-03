@@ -671,6 +671,19 @@ export type PaperSkipRecord = {
   reasonCodes: string[];
   rejectionReason: string;
   requiredRebalance: string | null;
+  /**
+   * PAPER-V2 Phase 1B — reject diagnostics persisted into sizing_audit JSONB
+   * so false-negative forensics do not rely on estimates.
+   */
+  diagnostics?: Record<string, unknown> | null;
+  /** Optional VWAP/econ snapshot when already computable at reject time. */
+  buyVwapToman?: number | null;
+  sellVwapToman?: number | null;
+  buyFeeBps?: number | null;
+  sellFeeBps?: number | null;
+  grossSpreadToman?: number | null;
+  economicNetPnlToman?: number | null;
+  riskAdjustedPnlToman?: number | null;
 };
 
 export type PaperCandidateStateRow = {
@@ -936,6 +949,14 @@ export async function commitPaperCycle(input: {
           buySourceId: k.buySourceId,
           sellSourceId: k.sellSourceId,
           sizeUsdt: String(k.sizeUsdt),
+          buyVwapToman: k.buyVwapToman ?? null,
+          sellVwapToman: k.sellVwapToman ?? null,
+          buyFeeBps: k.buyFeeBps ?? null,
+          sellFeeBps: k.sellFeeBps ?? null,
+          grossSpreadToman: k.grossSpreadToman ?? null,
+          economicNetPnlToman: k.economicNetPnlToman ?? null,
+          riskAdjustedPnlToman: k.riskAdjustedPnlToman ?? null,
+          sizingAudit: k.diagnostics ?? null,
           balancesAfter: [],
           occurredAt: input.occurredAt,
           createdAt: input.occurredAt

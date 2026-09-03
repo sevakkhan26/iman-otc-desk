@@ -75,7 +75,15 @@ import {
   estimateFromLifecycle,
   type OpportunitySurvivalTracker
 } from "@/lib/shadowArbitrage/paper/opportunitySurvival";
-import { assessCrossVenueCoherence } from "@/lib/shadowArbitrage/streaming/eventFabric";
+import {
+  assessCrossVenueCoherence,
+  type CoherenceResult
+} from "@/lib/shadowArbitrage/streaming/eventFabric";
+import type { VenueEffectiveFee } from "@/lib/shadowArbitrage/effectiveFees";
+import {
+  buildRejectDiagnostics,
+  type RejectDiagnostics
+} from "@/lib/shadowArbitrage/paper/rejectDiagnostics";
 import type {
   BlockedReasonCode,
   NormalizedSourceSnapshot,
@@ -155,6 +163,8 @@ export type PaperDecision =
         irtTomanShort: number;
         usdtMicrosShort: number;
       } | null;
+      /** PAPER-V2 Phase 1B — bounded reject diagnostics for ledger telemetry. */
+      diagnostics?: RejectDiagnostics | null;
     };
 
 export type CycleEvaluation = {
@@ -323,6 +333,8 @@ export type EvaluateInput = {
   /** Process/session persistence evidence populated before this evaluation. */
   survivalTracker?: OpportunitySurvivalTracker;
   maxCrossVenueSkewMs?: number;
+  /** PAPER-V2 Phase 1B — fee evidence by venue for fee_unknown diagnostics. */
+  feeEvidenceByVenue?: Record<string, VenueEffectiveFee>;
 };
 
 /**
@@ -422,7 +434,11 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
   };
 
   /** Records a skip with every exact cause, never a generic substitute. */
-  const skip = (candidate: PaperCandidate, causes: PaperReasonCode[]): void => {
+  const skip = (
+    candidate: PaperCandidate,
+    causes: PaperReasonCode[],
+    diagnostics?: RejectDiagnostics | null
+  ): void => {
     const codes = normalizeReasons(causes);
     const code = primaryReason(codes);
     decisions.push({
@@ -431,9 +447,39 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       code,
       codes,
       reasonFa: codes.map(reasonLabel).join(" · "),
-      requiredRebalance: null
+      requiredRebalance: null,
+      diagnostics: diagnostics ?? null
     });
   };
+
+  const feeByVenue = input.feeEvidenceByVenue ?? {};
+
+  const diagFor = (
+    candidate: PaperCandidate,
+    causes: PaperReasonCode[],
+    extra?: {
+      sizing?: SizingResult | null;
+      coherence?: CoherenceResult | null;
+    }
+  ): RejectDiagnostics =>
+    buildRejectDiagnostics({
+      rejectionCodes: normalizeReasons(causes),
+      routeKey: candidate.routeKey,
+      buySourceId: candidate.buySourceId,
+      sellSourceId: candidate.sellSourceId,
+      candidateSizeUsdt: candidate.sizeUsdt,
+      buyVwapToman: candidate.buyVwapToman,
+      sellVwapToman: candidate.sellVwapToman,
+      netProfitToman: candidate.netProfitToman,
+      buyFeeBps: candidate.buyFeeBps,
+      sellFeeBps: candidate.sellFeeBps,
+      sizing: extra?.sizing ?? null,
+      coherence: extra?.coherence ?? null,
+      buySnap: sourceById.get(candidate.buySourceId),
+      sellSnap: sourceById.get(candidate.sellSourceId),
+      buyFee: feeByVenue[candidate.buySourceId] ?? null,
+      sellFee: feeByVenue[candidate.sellSourceId] ?? null
+    });
 
   // 1. Shape every active opportunity into a candidate.
   const raw: PaperCandidate[] = input.opportunities
@@ -509,11 +555,20 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
         else if (st.feeStale) causes.push("fee_stale");
         else causes.push("account_not_ready");
       }
-      skip(c, causes.length ? causes : ["venue_not_executable"]);
+      {
+        const codes = (causes.length ? causes : ["venue_not_executable"]) as PaperReasonCode[];
+        skip(
+          c,
+          codes,
+          codes.includes("fee_unknown") || codes.includes("fee_stale")
+            ? diagFor(c, codes)
+            : null
+        );
+      }
       continue;
     }
     if (o.feeUnknown || c.buyFeeBps === null || c.sellFeeBps === null) {
-      skip(c, ["fee_unknown"]);
+      skip(c, ["fee_unknown"], diagFor(c, ["fee_unknown"]));
       continue;
     }
     if (buyState.feeStale || sellState.feeStale) {
@@ -542,13 +597,16 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       });
       if (!coherence.coherent) {
         blockedRouteCount += 1;
-        skip(c, [
-          coherence.reason === "awaiting_resync"
-            ? "market_data_resync"
-            : coherence.reason === "cross_venue_time_skew"
-              ? "market_data_time_incoherent"
-              : "stale_market_data"
-        ]);
+        {
+          const cohCodes: PaperReasonCode[] = [
+            coherence.reason === "awaiting_resync"
+              ? "market_data_resync"
+              : coherence.reason === "cross_venue_time_skew"
+                ? "market_data_time_incoherent"
+                : "stale_market_data"
+          ];
+          skip(c, cohCodes, diagFor(c, cohCodes, { coherence }));
+        }
         continue;
       }
       coherentRouteCount += 1;
@@ -719,7 +777,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
   // Fail closed when the caller required portfolio limits but capital is missing.
   if (input.portfolioLimits?.enabled === true && !limits) {
     for (const { c } of rankedRoutes) {
-      skip(c, ["sizing_blocked"]);
+      skip(c, ["sizing_blocked"], diagFor(c, ["sizing_blocked"]));
     }
     return {
       decisions,
@@ -1133,13 +1191,19 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
           ? "sizing_blocked"
           : rejection?.code ?? "portfolio_not_selected"
       ) as PaperReasonCode;
-      skip(
-        {
+      {
+        const cand = {
           ...row.c,
           scoring: scoringByLifecycleId.get(row.c.lifecycleId)
-        },
-        [code]
-      );
+        };
+        skip(
+          cand,
+          [code],
+          code === "sizing_blocked" || code === "fee_unknown"
+            ? diagFor(cand, [code], { sizing: row.sizing })
+            : null
+        );
+      }
     }
     const selectedOrder = new Map(
       selectedOptions.map((selection, index) => [selection.lifecycleId, index])
@@ -1229,7 +1293,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
     sizingByRoute.set(venuePairKey, sizing);
 
     if (sizing.status !== "SIZED" || sizing.sizeUsdtMicros === null || !sizing.quote || !sizing.economics) {
-      skip(c, ["sizing_blocked"]);
+      skip(c, ["sizing_blocked"], diagFor(c, ["sizing_blocked"], { sizing }));
       continue;
     }
 
@@ -1269,7 +1333,11 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
         code,
         codes: [code],
         reasonFa: reasonLabel(code),
-        requiredRebalance: plan.requiredRebalance
+        requiredRebalance: plan.requiredRebalance,
+        diagnostics:
+          code === "fee_unknown" || code === "sizing_blocked"
+            ? diagFor(sizedCandidate, [code], { sizing })
+            : null
       });
       continue;
     }

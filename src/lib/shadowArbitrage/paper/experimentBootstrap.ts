@@ -191,6 +191,39 @@ export async function runPaperExperimentBootstrap(
       return { ran: false, reason: "no-valuation-price" };
     }
 
+    // PAPER-V2 Phase 1A — refuse economically valid N-day start when fees expire early.
+    try {
+      const { loadEffectiveFees } = await import("@/lib/shadowArbitrage/effectiveFees");
+      const { validateFeeHorizonForRun } = await import(
+        "@/lib/shadowArbitrage/paper/feeHorizon"
+      );
+      const nowMs = Date.now();
+      const plannedEndMs = nowMs + PAPER_4D_DURATION_MS;
+      const fees = await loadEffectiveFees(nowMs);
+      const horizon = validateFeeHorizonForRun({
+        venues: fees.venues,
+        plannedEndMs,
+        nowMs
+      });
+      if (!horizon.ok) {
+        log("paper 4d experiment blocked by fee horizon", { blockers: horizon.blockers });
+        return {
+          ran: false,
+          reason: "error",
+          error: `fee_horizon_invalid: ${horizon.blockers
+            .map((b) => `${b.sourceId}:${b.reason}:${b.expiresAt}`)
+            .join(",")}`
+        };
+      }
+    } catch (e) {
+      log("paper 4d fee horizon check failed", e);
+      return {
+        ran: false,
+        reason: "error",
+        error: e instanceof Error ? e.message : String(e)
+      };
+    }
+
     const capital = RELEASE_CAPITAL_TOMAN;
     const allocationEvidence = buildOpeningAllocationEvidence(
       snaps.map((s) => {

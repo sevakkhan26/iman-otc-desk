@@ -278,3 +278,49 @@ export function formatTehranWithSeconds(isoUtc: string): string {
     hour12: false
   }).format(d);
 }
+
+
+/**
+ * PAPER-V2 Phase 1A — mark/report economics validity without completing the run.
+ * Merges into config.economicsValidity; never extends endsAt; never silently
+ * clears a prior DEGRADED_FROM_TIMESTAMP.
+ */
+export async function patchExperimentEconomicsValidity(
+  id: string,
+  audit: Record<string, unknown>
+): Promise<void> {
+  try {
+    const db = await getDbAsync();
+    const now = new Date().toISOString();
+    await serial(async () => {
+      const rows = await db
+        .select()
+        .from(shadowPaperExperiments)
+        .where(eq(shadowPaperExperiments.id, id))
+        .limit(1);
+      const cur = rows[0];
+      if (!cur || cur.status !== "ACTIVE") return;
+      const prev = (cur.config ?? {}) as Record<string, unknown>;
+      const prior = (prev.economicsValidity ?? null) as Record<string, unknown> | null;
+      const priorDegraded =
+        prior && typeof prior.degradedFromTimestamp === "string"
+          ? (prior.degradedFromTimestamp as string)
+          : null;
+      const nextAudit = { ...audit };
+      if (priorDegraded && !nextAudit.degradedFromTimestamp) {
+        nextAudit.degradedFromTimestamp = priorDegraded;
+        nextAudit.state = "ECONOMICS_INVALID";
+        nextAudit.reportState = "DEGRADED_FROM_TIMESTAMP";
+      }
+      await db
+        .update(shadowPaperExperiments)
+        .set({
+          config: { ...prev, economicsValidity: nextAudit },
+          updatedAt: now
+        })
+        .where(eq(shadowPaperExperiments.id, id));
+    });
+  } catch (error) {
+    throw asDbError(error, "patchExperimentEconomicsValidity");
+  }
+}

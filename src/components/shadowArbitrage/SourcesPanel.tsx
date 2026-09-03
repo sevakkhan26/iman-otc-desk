@@ -203,24 +203,30 @@ export function SourcesPanel({
       {partial ? (
         <div className="sa-callout sa-callout-warn" role="status">
           وضعیت حساب و کارمزد در این بارگذاری دریافت نشد؛ مقادیر مربوط به آن «—» نمایش داده می‌شوند.
-          سلامت منابع همچنان معتبر است.
+          سلامت دادهٔ بازار همچنان معتبر است و با آمادگی اجرا یکی نیست.
+        </div>
+      ) : null}
+      {summary.executionBlockedFee > 0 ? (
+        <div className="sa-callout sa-callout-warn" role="status">
+          کارمزد نامشخص/منقضی اجرای {toFaDigits(summary.executionBlockedFee)} منبع را مسدود کرده است؛
+          در صورت سالم بودن جمع‌آوری، قیمت و دفتر سفارش همچنان نمایش داده می‌شود.
         </div>
       ) : null}
 
       <div className="sa-kpi-grid">
         <Kpi
-          label="منابع سالم"
-          value={<Bidi>{`${toFaDigits(summary.healthy)} / ${toFaDigits(summary.total)}`}</Bidi>}
-          hint="در آخرین چرخه پاسخ سالم دادند"
-          tone={summary.healthy >= 7 ? "good" : summary.healthy >= 4 ? "warn" : "danger"}
+          label="سلامت دادهٔ بازار"
+          value={<Bidi>{`${toFaDigits(summary.marketDataHealthy)} / ${toFaDigits(summary.total)}`}</Bidi>}
+          hint="قیمت/دفتر سفارش دریافت می‌شود — جدا از آمادگی اجرا"
+          tone={summary.marketDataHealthy >= 7 ? "good" : summary.marketDataHealthy >= 4 ? "warn" : "danger"}
         />
         <Kpi
-          label="احراز هویت تأییدشده"
+          label="آمادگی اجرا"
           value={
-            <Bidi>{`${toFaDigits(summary.kycConfirmed)} / ${toFaDigits(summary.total)}`}</Bidi>
+            <Bidi>{`${toFaDigits(summary.executionReady)} / ${toFaDigits(summary.total)}`}</Bidi>
           }
-          hint={`حساب قابل استفاده: ${toFaDigits(summary.accountsReady)} — احراز هویت به‌تنهایی مجوز اجرا نیست`}
-          tone={summary.kycConfirmed === summary.total ? "good" : "warn"}
+          hint={`مسدود به‌خاطر کارمزد: ${toFaDigits(summary.executionBlockedFee)} — دادهٔ بازار ممکن است سالم بماند`}
+          tone={summary.executionReady === summary.total ? "good" : "warn"}
         />
         <Kpi
           label="کارمزد اعمال‌شده"
@@ -231,11 +237,11 @@ export function SourcesPanel({
           tone={summary.feeEvidenceMatched === summary.total ? "good" : "warn"}
         />
         <Kpi
-          label="منابع دارای اختلال"
+          label="منابع دارای اختلال داده"
           value={
             <Bidi>{`${toFaDigits(summary.degraded + summary.unavailable)} / ${toFaDigits(summary.total)}`}</Bidi>
           }
-          hint={`فقط مرجع: ${toFaDigits(summary.referenceOnly)} منبع`}
+          hint={`فقط مرجع: ${toFaDigits(summary.referenceOnly)} · احراز: ${toFaDigits(summary.kycConfirmed)}`}
           tone={summary.degraded + summary.unavailable ? "warn" : "muted"}
         />
       </div>

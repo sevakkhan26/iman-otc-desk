@@ -22,6 +22,12 @@ import type {
   NormalizedSourceSnapshot,
   SourceHealthRow
 } from "@/components/shadowArbitrage/types";
+import {
+  buildVenueHealthSplit,
+  type ExecutionReadinessState,
+  type MarketDataHealthState,
+  type VenueHealthSplit
+} from "@/lib/shadowArbitrage/paper/dataHealth";
 
 /** One venue as the accounts endpoint returns it. */
 export type VenueReadiness = {
@@ -204,6 +210,13 @@ export type VenueRow = {
 
   /** The applied-fee resolution, or null when the endpoint did not describe it. */
   feeEvidence: VenueFeeEvidence | null;
+
+  /** PAPER-V2 Phase 1D — market data health vs execution readiness (never conflated). */
+  marketDataHealth: MarketDataHealthState;
+  executionReadiness: ExecutionReadinessState;
+  marketDataVisible: boolean;
+  executionAllowed: boolean;
+  healthSplit: VenueHealthSplit;
 };
 
 const DAY_MS = 86_400_000;
@@ -319,7 +332,29 @@ export function buildVenueRows(input: BuildVenueRowsInput): VenueRow[] {
       blockingReason: v?.blockingReason ?? null,
       buySettlement: settlementFor(sourceId, "buy"),
       sellSettlement: settlementFor(sourceId, "sell"),
-      feeEvidence: feeEvidenceById.get(sourceId) ?? null
+      feeEvidence: feeEvidenceById.get(sourceId) ?? null,
+      ...(() => {
+        const fe = feeEvidenceById.get(sourceId) ?? null;
+        const split = buildVenueHealthSplit({
+          sourceId,
+          health: snap?.health ?? null,
+          referenceOnly,
+          feeOk: fe?.ok ?? (v?.takerFeeBps != null ? true : v ? false : null),
+          feeMiss: fe?.miss ?? null,
+          feeStale: v?.feeStale ?? null,
+          takerFeeBps: fe?.takerFeeBps ?? v?.takerFeeBps ?? null,
+          accountState: v?.accountState ?? null,
+          executionEligible: v?.executionEligible ?? null,
+          blockingReason: fe?.blockerFa ?? v?.blockingReason ?? null
+        });
+        return {
+          marketDataHealth: split.marketDataHealth,
+          executionReadiness: split.executionReadiness,
+          marketDataVisible: split.marketDataVisible,
+          executionAllowed: split.executionAllowed,
+          healthSplit: split
+        };
+      })()
     };
   });
 }
@@ -340,6 +375,10 @@ export type VenueSummary = {
   feeEvidenceMatched: number;
   /** Venues that failed closed, counted by the exact miss. */
   feeEvidenceBlocked: number;
+  /** Phase 1D — explicit split counters (do not reuse `healthy` for execution). */
+  marketDataHealthy: number;
+  executionReady: number;
+  executionBlockedFee: number;
 };
 
 /**
@@ -362,7 +401,10 @@ export function summarizeVenues(rows: VenueRow[]): VenueSummary {
     feesStale: 0,
     feesUnknown: 0,
     feeEvidenceMatched: 0,
-    feeEvidenceBlocked: 0
+    feeEvidenceBlocked: 0,
+    marketDataHealthy: 0,
+    executionReady: 0,
+    executionBlockedFee: 0
   };
   for (const r of rows) {
     if (r.health === "healthy") summary.healthy += 1;
@@ -386,6 +428,15 @@ export function summarizeVenues(rows: VenueRow[]): VenueSummary {
       summary.feesStale += 1;
     } else {
       summary.feesCurrent += 1;
+    }
+
+    if (r.marketDataHealth === "healthy") summary.marketDataHealthy += 1;
+    if (r.executionAllowed) summary.executionReady += 1;
+    if (
+      r.executionReadiness === "blocked_fee_unknown" ||
+      r.executionReadiness === "blocked_fee_stale"
+    ) {
+      summary.executionBlockedFee += 1;
     }
   }
   return summary;

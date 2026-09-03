@@ -315,6 +315,54 @@ export async function runPaperExecutionForCycle(input: {
     })),
     Number.isFinite(observedAtMs) ? observedAtMs : Date.now()
   );
+  /*
+   * PAPER-V2 Phase 1A — runtime fee-horizon monitor. Does not invent fees or
+   * extend validity; marks ECONOMICS_INVALID / DEGRADED_FROM_TIMESTAMP when
+   * required evidence expires mid-run.
+   */
+  try {
+    const {
+      assessRuntimeFeeHorizon,
+      toEconomicsValidityAudit
+    } = await import("@/lib/shadowArbitrage/paper/feeHorizon");
+    const requiredIds = session.openingAllocations.map((a) => a.sourceId);
+    const prior =
+      (activeExperimentId
+        ? ((
+            await import("@/db/repositories/shadowExperiments").then((m) =>
+              m.getActiveExperiment()
+            )
+          )?.config as Record<string, unknown> | undefined)?.economicsValidity
+        : null) ?? null;
+    const priorDegraded =
+      prior && typeof (prior as { degradedFromTimestamp?: unknown }).degradedFromTimestamp === "string"
+        ? ((prior as { degradedFromTimestamp: string }).degradedFromTimestamp)
+        : null;
+    const runtime = assessRuntimeFeeHorizon({
+      venues: effectiveFees.venues,
+      nowMs: Date.now(),
+      requiredSourceIds: requiredIds,
+      priorDegradedFromTimestamp: priorDegraded
+    });
+    if (runtime.warnings.length) {
+      console.warn("[shadow-paper] fee expiry warnings", {
+        sessionId: session.id,
+        warnings: runtime.warnings
+      });
+    }
+    if (activeExperimentId) {
+      const { patchExperimentEconomicsValidity } = await import(
+        "@/db/repositories/shadowExperiments"
+      );
+      await patchExperimentEconomicsValidity(
+        activeExperimentId,
+        toEconomicsValidityAudit(runtime, Date.now()) as unknown as Record<string, unknown>
+      );
+    }
+  } catch (e) {
+    console.warn("[shadow-paper] fee horizon monitor failed", e);
+  }
+
   const evaluation = evaluateCycle({
     opportunities: input.opportunities,
     sources: input.sources,
@@ -342,7 +390,8 @@ export async function runPaperExecutionForCycle(input: {
     // The decision clock starts after cycle collection/DB reads and completes
     // inside evaluateCycle; source receive timestamps remain the ingest origin.
     decisionTimestampMs: Date.now(),
-    survivalTracker
+    survivalTracker,
+    feeEvidenceByVenue: effectiveFees.byVenue
   });
 
   const fills: PaperFillRecord[] = [];
@@ -427,7 +476,18 @@ export async function runPaperExecutionForCycle(input: {
       rejectionCode: d.code,
       reasonCodes: d.codes,
       rejectionReason: d.reasonFa,
-      requiredRebalance: describeRebalance(d.requiredRebalance)
+      requiredRebalance: describeRebalance(d.requiredRebalance),
+      diagnostics: (d.diagnostics as unknown as Record<string, unknown> | null) ?? null,
+      buyVwapToman: d.candidate.buyVwapToman ?? null,
+      sellVwapToman: d.candidate.sellVwapToman ?? null,
+      buyFeeBps: d.candidate.buyFeeBps ?? null,
+      sellFeeBps: d.candidate.sellFeeBps ?? null,
+      grossSpreadToman:
+        Number.isFinite(d.candidate.sellVwapToman) && Number.isFinite(d.candidate.buyVwapToman)
+          ? Math.round(d.candidate.sellVwapToman - d.candidate.buyVwapToman)
+          : null,
+      economicNetPnlToman: d.diagnostics?.economics?.economicNetPnlToman ?? null,
+      riskAdjustedPnlToman: d.diagnostics?.economics?.riskAdjustedPnlToman ?? null
     });
   }
 

@@ -1498,6 +1498,61 @@ export async function POST(request: Request) {
     return bad("فقط نشست در حال اجرا را می‌توان متوقف کرد.", "conflict", 409);
   }
 
+  /*
+   * PAPER-V2 Phase 1A — refuse to start an economically valid N-day Paper run
+   * when required executable fee evidence expires before planned_end.
+   * Fail-closed: no silent extension, no compiled-default fallback.
+   */
+  if (action === "start") {
+    const setup = parseSessionSetupNote(target.note);
+    let plannedEndMs: number | null = setup?.endsAt ? Date.parse(setup.endsAt) : NaN;
+    if (!Number.isFinite(plannedEndMs)) {
+      try {
+        const { getActiveExperiment } = await import("@/db/repositories/shadowExperiments");
+        const exp = await getActiveExperiment();
+        if (exp?.sessionId === target.id && exp.endsAt) {
+          plannedEndMs = Date.parse(exp.endsAt);
+        }
+      } catch {
+        /* optional */
+      }
+    }
+    if (Number.isFinite(plannedEndMs)) {
+      const { loadEffectiveFees } = await import("@/lib/shadowArbitrage/effectiveFees");
+      const { validateFeeHorizonForRun } = await import(
+        "@/lib/shadowArbitrage/paper/feeHorizon"
+      );
+      const fees = await loadEffectiveFees(Date.now());
+      const requiredIds = target.openingAllocations.map((a) => a.sourceId);
+      const horizon = validateFeeHorizonForRun({
+        venues: fees.venues,
+        plannedEndMs: plannedEndMs as number,
+        nowMs: Date.now(),
+        requiredSourceIds: requiredIds
+      });
+      if (!horizon.ok) {
+        return new NextResponse(
+          JSON.stringify({
+            error: "fee_horizon_invalid",
+            message:
+              "شواهد کارمزد لازم تا پایان برنامه‌ریزی‌شده نشست دوام ندارد؛ نشست به‌عنوان اجرای اقتصادی معتبر شروع نمی‌شود.",
+            plannedEnd: horizon.plannedEndIso,
+            blockers: horizon.blockers.map((b) => ({
+              venue: b.sourceId,
+              mode: b.executionMode,
+              tier: b.tierLabel,
+              expiresAt: b.expiresAt,
+              reason: b.reason,
+              miss: b.miss,
+              detailFa: b.detailFa
+            }))
+          }),
+          { status: 409, headers: SHADOW_NO_STORE }
+        );
+      }
+    }
+  }
+
   await setPaperSessionStatus(target.id, next);
   return new NextResponse(
     JSON.stringify(envelope({ ...(await snapshot()), history: await listPaperSessions(20) })),

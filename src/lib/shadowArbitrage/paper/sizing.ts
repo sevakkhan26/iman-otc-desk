@@ -1969,7 +1969,7 @@ export function computeRouteSize(input: SizingInput): SizingResult {
             : code === "excessive_slippage"
               ? "slippage_over_limit"
               : code === "insufficient_balance"
-                ? "depth_exhausted"
+                ? "depth_exhausted" /* walked-VWAP balance miss; engine reads candidate rejection */
                 : "depth_exhausted";
     const blockersOut: SizingBlocker[] = [
       ...policyBlockers,

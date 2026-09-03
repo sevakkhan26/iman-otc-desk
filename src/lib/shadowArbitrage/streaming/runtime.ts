@@ -179,20 +179,26 @@ export function latestPaperStreamSnapshot(
   if (!STREAM_POLICIES.some((policy) => policy.sourceId === sourceId)) return null;
   const snapshot = fabric.snapshot(sourceId, endpoints.get(sourceId));
   if (!snapshot) return null;
-  const eventMs = Date.parse(
-    snapshot.marketData?.sourceEventTimestamp ??
-      snapshot.sourceTimestamp ??
-      snapshot.receivedAt
+  // Freshness vs local receive clock only. A venue server clock offset must not
+  // drop a book that we received moments ago (TASK-008 coherence FNs).
+  const receiveMs = Date.parse(
+    snapshot.marketData?.receiveTimestamp ?? snapshot.receivedAt
   );
-  if (!Number.isFinite(nowMs) || !Number.isFinite(eventMs)) return null;
-  const ageMs = Math.max(0, nowMs - eventMs);
+  if (!Number.isFinite(nowMs) || !Number.isFinite(receiveMs)) return null;
+  const ageMs = Math.max(0, nowMs - receiveMs);
   if (ageMs > SHADOW_STALE_MS) return null;
+  const sourceEventMs = Date.parse(
+    snapshot.marketData?.sourceEventTimestamp ?? snapshot.sourceTimestamp ?? ""
+  );
+  const sourceEventAgeMs = Number.isFinite(sourceEventMs)
+    ? Math.max(0, nowMs - sourceEventMs)
+    : ageMs;
   return {
     ...snapshot,
     ageMs,
     stale: false,
     marketData: snapshot.marketData
-      ? { ...snapshot.marketData, sourceEventAgeMs: ageMs }
+      ? { ...snapshot.marketData, sourceEventAgeMs }
       : undefined
   };
 }

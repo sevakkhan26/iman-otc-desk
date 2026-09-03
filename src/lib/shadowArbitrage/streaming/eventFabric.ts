@@ -416,13 +416,42 @@ export type CoherenceResult = {
     | "awaiting_resync"
     | "invalid_timestamp"
     | "cross_venue_time_skew";
+  /**
+   * Comparable-clock skew used by the hard gate: |buyReceive − sellReceive|.
+   * Receive timestamps share the local collector clock; venue server clocks do not.
+   */
   sourceSkewMs: number | null;
+  /**
+   * Raw |buySourceEvent − sellSourceEvent| for diagnostics only. Never the gate —
+   * exchanges' clocks are not synchronized with each other or with the desk.
+   */
+  venueClockSkewMs: number | null;
   eventToDecisionLatencyMs: number | null;
   sourceEventLatencyMs: number | null;
   receiveAgeMs: number | null;
 };
 
-/** Both legs must be fresh, synchronized and inside one deterministic time window. */
+function emptyCoherence(
+  reason: CoherenceResult["reason"]
+): CoherenceResult {
+  return {
+    coherent: false,
+    reason,
+    sourceSkewMs: null,
+    venueClockSkewMs: null,
+    eventToDecisionLatencyMs: null,
+    sourceEventLatencyMs: null,
+    receiveAgeMs: null
+  };
+}
+
+/**
+ * Both legs must be fresh on the local receive clock and observed inside one
+ * deterministic receive-time window. Venue `sourceEventTimestamp` values are
+ * NEVER compared across exchanges — unsynchronized server clocks produced
+ * TASK-008 false negatives (e.g. tabdeal→ramzinex lifecycle 527f37cb…).
+ * The 2500ms max skew budget itself is unchanged; only the compared clocks are.
+ */
 export function assessCrossVenueCoherence(input: {
   buy: NormalizedSourceSnapshot | undefined;
   sell: NormalizedSourceSnapshot | undefined;
@@ -432,97 +461,84 @@ export function assessCrossVenueCoherence(input: {
 }): CoherenceResult {
   const { buy, sell } = input;
   if (!buy || !sell) {
-    return {
-      coherent: false,
-      reason: "missing_snapshot",
-      sourceSkewMs: null,
-      eventToDecisionLatencyMs: null,
-      sourceEventLatencyMs: null,
-      receiveAgeMs: null
-    };
+    return emptyCoherence("missing_snapshot");
   }
   if (
     buy.marketData?.snapshotResyncState === "AWAITING_SNAPSHOT" ||
     sell.marketData?.snapshotResyncState === "AWAITING_SNAPSHOT"
   ) {
-    return {
-      coherent: false,
-      reason: "awaiting_resync",
-      sourceSkewMs: null,
-      eventToDecisionLatencyMs: null,
-      sourceEventLatencyMs: null,
-      receiveAgeMs: null
-    };
+    return emptyCoherence("awaiting_resync");
   }
+  // Venue-local event times (diagnostic / per-leg latency only).
   const buyEventMs = Date.parse(
-    buy.marketData?.sourceEventTimestamp ?? buy.sourceTimestamp ?? buy.receivedAt
+    buy.marketData?.sourceEventTimestamp ?? buy.sourceTimestamp ?? ""
   );
   const sellEventMs = Date.parse(
-    sell.marketData?.sourceEventTimestamp ?? sell.sourceTimestamp ?? sell.receivedAt
+    sell.marketData?.sourceEventTimestamp ?? sell.sourceTimestamp ?? ""
   );
+  // Comparable local clock for cross-venue gates.
   const buyReceiveMs = Date.parse(buy.marketData?.receiveTimestamp ?? buy.receivedAt);
   const sellReceiveMs = Date.parse(sell.marketData?.receiveTimestamp ?? sell.receivedAt);
   if (
     !Number.isFinite(input.decisionTimestampMs) ||
     !Number.isFinite(input.maxAgeMs) ||
     !Number.isFinite(input.maxSourceSkewMs) ||
-    !Number.isFinite(buyEventMs) ||
-    !Number.isFinite(sellEventMs) ||
     !Number.isFinite(buyReceiveMs) ||
     !Number.isFinite(sellReceiveMs)
   ) {
-    return {
-      coherent: false,
-      reason: "invalid_timestamp",
-      sourceSkewMs: null,
-      eventToDecisionLatencyMs: null,
-      sourceEventLatencyMs: null,
-      receiveAgeMs: null
-    };
+    return emptyCoherence("invalid_timestamp");
   }
+  const venueClockSkewMs =
+    Number.isFinite(buyEventMs) && Number.isFinite(sellEventMs)
+      ? Math.abs(buyEventMs - sellEventMs)
+      : null;
+  const receiveSkewMs = Math.abs(buyReceiveMs - sellReceiveMs);
+  const buyReceiveAgeMs = Math.max(0, input.decisionTimestampMs - buyReceiveMs);
+  const sellReceiveAgeMs = Math.max(0, input.decisionTimestampMs - sellReceiveMs);
   if (
     buy.stale ||
     sell.stale ||
-    input.decisionTimestampMs - buyEventMs > input.maxAgeMs ||
-    input.decisionTimestampMs - sellEventMs > input.maxAgeMs
+    buyReceiveAgeMs > input.maxAgeMs ||
+    sellReceiveAgeMs > input.maxAgeMs
   ) {
     return {
       coherent: false,
       reason: "stale_snapshot",
-      sourceSkewMs: Math.abs(buyEventMs - sellEventMs),
+      sourceSkewMs: receiveSkewMs,
+      venueClockSkewMs,
       eventToDecisionLatencyMs: null,
       sourceEventLatencyMs: null,
-      receiveAgeMs: null
+      receiveAgeMs: Math.max(buyReceiveAgeMs, sellReceiveAgeMs)
     };
   }
-  const sourceSkewMs = Math.abs(buyEventMs - sellEventMs);
-  if (sourceSkewMs > input.maxSourceSkewMs) {
+  // Hard gate: books must have been received within maxSourceSkewMs of each other
+  // on the local clock — not that two venue servers agree on wall time.
+  if (receiveSkewMs > input.maxSourceSkewMs) {
     return {
       coherent: false,
       reason: "cross_venue_time_skew",
-      sourceSkewMs,
+      sourceSkewMs: receiveSkewMs,
+      venueClockSkewMs,
       eventToDecisionLatencyMs: null,
       sourceEventLatencyMs: null,
-      receiveAgeMs: null
+      receiveAgeMs: Math.max(buyReceiveAgeMs, sellReceiveAgeMs)
     };
   }
+  const sourceEventLatencyMs = Math.max(
+    0,
+    Number.isFinite(buyEventMs) ? buyReceiveMs - buyEventMs : 0,
+    Number.isFinite(sellEventMs) ? sellReceiveMs - sellEventMs : 0
+  );
   return {
     coherent: true,
     reason: "coherent",
-    sourceSkewMs,
+    sourceSkewMs: receiveSkewMs,
+    venueClockSkewMs,
     eventToDecisionLatencyMs: Math.max(
       0,
       input.decisionTimestampMs - Math.max(buyReceiveMs, sellReceiveMs)
     ),
-    sourceEventLatencyMs: Math.max(
-      0,
-      buyReceiveMs - buyEventMs,
-      sellReceiveMs - sellEventMs
-    ),
-    receiveAgeMs: Math.max(
-      0,
-      input.decisionTimestampMs - buyReceiveMs,
-      input.decisionTimestampMs - sellReceiveMs
-    )
+    sourceEventLatencyMs,
+    receiveAgeMs: Math.max(buyReceiveAgeMs, sellReceiveAgeMs)
   };
 }

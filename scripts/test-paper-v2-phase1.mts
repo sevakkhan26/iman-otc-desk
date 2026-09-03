@@ -256,7 +256,8 @@ await test("market_data_time_incoherent includes sourceSkewMs + timestamps", () 
     coherence: {
       coherent: false,
       reason: "cross_venue_time_skew",
-      sourceSkewMs: 3200,
+      sourceSkewMs: 1000,
+      venueClockSkewMs: 3200,
       eventToDecisionLatencyMs: 100,
       sourceEventLatencyMs: 50,
       receiveAgeMs: 80
@@ -284,7 +285,8 @@ await test("market_data_time_incoherent includes sourceSkewMs + timestamps", () 
       }
     } as any
   });
-  assert.equal(d.coherence?.sourceSkewMs, 3200);
+  assert.equal(d.coherence?.sourceSkewMs, 1000);
+  assert.equal(d.coherence?.venueClockSkewMs, 3200);
   assert.equal(d.coherence?.buy?.sourceEventTimestamp, "2026-08-29T11:59:57.000Z");
   assert.equal(d.coherence?.sell?.receivedAt, "2026-08-29T12:00:01.000Z");
   assert.ok(d.coherence?.buy?.ageMs != null);

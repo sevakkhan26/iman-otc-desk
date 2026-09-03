@@ -49,20 +49,26 @@ function refreshedCachedSnapshot(
   snapshot: NormalizedSourceSnapshot,
   nowMs: number
 ): NormalizedSourceSnapshot | null {
-  const eventMs = Date.parse(
-    snapshot.marketData?.sourceEventTimestamp ??
-      snapshot.sourceTimestamp ??
-      snapshot.receivedAt
+  // Age against the local receive clock — venue sourceEvent clocks are not
+  // comparable to Date.now() and must not alone expire a fresh receipt.
+  const receiveMs = Date.parse(
+    snapshot.marketData?.receiveTimestamp ?? snapshot.receivedAt
   );
-  if (!Number.isFinite(nowMs) || !Number.isFinite(eventMs)) return null;
-  const ageMs = Math.max(0, nowMs - eventMs);
+  if (!Number.isFinite(nowMs) || !Number.isFinite(receiveMs)) return null;
+  const ageMs = Math.max(0, nowMs - receiveMs);
   if (ageMs > SHADOW_STALE_MS) return null;
+  const sourceEventMs = Date.parse(
+    snapshot.marketData?.sourceEventTimestamp ?? snapshot.sourceTimestamp ?? ""
+  );
+  const sourceEventAgeMs = Number.isFinite(sourceEventMs)
+    ? Math.max(0, nowMs - sourceEventMs)
+    : ageMs;
   return {
     ...snapshot,
     ageMs,
     stale: false,
     marketData: snapshot.marketData
-      ? { ...snapshot.marketData, sourceEventAgeMs: ageMs }
+      ? { ...snapshot.marketData, sourceEventAgeMs }
       : undefined
   };
 }

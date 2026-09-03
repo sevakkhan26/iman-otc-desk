@@ -33,7 +33,10 @@ export type RejectDiagnostics = {
   sizingAudit?: Record<string, unknown> | null;
   /** market_data_time_incoherent — skew + both source timestamps/ages. */
   coherence?: {
+    /** Comparable-clock gate skew (|buyReceive − sellReceive|). */
     sourceSkewMs: number | null;
+    /** Raw venue-server clock delta; diagnostic only, not the gate. */
+    venueClockSkewMs: number | null;
     reason: string | null;
     buy: SourceTimeDiag | null;
     sell: SourceTimeDiag | null;
@@ -194,6 +197,7 @@ export function buildRejectDiagnostics(input: {
   ) {
     base.coherence = {
       sourceSkewMs: input.coherence?.sourceSkewMs ?? null,
+      venueClockSkewMs: input.coherence?.venueClockSkewMs ?? null,
       reason: input.coherence?.reason ?? null,
       buy: sourceTimeDiag(input.buySnap, input.buySourceId),
       sell: sourceTimeDiag(input.sellSnap, input.sellSourceId)

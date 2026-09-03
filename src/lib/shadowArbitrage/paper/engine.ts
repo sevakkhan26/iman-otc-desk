@@ -124,6 +124,72 @@ export function fromBrokerCode(code: PaperRejectionCode): PaperReasonCode {
   return FROM_BROKER[code];
 }
 
+/**
+ * Map a BLOCKED sizing result onto the exact Paper reason vocabulary.
+ * TASK-008 lumped economic/inventory/depth fails under opaque `sizing_blocked`.
+ * Prefer the primary blocker, then the last candidate rejection code.
+ */
+export function paperReasonFromSizing(sizing: SizingResult): PaperReasonCode {
+  const lastRejected = [...(sizing.candidates ?? [])]
+    .reverse()
+    .find((c) => c.rejectionCode);
+  // Candidate rejection is the most specific signal when the solver walked sizes.
+  switch (lastRejected?.rejectionCode) {
+    case "not_net_positive":
+    case "edge_below_floor":
+      return "net_non_positive";
+    case "inventory_limit":
+      return "inventory_limit";
+    case "insufficient_depth":
+      return "insufficient_depth";
+    case "insufficient_balance": {
+      const fa = lastRejected.rejectionFa ?? "";
+      return fa.includes("تتر") || /usdt/i.test(fa)
+        ? "insufficient_usdt"
+        : "insufficient_irt";
+    }
+    default:
+      break;
+  }
+  const primary = sizing.blockers[0]?.code;
+  switch (primary) {
+    case "not_net_positive":
+    case "edge_below_floor":
+      return "net_non_positive";
+    case "inventory_limit":
+    case "inventory_unmeasurable":
+      return "inventory_limit";
+    case "depth_exhausted":
+    case "no_depth_evidence":
+    case "book_invalid":
+    case "quote_only_no_order_book":
+      return "insufficient_depth";
+    case "stale_quote":
+      return "stale_market_data";
+    case "fee_unconfirmed":
+      return "fee_unknown";
+    case "settlement_unconfirmed":
+      return "fee_settlement_unknown";
+    case "no_balance_record":
+      return "no_balance_record";
+    default:
+      return "sizing_blocked";
+  }
+}
+
+function sizingRejectNeedsDiagnostics(code: PaperReasonCode): boolean {
+  return (
+    code === "sizing_blocked" ||
+    code === "net_non_positive" ||
+    code === "insufficient_depth" ||
+    code === "insufficient_irt" ||
+    code === "insufficient_usdt" ||
+    code === "inventory_limit" ||
+    code === "fee_unknown" ||
+    code === "stale_market_data"
+  );
+}
+
 export type PaperCandidate = {
   lifecycleId: string;
   /** Exact outer-allocator route/quantity option selected for settlement. */
@@ -1293,7 +1359,12 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
     sizingByRoute.set(venuePairKey, sizing);
 
     if (sizing.status !== "SIZED" || sizing.sizeUsdtMicros === null || !sizing.quote || !sizing.economics) {
-      skip(c, ["sizing_blocked"], diagFor(c, ["sizing_blocked"], { sizing }));
+      const code = paperReasonFromSizing(sizing);
+      skip(
+        c,
+        [code],
+        sizingRejectNeedsDiagnostics(code) ? diagFor(c, [code], { sizing }) : null
+      );
       continue;
     }
 

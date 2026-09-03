@@ -324,3 +324,82 @@ export async function patchExperimentEconomicsValidity(
     throw asDbError(error, "patchExperimentEconomicsValidity");
   }
 }
+
+/**
+ * PAPER-V2 economic liveness — persist monitor state + supervisor payload on
+ * experiment config. Never clears firstDegradedAt; never extends endsAt.
+ */
+export async function patchExperimentEconomicLiveness(
+  id: string,
+  payload: {
+    economicLiveness: Record<string, unknown>;
+    supervisorPayload?: Record<string, unknown>;
+    economicsValidity?: Record<string, unknown>;
+  }
+): Promise<void> {
+  try {
+    const db = await getDbAsync();
+    const now = new Date().toISOString();
+    await serial(async () => {
+      const rows = await db
+        .select()
+        .from(shadowPaperExperiments)
+        .where(eq(shadowPaperExperiments.id, id))
+        .limit(1);
+      const cur = rows[0];
+      if (!cur || cur.status !== "ACTIVE") return;
+      const prev = (cur.config ?? {}) as Record<string, unknown>;
+      const priorLiv = (prev.economicLiveness ?? null) as Record<string, unknown> | null;
+      const priorFirst =
+        priorLiv && typeof priorLiv.firstDegradedAt === "string"
+          ? (priorLiv.firstDegradedAt as string)
+          : null;
+      const nextLiv = { ...payload.economicLiveness };
+      if (priorFirst && !nextLiv.firstDegradedAt) {
+        nextLiv.firstDegradedAt = priorFirst;
+      }
+      // If already degraded/invalid, never silently drop severity.
+      if (
+        priorLiv &&
+        (priorLiv.validityState === "ECONOMICS_INVALID" ||
+          priorLiv.validityState === "ECONOMICS_DEGRADED") &&
+        typeof nextLiv.validityState === "string" &&
+        nextLiv.validityState === "VALID"
+      ) {
+        nextLiv.validityState = priorLiv.validityState;
+      }
+
+      const nextConfig: Record<string, unknown> = {
+        ...prev,
+        economicLiveness: nextLiv
+      };
+      if (payload.supervisorPayload) {
+        nextConfig.economicLivenessSupervisor = payload.supervisorPayload;
+      }
+      if (payload.economicsValidity) {
+        const priorAudit = (prev.economicsValidity ?? null) as Record<string, unknown> | null;
+        const priorDegraded =
+          priorAudit && typeof priorAudit.degradedFromTimestamp === "string"
+            ? (priorAudit.degradedFromTimestamp as string)
+            : null;
+        const nextAudit = { ...payload.economicsValidity };
+        if (priorDegraded && !nextAudit.degradedFromTimestamp) {
+          nextAudit.degradedFromTimestamp = priorDegraded;
+          nextAudit.state = "ECONOMICS_INVALID";
+          nextAudit.reportState = "DEGRADED_FROM_TIMESTAMP";
+        }
+        nextConfig.economicsValidity = nextAudit;
+      }
+
+      await db
+        .update(shadowPaperExperiments)
+        .set({
+          config: nextConfig,
+          updatedAt: now
+        })
+        .where(eq(shadowPaperExperiments.id, id));
+    });
+  } catch (error) {
+    throw asDbError(error, "patchExperimentEconomicLiveness");
+  }
+}

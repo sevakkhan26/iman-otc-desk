@@ -43,6 +43,8 @@ export type PaperCycleOutcome = {
   skipped?: number;
   duplicates?: number;
   eligibleCandidates?: number;
+  /** Machine-readable economic liveness supervisor payload (non-authoritative terminal). */
+  economicLiveness?: Record<string, unknown> | null;
   portfolio?: PaperPortfolioTelemetry | null;
   marketData?: {
     decisionTimestampMs: number;
@@ -319,24 +321,30 @@ export async function runPaperExecutionForCycle(input: {
    * PAPER-V2 Phase 1A — runtime fee-horizon monitor. Does not invent fees or
    * extend validity; marks ECONOMICS_INVALID / DEGRADED_FROM_TIMESTAMP when
    * required evidence expires mid-run.
+   * Economic liveness (NO-FILL / FEE-BLOCK / dropout) is assessed after commit.
    */
+  let priorEconomicsValidity: Record<string, unknown> | null = null;
+  let priorEconomicLiveness: Record<string, unknown> | null = null;
   try {
     const {
       assessRuntimeFeeHorizon,
       toEconomicsValidityAudit
     } = await import("@/lib/shadowArbitrage/paper/feeHorizon");
     const requiredIds = session.openingAllocations.map((a) => a.sourceId);
-    const prior =
-      (activeExperimentId
-        ? ((
-            await import("@/db/repositories/shadowExperiments").then((m) =>
-              m.getActiveExperiment()
-            )
-          )?.config as Record<string, unknown> | undefined)?.economicsValidity
-        : null) ?? null;
+    const activeExp = activeExperimentId
+      ? await import("@/db/repositories/shadowExperiments").then((m) =>
+          m.getActiveExperiment()
+        )
+      : null;
+    const cfg = (activeExp?.config ?? null) as Record<string, unknown> | null;
+    priorEconomicsValidity =
+      (cfg?.economicsValidity as Record<string, unknown> | undefined) ?? null;
+    priorEconomicLiveness =
+      (cfg?.economicLiveness as Record<string, unknown> | undefined) ?? null;
     const priorDegraded =
-      prior && typeof (prior as { degradedFromTimestamp?: unknown }).degradedFromTimestamp === "string"
-        ? ((prior as { degradedFromTimestamp: string }).degradedFromTimestamp)
+      priorEconomicsValidity &&
+      typeof priorEconomicsValidity.degradedFromTimestamp === "string"
+        ? (priorEconomicsValidity.degradedFromTimestamp as string)
         : null;
     const runtime = assessRuntimeFeeHorizon({
       venues: effectiveFees.venues,
@@ -580,6 +588,121 @@ export async function runPaperExecutionForCycle(input: {
     /* never take down paper execution */
   }
 
+  /*
+   * PAPER-V2 economic liveness — infra/data/econ split + no-fill / fee-block /
+   * positive-net dropout. Terminal logs are non-authoritative; supervisor
+   * payload is persisted on experiment config when an ACTIVE experiment exists.
+   */
+  let economicLivenessPayload: Record<string, unknown> | null = null;
+  try {
+    const {
+      assessEconomicLiveness,
+      buildCycleFunnel,
+      aggregateMarketDataHealth,
+      emptyPersistedState
+    } = await import("@/lib/shadowArbitrage/paper/economicLiveness");
+    const { toEconomicsValidityAudit, assessRuntimeFeeHorizon } = await import(
+      "@/lib/shadowArbitrage/paper/feeHorizon"
+    );
+    const requiredIds = session.openingAllocations.map((a) => a.sourceId);
+    const funnel = buildCycleFunnel({
+      opportunities: input.opportunities.map((o) => ({
+        buyVwapToman: o.buyVwapToman,
+        sellVwapToman: o.sellVwapToman,
+        netProfitToman: o.netProfitToman,
+        feeUnknown: o.feeUnknown,
+        isActive: o.isActive
+      })),
+      decisions: evaluation.decisions.map((d) =>
+        d.kind === "EXECUTE"
+          ? { kind: "EXECUTE" as const }
+          : {
+              kind: "SKIP" as const,
+              code: d.code,
+              codes: d.codes,
+              buyVwapToman: d.candidate.buyVwapToman,
+              sellVwapToman: d.candidate.sellVwapToman,
+              netProfitToman: d.candidate.netProfitToman
+            }
+      ),
+      filledCount: committed.filled
+    });
+    const marketDataHealth = aggregateMarketDataHealth(
+      input.sources.map((s) => s.health ?? null)
+    );
+    const priorFeeDegraded =
+      priorEconomicsValidity &&
+      typeof priorEconomicsValidity.degradedFromTimestamp === "string"
+        ? (priorEconomicsValidity.degradedFromTimestamp as string)
+        : null;
+    const priorLiv =
+      priorEconomicLiveness &&
+      priorEconomicLiveness.version === "economic_liveness_v1"
+        ? (priorEconomicLiveness as unknown as import("@/lib/shadowArbitrage/paper/economicLiveness").EconomicLivenessPersistedState)
+        : emptyPersistedState();
+    // Prefer persisted lastFillAt; fall back to session paper stats when absent.
+    let lastFillAt = priorLiv.lastFillAt;
+    if (!lastFillAt) {
+      try {
+        const { loadPaperStats } = await import("@/db/repositories/shadowPaper");
+        const stats = await loadPaperStats(session.id);
+        lastFillAt = stats.lastFillAt;
+      } catch {
+        /* optional */
+      }
+    }
+    const assessment = assessEconomicLiveness({
+      nowMs: Date.now(),
+      infraHealth: "healthy", // collector reached this path; Docker infra is separate
+      marketDataHealth,
+      candidateEvaluationContinuing: true,
+      lastFillAt,
+      filledThisCycle: committed.filled,
+      funnel,
+      venues: effectiveFees.venues,
+      requiredSourceIds: requiredIds,
+      prior: priorLiv,
+      priorFeeDegradedFromTimestamp: priorFeeDegraded
+    });
+    economicLivenessPayload = assessment.supervisorPayload as unknown as Record<
+      string,
+      unknown
+    >;
+    if (assessment.alerts.length) {
+      console.warn("[shadow-paper] economic liveness alerts", {
+        sessionId: session.id,
+        economicLiveness: assessment.health.economicLiveness,
+        validityState: assessment.validityState,
+        firstDegradedAt: assessment.firstDegradedAt,
+        alerts: assessment.alerts.map((a) => ({ code: a.code, severity: a.severity }))
+      });
+    }
+    if (activeExperimentId) {
+      const { patchExperimentEconomicLiveness } = await import(
+        "@/db/repositories/shadowExperiments"
+      );
+      const feeRuntime = assessRuntimeFeeHorizon({
+        venues: effectiveFees.venues,
+        nowMs: Date.now(),
+        requiredSourceIds: requiredIds,
+        priorDegradedFromTimestamp: priorFeeDegraded
+      });
+      await patchExperimentEconomicLiveness(activeExperimentId, {
+        economicLiveness: assessment.nextPersisted as unknown as Record<string, unknown>,
+        supervisorPayload: assessment.supervisorPayload as unknown as Record<
+          string,
+          unknown
+        >,
+        economicsValidity: toEconomicsValidityAudit(
+          feeRuntime,
+          Date.now()
+        ) as unknown as Record<string, unknown>
+      });
+    }
+  } catch (e) {
+    console.warn("[shadow-paper] economic liveness monitor failed", e);
+  }
+
   return {
     ran: true,
     sessionId: session.id,
@@ -589,7 +712,8 @@ export async function runPaperExecutionForCycle(input: {
     detailedEventsWritten: committed.detailedEventsWritten,
     eligibleCandidates: evaluation.eligibleCandidates,
     portfolio: evaluation.portfolio,
-    marketData: evaluation.marketData
+    marketData: evaluation.marketData,
+    economicLiveness: economicLivenessPayload
   };
 }
 

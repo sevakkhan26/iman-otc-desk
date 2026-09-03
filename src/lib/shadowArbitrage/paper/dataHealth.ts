@@ -156,3 +156,35 @@ export function summarizeHealthSplit(rows: VenueHealthSplit[]): HealthSplitSumma
   }
   return s;
 }
+
+/**
+ * PAPER-V2 economic-liveness — three-way health split.
+ * Infra healthy must never be read as economics healthy.
+ */
+export type ThreeWayHealthSplit = {
+  infraHealth: "healthy" | "degraded" | "stopped" | "unknown";
+  marketDataHealth: MarketDataHealthState;
+  economicLiveness:
+    | "HEALTHY"
+    | "WARNING"
+    | "CRITICAL"
+    | "ECONOMICS_DEGRADED"
+    | "ECONOMICS_INVALID"
+    | "NO_EXECUTABLE_OPPORTUNITIES"
+    | "unknown";
+  /** Always false — documented invariant for supervisors. */
+  infraImpliesEconomics: false;
+};
+
+export function buildThreeWayHealthSplit(input: {
+  infraHealth: ThreeWayHealthSplit["infraHealth"];
+  marketDataHealth: MarketDataHealthState;
+  economicLiveness: ThreeWayHealthSplit["economicLiveness"];
+}): ThreeWayHealthSplit {
+  return {
+    infraHealth: input.infraHealth,
+    marketDataHealth: input.marketDataHealth,
+    economicLiveness: input.economicLiveness,
+    infraImpliesEconomics: false
+  };
+}

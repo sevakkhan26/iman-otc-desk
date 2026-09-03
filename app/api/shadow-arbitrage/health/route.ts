@@ -8,8 +8,11 @@ import {
   loadSourceStats
 } from "@/db/repositories/shadowArbitrage";
 import { getActivePaperSession, loadPaperStats } from "@/db/repositories/shadowPaper";
+import { getActiveExperiment } from "@/db/repositories/shadowExperiments";
 import { SHADOW_BANNER, SHADOW_SOURCES } from "@/lib/shadowArbitrage/config";
 import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
+import { classifyInfraHealth } from "@/lib/shadowArbitrage/paper/economicLiveness";
+import { buildThreeWayHealthSplit } from "@/lib/shadowArbitrage/paper/dataHealth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -25,13 +28,15 @@ export async function GET() {
   const session = await requireAdminSession();
   if (!isSession(session)) return session;
 
-  const [observation, worker, runStats, sourceStats, paperSession] = await Promise.all([
-    getObservation(),
-    getWorkerHeartbeat(),
-    loadRunStats(),
-    loadSourceStats(),
-    getActivePaperSession()
-  ]);
+  const [observation, worker, runStats, sourceStats, paperSession, activeExperiment] =
+    await Promise.all([
+      getObservation(),
+      getWorkerHeartbeat(),
+      loadRunStats(),
+      loadSourceStats(),
+      getActivePaperSession(),
+      getActiveExperiment().catch(() => null)
+    ]);
 
   // Phase 6 status. Reported behind the same admin gate as everything else —
   // this adds a field, it does not add an unauthenticated surface.
@@ -83,11 +88,83 @@ export async function GET() {
         ? "stopped"
         : "degraded";
 
+  // INFRA vs MARKET DATA vs ECONOMIC LIVENESS — never conflate.
+  const infraHealth = classifyInfraHealth(status);
+  const expCfg = (activeExperiment?.config ?? null) as Record<string, unknown> | null;
+  const liv = (expCfg?.economicLiveness ?? null) as Record<string, unknown> | null;
+  const supervisorEconomic = (expCfg?.economicLivenessSupervisor ?? null) as
+    | Record<string, unknown>
+    | null;
+  const marketDataFromSources = sourceStats.length
+    ? sourceStats.every((s) => (s as { health?: string }).health === "healthy")
+      ? "healthy"
+      : sourceStats.some((s) => (s as { health?: string }).health === "unavailable")
+        ? "degraded"
+        : "degraded"
+    : ((supervisorEconomic?.marketDataHealth as string | undefined) ?? "unknown");
+  const economicLivenessStatus =
+    (supervisorEconomic?.economicLivenessStatus as string | undefined) ??
+    (liv?.validityState === "ECONOMICS_INVALID"
+      ? "ECONOMICS_INVALID"
+      : liv?.validityState === "ECONOMICS_DEGRADED"
+        ? "ECONOMICS_DEGRADED"
+        : liv?.validityState === "WARNING"
+          ? "WARNING"
+          : liv
+            ? "HEALTHY"
+            : "unknown");
+  const healthSplit = buildThreeWayHealthSplit({
+    infraHealth,
+    marketDataHealth: marketDataFromSources as
+      | "healthy"
+      | "degraded"
+      | "unavailable"
+      | "unknown",
+    economicLiveness: economicLivenessStatus as
+      | "HEALTHY"
+      | "WARNING"
+      | "CRITICAL"
+      | "ECONOMICS_DEGRADED"
+      | "ECONOMICS_INVALID"
+      | "NO_EXECUTABLE_OPPORTUNITIES"
+      | "unknown"
+  });
+  const economicLiveness = {
+    ...healthSplit,
+    last_fill_at:
+      (supervisorEconomic?.last_fill_at as string | null | undefined) ??
+      paper.lastFillAt ??
+      (liv?.lastFillAt as string | null | undefined) ??
+      null,
+    hours_since_fill:
+      (supervisorEconomic?.hours_since_fill as number | null | undefined) ??
+      (liv?.hoursSinceFill as number | null | undefined) ??
+      null,
+    rolling_funnel_counts: supervisorEconomic?.rolling_funnel_counts ?? liv?.lastFunnel ?? null,
+    reject_distribution: supervisorEconomic?.reject_distribution ?? null,
+    fee_blockers: supervisorEconomic?.fee_blockers ?? null,
+    first_degraded_at:
+      (supervisorEconomic?.first_degraded_at as string | null | undefined) ??
+      (liv?.firstDegradedAt as string | null | undefined) ??
+      null,
+    validityState:
+      (supervisorEconomic?.validityState as string | undefined) ??
+      (liv?.validityState as string | undefined) ??
+      null,
+    alerts: supervisorEconomic?.alerts ?? [],
+    terminal_output_authoritative: false as const,
+    supervisorPayload: supervisorEconomic
+  };
+
   return new NextResponse(
     JSON.stringify({
       banner: SHADOW_BANNER,
       shadowMode: true,
       status,
+      /** Explicit: Docker/collector infra status — not economic liveness. */
+      infraHealth,
+      healthSplit,
+      economicLiveness,
       serverNow: new Date().toISOString(),
       paper,
       collector: {

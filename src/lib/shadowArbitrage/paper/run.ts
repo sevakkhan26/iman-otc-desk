@@ -398,6 +398,7 @@ export async function runPaperExecutionForCycle(input: {
     // The decision clock starts after cycle collection/DB reads and completes
     // inside evaluateCycle; source receive timestamps remain the ingest origin.
     decisionTimestampMs: Date.now(),
+    paperExecutionRealism: true,
     survivalTracker,
     feeEvidenceByVenue: effectiveFees.byVenue
   });

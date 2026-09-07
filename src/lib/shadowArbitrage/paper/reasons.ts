@@ -50,7 +50,20 @@ export type PaperReasonCode =
   | "portfolio_not_selected"
   | "optimizer_budget_exhausted"
   | "adjusted_score_non_positive"
-  | "experiment_closed";
+  | "experiment_closed"
+  // PAPER-V2 realism / full no-trade closure — exact delayed & sizing codes
+  | "sizing_missing_policy"
+  | "sizing_expired_policy"
+  | "sizing_slippage_over_limit"
+  | "sizing_size_floor"
+  | "delayed_liquidity_disappeared"
+  | "delayed_depth_insufficient"
+  | "delayed_net_non_positive"
+  | "delayed_book_stale"
+  | "delayed_book_incoherent"
+  | "delayed_book_invalid"
+  | "partial_below_minimum"
+  | "leg_risk_second_leg_failed";
 
 export const PAPER_REASON_FA: Record<PaperReasonCode, string> = {
   account_not_ready: "حساب کاربری صرافی آماده نیست",
@@ -89,7 +102,19 @@ export const PAPER_REASON_FA: Record<PaperReasonCode, string> = {
   portfolio_not_selected: "ترکیب دیگری سود تعدیل‌شدهٔ کل بیشتری دارد",
   optimizer_budget_exhausted: "بودجهٔ اثبات دقیق تمام شد؛ تخصیص به‌صورت بسته رد شد",
   adjusted_score_non_positive: "اقتصاد خام مثبت است اما امتیاز موردانتظار Paper مثبت نیست",
-  experiment_closed: "مهلت آزمایش Paper به پایان رسیده — معاملهٔ جدید باز نمی‌شود"
+  experiment_closed: "مهلت آزمایش Paper به پایان رسیده — معاملهٔ جدید باز نمی‌شود",
+  sizing_missing_policy: "سیاست ریسک لازم برای اندازه‌گیری حجم تعیین نشده است",
+  sizing_expired_policy: "اعتبار سیاست ریسک لازم برای اندازه‌گیری حجم منقضی شده است",
+  sizing_slippage_over_limit: "بافر لغزش مدل‌شده از سقف مجاز سیاست بیشتر است",
+  sizing_size_floor: "ظرفیت قابل استفاده به حداقل سیاست کاغذی یا حداقل تأییدشدهٔ صرافی نمی‌رسد",
+  delayed_liquidity_disappeared: "پس از تأخیر شبیه‌سازی‌شده نقدینگی قابل اجرا از بین رفته است",
+  delayed_depth_insufficient: "عمق دفتر تأخیری برای حجم برنامه‌ریزی‌شده کافی نیست",
+  delayed_net_non_positive: "پس از بازبینی دفتر تأخیری سود خالص اقتصادی مثبت نیست",
+  delayed_book_stale: "دفتر تأخیری در زمان رسیدن سفارش کهنه است",
+  delayed_book_incoherent: "هم‌زمانی دریافت دو سمت در زمان رسیدن سفارش خارج از بودجه است",
+  delayed_book_invalid: "دفتر تأخیری نامعتبر است (NaN/متقاطع/سطح خراب)",
+  partial_below_minimum: "عمق تأخیری فقط حجم جزئی زیر حداقل Paper می‌دهد",
+  leg_risk_second_leg_failed: "پای اول در تأخیر قابل اجرا بود اما پای دوم پر نشد — پر کردن اتمی رد شد"
 };
 
 /**
@@ -161,6 +186,18 @@ const PRIORITY: PaperReasonCode[] = [
   "optimizer_budget_exhausted",
   "adjusted_score_non_positive",
   "portfolio_not_selected",
+  "sizing_missing_policy",
+  "sizing_expired_policy",
+  "sizing_slippage_over_limit",
+  "sizing_size_floor",
+  "delayed_liquidity_disappeared",
+  "delayed_depth_insufficient",
+  "delayed_net_non_positive",
+  "delayed_book_stale",
+  "delayed_book_incoherent",
+  "delayed_book_invalid",
+  "partial_below_minimum",
+  "leg_risk_second_leg_failed",
   "sizing_blocked",
   "size_not_selected"
 ];

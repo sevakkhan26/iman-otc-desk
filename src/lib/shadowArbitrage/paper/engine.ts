@@ -31,6 +31,12 @@ import {
   type ReservationBook
 } from "@/lib/shadowArbitrage/paper/reservations";
 import type { QuoteCapacityInput } from "@/lib/shadowArbitrage/paper/liquidity";
+import {
+  recheckDelayedExecutableBook,
+  DEFAULT_PAPER_EXECUTION_REALISM,
+  type DelayedBookEvidence,
+  type PaperExecutionRealismConfig
+} from "@/lib/shadowArbitrage/paper/delayedBookRecheck";
 import type { VenueCapitalState } from "@/lib/shadowArbitrage/capital";
 import {
   microsToUsdt,
@@ -172,7 +178,19 @@ export function paperReasonFromSizing(sizing: SizingResult): PaperReasonCode {
       return "fee_settlement_unknown";
     case "no_balance_record":
       return "no_balance_record";
+    case "missing_policy":
+      return "sizing_missing_policy";
+    case "expired_policy":
+      return "sizing_expired_policy";
+    case "slippage_over_limit":
+      return "sizing_slippage_over_limit";
+    case "size_floor":
+      return "sizing_size_floor";
     default:
+      // Authoritative path must not emit opaque sizing_blocked when a blocker exists.
+      if (primary) {
+        return "sizing_blocked";
+      }
       return "sizing_blocked";
   }
 }
@@ -215,6 +233,8 @@ export type PaperDecision =
       balancesAfter: VenueBalance[];
       /** The sizing that produced this fill — why this size and not a larger one. */
       sizing: SizingResult;
+      /** PAPER-V2 realism — delayed book recheck evidence (always present when realism on). */
+      delayedRecheck?: DelayedBookEvidence | null;
     }
   | {
       kind: "SKIP";
@@ -231,6 +251,8 @@ export type PaperDecision =
       } | null;
       /** PAPER-V2 Phase 1B — bounded reject diagnostics for ledger telemetry. */
       diagnostics?: RejectDiagnostics | null;
+      /** PAPER-V2 realism — delayed recheck reject evidence. */
+      delayedRecheck?: DelayedBookEvidence | null;
     };
 
 export type CycleEvaluation = {
@@ -401,6 +423,18 @@ export type EvaluateInput = {
   maxCrossVenueSkewMs?: number;
   /** PAPER-V2 Phase 1B — fee evidence by venue for fee_unknown diagnostics. */
   feeEvidenceByVenue?: Record<string, VenueEffectiveFee>;
+  /**
+   * PAPER-V2 realism — books observed at simulated order-arrival time.
+   * When omitted, detection books are aged to arrival (stale/coherence still bind).
+   */
+  delayedSources?: NormalizedSourceSnapshot[];
+  /** Optional post-first-leg books for leg-risk simulation (tests / replay). */
+  postFirstLegSources?: NormalizedSourceSnapshot[];
+  /**
+   * PAPER-V2 realism. Undefined/false = detection-time fill (unit-test default).
+   * `true` or a config object enables delayed recheck (Paper runner must set this).
+   */
+  paperExecutionRealism?: Partial<PaperExecutionRealismConfig> | true | false;
 };
 
 /**
@@ -1534,6 +1568,97 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       }
     }
 
+    /*
+     * PAPER-V2 REALISM — delayed executable-book recheck before fill.
+     * Detection-time plan is not sufficient: re-evaluate VWAP/fees/slip/net on
+     * the comparable book at simulated order-arrival. Never record a fill unless
+     * rechecked qty + economics pass. Partial fills allowed when configured;
+     * leg-risk rejects atomic fantasy when post-first-leg books fail.
+     */
+    // Opt-in: paper session runner enables realism. Unit tests that never set
+    // paperExecutionRealism keep detection-time settlement (regression stable).
+    const realismCfg =
+      input.paperExecutionRealism === undefined || input.paperExecutionRealism === false
+        ? null
+        : {
+            ...DEFAULT_PAPER_EXECUTION_REALISM,
+            ...(input.paperExecutionRealism === true ? {} : input.paperExecutionRealism),
+            latency: {
+              ...DEFAULT_PAPER_EXECUTION_REALISM.latency,
+              ...(input.paperExecutionRealism !== true
+                ? input.paperExecutionRealism.latency ?? {}
+                : {})
+            },
+            slippageBufferBps:
+              (input.paperExecutionRealism !== true
+                ? input.paperExecutionRealism.slippageBufferBps
+                : undefined) ??
+              input.sizing.slippageBufferBps ??
+              DEFAULT_PAPER_EXECUTION_REALISM.slippageBufferBps
+          };
+    if (realismCfg) {
+      const delayedById = new Map(
+        (input.delayedSources ?? []).map((s) => [s.sourceId as string, s])
+      );
+      const postById = new Map(
+        (input.postFirstLegSources ?? []).map((s) => [s.sourceId as string, s])
+      );
+      const detectionBuy = sourceById.get(sizedCandidate.buySourceId);
+      const detectionSell = sourceById.get(sizedCandidate.sellSourceId);
+      const recheck = recheckDelayedExecutableBook({
+        buySourceId: sizedCandidate.buySourceId,
+        sellSourceId: sizedCandidate.sellSourceId,
+        plannedSizeUsdt: sizedCandidate.sizeUsdt,
+        detectionBuy,
+        detectionSell,
+        delayedBuy: delayedById.get(sizedCandidate.buySourceId) ?? detectionBuy,
+        delayedSell: delayedById.get(sizedCandidate.sellSourceId) ?? detectionSell,
+        postFirstLegBuy: postById.get(sizedCandidate.buySourceId),
+        postFirstLegSell: postById.get(sizedCandidate.sellSourceId),
+        decisionTimestampMs,
+        buyFeeBps: sizedCandidate.buyFeeBps as number,
+        sellFeeBps: sizedCandidate.sellFeeBps as number,
+        buySettlement: settlementFor(sizedCandidate.buySourceId, "buy"),
+        sellSettlement: settlementFor(sizedCandidate.sellSourceId, "sell"),
+        markPriceToman: sizing.quote!.markPriceToman,
+        detectionBuyVwapToman: sizedCandidate.buyVwapToman,
+        detectionSellVwapToman: sizedCandidate.sellVwapToman,
+        detectionEconomicNetPnlToman: plan.ok ? plan.economicNetPnlToman : null,
+        detectionRiskAdjustedPnlToman: plan.ok ? plan.riskAdjustedPnlToman : null,
+        config: realismCfg
+      });
+      if (!recheck.ok) {
+        decisions.push({
+          kind: "SKIP",
+          candidate: sizedCandidate,
+          code: recheck.code,
+          codes: [recheck.code],
+          reasonFa: reasonLabel(recheck.code),
+          requiredRebalance: null,
+          diagnostics: diagFor(sizedCandidate, [recheck.code], { sizing }),
+          delayedRecheck: recheck.evidence
+        });
+        continue;
+      }
+      // Adopt delayed plan + (possibly partial) size for settlement.
+      plan = recheck.plan;
+      if (recheck.partial || recheck.fillSizeUsdt !== sizedCandidate.sizeUsdt) {
+        sizedCandidate = {
+          ...sizedCandidate,
+          sizeUsdt: recheck.fillSizeUsdt,
+          buyVwapToman: recheck.plan.buyLeg
+            ? // buyLeg doesn't expose vwap directly; use evidence
+              (recheck.evidence.delayed.buyVwapToman as number)
+            : sizedCandidate.buyVwapToman,
+          sellVwapToman: (recheck.evidence.delayed.sellVwapToman as number),
+          slippageBufferToman: recheck.plan.slippageBufferToman
+        };
+      }
+      // Stash evidence on a local for EXECUTE push below.
+      (sizedCandidate as PaperCandidate & { __delayedRecheck?: DelayedBookEvidence }).__delayedRecheck =
+        recheck.evidence;
+    }
+
     eligibleCandidates += 1;
 
     /*
@@ -1622,12 +1747,16 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
     }
 
     executedCount += 1;
+    const delayedEvidence =
+      (sizedCandidate as PaperCandidate & { __delayedRecheck?: DelayedBookEvidence })
+        .__delayedRecheck ?? null;
     decisions.push({
       kind: "EXECUTE",
       candidate: sizedCandidate,
       plan,
       balancesAfter: committed.balancesAfter,
-      sizing
+      sizing,
+      delayedRecheck: delayedEvidence
     });
   }
 

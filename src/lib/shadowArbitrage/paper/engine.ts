@@ -1605,14 +1605,18 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       );
       const detectionBuy = sourceById.get(sizedCandidate.buySourceId);
       const detectionSell = sourceById.get(sizedCandidate.sellSourceId);
+      // Only pass delayed* when a true arrival-time book is supplied.
+      // Omitting them lets recheckDelayedExecutableBook age detection books
+      // via snapshotAtArrival (timing semantics). Never fall back to raw
+      // detectionBuy/Sell here — that skips aging and corrupts evidence ages.
       const recheck = recheckDelayedExecutableBook({
         buySourceId: sizedCandidate.buySourceId,
         sellSourceId: sizedCandidate.sellSourceId,
         plannedSizeUsdt: sizedCandidate.sizeUsdt,
         detectionBuy,
         detectionSell,
-        delayedBuy: delayedById.get(sizedCandidate.buySourceId) ?? detectionBuy,
-        delayedSell: delayedById.get(sizedCandidate.sellSourceId) ?? detectionSell,
+        delayedBuy: delayedById.get(sizedCandidate.buySourceId),
+        delayedSell: delayedById.get(sizedCandidate.sellSourceId),
         postFirstLegBuy: postById.get(sizedCandidate.buySourceId),
         postFirstLegSell: postById.get(sizedCandidate.sellSourceId),
         decisionTimestampMs,
@@ -1640,20 +1644,18 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
         });
         continue;
       }
-      // Adopt delayed plan + (possibly partial) size for settlement.
+      // Adopt delayed plan + size/VWAP/slip for settlement AND candidate
+      // telemetry. Always sync — not only on partial — so full-size adverse
+      // price moves still persist delayed VWAPs (run.ts fill row uses plan,
+      // but candidate fields feed survival/traces/gross-spread displays).
       plan = recheck.plan;
-      if (recheck.partial || recheck.fillSizeUsdt !== sizedCandidate.sizeUsdt) {
-        sizedCandidate = {
-          ...sizedCandidate,
-          sizeUsdt: recheck.fillSizeUsdt,
-          buyVwapToman: recheck.plan.buyLeg
-            ? // buyLeg doesn't expose vwap directly; use evidence
-              (recheck.evidence.delayed.buyVwapToman as number)
-            : sizedCandidate.buyVwapToman,
-          sellVwapToman: (recheck.evidence.delayed.sellVwapToman as number),
-          slippageBufferToman: recheck.plan.slippageBufferToman
-        };
-      }
+      sizedCandidate = {
+        ...sizedCandidate,
+        sizeUsdt: recheck.fillSizeUsdt,
+        buyVwapToman: (recheck.evidence.delayed.buyVwapToman as number),
+        sellVwapToman: (recheck.evidence.delayed.sellVwapToman as number),
+        slippageBufferToman: recheck.plan.slippageBufferToman
+      };
       // Stash evidence on a local for EXECUTE push below.
       (sizedCandidate as PaperCandidate & { __delayedRecheck?: DelayedBookEvidence }).__delayedRecheck =
         recheck.evidence;

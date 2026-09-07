@@ -486,7 +486,12 @@ export async function runPaperExecutionForCycle(input: {
       reasonCodes: d.codes,
       rejectionReason: d.reasonFa,
       requiredRebalance: describeRebalance(d.requiredRebalance),
-      diagnostics: (d.diagnostics as unknown as Record<string, unknown> | null) ?? null,
+      diagnostics: {
+        ...((d.diagnostics as unknown as Record<string, unknown> | null) ?? {}),
+        // PAPER-V2 realism — persist delayed recheck evidence on skips so
+        // forensics can separate delayed_* / leg-risk from detection rejects.
+        ...(d.delayedRecheck ? { delayedRecheck: d.delayedRecheck } : {})
+      },
       buyVwapToman: d.candidate.buyVwapToman ?? null,
       sellVwapToman: d.candidate.sellVwapToman ?? null,
       buyFeeBps: d.candidate.buyFeeBps ?? null,

@@ -11,11 +11,12 @@ import {
   DEFAULT_PAPER_EXECUTION_REALISM,
   type DelayedRecheckResult
 } from "../src/lib/shadowArbitrage/paper/delayedBookRecheck.ts";
-import { planFill, settlementFor } from "../src/lib/shadowArbitrage/paper/broker.ts";
-import { paperReasonFromSizing } from "../src/lib/shadowArbitrage/paper/engine.ts";
+import { planFill, settlementFor, usdtToMicros } from "../src/lib/shadowArbitrage/paper/broker.ts";
+import { evaluateCycle, paperReasonFromSizing } from "../src/lib/shadowArbitrage/paper/engine.ts";
 import type { SizingResult } from "../src/lib/shadowArbitrage/paper/sizing.ts";
 import type { NormalizedSourceSnapshot } from "../src/lib/shadowArbitrage/types.ts";
 import { seedLocalPaperExecutionLimits } from "../src/lib/shadowArbitrage/paper/venueExecutionLimits.ts";
+import { buildPolicyState } from "../src/lib/shadowArbitrage/live/policy.ts";
 
 seedLocalPaperExecutionLimits({ minNotionalUsdt: 5, quantityStepUsdt: 0.01 });
 
@@ -492,6 +493,214 @@ await test("latency model deterministic + capped", () => {
   assert.equal(fixed, 400);
   const aged = snapshotAtArrival(buy, T0 + 1_000, 90_000);
   assert.ok(aged.ageMs >= 1000 || aged.ageMs === buy.ageMs);
+});
+
+await test("G. omitted delayed books age via snapshotAtArrival → delayed_book_stale", () => {
+  // Near maxAge (90s): detection still fresh, arrival after 1s delay is stale.
+  const buy = snap({ sourceId: "tabdeal", receivedAtMs: T0 - 89_500 });
+  const sell = snap({
+    sourceId: "ramzinex",
+    receivedAtMs: T0 - 89_400,
+    bids: [{ priceToman: 206_000, amountUsdt: 200 }],
+    asks: [{ priceToman: 206_100, amountUsdt: 200 }]
+  });
+  const r = recheckDelayedExecutableBook({
+    ...baseInput({
+      detectionBuy: buy,
+      detectionSell: sell,
+      delayedBuy: undefined,
+      delayedSell: undefined,
+      config: {
+        latency: { baseArrivalDelayMs: 250, maxDelayMs: 5_000, fixedDelayMs: 1_000 },
+        allowPartialFill: true,
+        simulateLegRisk: false,
+        firstLeg: "buy",
+        slippageBufferBps: 5,
+        maxAgeMs: 90_000
+      }
+    })
+  });
+  assert.equal(r.ok, false);
+  if (!r.ok) assert.equal(r.code, "delayed_book_stale");
+  // Evidence must reflect aged arrival books, not raw detection ageMs.
+  assert.ok((r.evidence.delayed.buy.ageMs ?? 0) >= 90_000);
+  assert.equal(r.evidence.delayed.buy.stale, true);
+});
+
+await test("H. engine without delayedSources ages detection (no raw fallback)", () => {
+  const policyValues = {
+    max_order_size_usdt: 500,
+    max_venue_exposure_percent: 80,
+    min_risk_adjusted_edge_percent: 0,
+    max_quote_age_ms: 90_000,
+    max_slippage_bps: 10,
+    max_inventory_deviation_percent: 100
+  };
+  const policies = buildPolicyState(
+    Object.entries(policyValues).map(([key, value]) => ({
+      key: key as never,
+      value,
+      provenance: "ADMIN_APPROVED" as const,
+      setBy: "realism-1",
+      setAt: "2026-09-01T00:00:00.000Z",
+      validForDays: null,
+      note: null
+    })),
+    T0
+  );
+  const buyAsk = 200_000;
+  const sellBid = 206_000;
+  const buy = snap({ sourceId: "tabdeal", receivedAtMs: T0 - 89_500, asks: [{ priceToman: buyAsk, amountUsdt: 200 }], bids: [{ priceToman: buyAsk - 100, amountUsdt: 200 }] });
+  const sell = snap({
+    sourceId: "ramzinex",
+    receivedAtMs: T0 - 89_400,
+    bids: [{ priceToman: sellBid, amountUsdt: 200 }],
+    asks: [{ priceToman: sellBid + 100, amountUsdt: 200 }]
+  });
+  const opp = {
+    id: "lc-age-engine",
+    routeKey: "tabdeal->ramzinex",
+    buySourceId: "tabdeal",
+    sellSourceId: "ramzinex",
+    buySourceName: "tabdeal",
+    sellSourceName: "ramzinex",
+    sizeUsdt: 25,
+    buyVwapToman: buyAsk,
+    sellVwapToman: sellBid,
+    rawSpreadPercent: ((sellBid - buyAsk) / buyAsk) * 100,
+    buyFeeToman: 0,
+    sellFeeToman: 0,
+    buyFeeBps: 25,
+    sellFeeBps: 25,
+    totalFeePercent: 0.5,
+    slippageBufferToman: Math.round(buyAsk * 25 * 0.0005),
+    rebalanceCostToman: 0,
+    netProfitToman: (sellBid - buyAsk) * 25,
+    netEdgePercent: ((sellBid - buyAsk) / buyAsk) * 100,
+    buyCostToman: buyAsk * 25,
+    sellProceedsToman: sellBid * 25,
+    eligibility: "EXECUTABLE_NOW",
+    blockedReasons: [],
+    firstSeenAt: iso(T0),
+    lastSeenAt: iso(T0),
+    endedAt: null,
+    durationMs: 0,
+    maxNetEdgePercent: 1,
+    maxNetProfitToman: (sellBid - buyAsk) * 25,
+    maxRawSpreadPercent: 1,
+    feeUnknown: false,
+    observationCount: 1,
+    isActive: true,
+    buyAgeMs: 100,
+    sellAgeMs: 100
+  };
+  const result = evaluateCycle({
+    opportunities: [opp as never],
+    sources: [buy, sell],
+    // intentionally omit delayedSources — runner path
+    venueStates: [
+      {
+        sourceId: "tabdeal",
+        executable: true,
+        capitalClass: "EXECUTABLE",
+        takerFeeBps: 25,
+        feeProvenance: "ADMIN_CONFIRMED",
+        feeStale: false
+      },
+      {
+        sourceId: "ramzinex",
+        executable: true,
+        capitalClass: "EXECUTABLE",
+        takerFeeBps: 25,
+        feeProvenance: "ADMIN_CONFIRMED",
+        feeStale: false
+      }
+    ] as never[],
+    executedLifecycleIds: new Set(),
+    balances: [
+      { sourceId: "tabdeal" as never, irtToman: 50_000_000_000, usdtMicros: usdtToMicros(50_000) },
+      { sourceId: "ramzinex" as never, irtToman: 50_000_000_000, usdtMicros: usdtToMicros(50_000) }
+    ],
+    sizing: {
+      policies,
+      allocationTomanBySource: new Map([
+        ["tabdeal", 40_000_000_000],
+        ["ramzinex", 40_000_000_000]
+      ]),
+      portfolioValueToman: 100_000_000_000,
+      exposureTomanBySource: new Map([
+        ["tabdeal", 10_000_000_000],
+        ["ramzinex", 10_000_000_000]
+      ]),
+      slippageBufferBps: 5,
+      inventoryModel: {
+        valuationPriceToman: buyAsk,
+        maxDeviationPoints: 100,
+        targets: [
+          { sourceId: "tabdeal", targetUsdtSharePercent: 50 },
+          { sourceId: "ramzinex", targetUsdtSharePercent: 50 }
+        ]
+      }
+    },
+    decisionTimestampMs: T0,
+    paperExecutionRealism: {
+      latency: { baseArrivalDelayMs: 250, maxDelayMs: 5_000, fixedDelayMs: 1_000 },
+      allowPartialFill: true,
+      simulateLegRisk: false,
+      firstLeg: "buy",
+      slippageBufferBps: 5,
+      maxAgeMs: 90_000
+    }
+  });
+  const skips = result.decisions.filter((d) => d.kind === "SKIP");
+  assert.ok(skips.length >= 1, "expected delayed stale skip");
+  const delayedSkip = skips.find((d) => d.kind === "SKIP" && d.code === "delayed_book_stale");
+  assert.ok(delayedSkip, `expected delayed_book_stale, got ${skips.map((s) => s.kind === "SKIP" ? s.code : s.kind).join(",")}`);
+  if (delayedSkip && delayedSkip.kind === "SKIP") {
+    assert.equal(delayedSkip.delayedRecheck?.delayed.buy.stale, true);
+    assert.ok((delayedSkip.delayedRecheck?.delayed.buy.ageMs ?? 0) >= 90_000);
+  }
+});
+
+await test("I. full-size delayed adverse VWAP still syncs candidate fields", () => {
+  const buy = snap({ sourceId: "tabdeal", receivedAtMs: T0 - 200 });
+  const sell = snap({
+    sourceId: "ramzinex",
+    receivedAtMs: T0 - 150,
+    bids: [{ priceToman: 206_000, amountUsdt: 200 }],
+    asks: [{ priceToman: 206_100, amountUsdt: 200 }]
+  });
+  // Adverse but still net-positive delayed books (buy worse, sell slightly worse).
+  const delayedBuy = snap({
+    sourceId: "tabdeal",
+    receivedAtMs: T0 + 200,
+    asks: [{ priceToman: 200_400, amountUsdt: 200 }],
+    bids: [{ priceToman: 200_300, amountUsdt: 200 }]
+  });
+  const delayedSell = snap({
+    sourceId: "ramzinex",
+    receivedAtMs: T0 + 250,
+    bids: [{ priceToman: 205_700, amountUsdt: 200 }],
+    asks: [{ priceToman: 205_800, amountUsdt: 200 }]
+  });
+  const r = recheckDelayedExecutableBook(
+    baseInput({
+      detectionBuy: buy,
+      detectionSell: sell,
+      delayedBuy,
+      delayedSell,
+      plannedSizeUsdt: 50,
+      detectionBuyVwapToman: 200_000,
+      detectionSellVwapToman: 206_000
+    })
+  );
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    assert.equal(r.partial, false);
+    assert.equal(r.fillSizeUsdt, 50);
+    assert.equal(r.evidence.delayed.buyVwapToman, 200_400);
+    assert.equal(r.evidence.delayed.sellVwapToman, 205_700);
+  }
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed`);

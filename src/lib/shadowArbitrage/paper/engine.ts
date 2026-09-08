@@ -235,6 +235,7 @@ export type PaperDecision =
       sizing: SizingResult;
       /** PAPER-V2 realism — delayed book recheck evidence (always present when realism on). */
       delayedRecheck?: DelayedBookEvidence | null;
+      executionOutcome?: "FILLED" | "LEG_RISK";
     }
   | {
       kind: "SKIP";
@@ -428,6 +429,8 @@ export type EvaluateInput = {
    * When omitted, detection books are aged to arrival (stale/coherence still bind).
    */
   delayedSources?: NormalizedSourceSnapshot[];
+  arrivalTimestampMs?: number;
+  postFirstLegTimestampMs?: number;
   /** Optional post-first-leg books for leg-risk simulation (tests / replay). */
   postFirstLegSources?: NormalizedSourceSnapshot[];
   /**
@@ -1629,7 +1632,41 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
         detectionSellVwapToman: sizedCandidate.sellVwapToman,
         detectionEconomicNetPnlToman: plan.ok ? plan.economicNetPnlToman : null,
         detectionRiskAdjustedPnlToman: plan.ok ? plan.riskAdjustedPnlToman : null,
-        config: realismCfg
+        arrivalTimestampMs: input.arrivalTimestampMs,
+        postFirstLegTimestampMs: input.postFirstLegTimestampMs,
+        validatePlan: (p, qty) => {
+          const at = input.postFirstLegTimestampMs ?? input.arrivalTimestampMs ?? decisionTimestampMs;
+          const policy = (key: string) => input.sizing.policies.find(x => x.definition.key === key);
+          for (const key of ["max_order_size_usdt", "min_risk_adjusted_edge_percent", "max_slippage_bps", "max_quote_age_ms", "max_venue_exposure_percent", "max_inventory_deviation_percent"]) {
+            const v = policy(key);
+            if (!v?.configured || v.value === null) return "sizing_missing_policy";
+            if (v.expired || (v.expiresAt && Date.parse(v.expiresAt) <= at)) return "sizing_expired_policy";
+          }
+          if (qty > policy("max_order_size_usdt")!.value!) return "sizing_order_limit";
+          const edgeBps = Math.round(p.riskAdjustedPnlToman / -p.buyLeg.deltaIrtToman * 1e8) / 1e4;
+          if (edgeBps / 100 < policy("min_risk_adjusted_edge_percent")!.value!) return "delayed_edge_below_floor";
+          const free = availableBalances(ledger);
+          for (const leg of [p.buyLeg,p.sellLeg]) {
+            const bal = free.find(b => b.sourceId === leg.sourceId);
+            if (!bal) return "no_balance_record";
+            if (bal.irtToman + leg.deltaIrtToman < 0) return "insufficient_irt";
+            if (bal.usdtMicros + leg.deltaUsdtMicros < 0) return "insufficient_usdt";
+          }
+          const inv = assessInventory({balances:free,model:input.sizing.inventoryModel,deltas:[p.buyLeg,p.sellLeg]});
+          if (!inv.measurable || !inv.withinBand) return "inventory_limit";
+          if (limits) {
+            const cap = routeCapitalToman({sizeUsdt:qty,buyVwapToman:p.buyLeg.vwapToman,sellVwapToman:p.sellLeg.vwapToman,markPriceToman:limits.markPriceToman});
+            const util = computeUtilization({equityToman:limits.equityToman,markPriceToman:limits.markPriceToman,reservedBuyIrtToman:reservedBuyIrt,reservedSellUsdtMicros});
+            if (util.wouldBreach(cap,maxUtil,minReserve)) return "portfolio_utilization_cap";
+            for (const leg of [p.buyLeg,p.sellLeg]) {
+              if (!venueExposureAfter({currentExposureToman:liveExposure.get(leg.sourceId)??0,addToman:leg.notionalToman,equityToman:limits.equityToman,maxVenuePercent:maxVenue})) return "venue_exposure_cap";
+            }
+          }
+          return null;
+        },
+        config: { ...realismCfg, maxSlippageBps: input.sizing.policies.find(p=>p.definition.key === "max_slippage_bps")?.value ?? 0, maxAgeMs: Math.min(realismCfg.maxAgeMs ?? SHADOW_STALE_MS,
+          input.sizing.policies.find(p=>p.definition.key === "max_quote_age_ms")?.value ?? SHADOW_STALE_MS),
+          maxCrossVenueSkewMs: input.maxCrossVenueSkewMs ?? realismCfg.maxCrossVenueSkewMs }
       });
       if (!recheck.ok) {
         decisions.push({
@@ -1656,6 +1693,19 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
         sellVwapToman: (recheck.evidence.delayed.sellVwapToman as number),
         slippageBufferToman: recheck.plan.slippageBufferToman
       };
+      const buyDebit = -plan.buyLeg.deltaIrtToman;
+      const locked = buyDebit + Math.round(-plan.sellLeg.deltaUsdtMicros / 1e6 * plan.markPriceToman);
+      const edgeBps = buyDebit > 0 ? Math.round(plan.riskAdjustedPnlToman/buyDebit*1e8)/1e4 : 0;
+      sizing = { ...sizing, sizeUsdtMicros: Math.round(recheck.fillSizeUsdt * 1e6),
+        quote: sizing.quote ? {...sizing.quote, buyVwapToman:plan.buyLeg.vwapToman,sellVwapToman:plan.sellLeg.vwapToman,markPriceToman:plan.markPriceToman} : sizing.quote,
+        economics: sizing.economics ? {...sizing.economics,capitalInvolvedToman:buyDebit,buyDebitIrtToman:buyDebit,
+          sellDebitUsdtMicros:-plan.sellLeg.deltaUsdtMicros,capitalLockedToman:locked,
+          cashPnlIrtToman:plan.cashPnlIrtToman,inventoryDeltaUsdtMicros:plan.inventoryDeltaUsdtMicros,
+          economicNetPnlToman:plan.economicNetPnlToman,riskAdjustedPnlToman:plan.riskAdjustedPnlToman,
+          slippageBufferToman:plan.slippageBufferToman,riskAdjustedEdgePercent:edgeBps/100,riskAdjustedReturnBps:edgeBps} : sizing.economics,
+        audit: { ...sizing.audit, detectionSizing: sizing.audit ?? null, delayedRecheck: recheck.evidence,
+          actualBuySizeUsdt: plan.buyLeg.sizeUsdt, actualSellSizeUsdt: plan.sellLeg.sizeUsdt } as unknown as SizingResult["audit"] };
+      sizingByRoute.set(venuePairKey,sizing);
       // Stash evidence on a local for EXECUTE push below.
       (sizedCandidate as PaperCandidate & { __delayedRecheck?: DelayedBookEvidence }).__delayedRecheck =
         recheck.evidence;
@@ -1748,18 +1798,22 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       );
     }
 
-    executedCount += 1;
     const delayedEvidence =
       (sizedCandidate as PaperCandidate & { __delayedRecheck?: DelayedBookEvidence })
         .__delayedRecheck ?? null;
+    const executionOutcome = delayedEvidence?.outcome === "LEG_RISK" ? "LEG_RISK" : "FILLED";
+    if (executionOutcome === "FILLED") executedCount += 1;
     decisions.push({
       kind: "EXECUTE",
       candidate: sizedCandidate,
       plan,
       balancesAfter: committed.balancesAfter,
       sizing,
-      delayedRecheck: delayedEvidence
+      delayedRecheck: delayedEvidence,
+      executionOutcome
     });
+    // An unmatched leg requires operator review; never keep opening routes.
+    if (executionOutcome === "LEG_RISK") break;
   }
 
   const peakUtilizationPercent =
@@ -1774,7 +1828,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
   if (portfolioTelemetry) {
     const executed = decisions.filter(
       (decision): decision is Extract<PaperDecision, { kind: "EXECUTE" }> =>
-        decision.kind === "EXECUTE"
+        decision.kind === "EXECUTE" && decision.executionOutcome !== "LEG_RISK"
     );
     const actualCapital = executed.reduce(
       (sum, decision) =>

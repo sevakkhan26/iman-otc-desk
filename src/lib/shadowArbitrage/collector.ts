@@ -294,7 +294,8 @@ async function runCycleLocked(input: {
       occurredAt: serverNow,
       cycleStatus: status,
       sources: aged,
-      opportunities: activeOpportunities
+      opportunities: activeOpportunities,
+      observeSources: (freshAfterMs) => collectAllShadowSources({ freshAfterMs })
     },
     (message, extra) => console.error(message, extra)
   );

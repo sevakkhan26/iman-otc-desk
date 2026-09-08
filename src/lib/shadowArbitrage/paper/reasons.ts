@@ -13,6 +13,10 @@ import type { BlockedReasonCode, OpportunityEligibility } from "@/lib/shadowArbi
 
 /** Every reason the paper engine may record. Deliberately specific. */
 export type PaperReasonCode =
+  | "sizing_order_limit"
+  | "delayed_edge_below_floor"
+  | "post_leg_observation_missing"
+  | "delayed_observation_missing"
   // upstream opportunity state
   | "account_not_ready"
   | "fee_unknown"
@@ -66,6 +70,10 @@ export type PaperReasonCode =
   | "leg_risk_second_leg_failed";
 
 export const PAPER_REASON_FA: Record<PaperReasonCode, string> = {
+  sizing_order_limit: "حجم معامله از سقف سفارش بیشتر است",
+  delayed_edge_below_floor: "حاشیهٔ پس از تأخیر از کف سیاست کمتر است",
+  post_leg_observation_missing: "مشاهدهٔ پای دوم در دسترس نیست",
+  delayed_observation_missing: "مشاهدهٔ تازه در زمان رسیدن سفارش دریافت نشده است",
   account_not_ready: "حساب کاربری صرافی آماده نیست",
   fee_unknown: "کارمزد تأییدنشده",
   fee_stale: "اعتبار کارمزد منقضی شده است",
@@ -152,6 +160,9 @@ const FROM_UPSTREAM: Record<BlockedReasonCode, PaperReasonCode> = {
  * primary, which is what keeps the compact per-cycle counts stable.
  */
 const PRIORITY: PaperReasonCode[] = [
+  "delayed_edge_below_floor",
+  "post_leg_observation_missing",
+  "delayed_observation_missing",
   "same_venue",
   "reference_only",
   "account_not_ready",

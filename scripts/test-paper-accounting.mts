@@ -155,5 +155,10 @@ await test("free equals total balance under immediate-fill model", () => {
   }
 });
 
+await test("unmatched leg fees and exposure remain visible without inventing closed profit", () => {
+  const risk: AccountingFill={...fill,id:"risk",outcome:"LEG_RISK",economicNetPnlToman:-50000,inventoryDeltaUsdtMicros:100000000};
+  const a=buildPortfolioAccounting({asOf,initialCapitalToman:10000000000,markPriceToman:200000,balances:balances as never,opening,fills:[risk],todayStartMs:tehranDayStartMs(Date.parse(asOf))});
+  assert.equal(a.realizedEconomicPnlToman,0);assert.equal(a.openPositions.length,1);assert.equal(a.openPositions[0].inventoryDeltaUsdtMicros,100000000);assert.equal(a.fees.feeToman,50000);assert.equal(a.fees.feeUsdtMicros,25000);
+});
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

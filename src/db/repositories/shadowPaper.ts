@@ -64,7 +64,7 @@ export type PaperLedgerRow = {
   runId: string | null;
   lifecycleId: string;
   routeKey: string;
-  outcome: "FILLED" | "SKIPPED";
+  outcome: "FILLED" | "SKIPPED" | "LEG_RISK";
   rejectionCode: string | null;
   rejectionReason: string | null;
   requiredRebalance: string | null;
@@ -324,6 +324,11 @@ export async function setPaperSessionStatus(
         .from(shadowPaperSessions)
         .where(eq(shadowPaperSessions.id, id))
         .limit(1);
+      if (status === "RUNNING") {
+        const exposure = await db.select({id: shadowPaperLedger.id}).from(shadowPaperLedger)
+          .where(and(eq(shadowPaperLedger.sessionId, id), eq(shadowPaperLedger.outcome, "LEG_RISK"))).limit(1);
+        if (exposure.length) throw new Error("Paper session has unresolved leg exposure; resume is blocked");
+      }
       if (status === "RUNNING" && !existing[0]?.startedAt) patch.startedAt = now;
       await db.update(shadowPaperSessions).set(patch).where(eq(shadowPaperSessions.id, id));
     });
@@ -594,7 +599,7 @@ export async function loadFilledLifecycleIds(sessionId: string): Promise<Set<str
       db
         .select({ lifecycleId: shadowPaperLedger.lifecycleId })
         .from(shadowPaperLedger)
-        .where(and(eq(shadowPaperLedger.sessionId, sessionId), eq(shadowPaperLedger.outcome, "FILLED")))
+        .where(and(eq(shadowPaperLedger.sessionId, sessionId), inArray(shadowPaperLedger.outcome, ["FILLED", "LEG_RISK"])))
     );
     return new Set(rows.map((r) => r.lifecycleId));
   } catch {
@@ -603,6 +608,8 @@ export async function loadFilledLifecycleIds(sessionId: string): Promise<Set<str
 }
 
 export type PaperFillRecord = {
+  executionOutcome?: "FILLED" | "LEG_RISK";
+  executionEvidence?: Record<string, unknown> | null;
   lifecycleId: string;
   routeKey: string;
   buySourceId: string;
@@ -733,6 +740,7 @@ function decisionKeyOf(outcome: string, reasonCodes: string[]): string {
  */
 export async function commitPaperCycle(input: {
   sessionId: string;
+  requireRunning?: boolean;
   runId: string | null;
   occurredAt: string;
   fills: PaperFillRecord[];
@@ -824,6 +832,10 @@ export async function commitPaperCycle(input: {
         const key = `${input.sessionId}|${f.lifecycleId}`;
         try {
           await db.transaction(async (tx) => {
+            if (input.requireRunning) {
+              const [active] = await tx.select().from(shadowPaperSessions).where(eq(shadowPaperSessions.id,input.sessionId));
+              if (!active || active.status !== "RUNNING") throw new Error("paper session no longer running");
+            }
             await tx.insert(shadowPaperLedger).values({
               id: randomUUID(),
               sessionId: input.sessionId,
@@ -831,11 +843,11 @@ export async function commitPaperCycle(input: {
               idempotencyKey: key,
               lifecycleId: f.lifecycleId,
               routeKey: f.routeKey,
-              outcome: "FILLED",
-              eventType: "FILLED",
-              reasonCodes: [],
-              rejectionCode: null,
-              rejectionReason: null,
+              outcome: f.executionOutcome ?? "FILLED",
+              eventType: f.executionOutcome ?? "FILLED",
+              reasonCodes: f.executionOutcome === "LEG_RISK" ? ["leg_risk_second_leg_failed"] : [],
+              rejectionCode: f.executionOutcome === "LEG_RISK" ? "leg_risk_second_leg_failed" : null,
+              rejectionReason: f.executionOutcome === "LEG_RISK" ? "معامله نیمه‌تمام؛ موجودی پای اول ثبت شد و جلسه متوقف است" : null,
               requiredRebalance: null,
               buySourceId: f.buySourceId,
               sellSourceId: f.sellSourceId,
@@ -890,10 +902,14 @@ export async function commitPaperCycle(input: {
               nextLargerRejectionCode: f.sizing?.nextLargerRejectionCode ?? null,
               nextLargerRejectionReason: f.sizing?.nextLargerRejectionReason ?? null,
               nextLargerMarginalPnlToman: f.sizing?.nextLargerMarginalPnlToman ?? null,
-              sizingAudit: f.sizing?.audit ?? null,
+              sizingAudit: f.executionEvidence ? { ...(f.sizing?.audit ?? {}), delayedRecheck:f.executionEvidence,
+                executionOutcome:f.executionOutcome ?? "FILLED" } : f.sizing?.audit ?? null,
               occurredAt: input.occurredAt,
               createdAt: input.occurredAt
             });
+            if (f.executionOutcome === "LEG_RISK") {
+              await tx.update(shadowPaperSessions).set({status:"PAUSED",pausedAt:input.occurredAt,updatedAt:input.occurredAt}).where(eq(shadowPaperSessions.id,input.sessionId));
+            }
             for (const b of f.balancesAfter) {
               // A negative balance must never reach the database.
               if (b.irtToman < 0 || b.usdtMicros < 0) {
@@ -909,7 +925,8 @@ export async function commitPaperCycle(input: {
                 .where(eq(shadowPaperBalances.id, `${input.sessionId}|${b.sourceId}`));
             }
           });
-          filled += 1;
+          if (f.executionOutcome !== "LEG_RISK") filled += 1;
+          else reasonCounts["leg_risk_second_leg_failed"] = (reasonCounts["leg_risk_second_leg_failed"] ?? 0)+1;
           detailedEventsWritten += 1;
         } catch (e) {
           // A duplicate simply means this lifecycle was already filled — that is
@@ -920,7 +937,7 @@ export async function commitPaperCycle(input: {
             throw e;
           }
         }
-        await upsertState(f, "FILLED", null, []);
+        await upsertState(f, f.executionOutcome ?? "FILLED", f.executionOutcome === "LEG_RISK" ? "leg_risk_second_leg_failed" : null, f.executionOutcome === "LEG_RISK" ? ["leg_risk_second_leg_failed"] : []);
       }
 
       for (const k of input.skips) {
@@ -1177,7 +1194,7 @@ export async function countPaperLedger(
 export async function loadPaperLedger(
   sessionId: string,
   options: {
-    outcome?: "FILLED" | "SKIPPED";
+    outcome?: "FILLED" | "SKIPPED" | "LEG_RISK";
     limit?: number;
     /** Server-side offset for pagination (no silent 2,000-row UI cap). */
     offset?: number;
@@ -1208,7 +1225,7 @@ export async function loadPaperLedger(
       runId: r.runId,
       lifecycleId: r.lifecycleId,
       routeKey: r.routeKey,
-      outcome: r.outcome === "FILLED" ? "FILLED" : "SKIPPED",
+      outcome: r.outcome === "FILLED" ? "FILLED" : r.outcome === "LEG_RISK" ? "LEG_RISK" : "SKIPPED",
       rejectionCode: r.rejectionCode,
       rejectionReason: r.rejectionReason,
       requiredRebalance: r.requiredRebalance,
@@ -1268,6 +1285,7 @@ export async function loadPaperLedger(
 /** Aggregates for the dashboard and the health endpoint. */
 export async function loadPaperStats(sessionId: string): Promise<{
   filled: number;
+  legRisk: number;
   skipped: number;
   cashPnlIrtToman: number;
   inventoryDeltaUsdtMicros: number;
@@ -1281,6 +1299,7 @@ export async function loadPaperStats(sessionId: string): Promise<{
 }> {
   const empty = {
     filled: 0,
+    legRisk: 0,
     skipped: 0,
     cashPnlIrtToman: 0,
     inventoryDeltaUsdtMicros: 0,
@@ -1295,9 +1314,11 @@ export async function loadPaperStats(sessionId: string): Promise<{
   try {
     const rows = await loadPaperLedger(sessionId, { limit: 500 });
     const fills = rows.filter((r) => r.outcome === "FILLED");
+    const risks = rows.filter((r) => r.outcome === "LEG_RISK");
+    const settlements = [...fills, ...risks];
     const skips = rows.filter((r) => r.outcome === "SKIPPED");
     const byReason = new Map<string, { reasonFa: string; count: number }>();
-    for (const s of skips) {
+    for (const s of [...skips, ...risks]) {
       const code = s.rejectionCode ?? "unknown";
       const cur = byReason.get(code);
       if (cur) cur.count += 1;
@@ -1305,14 +1326,15 @@ export async function loadPaperStats(sessionId: string): Promise<{
     }
     return {
       filled: fills.length,
+      legRisk: risks.length,
       skipped: skips.length,
-      cashPnlIrtToman: fills.reduce((s, f) => s + (f.cashPnlIrtToman ?? 0), 0),
-      inventoryDeltaUsdtMicros: fills.reduce((s, f) => s + (f.inventoryDeltaUsdtMicros ?? 0), 0),
-      sellFeeValueToman: fills.reduce((s, f) => s + (f.sellFeeValueToman ?? 0), 0),
-      economicNetPnlToman: fills.reduce((s, f) => s + (f.economicNetPnlToman ?? 0), 0),
-      riskAdjustedPnlToman: fills.reduce((s, f) => s + (f.riskAdjustedPnlToman ?? 0), 0),
-      feeTomanTotal: fills.reduce((s, f) => s + (f.feeTomanTotal ?? 0), 0),
-      feeUsdtMicrosTotal: fills.reduce((s, f) => s + (f.feeUsdtMicrosTotal ?? 0), 0),
+      cashPnlIrtToman: settlements.reduce((s, f) => s + (f.cashPnlIrtToman ?? 0), 0),
+      inventoryDeltaUsdtMicros: settlements.reduce((s, f) => s + (f.inventoryDeltaUsdtMicros ?? 0), 0),
+      sellFeeValueToman: settlements.reduce((s, f) => s + (f.sellFeeValueToman ?? 0), 0),
+      economicNetPnlToman: settlements.reduce((s, f) => s + (f.economicNetPnlToman ?? 0), 0),
+      riskAdjustedPnlToman: settlements.reduce((s, f) => s + (f.riskAdjustedPnlToman ?? 0), 0),
+      feeTomanTotal: settlements.reduce((s, f) => s + (f.feeTomanTotal ?? 0), 0),
+      feeUsdtMicrosTotal: settlements.reduce((s, f) => s + (f.feeUsdtMicrosTotal ?? 0), 0),
       blockReasons: [...byReason.entries()]
         .map(([code, v]) => ({ code, reasonFa: v.reasonFa, count: v.count }))
         .sort((a, b) => b.count - a.count || a.code.localeCompare(b.code)),

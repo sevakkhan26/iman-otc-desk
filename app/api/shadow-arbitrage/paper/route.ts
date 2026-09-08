@@ -185,6 +185,7 @@ async function snapshot(reasonFilter: string | null = null) {
       session: null,
       balances: [],
       trades: [],
+      legRisks: [],
       transitions: [],
       candidates: [],
       reasonBreakdown: [],
@@ -193,7 +194,7 @@ async function snapshot(reasonFilter: string | null = null) {
       accounting: null
     };
   }
-  const [balances, trades, transitions, stats, reasonBreakdown, candidates, cycleSummaries] =
+  const [balances, trades, transitions, stats, reasonBreakdown, candidates, cycleSummaries, legRisks] =
     await Promise.all([
       loadPaperBalances(session.id),
       // Financial history is append-only and must not be capped by opportunity retention.
@@ -207,7 +208,8 @@ async function snapshot(reasonFilter: string | null = null) {
         openOnly: true,
         limit: 200
       }),
-      loadCycleSummaries(session.id, 60)
+      loadCycleSummaries(session.id, 60),
+      loadPaperLedger(session.id, {outcome:"LEG_RISK",limit:2000})
     ]);
 
   // Inventory drift: where the virtual book stands versus how it opened.
@@ -226,7 +228,7 @@ async function snapshot(reasonFilter: string | null = null) {
     };
   });
 
-  const evaluated = stats.filled + stats.skipped;
+  const evaluated = stats.filled + stats.skipped + stats.legRisk;
   return {
     session,
     balances: balances.map((b) => {
@@ -242,6 +244,7 @@ async function snapshot(reasonFilter: string | null = null) {
       };
     }),
     trades,
+    legRisks,
     transitions,
     candidates,
     reasonBreakdown,
@@ -910,7 +913,7 @@ export async function GET(request: Request) {
         markPriceToman: markForAccounting,
         balances: sizingBalances,
         opening: snap.session.openingAllocations ?? [],
-        fills: (snap.trades ?? []).map(
+        fills: [...(snap.trades ?? []), ...(snap.legRisks ?? [])].map(
           (t): AccountingFill => ({
             id: t.id,
             lifecycleId: t.lifecycleId,
@@ -932,7 +935,8 @@ export async function GET(request: Request) {
             slippageBufferToman: t.slippageBufferToman,
             markPriceToman: t.markPriceToman,
             occurredAt: t.occurredAt,
-            outcome: "FILLED"
+            outcome: t.outcome,
+            inventoryDeltaUsdtMicros: t.inventoryDeltaUsdtMicros
           })
         ),
         todayStartMs: tehranDayStartMs(Date.parse(asOf))

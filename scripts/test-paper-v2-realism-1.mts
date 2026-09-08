@@ -15,7 +15,7 @@ import { planFill, settlementFor, usdtToMicros } from "../src/lib/shadowArbitrag
 import { evaluateCycle, paperReasonFromSizing } from "../src/lib/shadowArbitrage/paper/engine.ts";
 import type { SizingResult } from "../src/lib/shadowArbitrage/paper/sizing.ts";
 import type { NormalizedSourceSnapshot } from "../src/lib/shadowArbitrage/types.ts";
-import { seedLocalPaperExecutionLimits } from "../src/lib/shadowArbitrage/paper/venueExecutionLimits.ts";
+import { clearVenueExecutionLimitsRegistry, seedLocalPaperExecutionLimits } from "../src/lib/shadowArbitrage/paper/venueExecutionLimits.ts";
 import { buildPolicyState } from "../src/lib/shadowArbitrage/live/policy.ts";
 
 seedLocalPaperExecutionLimits({ minNotionalUsdt: 5, quantityStepUsdt: 0.01 });
@@ -112,10 +112,10 @@ function snap(over: {
 const T0 = Date.parse("2026-09-07T09:00:00.000Z");
 
 function baseInput(over: Partial<Parameters<typeof recheckDelayedExecutableBook>[0]> = {}) {
-  const buy = snap({ sourceId: "tabdeal", receivedAtMs: T0 - 200 });
+  const buy = snap({ sourceId: "tabdeal", receivedAtMs: T0 + 300 });
   const sell = snap({
     sourceId: "ramzinex",
-    receivedAtMs: T0 - 150,
+    receivedAtMs: T0 + 300,
     bids: [{ priceToman: 206_000, amountUsdt: 200 }],
     asks: [{ priceToman: 206_100, amountUsdt: 200 }]
   });
@@ -183,7 +183,7 @@ await test("1. liquidity survives => remains fill-eligible", () => {
 await test("2. best level disappears => reject", () => {
   const buyGone = snap({
     sourceId: "tabdeal",
-    receivedAtMs: T0 - 200,
+    receivedAtMs: T0 + 300,
     asks: [{ priceToman: 200_000, amountUsdt: 200 }],
     bids: [{ priceToman: 199_000, amountUsdt: 200 }]
   });
@@ -211,13 +211,13 @@ await test("2. best level disappears => reject", () => {
 await test("3. depth shrinks below plan (no partial) => reject exact blocker", () => {
   const thinBuy = snap({
     sourceId: "tabdeal",
-    receivedAtMs: T0 - 200,
+    receivedAtMs: T0 + 300,
     asks: [{ priceToman: 200_000, amountUsdt: 10 }], // plan 50
     bids: [{ priceToman: 199_000, amountUsdt: 200 }]
   });
   const thinSell = snap({
     sourceId: "ramzinex",
-    receivedAtMs: T0 - 150,
+    receivedAtMs: T0 + 300,
     bids: [{ priceToman: 206_000, amountUsdt: 10 }],
     asks: [{ priceToman: 206_100, amountUsdt: 200 }]
   });
@@ -241,13 +241,13 @@ await test("3. depth shrinks below plan (no partial) => reject exact blocker", (
 await test("3b. depth shrinks but partial allowed => FILL_PARTIAL when still profitable", () => {
   const thinBuy = snap({
     sourceId: "tabdeal",
-    receivedAtMs: T0 - 200,
+    receivedAtMs: T0 + 300,
     asks: [{ priceToman: 200_000, amountUsdt: 20 }],
     bids: [{ priceToman: 199_000, amountUsdt: 200 }]
   });
   const thinSell = snap({
     sourceId: "ramzinex",
-    receivedAtMs: T0 - 150,
+    receivedAtMs: T0 + 300,
     bids: [{ priceToman: 206_000, amountUsdt: 20 }],
     asks: [{ priceToman: 206_100, amountUsdt: 200 }]
   });
@@ -278,13 +278,13 @@ await test("4. delayed VWAP makes net <= 0 => reject", () => {
   // Adverse move: buy ask up, sell bid down => edge dies
   const badBuy = snap({
     sourceId: "tabdeal",
-    receivedAtMs: T0 - 200,
+    receivedAtMs: T0 + 300,
     asks: [{ priceToman: 205_200, amountUsdt: 200 }],
     bids: [{ priceToman: 205_000, amountUsdt: 200 }]
   });
   const badSell = snap({
     sourceId: "ramzinex",
-    receivedAtMs: T0 - 150,
+    receivedAtMs: T0 + 300,
     bids: [{ priceToman: 205_050, amountUsdt: 200 }],
     asks: [{ priceToman: 205_100, amountUsdt: 200 }]
   });
@@ -319,7 +319,8 @@ await test("5. delayed book stale/incoherent => reject", () => {
         allowPartialFill: false,
         simulateLegRisk: false,
         slippageBufferBps: 5,
-        maxAgeMs: 90_000
+        maxAgeMs: 90_000,
+        requireArrivalObservation: false
       }
     })
   );
@@ -348,7 +349,8 @@ await test("5. delayed book stale/incoherent => reject", () => {
         allowPartialFill: false,
         simulateLegRisk: false,
         slippageBufferBps: 5,
-        maxCrossVenueSkewMs: 2_500
+        maxCrossVenueSkewMs: 2_500,
+        requireArrivalObservation: false
       }
     })
   );
@@ -356,7 +358,7 @@ await test("5. delayed book stale/incoherent => reject", () => {
   if (!r2.ok) assert.equal(r2.code, "delayed_book_incoherent");
 });
 
-await test("6. original+delayed evidence persisted", () => {
+await test("6. original+delayed evidence returned by pure module", () => {
   const r = recheckDelayedExecutableBook(baseInput());
   assert.ok(r.evidence.version === "paper_v2_delayed_recheck_v1");
   assert.ok(r.evidence.detection.sizeUsdt === 50);
@@ -387,13 +389,13 @@ await test("8. no negative-after-fee route becomes fillable", () => {
       // Force detection-like bad prices on delayed book
       delayedBuy: snap({
         sourceId: "tabdeal",
-        receivedAtMs: T0 - 200,
+        receivedAtMs: T0 + 300,
         asks: [{ priceToman: 210_000, amountUsdt: 200 }],
         bids: [{ priceToman: 209_800, amountUsdt: 200 }]
       }),
       delayedSell: snap({
         sourceId: "ramzinex",
-        receivedAtMs: T0 - 150,
+        receivedAtMs: T0 + 300,
         bids: [{ priceToman: 210_050, amountUsdt: 200 }],
         asks: [{ priceToman: 210_100, amountUsdt: 200 }]
       })
@@ -410,10 +412,10 @@ await test("8. no negative-after-fee route becomes fillable", () => {
   }
 });
 
-await test("E. leg-risk second leg fails => reject (no atomic fantasy)", () => {
+await test("E. leg-risk second leg fails => settle first-leg exposure", () => {
   const postSell = snap({
     sourceId: "ramzinex",
-    receivedAtMs: T0 - 150,
+    receivedAtMs: T0 + 300,
     bids: [{ priceToman: 206_000, amountUsdt: 200 }],
     asks: [{ priceToman: 206_100, amountUsdt: 200 }]
   });
@@ -437,10 +439,12 @@ await test("E. leg-risk second leg fails => reject (no atomic fantasy)", () => {
       }
     })
   );
-  assert.equal(r.ok, false);
-  if (!r.ok) {
-    assert.equal(r.outcome, "LEG_RISK_SECOND_LEG_FAILED");
-    assert.equal(r.code, "leg_risk_second_leg_failed");
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    assert.equal(r.outcome, "LEG_RISK");
+    assert.equal(r.plan.buyLeg.sizeUsdt, 50);
+    assert.equal(r.plan.sellLeg.sizeUsdt, 0);
+    assert.ok(r.plan.inventoryDeltaUsdtMicros > 0);
     assert.ok(r.evidence.legRisk?.simulated);
   }
 });
@@ -448,7 +452,7 @@ await test("E. leg-risk second leg fails => reject (no atomic fantasy)", () => {
 await test("E. crossed/NaN delayed book => delayed_book_invalid", () => {
   const crossed = snap({
     sourceId: "tabdeal",
-    receivedAtMs: T0 - 200,
+    receivedAtMs: T0 + 300,
     bids: [{ priceToman: 201_000, amountUsdt: 50 }],
     asks: [{ priceToman: 200_000, amountUsdt: 50 }] // crossed
   });
@@ -516,7 +520,8 @@ await test("G. omitted delayed books age via snapshotAtArrival → delayed_book_
         simulateLegRisk: false,
         firstLeg: "buy",
         slippageBufferBps: 5,
-        maxAgeMs: 90_000
+        maxAgeMs: 90_000,
+        requireArrivalObservation: false
       }
     })
   });
@@ -527,7 +532,7 @@ await test("G. omitted delayed books age via snapshotAtArrival → delayed_book_
   assert.equal(r.evidence.delayed.buy.stale, true);
 });
 
-await test("H. engine without delayedSources ages detection (no raw fallback)", () => {
+await test("H. engine without arrival observations rejects execution", () => {
   const policyValues = {
     max_order_size_usdt: 500,
     max_venue_exposure_percent: 80,
@@ -654,8 +659,8 @@ await test("H. engine without delayedSources ages detection (no raw fallback)", 
   });
   const skips = result.decisions.filter((d) => d.kind === "SKIP");
   assert.ok(skips.length >= 1, "expected delayed stale skip");
-  const delayedSkip = skips.find((d) => d.kind === "SKIP" && d.code === "delayed_book_stale");
-  assert.ok(delayedSkip, `expected delayed_book_stale, got ${skips.map((s) => s.kind === "SKIP" ? s.code : s.kind).join(",")}`);
+  const delayedSkip = skips.find((d) => d.kind === "SKIP" && d.code === "delayed_observation_missing");
+  assert.ok(delayedSkip, `expected delayed_observation_missing, got ${skips.map((s) => s.kind === "SKIP" ? s.code : s.kind).join(",")}`);
   if (delayedSkip && delayedSkip.kind === "SKIP") {
     assert.equal(delayedSkip.delayedRecheck?.delayed.buy.stale, true);
     assert.ok((delayedSkip.delayedRecheck?.delayed.buy.ageMs ?? 0) >= 90_000);
@@ -663,23 +668,23 @@ await test("H. engine without delayedSources ages detection (no raw fallback)", 
 });
 
 await test("I. full-size delayed adverse VWAP still syncs candidate fields", () => {
-  const buy = snap({ sourceId: "tabdeal", receivedAtMs: T0 - 200 });
+  const buy = snap({ sourceId: "tabdeal", receivedAtMs: T0 + 300 });
   const sell = snap({
     sourceId: "ramzinex",
-    receivedAtMs: T0 - 150,
+    receivedAtMs: T0 + 300,
     bids: [{ priceToman: 206_000, amountUsdt: 200 }],
     asks: [{ priceToman: 206_100, amountUsdt: 200 }]
   });
   // Adverse but still net-positive delayed books (buy worse, sell slightly worse).
   const delayedBuy = snap({
     sourceId: "tabdeal",
-    receivedAtMs: T0 + 200,
+    receivedAtMs: T0 + 300,
     asks: [{ priceToman: 200_400, amountUsdt: 200 }],
     bids: [{ priceToman: 200_300, amountUsdt: 200 }]
   });
   const delayedSell = snap({
     sourceId: "ramzinex",
-    receivedAtMs: T0 + 250,
+    receivedAtMs: T0 + 300,
     bids: [{ priceToman: 205_700, amountUsdt: 200 }],
     asks: [{ priceToman: 205_800, amountUsdt: 200 }]
   });
@@ -703,5 +708,64 @@ await test("I. full-size delayed adverse VWAP still syncs candidate fields", () 
   }
 });
 
+await test("new: detection snapshot cannot masquerade as arrival evidence", () => {
+  const r = recheckDelayedExecutableBook(baseInput({ delayedBuy: snap({sourceId:"tabdeal",receivedAtMs:T0}) }));
+  assert.equal(r.ok,false);
+  if (!r.ok) assert.equal(r.code,"delayed_book_invalid");
+});
+await test("new: second-leg profitable price actually settles at new price", () => {
+  const r = recheckDelayedExecutableBook(baseInput({
+    postFirstLegSell:snap({sourceId:"ramzinex",receivedAtMs:T0+600,bids:[{priceToman:205000,amountUsdt:200}],asks:[{priceToman:205100,amountUsdt:200}]}),
+    postFirstLegTimestampMs:T0+600,
+    config:{...baseInput().config,simulateLegRisk:true}
+  }));
+  assert.equal(r.ok,true);
+  if(r.ok) { assert.equal(r.outcome,"FILL_FULL"); assert.equal(r.plan.sellLeg.vwapToman,205000); assert.equal(r.plan.sellLeg.notionalToman,10250000); }
+});
+await test("new: adverse second leg preserves first-leg balance exposure", () => {
+  const r = recheckDelayedExecutableBook(baseInput({
+    postFirstLegSell:snap({sourceId:"ramzinex",receivedAtMs:T0+600,bids:[{priceToman:190000,amountUsdt:200}],asks:[{priceToman:190100,amountUsdt:200}]}),
+    postFirstLegTimestampMs:T0+600,
+    config:{...baseInput().config,simulateLegRisk:true}
+  }));
+  assert.equal(r.ok,true);
+  if(r.ok) { assert.equal(r.outcome,"LEG_RISK"); assert.equal(r.plan.buyLeg.sizeUsdt,50); assert.equal(r.plan.sellLeg.sizeUsdt,0); assert.equal(r.plan.inventoryDeltaUsdtMicros,50000000); assert.ok(r.plan.cashPnlIrtToman<0); }
+});
+await test("new: partial second leg settles only observed amount", () => {
+  const r = recheckDelayedExecutableBook(baseInput({
+    postFirstLegSell:snap({sourceId:"ramzinex",receivedAtMs:T0+600,bids:[{priceToman:206000,amountUsdt:20}],asks:[{priceToman:206100,amountUsdt:200}]}),
+    postFirstLegTimestampMs:T0+600,
+    config:{...baseInput().config,simulateLegRisk:true}
+  }));
+  assert.equal(r.ok,true);
+  if(r.ok) { assert.equal(r.outcome,"LEG_RISK"); assert.equal(r.plan.buyLeg.sizeUsdt,50); assert.equal(r.plan.sellLeg.sizeUsdt,20); assert.ok(r.plan.inventoryDeltaUsdtMicros>29000000); }
+});
+await test("new: policy floor blocks before any first-leg settlement", () => {
+  const r = recheckDelayedExecutableBook(baseInput({validatePlan:()=>"delayed_edge_below_floor"}));
+  assert.equal(r.ok,false);
+  if(!r.ok) assert.equal(r.code,"delayed_edge_below_floor");
+  assert.equal(r.evidence.legRisk,null);
+});
+await test("new: venue minimum survives delayed partial sizing", () => {
+  clearVenueExecutionLimitsRegistry();
+  seedLocalPaperExecutionLimits({minNotionalUsdt:20,quantityStepUsdt:1});
+  try {
+    const r=recheckDelayedExecutableBook(baseInput({delayedBuy:snap({sourceId:"tabdeal",receivedAtMs:T0+300,asks:[{priceToman:200000,amountUsdt:10.55}]}),config:{...baseInput().config,allowPartialFill:true}}));
+    assert.equal(r.ok,false);
+    if(!r.ok) assert.equal(r.code,"partial_below_minimum");
+  } finally { clearVenueExecutionLimitsRegistry(); seedLocalPaperExecutionLimits({minNotionalUsdt:5,quantityStepUsdt:0.01}); }
+});
+await test("new: sell-first failure records cash and negative inventory delta", () => {
+  const r=recheckDelayedExecutableBook(baseInput({postFirstLegBuy:{...snap({sourceId:"tabdeal",receivedAtMs:T0+600}),bookAsks:null,userBuyPriceToman:null,bestAskToman:null},postFirstLegTimestampMs:T0+600,config:{...baseInput().config,simulateLegRisk:true,firstLeg:"sell"}}));
+  assert.ok(r.ok); if(r.ok){assert.equal(r.outcome,"LEG_RISK");assert.equal(r.plan.buyLeg.sizeUsdt,0);assert.equal(r.plan.sellLeg.sizeUsdt,50);assert.ok(r.plan.cashPnlIrtToman>0);assert.ok(r.plan.inventoryDeltaUsdtMicros<0);}
+});
+await test("new: stale second observation leaves a recorded first leg", () => {
+  const r=recheckDelayedExecutableBook(baseInput({postFirstLegSell:snap({sourceId:"ramzinex",receivedAtMs:T0-200000}),postFirstLegTimestampMs:T0+600,config:{...baseInput().config,simulateLegRisk:true}}));
+  assert.ok(r.ok);if(r.ok){assert.equal(r.outcome,"LEG_RISK");assert.equal(r.plan.sellLeg.sizeUsdt,0);assert.equal(r.plan.buyLeg.sizeUsdt,50);}
+});
+await test("new: delayed partial volume respects accepted-depth slippage ceiling", () => {
+  const r=recheckDelayedExecutableBook(baseInput({delayedBuy:snap({sourceId:"tabdeal",receivedAtMs:T0+300,asks:[{priceToman:200000,amountUsdt:20},{priceToman:201000,amountUsdt:200}]}),config:{...baseInput().config,allowPartialFill:true,maxSlippageBps:10}}));
+  assert.ok(r.ok);if(r.ok){assert.equal(r.fillSizeUsdt,20);assert.equal(r.plan.buyLeg.vwapToman,200000);}
+});
 console.log(`\nResult: ${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

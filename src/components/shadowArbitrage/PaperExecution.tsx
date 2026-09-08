@@ -32,6 +32,7 @@ type Session = {
 };
 
 type Stats = {
+  legRisk?: number;
   filled: number;
   skipped: number;
   cashPnlIrtToman: number;
@@ -278,6 +279,7 @@ export function PaperExecution() {
 
   return (
     <div className="sa-stack sa-paper">
+      {(data?.stats?.legRisk ?? 0) > 0 ? <div className="sa-callout sa-callout-warn" role="alert">معاملهٔ نیمه‌تمام ثبت شده است. موجودی پای اجراشده در حساب‌ها حفظ شده و ادامهٔ این جلسه مسدود است.</div> : null}
       <div className="sa-callout sa-callout-warn" role="status">
         <span className="sa-strong">{PAPER_BANNER_EN}</span>
         <span className="sa-sub">

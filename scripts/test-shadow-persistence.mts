@@ -1164,6 +1164,34 @@ await test("7A readiness storage does not disturb the observation or paper sessi
   }
 });
 
+
+await test("leg-risk settlement is durable, separately counted, idempotent and cannot resume", async () => {
+  const session = await paperRepo.createPaperSession({observationId:null,name:"leg-risk regression",mode:"PROVISIONAL_EVALUATION",totalCapitalToman:60000000,valuationPriceToman:100000,openingAllocations:PAPER_OPENING,approvalFingerprint:null,createdBy:"test",note:null});
+  await paperRepo.setPaperSessionStatus(session.id,"RUNNING");
+  const balancesAfter=[{sourceId:"nobitex",irtToman:17493750,usdtMicros:125000000},{sourceId:"wallex",irtToman:20000000,usdtMicros:100000000}];
+  const fill={...paperFill("risk-only",-2506250,balancesAfter),executionOutcome:"LEG_RISK" as const,
+    sellNotionalToman:0,feeUsdtMicrosTotal:0,sellFeeValueToman:0,inventoryDeltaUsdtMicros:25000000,
+    economicNetPnlToman:-6250,riskAdjustedPnlToman:-7250,
+    executionEvidence:{outcome:"LEG_RISK",legRisk:{firstLegFilledUsdt:25,secondLegFilledUsdt:0}}};
+  const args={sessionId:session.id,runId:null,occurredAt:new Date().toISOString(),fills:[fill],skips:[]};
+  const result=await paperRepo.commitPaperCycle({...args,requireRunning:true});
+  assert.equal(result.filled,0);
+  assert.equal((await paperRepo.getPaperSession(session.id))?.status,"PAUSED");
+  assert.deepEqual((await paperRepo.loadPaperBalances(session.id)).sort((a,b)=>a.sourceId.localeCompare(b.sourceId)),balancesAfter);
+  const rows=await paperRepo.loadPaperLedger(session.id,{outcome:"LEG_RISK"});
+  assert.equal(rows.length,1);
+  assert.equal(rows[0].outcome,"LEG_RISK");
+  assert.ok(JSON.stringify(rows[0].sizingAudit).includes("firstLegFilledUsdt"));
+  const stats=await paperRepo.loadPaperStats(session.id);
+  assert.equal(stats.filled,0); assert.equal(stats.skipped,0); assert.equal(stats.legRisk,1);
+  assert.equal(stats.inventoryDeltaUsdtMicros,25000000);
+  assert.ok((await paperRepo.loadFilledLifecycleIds(session.id)).has("risk-only"));
+  const again=await paperRepo.commitPaperCycle(args);
+  assert.equal(again.duplicates,1);
+  assert.deepEqual((await paperRepo.loadPaperBalances(session.id)).sort((a,b)=>a.sourceId.localeCompare(b.sourceId)),balancesAfter);
+  await assert.rejects(paperRepo.setPaperSessionStatus(session.id,"RUNNING"),/unresolved leg exposure/);
+});
+
 await closeDb().catch(() => undefined);
 await rm(dir, { recursive: true, force: true });
 

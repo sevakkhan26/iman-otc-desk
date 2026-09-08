@@ -1,4 +1,5 @@
-#!/usr/bin/env npx tsx
+import assert from "node:assert/strict";
+import {observeExecution} from "../src/lib/shadowArbitrage/paper/observeExecution.ts";
 /**
  * Short local Paper burn-in (minutes-scale synthetic cycles, not multi-day).
  * Proves evaluateCycle continues without silent stall under realism.
@@ -12,8 +13,7 @@ import type { NormalizedSourceSnapshot } from "../src/lib/shadowArbitrage/types.
 
 seedLocalPaperExecutionLimits({ minNotionalUsdt: 5, quantityStepUsdt: 0.01 });
 
-const OUT = process.env.PAPER_TEST_OUTPUT_DIR ?? "./artifacts/local-paper-regression";
-mkdirSync(OUT, { recursive: true });
+
 
 const CYCLES = 40;
 const T0 = Date.parse("2026-09-07T10:00:00.000Z");
@@ -117,7 +117,7 @@ const policies = buildPolicyState(
   T0
 );
 
-let balances = [
+const balances = [
   { sourceId: "tabdeal" as never, irtToman: 50_000_000_000, usdtMicros: usdtToMicros(50_000) },
   { sourceId: "ramzinex" as never, irtToman: 50_000_000_000, usdtMicros: usdtToMicros(50_000) }
 ];
@@ -141,13 +141,8 @@ const venueStates = [
   }
 ] as never[];
 
-const executedLifecycleIds = new Set<string>();
-let executed = 0;
-let skipped = 0;
-const skipCodes: Record<string, number> = {};
-const cycleRows: Array<Record<string, unknown>> = [];
-let silentStall = false;
-for (let i = 0; i < CYCLES; i++) {
+
+const i=1;
   const t = T0 + i * 2_000;
   // Alternate: profitable wide edge vs thin/adverse books (no silent unknown).
   const profitable = i % 3 !== 2;
@@ -198,15 +193,12 @@ for (let i = 0; i < CYCLES; i++) {
     sellAgeMs: 100
   };
 
-  const result = evaluateCycle({
+  const input = ({
     opportunities: [opp as never],
     sources: [buy, sell],
-    delayedSources: [i % 7 === 0 ? {...makeSnap("tabdeal",t+300,buyAsk-100,buyAsk,depth),bookAsks:null,depthUsdtAsk:0} : makeSnap("tabdeal",t+300,buyAsk-100,buyAsk,depth), makeSnap("ramzinex",t+300,sellBid,sellBid+100,depth)],
-    postFirstLegSources: [makeSnap("tabdeal",t+600,buyAsk-100,buyAsk,depth),makeSnap("ramzinex",t+600,sellBid,sellBid+100,depth)],
-    arrivalTimestampMs:t+300,
-    postFirstLegTimestampMs:t+600,
+    delayedSources: [delayedBuy as never, sell],
     venueStates,
-    executedLifecycleIds,
+    executedLifecycleIds: new Set(),
     balances,
     sizing: {
       policies,
@@ -239,47 +231,40 @@ for (let i = 0; i < CYCLES; i++) {
     }
   });
 
-  balances = result.balancesAfter as typeof balances;
-  for (const d of result.decisions) if(d.kind === "EXECUTE") executedLifecycleIds.add(d.candidate.lifecycleId);
-  executed += result.executedCount;
-  for (const d of result.decisions) {
-    if (d.kind === "SKIP") {
-      skipped += 1;
-      skipCodes[d.code] = (skipCodes[d.code] ?? 0) + 1;
-      if (!d.code || d.code === "sizing_blocked") {
-        // opaque on authoritative path is a burn-in failure signal
-      }
-    }
-  }
-  const decisionCount = result.decisions.length;
-  if (decisionCount === 0) silentStall = true;
-  cycleRows.push({
-    i,
-    t: iso(t),
-    executedCount: result.executedCount,
-    decisions: result.decisions.map((d) =>
-      d.kind === "EXECUTE"
-        ? { kind: "EXECUTE", size: d.candidate.sizeUsdt, delayed: d.delayedRecheck?.outcome }
-        : { kind: "SKIP", code: d.code, delayed: d.delayedRecheck?.outcome ?? null }
-    )
-  });
-}
 
-const opaque = skipCodes["sizing_blocked"] ?? 0;
-const report = {
-  method: "40 synthetic stateful engine cycles; no network, runner or database",
-  cycles: CYCLES,
-  executed,
-  skipped,
-  skipCodes,
-  opaqueSizingBlocked: opaque,
-  silentStall,
-  ok: !silentStall && opaque === 0 && CYCLES === cycleRows.length && executed+skipped === CYCLES,
-  balancesAfter:balances,
-  executedLifecycleCount:executedLifecycleIds.size,
-  sample: cycleRows.slice(0, 5)
-};
-
-writeFileSync(`${OUT}/raw-burn-in.json`, JSON.stringify({ report, cycleRows }, null, 2) + "\n");
-console.log(JSON.stringify(report, null, 2));
-if (!report.ok) process.exit(1);
+const arrivalBuy=makeSnap("tabdeal",t+300,199900,200000,200);
+const arrivalSell=makeSnap("ramzinex",t+300,206000,206100,200);
+const postBuy=makeSnap("tabdeal",t+600,199900,200000,200);
+const postSell=makeSnap("ramzinex",t+600,206000,206100,200);
+const fresh={...input,delayedSources:[arrivalBuy,arrivalSell],postFirstLegSources:[postBuy,postSell],arrivalTimestampMs:t+300,postFirstLegTimestampMs:t+600};
+const run=(x: typeof fresh)=>evaluateCycle(x as Parameters<typeof evaluateCycle>[0]);
+const complete=run(fresh);
+assert.equal(complete.executedCount,1);
+const execution=complete.decisions.find(d=>d.kind==="EXECUTE");
+assert.ok(execution?.kind==="EXECUTE");
+assert.equal(execution.executionOutcome,"FILLED");
+const policy1=buildPolicyState(Object.entries({...policyValues,min_risk_adjusted_edge_percent:1}).map(([key,value])=>({key:key as never,value,provenance:"ADMIN_APPROVED" as const,setBy:"test",setAt:iso(T0),validForDays:null,note:null})),T0);
+const floor=run({...fresh,sizing:{...input.sizing,policies:policy1},delayedSources:[arrivalBuy,makeSnap("ramzinex",t+300,201500,201600,200)]});
+assert.equal(floor.executedCount,0);
+assert.ok(floor.decisions.some(d=>d.kind==="SKIP"&&d.code==="delayed_edge_below_floor"));
+const gone={...postSell,bookBids:[],bestBidToman:null,userSellPriceToman:null};
+const risk=run({...fresh,postFirstLegSources:[postBuy,gone]});
+assert.equal(risk.executedCount,0);
+const exposure=risk.decisions.find(d=>d.kind==="EXECUTE");
+assert.ok(exposure?.kind==="EXECUTE");
+assert.equal(exposure.executionOutcome,"LEG_RISK");
+assert.equal(exposure.plan.sellLeg.sizeUsdt,0);
+assert.ok(exposure.plan.buyLeg.sizeUsdt>0);
+const changed=run({...fresh,postFirstLegSources:[postBuy,makeSnap("ramzinex",t+600,205500,205600,200)]});
+const d=changed.decisions.find(d=>d.kind==="EXECUTE");
+assert.ok(d?.kind==="EXECUTE");
+assert.equal(d.candidate.sellVwapToman,205500);
+assert.equal(d.sizing.economics?.riskAdjustedPnlToman,d.plan.riskAdjustedPnlToman);
+const otc={...arrivalBuy,marketModel:"OTC_QUOTE" as const,bookBids:null,bookAsks:null};
+const otcResult=run({...fresh,delayedSources:[otc,arrivalSell]});
+assert.equal(otcResult.executedCount,1);
+let clock=t; const observed:number[]=[];
+const obs=await observeExecution({detection:[buy,sell],decisionTimestampMs:t,now:()=>clock,sleep:async ms=>{clock+=ms},observe:async after=>{observed.push(after);return observed.length===1?[makeSnap("tabdeal",clock,199900,200000,200)]:[]}});
+assert.equal(observed.length,2);assert.ok(observed[0]>t);assert.ok(observed[1]>observed[0]);
+assert.equal(obs.postFirstLegSources[0].health,"unavailable");
+console.log("PASS engine: valid fill, policy floor, durable-exposure decision, actual second price, OTC, observation sequencing and missing post observation");

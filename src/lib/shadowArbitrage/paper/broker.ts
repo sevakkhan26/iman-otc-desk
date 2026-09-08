@@ -257,7 +257,7 @@ export function settlementCoherent(s: SideSettlement, side: "buy" | "sell"): boo
  * Confirmed rule: the fee settles in IRT and is added to the debit, so the IRT
  * debit is cost + fee and the FULL purchased quantity is credited.
  */
-function planBuyLeg(
+export function planBuyLeg(
   sourceId: ShadowSourceId,
   vwapToman: number,
   sizeUsdt: number,
@@ -304,7 +304,7 @@ function planBuyLeg(
  * the venue takes quantity plus fee — and the full IRT proceeds are credited.
  * The venue must therefore hold quantity + fee, not just quantity.
  */
-function planSellLeg(
+export function planSellLeg(
   sourceId: ShadowSourceId,
   vwapToman: number,
   sizeUsdt: number,
@@ -545,4 +545,20 @@ export function reconcilePaperLedgers(
     expectedIrtDelta,
     expectedUsdtMicrosDelta
   };
+}
+
+/** Accounting for already-observed legs, including unmatched inventory.
+ * This is never a profitability gate: an exposure must not disappear because it lost money.
+ */
+export function settleObservedLegs(buyLeg: LegPlan, sellLeg: LegPlan, markPriceToman: number, slippageBufferToman: number): FillPlan {
+  const cash = buyLeg.deltaIrtToman + sellLeg.deltaIrtToman;
+  const inventory = buyLeg.deltaUsdtMicros + sellLeg.deltaUsdtMicros;
+  const economic = cash + Math.round(microsToUsdt(inventory) * markPriceToman);
+  return { ok: true, buyLeg, sellLeg, markPriceToman, slippageBufferToman,
+    grossSpreadToman: sellLeg.notionalToman-buyLeg.notionalToman,
+    totalFeeToman: buyLeg.feeToman+sellLeg.feeToman,
+    totalFeeUsdtMicros: buyLeg.feeUsdtMicros+sellLeg.feeUsdtMicros,
+    cashPnlIrtToman: cash, inventoryDeltaUsdtMicros: inventory,
+    sellFeeValueToman: Math.round(microsToUsdt(buyLeg.feeUsdtMicros+sellLeg.feeUsdtMicros)*markPriceToman),
+    economicNetPnlToman: economic, riskAdjustedPnlToman: economic-slippageBufferToman };
 }

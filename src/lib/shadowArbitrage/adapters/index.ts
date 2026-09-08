@@ -75,7 +75,8 @@ function refreshedCachedSnapshot(
 
 async function runOne(
   id: ShadowSourceId,
-  eventDriven: boolean
+  eventDriven: boolean,
+  freshAfterMs?: number
 ): Promise<NormalizedSourceSnapshot> {
   const cfg = getSourceConfig(id);
   const receivedAt = new Date().toISOString();
@@ -83,8 +84,8 @@ async function runOne(
     return unavailableSnapshot(cfg, receivedAt, "منبع در تنظیمات غیرفعال است");
   }
   const streamed = latestPaperStreamSnapshot(id, Date.parse(receivedAt));
-  if (streamed) return streamed;
-  if (eventDriven) {
+  if (streamed && (freshAfterMs === undefined || Date.parse(streamed.marketData?.receiveTimestamp ?? streamed.receivedAt) >= freshAfterMs)) return streamed;
+  if (eventDriven && freshAfterMs === undefined) {
     const cached = lastRegularSnapshot.get(id);
     const refreshed = cached
       ? refreshedCachedSnapshot(cached, Date.parse(receivedAt))
@@ -111,7 +112,7 @@ async function runOne(
      * judged by the same checks as the rest: certification decides, not a
      * hard-coded exception.
      */
-    const snapshot = snapshotFromResult(cfg, result, receivedAt);
+    const snapshot = snapshotFromResult(cfg, result, freshAfterMs === undefined ? receivedAt : new Date().toISOString());
     const coverage = VENUE_STREAMING_COVERAGE.find((row) => row.sourceId === id);
     const priorStream = paperStreamTelemetry(id, Date.parse(receivedAt));
     const transport =
@@ -186,9 +187,11 @@ export function crossCheckUnits(sources: NormalizedSourceSnapshot[]): Normalized
  */
 export async function collectAllShadowSources(input?: {
   eventDriven?: boolean;
+  /** Bypass detection caches for Paper arrival observations. */
+  freshAfterMs?: number;
 }): Promise<NormalizedSourceSnapshot[]> {
   const settled = await Promise.allSettled(
-    SHADOW_SOURCES.map((s) => runOne(s.id, Boolean(input?.eventDriven)))
+    SHADOW_SOURCES.map((s) => runOne(s.id, Boolean(input?.eventDriven), input?.freshAfterMs))
   );
   const results = settled.map((outcome, i) => {
     const cfg = SHADOW_SOURCES[i]!;

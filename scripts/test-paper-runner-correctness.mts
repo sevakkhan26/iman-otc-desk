@@ -1,4 +1,5 @@
-#!/usr/bin/env npx tsx
+import assert from "node:assert/strict";
+import {observeExecution} from "../src/lib/shadowArbitrage/paper/observeExecution.ts";
 /**
  * Short local Paper burn-in (minutes-scale synthetic cycles, not multi-day).
  * Proves evaluateCycle continues without silent stall under realism.
@@ -12,8 +13,7 @@ import type { NormalizedSourceSnapshot } from "../src/lib/shadowArbitrage/types.
 
 seedLocalPaperExecutionLimits({ minNotionalUsdt: 5, quantityStepUsdt: 0.01 });
 
-const OUT = process.env.PAPER_TEST_OUTPUT_DIR ?? "./artifacts/local-paper-regression";
-mkdirSync(OUT, { recursive: true });
+
 
 const CYCLES = 40;
 const T0 = Date.parse("2026-09-07T10:00:00.000Z");
@@ -117,7 +117,7 @@ const policies = buildPolicyState(
   T0
 );
 
-let balances = [
+const balances = [
   { sourceId: "tabdeal" as never, irtToman: 50_000_000_000, usdtMicros: usdtToMicros(50_000) },
   { sourceId: "ramzinex" as never, irtToman: 50_000_000_000, usdtMicros: usdtToMicros(50_000) }
 ];
@@ -141,13 +141,8 @@ const venueStates = [
   }
 ] as never[];
 
-const executedLifecycleIds = new Set<string>();
-let executed = 0;
-let skipped = 0;
-const skipCodes: Record<string, number> = {};
-const cycleRows: Array<Record<string, unknown>> = [];
-let silentStall = false;
-for (let i = 0; i < CYCLES; i++) {
+
+const i=1;
   const t = T0 + i * 2_000;
   // Alternate: profitable wide edge vs thin/adverse books (no silent unknown).
   const profitable = i % 3 !== 2;
@@ -198,15 +193,12 @@ for (let i = 0; i < CYCLES; i++) {
     sellAgeMs: 100
   };
 
-  const result = evaluateCycle({
+  const input = ({
     opportunities: [opp as never],
     sources: [buy, sell],
-    delayedSources: [i % 7 === 0 ? {...makeSnap("tabdeal",t+300,buyAsk-100,buyAsk,depth),bookAsks:null,depthUsdtAsk:0} : makeSnap("tabdeal",t+300,buyAsk-100,buyAsk,depth), makeSnap("ramzinex",t+300,sellBid,sellBid+100,depth)],
-    postFirstLegSources: [makeSnap("tabdeal",t+600,buyAsk-100,buyAsk,depth),makeSnap("ramzinex",t+600,sellBid,sellBid+100,depth)],
-    arrivalTimestampMs:t+300,
-    postFirstLegTimestampMs:t+600,
+    delayedSources: [delayedBuy as never, sell],
     venueStates,
-    executedLifecycleIds,
+    executedLifecycleIds: new Set(),
     balances,
     sizing: {
       policies,
@@ -239,47 +231,45 @@ for (let i = 0; i < CYCLES; i++) {
     }
   });
 
-  balances = result.balancesAfter as typeof balances;
-  for (const d of result.decisions) if(d.kind === "EXECUTE") executedLifecycleIds.add(d.candidate.lifecycleId);
-  executed += result.executedCount;
-  for (const d of result.decisions) {
-    if (d.kind === "SKIP") {
-      skipped += 1;
-      skipCodes[d.code] = (skipCodes[d.code] ?? 0) + 1;
-      if (!d.code || d.code === "sizing_blocked") {
-        // opaque on authoritative path is a burn-in failure signal
-      }
-    }
-  }
-  const decisionCount = result.decisions.length;
-  if (decisionCount === 0) silentStall = true;
-  cycleRows.push({
-    i,
-    t: iso(t),
-    executedCount: result.executedCount,
-    decisions: result.decisions.map((d) =>
-      d.kind === "EXECUTE"
-        ? { kind: "EXECUTE", size: d.candidate.sizeUsdt, delayed: d.delayedRecheck?.outcome }
-        : { kind: "SKIP", code: d.code, delayed: d.delayedRecheck?.outcome ?? null }
-    )
-  });
-}
 
-const opaque = skipCodes["sizing_blocked"] ?? 0;
-const report = {
-  method: "40 synthetic stateful engine cycles; no network, runner or database",
-  cycles: CYCLES,
-  executed,
-  skipped,
-  skipCodes,
-  opaqueSizingBlocked: opaque,
-  silentStall,
-  ok: !silentStall && opaque === 0 && CYCLES === cycleRows.length && executed+skipped === CYCLES,
-  balancesAfter:balances,
-  executedLifecycleCount:executedLifecycleIds.size,
-  sample: cycleRows.slice(0, 5)
-};
 
-writeFileSync(`${OUT}/raw-burn-in.json`, JSON.stringify({ report, cycleRows }, null, 2) + "\n");
-console.log(JSON.stringify(report, null, 2));
-if (!report.ok) process.exit(1);
+const {mkdtemp,rm}=await import("node:fs/promises");
+const {tmpdir}=await import("node:os");
+const dir=await mkdtemp(`${tmpdir()}/paper-runner-correctness-`);
+process.env.DATABASE_URL=`pglite:${dir}/db`;
+process.env.SHADOW_COLLECTOR_ENABLED="false";
+const {closeDb}=await import("../src/db/client.ts");
+const {runMigrations}=await import("../src/db/migrate.ts");
+const repo=await import("../src/db/repositories/shadowPaper.ts");
+const evidenceRepo=await import("../src/db/repositories/shadowArbitrage.ts");
+const feeRepo=await import("../src/db/repositories/shadowFeeTier.ts");
+const policyRepo=await import("../src/db/repositories/shadowLive.ts");
+const {runPaperExecutionForCycle}=await import("../src/lib/shadowArbitrage/paper/run.ts");
+try {
+ await runMigrations();
+ for(const sourceId of ["tabdeal","ramzinex"]){
+  await evidenceRepo.recordAccountConfirmation({sourceId,kycComplete:true,accountState:"VERIFIED",executionEligible:true,provenance:"LOCAL_TEST",confirmedBy:"test"});
+  await evidenceRepo.recordFeeConfirmation({sourceId,takerFeeBps:25,makerFeeBps:25,feeTier:null,confirmedBy:"test",validDays:1});
+  await feeRepo.recordFeeTierEvidence({sourceId,executionMode:"ORDER_BOOK",tierLabel:null,makerFeeBps:25,takerFeeBps:25,provenance:"LOCAL_TEST",evidenceKey:sourceId,confirmedBy:"test",confirmedAt:new Date().toISOString(),validForDays:1,sourceUrl:null,note:null});
+ }
+ for(const [policyKey,value] of Object.entries(policyValues))await policyRepo.recordRiskPolicy({policyKey,value,setBy:"test",validForDays:1});
+ const session=await repo.createPaperSession({observationId:null,name:"isolated runner regression",mode:"PROVISIONAL_EVALUATION",totalCapitalToman:150000000000,valuationPriceToman:200000,openingAllocations:balances.map(b=>({sourceId:b.sourceId,irtToman:b.irtToman,usdtUnits:b.usdtMicros/1e6})),approvalFingerprint:null,createdBy:"test",note:null});
+ await repo.setPaperSessionStatus(session.id,"RUNNING");
+ const freshSources=()=>[makeSnap("tabdeal",Date.now(),199900,200000,200),makeSnap("ramzinex",Date.now(),206000,206100,200)];
+ let observed=0;
+ const runArgs={runId:null,occurredAt:new Date().toISOString(),cycleStatus:"success" as const,sources:freshSources(),opportunities:[{...opp,id:"runner-full",firstSeenAt:new Date().toISOString(),lastSeenAt:new Date().toISOString()} as never],observeSources:async (notBefore:number)=>{assert.ok(Date.now()>=notBefore);observed++;return freshSources();}};
+ const full=await runPaperExecutionForCycle(runArgs);
+ assert.equal(full.filled,1,JSON.stringify(full));assert.equal(observed,2);
+ let rows=await repo.loadPaperLedger(session.id,{outcome:"FILLED"});assert.equal(rows.length,1);assert.ok(rows[0].sizingAudit?.delayedRecheck);
+ const afterFull=await repo.loadPaperBalances(session.id);
+ const repeat=await runPaperExecutionForCycle({...runArgs,sources:freshSources()});
+ assert.equal(repeat.filled,0);assert.deepEqual(await repo.loadPaperBalances(session.id),afterFull);
+ observed=0;
+ const risk=await runPaperExecutionForCycle({...runArgs,sources:freshSources(),opportunities:[{...opp,id:"runner-risk"} as never],observeSources:async ()=>{observed++;return observed===1?freshSources():freshSources().map(s=>s.sourceId==="ramzinex"?{...s,bookBids:[],bestBidToman:null,userSellPriceToman:null}:s);}});
+ assert.equal(risk.filled,0,JSON.stringify(risk));
+ assert.equal((await repo.getPaperSession(session.id))?.status,"PAUSED",JSON.stringify(risk));
+ const riskRows=await repo.loadPaperLedger(session.id,{outcome:"LEG_RISK"});assert.equal(riskRows.length,1);assert.ok((riskRows[0].inventoryDeltaUsdtMicros??0)>0);
+ assert.ok((await repo.loadFilledLifecycleIds(session.id)).has("runner-risk"));
+ const stopped=await runPaperExecutionForCycle({...runArgs,sources:freshSources()});assert.equal(stopped.reason,"not_running");
+ console.log("PASS runner integration: actual delayed observations, successful durable fill, duplicate suppression, partial-leg accounting, persistent pause, stopped execution");
+}finally{await closeDb();await rm(dir,{recursive:true,force:true});}

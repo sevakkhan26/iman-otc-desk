@@ -11,7 +11,7 @@
  *  - FILL_FULL / FILL_PARTIAL when delayed books still support a profitable size
  *  - REJECT with an exact delayed_* / book / coherence reason
  *  - LEG_RISK_* when sequential legs would leave one side unfilled (no atomic
- *    fantasy fill; round-trip is rejected with leg-risk evidence)
+ *    round-trip completion; actual simulated first-leg balances are preserved)
  */
 import {
   SHADOW_EVENT_COHERENCE_MAX_SKEW_MS,
@@ -24,6 +24,7 @@ import {
 } from "@/lib/shadowArbitrage/streaming/eventFabric";
 import {
   planFill,
+  planBuyLeg, planSellLeg, settleObservedLegs,
   settlementFor,
   type FillPlan,
   type SideSettlement
@@ -32,11 +33,12 @@ import {
   microsToUsdt,
   usdtToMicros,
   validateBook,
+  executableLadder,
   walkBook,
   type BookSide
 } from "@/lib/shadowArbitrage/paper/liquidity";
 import { feeFromBps } from "@/lib/shadowArbitrage/money";
-import { PAPER_POLICY_MIN_USDT } from "@/lib/shadowArbitrage/paper/venueExecutionLimits";
+import { resolvePaperRouteFloor, getVenueExecutionLimit, quantizeDownToStep, PAPER_POLICY_MIN_USDT } from "@/lib/shadowArbitrage/paper/venueExecutionLimits";
 import type { PaperReasonCode } from "@/lib/shadowArbitrage/paper/reasons";
 
 /** Deterministic Paper latency model (ms). */
@@ -67,6 +69,9 @@ export type PaperExecutionRealismConfig = {
   /** Policy risk-buffer bps applied to delayed buy notional (not a second static pad). */
   slippageBufferBps: number;
   minSizeUsdt?: number;
+  maxSlippageBps?: number;
+  /** Require supplied observations instead of inventing arrival liquidity. */
+  requireArrivalObservation?: boolean;
 };
 
 export const DEFAULT_PAPER_EXECUTION_REALISM: PaperExecutionRealismConfig = {
@@ -77,6 +82,7 @@ export const DEFAULT_PAPER_EXECUTION_REALISM: PaperExecutionRealismConfig = {
   maxCrossVenueSkewMs: SHADOW_EVENT_COHERENCE_MAX_SKEW_MS,
   maxAgeMs: SHADOW_STALE_MS,
   slippageBufferBps: 5,
+  requireArrivalObservation: true,
   minSizeUsdt: PAPER_POLICY_MIN_USDT
 };
 
@@ -96,7 +102,8 @@ export type DelayedRecheckOutcomeKind =
   | "FILL_FULL"
   | "FILL_PARTIAL"
   | "REJECT"
-  | "LEG_RISK_SECOND_LEG_FAILED";
+  | "LEG_RISK_SECOND_LEG_FAILED"
+  | "LEG_RISK";
 
 export type DelayedBookEvidence = {
   version: "paper_v2_delayed_recheck_v1";
@@ -129,6 +136,7 @@ export type DelayedBookEvidence = {
   rejectCode: PaperReasonCode | null;
   fillSizeUsdt: number | null;
   partial: boolean;
+  postFirstLeg?: { buy: BookSideSnapshot; sell: BookSideSnapshot; timestampMs: number };
   legRisk: {
     simulated: boolean;
     firstLeg: "buy" | "sell";
@@ -140,7 +148,7 @@ export type DelayedBookEvidence = {
 
 export type DelayedRecheckPass = {
   ok: true;
-  outcome: "FILL_FULL" | "FILL_PARTIAL";
+  outcome: "FILL_FULL" | "FILL_PARTIAL" | "LEG_RISK";
   plan: FillPlan;
   fillSizeUsdt: number;
   partial: boolean;
@@ -165,7 +173,6 @@ function venueLatencyMs(snap: NormalizedSourceSnapshot | undefined): number {
   const md = snap?.marketData;
   const candidates = [
     md?.latencyEstimateMs,
-    md?.sourceEventLatencyMs,
     md?.sourceEventAgeMs,
     snap?.ageMs
   ];
@@ -261,19 +268,24 @@ export function snapshotAtArrival(
 function walkSide(
   snap: NormalizedSourceSnapshot | undefined,
   side: BookSide,
-  sizeUsdt: number
+  sizeUsdt: number,
+  maxSlippageBps = 10
 ): { ok: true; vwap: number; filledUsdt: number; complete: boolean } | { ok: false; code: PaperReasonCode } {
   if (!snap) return { ok: false, code: "delayed_liquidity_disappeared" };
   const bids = snap.bookBids;
   const asks = snap.bookAsks;
+  const ladder = executableLadder({ marketModel: snap.marketModel, bookBids: bids, bookAsks: asks, side,
+    quote: snap.marketModel === "OTC_QUOTE" ? { userBuyPriceToman: snap.userBuyPriceToman,
+      userSellPriceToman: snap.userSellPriceToman, maxExecutableUsdt: snap.maxExecutableUsdt,
+      ageMs: snap.ageMs, stale: snap.stale, maxQuoteAgeMs: null } : undefined });
   const validation = validateBook(bids, asks, snap.marketModel);
-  if (!validation.ok) {
-    if (validation.problem === "book_crossed" || validation.problem === "book_unusable_level") {
+  if (!ladder.ok) {
+    if ((!validation.ok && (validation.problem === "book_crossed" || validation.problem === "book_unusable_level"))) {
       return { ok: false, code: "delayed_book_invalid" };
     }
     return { ok: false, code: "delayed_liquidity_disappeared" };
   }
-  const levels = side === "buy" ? asks : bids;
+  const levels = ladder.levels;
   if (!levels?.length) return { ok: false, code: "delayed_liquidity_disappeared" };
   // Reject NaN / non-finite levels explicitly.
   for (const l of levels) {
@@ -286,7 +298,11 @@ function walkSide(
       return { ok: false, code: "delayed_book_invalid" };
     }
   }
-  const walk = walkBook(levels, usdtToMicros(sizeUsdt), side);
+  // Preserve the sizing engine's accepted-depth ceiling at the new book.
+  const best = levels[0].priceToman;
+  const ceiling = Math.min(10, Math.max(0,maxSlippageBps));
+  const accepted = levels.filter(l => (side === "buy" ? l.priceToman-best : best-l.priceToman) / best * 10000 <= ceiling + 1e-9);
+  const walk = walkBook(accepted, usdtToMicros(sizeUsdt), side);
   if (walk.filledMicros <= 0 || walk.vwapToman === null || !(walk.vwapToman > 0)) {
     return { ok: false, code: "delayed_liquidity_disappeared" };
   }
@@ -301,10 +317,11 @@ function walkSide(
 function maxFillableBoth(
   buy: NormalizedSourceSnapshot | undefined,
   sell: NormalizedSourceSnapshot | undefined,
-  requestedUsdt: number
+  requestedUsdt: number,
+  maxSlippageBps = 10
 ): number {
-  const buyWalk = walkSide(buy, "buy", requestedUsdt);
-  const sellWalk = walkSide(sell, "sell", requestedUsdt);
+  const buyWalk = walkSide(buy, "buy", requestedUsdt, maxSlippageBps);
+  const sellWalk = walkSide(sell, "sell", requestedUsdt, maxSlippageBps);
   if (!buyWalk.ok || !sellWalk.ok) {
     // Try full depth on each side independently.
     const buyDepth = depthUsdt(buy?.bookAsks);
@@ -346,6 +363,10 @@ export type DelayedRecheckInput = {
    */
   postFirstLegBuy?: NormalizedSourceSnapshot | undefined;
   postFirstLegSell?: NormalizedSourceSnapshot | undefined;
+  arrivalTimestampMs?: number;
+  postFirstLegTimestampMs?: number;
+  /** Called before a first leg is considered filled, and again before the second. */
+  validatePlan?: (plan: FillPlan, sizeUsdt: number) => PaperReasonCode | null;
   config?: Partial<PaperExecutionRealismConfig>;
 };
 
@@ -364,7 +385,7 @@ function fail(
 
 /**
  * Re-evaluate executable quantity + economics on the delayed comparable book.
- * Never returns ok=true unless planFill on the delayed book is net-positive.
+ * ok=true represents either a validated round trip or recorded unmatched leg exposure.
  */
 export function recheckDelayedExecutableBook(
   input: DelayedRecheckInput
@@ -377,13 +398,16 @@ export function recheckDelayedExecutableBook(
       ...(input.config?.latency ?? {})
     }
   };
-  const minSize = cfg.minSizeUsdt ?? PAPER_POLICY_MIN_USDT;
+  const floor = resolvePaperRouteFloor(input.buySourceId, input.sellSourceId);
+  const minSize = Math.max(cfg.minSizeUsdt ?? PAPER_POLICY_MIN_USDT, microsToUsdt(floor.minMicros),
+    microsToUsdt(getVenueExecutionLimit(input.buySourceId)?.minNotionalUsdtMicros ?? 0),
+    microsToUsdt(getVenueExecutionLimit(input.sellSourceId)?.minNotionalUsdtMicros ?? 0));
   const delayMs = resolveExecutionDelayMs({
     buy: input.detectionBuy,
     sell: input.detectionSell,
     model: cfg.latency
   });
-  const arrivalTimestampMs = input.decisionTimestampMs + delayMs;
+  const arrivalTimestampMs = input.arrivalTimestampMs ?? input.decisionTimestampMs + delayMs;
   const maxAgeMs = cfg.maxAgeMs ?? SHADOW_STALE_MS;
 
   const delayedBuyRaw =
@@ -431,10 +455,22 @@ export function recheckDelayedExecutableBook(
     legRisk: null
   });
 
+  if (cfg.requireArrivalObservation && (!input.delayedBuy || !input.delayedSell)) {
+    return fail("delayed_observation_missing", "REJECT", evidenceBase());
+  }
+  if (!Number.isFinite(arrivalTimestampMs) || arrivalTimestampMs < input.decisionTimestampMs + delayMs) {
+    return fail("delayed_book_invalid", "REJECT", evidenceBase());
+  }
   if (!delayedBuyRaw || !delayedSellRaw) {
     return fail("delayed_liquidity_disappeared", "REJECT", evidenceBase());
   }
 
+  const received = (snap: NormalizedSourceSnapshot) => Date.parse(snap.marketData?.receiveTimestamp ?? snap.receivedAt);
+  if ([delayedBuyRaw, delayedSellRaw].some(s => !Number.isFinite(received(s)) || received(s) > arrivalTimestampMs ||
+    (cfg.requireArrivalObservation && received(s) < input.decisionTimestampMs + delayMs)))
+    return fail("delayed_book_invalid", "REJECT", evidenceBase());
+  if ([delayedBuyRaw, delayedSellRaw].some(s => s.health === "unavailable" || s.health === "degraded"))
+    return fail("source_unhealthy", "REJECT", evidenceBase());
   const coherence = assessCrossVenueCoherence({
     buy: delayedBuyRaw,
     sell: delayedSellRaw,
@@ -460,9 +496,12 @@ export function recheckDelayedExecutableBook(
     return fail("delayed_book_invalid", "REJECT", ev0);
   }
 
+  if (planned < minSize || quantizeDownToStep(usdtToMicros(planned), floor.stepMicros) !== usdtToMicros(planned)) {
+    return fail("partial_below_minimum", "REJECT", ev0);
+  }
   let targetSize = planned;
-  const buyAtPlan = walkSide(delayedBuyRaw, "buy", planned);
-  const sellAtPlan = walkSide(delayedSellRaw, "sell", planned);
+  const buyAtPlan = walkSide(delayedBuyRaw, "buy", planned, cfg.maxSlippageBps);
+  const sellAtPlan = walkSide(delayedSellRaw, "sell", planned, cfg.maxSlippageBps);
 
   if (!buyAtPlan.ok) return fail(buyAtPlan.code, "REJECT", ev0);
   if (!sellAtPlan.ok) return fail(sellAtPlan.code, "REJECT", ev0);
@@ -472,59 +511,23 @@ export function recheckDelayedExecutableBook(
     if (!cfg.allowPartialFill) {
       return fail("delayed_depth_insufficient", "REJECT", ev0);
     }
-    const fillable = maxFillableBoth(delayedBuyRaw, delayedSellRaw, planned);
+    const fillable = maxFillableBoth(delayedBuyRaw, delayedSellRaw, planned, cfg.maxSlippageBps);
     if (fillable + 1e-12 < minSize) {
       return fail("partial_below_minimum", "REJECT", ev0);
     }
-    // Quantize down to 0.01 USDT step.
-    targetSize = Math.floor(fillable * 100) / 100;
+    targetSize = microsToUsdt(quantizeDownToStep(usdtToMicros(fillable), floor.stepMicros));
     if (targetSize < minSize) {
       return fail("partial_below_minimum", "REJECT", ev0);
     }
   }
 
-  const buyWalk = walkSide(delayedBuyRaw, "buy", targetSize);
-  const sellWalk = walkSide(delayedSellRaw, "sell", targetSize);
+  const buyWalk = walkSide(delayedBuyRaw, "buy", targetSize, cfg.maxSlippageBps);
+  const sellWalk = walkSide(delayedSellRaw, "sell", targetSize, cfg.maxSlippageBps);
   if (!buyWalk.ok) return fail(buyWalk.code, "REJECT", ev0);
   if (!sellWalk.ok) return fail(sellWalk.code, "REJECT", ev0);
   if (!buyWalk.complete || !sellWalk.complete) {
     // Even after shrinking, a side could not fill — treat as depth insufficient.
     return fail("delayed_depth_insufficient", "REJECT", ev0);
-  }
-
-  // Leg-risk: when a post-first-leg book is supplied, evaluate the second leg
-  // against it. Independent same-cycle books do not invent a leg failure.
-  if (cfg.simulateLegRisk && (input.postFirstLegBuy || input.postFirstLegSell)) {
-    const first = cfg.firstLeg;
-    const firstWalk = first === "buy" ? buyWalk : sellWalk;
-    const secondSnap =
-      first === "buy"
-        ? (input.postFirstLegSell ?? delayedSellRaw)
-        : (input.postFirstLegBuy ?? delayedBuyRaw);
-    const secondSide: BookSide = first === "buy" ? "sell" : "buy";
-    const secondWalk = walkSide(secondSnap, secondSide, targetSize);
-    const legEv = {
-      ...ev0,
-      delayed: {
-        ...ev0.delayed,
-        sizeUsdt: targetSize,
-        buyVwapToman: buyWalk.vwap,
-        sellVwapToman: sellWalk.vwap
-      },
-      legRisk: {
-        simulated: true,
-        firstLeg: first,
-        firstLegFilledUsdt: firstWalk.ok ? firstWalk.filledUsdt : null,
-        secondLegFilledUsdt: secondWalk.ok ? secondWalk.filledUsdt : 0,
-        secondLegCode: null as PaperReasonCode | null
-      }
-    };
-    if (!secondWalk.ok || !secondWalk.complete) {
-      legEv.legRisk!.secondLegCode = secondWalk.ok
-        ? "delayed_depth_insufficient"
-        : secondWalk.code;
-      return fail("leg_risk_second_leg_failed", "LEG_RISK_SECOND_LEG_FAILED", legEv);
-    }
   }
 
   const slip = riskBufferToman(buyWalk.vwap, targetSize, cfg.slippageBufferBps);
@@ -538,7 +541,7 @@ export function recheckDelayedExecutableBook(
     sellFeeBps: input.sellFeeBps,
     buySettlement: input.buySettlement ?? settlementFor(input.buySourceId, "buy"),
     sellSettlement: input.sellSettlement ?? settlementFor(input.sellSourceId, "sell"),
-    markPriceToman: input.markPriceToman,
+    markPriceToman: buyWalk.vwap,
     slippageBufferToman: slip
   });
 
@@ -562,15 +565,7 @@ export function recheckDelayedExecutableBook(
     partial,
     outcome: plan.ok ? (partial ? "FILL_PARTIAL" : "FILL_FULL") : "REJECT",
     rejectCode: plan.ok ? null : "delayed_net_non_positive",
-    legRisk: cfg.simulateLegRisk
-      ? {
-          simulated: true,
-          firstLeg: cfg.firstLeg,
-          firstLegFilledUsdt: targetSize,
-          secondLegFilledUsdt: targetSize,
-          secondLegCode: null
-        }
-      : null
+    legRisk: null
   };
 
   if (!plan.ok) {
@@ -593,6 +588,54 @@ export function recheckDelayedExecutableBook(
     return fail("delayed_net_non_positive", "REJECT", ev);
   }
 
+  const policyReject = input.validatePlan?.(plan, targetSize);
+  if (policyReject) return fail(policyReject, "REJECT", ev);
+  if (cfg.simulateLegRisk) {
+    const firstBuy = cfg.firstLeg === "buy";
+    const secondSnap = firstBuy ? input.postFirstLegSell : input.postFirstLegBuy;
+    const postAt = input.postFirstLegTimestampMs ?? arrivalTimestampMs;
+    // Without any post-leg observation, no sequential execution can be asserted.
+    if (!secondSnap) return fail("post_leg_observation_missing", "REJECT", ev);
+    const secondCheck = assessCrossVenueCoherence({ buy: secondSnap, sell: secondSnap,
+      decisionTimestampMs: postAt, maxAgeMs, maxSourceSkewMs: cfg.maxCrossVenueSkewMs ?? SHADOW_EVENT_COHERENCE_MAX_SKEW_MS });
+    let secondCode: PaperReasonCode | null = !Number.isFinite(postAt) || postAt < arrivalTimestampMs || !Number.isFinite(received(secondSnap)) || received(secondSnap) > postAt || received(secondSnap) < arrivalTimestampMs
+      ? "delayed_book_invalid" : !secondCheck.coherent || secondSnap.stale ? "delayed_book_stale"
+      : secondSnap.health !== "healthy" ? "source_unhealthy" : null;
+    const secondWalk = secondCode ? null : walkSide(secondSnap, firstBuy ? "sell" : "buy", targetSize, cfg.maxSlippageBps);
+    if (secondWalk && !secondWalk.ok) secondCode = secondWalk.code;
+    let secondSize = secondWalk?.ok ? secondWalk.filledUsdt : 0;
+    let resultPlan = plan;
+    if (secondWalk?.ok) {
+      const secondPreview = planFill({ ...input, sizeUsdt: targetSize,
+        buyVwapToman: firstBuy ? buyWalk.vwap : secondWalk.vwap,
+        sellVwapToman: firstBuy ? secondWalk.vwap : sellWalk.vwap,
+        buySettlement: input.buySettlement ?? settlementFor(input.buySourceId, "buy"),
+        sellSettlement: input.sellSettlement ?? settlementFor(input.sellSourceId, "sell"),
+        markPriceToman: firstBuy ? buyWalk.vwap : secondWalk.vwap, slippageBufferToman: slip });
+      if (!secondPreview.ok) secondCode = "delayed_net_non_positive";
+      else secondCode = input.validatePlan?.(secondPreview, targetSize) ?? null;
+      if (secondCode) secondSize = 0;
+      else resultPlan = secondPreview as FillPlan;
+    }
+    const complete = !secondCode && secondSize === targetSize;
+    if (!complete) {
+      const buyLeg = firstBuy ? plan.buyLeg : planBuyLeg(input.buySourceId,
+        secondWalk?.ok ? secondWalk.vwap : buyWalk.vwap, secondSize, input.buyFeeBps, plan.buyLeg.settlement);
+      const sellLeg = firstBuy ? planSellLeg(input.sellSourceId,
+        secondWalk?.ok ? secondWalk.vwap : sellWalk.vwap, secondSize, input.sellFeeBps, plan.sellLeg.settlement) : plan.sellLeg;
+      resultPlan = settleObservedLegs(buyLeg, sellLeg, plan.markPriceToman, slip);
+    }
+    const evidence: DelayedBookEvidence = { ...ev,
+      outcome: complete ? (partial ? "FILL_PARTIAL" : "FILL_FULL") : "LEG_RISK",
+      rejectCode: complete ? null : (secondCode ?? "delayed_depth_insufficient"),
+      postFirstLeg: { buy: sideSnap(input.postFirstLegBuy, input.buySourceId), sell: sideSnap(input.postFirstLegSell, input.sellSourceId), timestampMs: postAt },
+      legRisk: { simulated: true, firstLeg: cfg.firstLeg, firstLegFilledUsdt: targetSize,
+        secondLegFilledUsdt: secondSize, secondLegCode: complete ? null : (secondCode ?? "delayed_depth_insufficient") },
+      delayed: { ...ev.delayed, buyVwapToman: resultPlan.buyLeg.vwapToman, sellVwapToman: resultPlan.sellLeg.vwapToman,
+        economicNetPnlToman: resultPlan.economicNetPnlToman, riskAdjustedPnlToman: resultPlan.riskAdjustedPnlToman } };
+    return { ok: true, outcome: evidence.outcome as "FILL_FULL" | "FILL_PARTIAL" | "LEG_RISK",
+      plan: resultPlan, fillSizeUsdt: targetSize, partial, evidence };
+  }
   return {
     ok: true,
     outcome: partial ? "FILL_PARTIAL" : "FILL_FULL",

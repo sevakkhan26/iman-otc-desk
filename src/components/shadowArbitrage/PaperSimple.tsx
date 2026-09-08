@@ -73,7 +73,7 @@ type Payload = {
   balances: Balance[];
   trades: Trade[];
   transitions: Trade[];
-  stats: { filled: number; skipped: number } | null;
+  stats: { filled: number; skipped: number; legRisk?: number } | null;
   wizard?: Wizard;
   message?: string;
 };
@@ -279,6 +279,7 @@ export function PaperSimple({
 
   return (
     <div className="sa-stack">
+      {(data?.stats?.legRisk ?? 0) > 0 ? <div className="sa-callout sa-callout-warn" role="alert">معاملهٔ نیمه‌تمام ثبت شده است. موجودی پای اجراشده در حساب‌ها حفظ شده و ادامهٔ این جلسه مسدود است.</div> : null}
       {show.session ? (
         <div className="sa-callout sa-callout-muted" role="status">
           {data?.paperBannerFa ?? "اجرای کاغذی — هیچ سفارش یا انتقال واقعی انجام نمی‌شود"} ·

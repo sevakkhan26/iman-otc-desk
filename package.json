@@ -68,7 +68,8 @@
     "test:paper-v2-phase2": "npx --yes tsx scripts/test-paper-v2-phase2-bugfix.mts",
     "test:economic-liveness": "npx --yes tsx scripts/test-economic-liveness.mts && npx --yes tsx scripts/test-paper-v2-realism-1.mts",
     "test:paper-v2-realism-1": "npx --yes tsx scripts/test-paper-v2-realism-1.mts",
-    "replay:paper-v2-phase2": "npx --yes tsx scripts/replay-paper-v2-phase2.mts"
+    "replay:paper-v2-phase2": "npx --yes tsx scripts/replay-paper-v2-phase2.mts",
+    "test:paper-correctness": "node --import tsx scripts/test-paper-v2-realism-1.mts && node --import tsx scripts/test-paper-correctness.mts && node --import tsx scripts/test-paper-runner-correctness.mts && node --import tsx scripts/test-shadow-persistence.mts && node --import tsx scripts/test-paper-accounting.mts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.4",

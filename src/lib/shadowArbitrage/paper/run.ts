@@ -1,3 +1,4 @@
+import { observeExecution } from "@/lib/shadowArbitrage/paper/observeExecution";
 /**
  * Phase 6 — orchestration between one collection cycle and the paper engine.
  *
@@ -87,12 +88,13 @@ const survivalTrackersBySession = new Map<string, OpportunitySurvivalTracker>();
  * container picks the same session back up with the same balances and the same
  * filled-lifecycle memory.
  */
-export async function runPaperExecutionForCycle(input: {
+async function runPaperCycle(input: {
   runId: string | null;
   occurredAt: string;
   cycleStatus: "success" | "partial" | "failed";
   sources: NormalizedSourceSnapshot[];
   opportunities: ShadowOpportunity[];
+  observeSources?: (notBeforeMs: number) => Promise<NormalizedSourceSnapshot[]>;
 }): Promise<PaperCycleOutcome> {
   // Only a successful cycle carries a market picture worth acting on.
   if (input.cycleStatus === "failed") {
@@ -153,6 +155,22 @@ export async function runPaperExecutionForCycle(input: {
     /* experiment module optional if migration not yet applied */
   }
 
+  const decisionTimestampMs = Date.now();
+  const observations = input.opportunities.some(o=>o.isActive && !o.feeUnknown)
+    ? await observeExecution({detection:input.sources,decisionTimestampMs,observe:input.observeSources})
+    : {delayedSources:[],postFirstLegSources:[],arrivalTimestampMs:decisionTimestampMs,postFirstLegTimestampMs:decisionTimestampMs};
+  const currentSession = await getActivePaperSession();
+  if (!currentSession || currentSession.id !== session.id || currentSession.status !== "RUNNING")
+    return {ran:false,reason:"not_running",sessionId:session.id};
+  const setupNow = (await import("@/lib/shadowArbitrage/paper/sessionCapital")).parseSessionSetupNote(session.note);
+  if (setupNow?.endsAt && Date.now() >= Date.parse(setupNow.endsAt)) {
+    await setPaperSessionStatus(session.id,"STOPPED");
+    return {ran:false,reason:"not_running",sessionId:session.id};
+  }
+  const {getActiveExperiment: getArrivalExperiment, experimentIsOpen: arrivalExperimentOpen} = await import("@/db/repositories/shadowExperiments");
+  const arrivalExperiment = await getArrivalExperiment();
+  if (arrivalExperiment && !arrivalExperimentOpen(arrivalExperiment, Date.now()))
+    return {ran:false,reason:"not_running",sessionId:session.id};
   const [effectiveFees, accountEvidence, balanceRows, filledIds, policyValues] = await Promise.all([
     loadEffectiveFees(Date.now()),
     loadLatestAccountConfirmations(),
@@ -397,7 +415,8 @@ export async function runPaperExecutionForCycle(input: {
     portfolioLimits,
     // The decision clock starts after cycle collection/DB reads and completes
     // inside evaluateCycle; source receive timestamps remain the ingest origin.
-    decisionTimestampMs: Date.now(),
+    decisionTimestampMs,
+    ...observations,
     paperExecutionRealism: true,
     survivalTracker,
     feeEvidenceByVenue: effectiveFees.byVenue
@@ -409,6 +428,8 @@ export async function runPaperExecutionForCycle(input: {
   for (const d of evaluation.decisions) {
     if (d.kind === "EXECUTE") {
       fills.push({
+        executionOutcome: d.executionOutcome ?? "FILLED",
+        executionEvidence: d.delayedRecheck as unknown as Record<string, unknown> ?? null,
         lifecycleId: d.candidate.lifecycleId,
         routeKey: d.candidate.routeKey,
         buySourceId: d.candidate.buySourceId,
@@ -507,8 +528,9 @@ export async function runPaperExecutionForCycle(input: {
 
   const committed = await commitPaperCycle({
     sessionId: session.id,
+    requireRunning: true,
     runId: input.runId,
-    occurredAt: input.occurredAt,
+    occurredAt: new Date().toISOString(),
     fills,
     skips
   });
@@ -621,7 +643,7 @@ export async function runPaperExecutionForCycle(input: {
       })),
       decisions: evaluation.decisions.map((d) =>
         d.kind === "EXECUTE"
-          ? { kind: "EXECUTE" as const }
+          ? d.executionOutcome === "LEG_RISK" ? {kind:"SKIP" as const,code:"leg_risk_second_leg_failed",codes:["leg_risk_second_leg_failed"]} : { kind: "EXECUTE" as const }
           : {
               kind: "SKIP" as const,
               code: d.code,
@@ -741,4 +763,13 @@ export async function runPaperExecutionIsolated(
     log("[shadow-paper] cycle failed — collector unaffected", error);
     return { ran: false, reason: "error", error };
   }
+}
+
+// Serialize the whole read-observe-evaluate-commit sequence within this process.
+// The collector also owns the cross-process DB advisory lock.
+let paperQueue: Promise<unknown> = Promise.resolve();
+export function runPaperExecutionForCycle(input: Parameters<typeof runPaperCycle>[0]): Promise<PaperCycleOutcome> {
+  const task = paperQueue.then(()=>runPaperCycle(input));
+  paperQueue = task.catch(()=>undefined);
+  return task;
 }

@@ -33,7 +33,8 @@ export type AccountingFill = {
   slippageBufferToman: number | null;
   markPriceToman: number | null;
   occurredAt: string;
-  outcome: "FILLED" | "SKIPPED";
+  outcome: "FILLED" | "SKIPPED" | "LEG_RISK";
+  inventoryDeltaUsdtMicros?: number | null;
 };
 
 export type VenueAccountingRow = {
@@ -102,7 +103,7 @@ export type PortfolioAccounting = {
   returnPercent: number | null;
   venues: VenueAccountingRow[];
   openOrders: [];
-  openPositions: [];
+  openPositions: Array<{id: string; routeKey: string; inventoryDeltaUsdtMicros: number | null; occurredAt: string}>;
   openOrdersNoteFa: string;
   openPositionsNoteFa: string;
   reconciliation: {
@@ -120,7 +121,7 @@ export type PortfolioAccounting = {
 };
 
 const OPEN_ORDERS_NOTE =
-  "کارگزار کاغذی فعلی سفارش باز نگه نمی‌دارد: هر نامزد پذیرفته‌شده در همان چرخه به‌صورت اتمی دو پا پر می‌شود یا رد می‌شود. هیچ سفارش باز مجازی وجود ندارد.";
+  "کارگزار کاغذی فعلی سفارش باز نگه نمی‌دارد: نتیجهٔ هر پای اجراشده در موجودی ثبت می‌شود و اجرای نیمه‌تمام جلسه را متوقف می‌کند. هیچ سفارش باز مجازی وجود ندارد.";
 
 const OPEN_POSITIONS_NOTE =
   "مدل فعلی آربیتراژ کاغذی پوزیشن باز دوطرفه نگه نمی‌دارد؛ موجودی مجازی فقط در تراز هر صرافی است. پوزیشن فقط وقتی نمایش داده می‌شود که در دفتر ثبت شده باشد.";
@@ -191,6 +192,8 @@ export function buildPortfolioAccounting(input: {
       ? null
       : Math.round(availableIrtToman + microsToUsdt(availableUsdtMicros) * mark);
 
+  const risks = input.fills.filter(f => f.outcome === "LEG_RISK");
+  const settled = input.fills.filter(f => f.outcome !== "SKIPPED");
   const filled = input.fills.filter((f) => f.outcome === "FILLED");
   const realizedEconomicPnlToman = filled.reduce((s, f) => s + (f.economicNetPnlToman ?? 0), 0);
   const realizedRiskAdjustedPnlToman = filled.reduce(
@@ -203,15 +206,15 @@ export function buildPortfolioAccounting(input: {
     .filter((f) => Date.parse(f.occurredAt) >= input.todayStartMs)
     .reduce((s, f) => s + (f.economicNetPnlToman ?? 0), 0);
 
-  const feeToman = filled.reduce((s, f) => s + (f.feeTomanTotal ?? 0), 0);
-  const feeUsdtMicros = filled.reduce((s, f) => s + (f.feeUsdtMicrosTotal ?? 0), 0);
+  const feeToman = settled.reduce((s, f) => s + (f.feeTomanTotal ?? 0), 0);
+  const feeUsdtMicros = settled.reduce((s, f) => s + (f.feeUsdtMicrosTotal ?? 0), 0);
   const feeUsdtVal = feeUsdtValue(feeUsdtMicros, mark);
 
   const byVenueMap = new Map<
     string,
     { feeToman: number; feeUsdtMicros: number; trades: number }
   >();
-  for (const f of filled) {
+  for (const f of settled) {
     for (const sid of [f.buySourceId, f.sellSourceId]) {
       const cur = byVenueMap.get(sid) ?? { feeToman: 0, feeUsdtMicros: 0, trades: 0 };
       // Attribute half of each fee leg-ish: store full fee once on buy, half rounding on sell is wrong.
@@ -242,7 +245,7 @@ export function buildPortfolioAccounting(input: {
         trades: v.trades
       }))
       .sort((a, b) => a.sourceId.localeCompare(b.sourceId)),
-    byTrade: filled.map((f) => ({
+    byTrade: settled.map((f) => ({
       id: f.id,
       lifecycleId: f.lifecycleId,
       routeKey: f.routeKey,
@@ -276,8 +279,8 @@ export function buildPortfolioAccounting(input: {
   const venueSumVsEquity =
     equityToman === null || venueSum === null ? null : venueSum - equityToman;
 
-  const feeLedgerSumToman = filled.reduce((s, f) => s + (f.feeTomanTotal ?? 0), 0);
-  const feeLedgerSumUsdt = filled.reduce((s, f) => s + (f.feeUsdtMicrosTotal ?? 0), 0);
+  const feeLedgerSumToman = settled.reduce((s, f) => s + (f.feeTomanTotal ?? 0), 0);
+  const feeLedgerSumUsdt = settled.reduce((s, f) => s + (f.feeUsdtMicrosTotal ?? 0), 0);
 
   return {
     asOf: input.asOf,
@@ -306,9 +309,9 @@ export function buildPortfolioAccounting(input: {
         : null,
     venues,
     openOrders: [],
-    openPositions: [],
+    openPositions: risks.map(f => ({id:f.id,routeKey:f.routeKey,inventoryDeltaUsdtMicros:f.inventoryDeltaUsdtMicros ?? null,occurredAt:f.occurredAt})),
     openOrdersNoteFa: OPEN_ORDERS_NOTE,
-    openPositionsNoteFa: OPEN_POSITIONS_NOTE,
+    openPositionsNoteFa: risks.length ? "معاملهٔ نیمه‌تمام و موجودی پوشش‌داده‌نشده ثبت شده؛ جلسه تا بررسی حسابداری متوقف است." : OPEN_POSITIONS_NOTE,
     reconciliation: {
       equityMatchesInitialPlusPnl:
         equityVsInitialPlusPnl === null ? null : Math.abs(equityVsInitialPlusPnl) <= 1,

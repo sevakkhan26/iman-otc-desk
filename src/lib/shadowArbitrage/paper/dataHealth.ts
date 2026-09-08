@@ -72,7 +72,7 @@ export function classifyExecutionReadiness(input: {
   ) {
     return "blocked_account";
   }
-  if (input.feeOk === true && input.takerFeeBps != null && input.executionEligible !== false) {
+  if (input.feeOk === true && input.takerFeeBps != null) {
     return "ready";
   }
   if (input.blockingReason) return "blocked_other";

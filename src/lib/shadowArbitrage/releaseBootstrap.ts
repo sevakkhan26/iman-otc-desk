@@ -45,7 +45,7 @@ import {
 import { SHADOW_SOURCES } from "@/lib/shadowArbitrage/config";
 
 /** Stable for this release. Changing it would make the reconciliation re-run. */
-export const RELEASE_KEY = "release-4.1.6.0-admin-evidence-10b";
+export const RELEASE_KEY = "release-4.1.6.0-admin-evidence-owner-reconfirm-20260908";
 
 /** The approved virtual capital. Simulated; no real money is involved. */
 export const RELEASE_CAPITAL_TOMAN = 10_000_000_000;
@@ -77,12 +77,13 @@ export const APPROVED_VENUES: Array<{
   { sourceId: "arzinja", tier: "Level 1", takerBps: 0, makerBps: 0, executionMode: "ORDER_BOOK" }
 ];
 
-/** 2026-08-01 16:30 Asia/Tehran (UTC+03:30) — the approver's own timestamp. */
-export const CONFIRMED_AT = "2026-08-01T13:00:00.000Z";
-/** The approver's stated expiry. Thirty days from the confirmation date. */
-export const EXPIRES_AT = "2026-08-31T13:00:00.000Z";
+/** 2026-09-08 owner reconfirm mint (UTC). Owner email at 2026-09-08T10:30:41Z; rates unchanged from August canonical. */
+export const CONFIRMED_AT = "2026-09-08T10:44:44.000Z";
+/** Derived ONLY as confirmedAt + VALID_DAYS*86400000 (VALID_DAYS=30). Do not hand-edit. */
+export const EXPIRES_AT = "2026-10-08T10:44:44.000Z";
 /** Documented admin TTL used when recording confirmations (expiresAt = confirmedAt + VALID_DAYS). */
 export const VALID_DAYS = 30;
+/** Owner reconfirmed SAME canonical August rates for all 9 venues on 2026-09-08 (OWNER_RECONFIRMED_SAME_CANONICAL_RATES). */
 const PROVENANCE = "ADMIN_CONFIRMED_SCREENSHOT";
 const CONFIRMED_BY = "otc-iman";
 

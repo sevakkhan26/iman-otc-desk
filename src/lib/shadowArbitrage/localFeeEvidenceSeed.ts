@@ -37,7 +37,7 @@ import {
 } from "@/lib/shadowArbitrage/releaseBootstrap";
 /** Marker note only — not a second source of fee numbers. */
 export const LOCAL_FEE_SEED_NOTE =
-  "local fee parity — canonical evidence from releaseBootstrap APPROVED_VENUES";
+  "local fee parity — canonical evidence from releaseBootstrap APPROVED_VENUES (owner-reconfirmed same rates 2026-09-08)";
 
 const PROVENANCE = "ADMIN_CONFIRMED_SCREENSHOT";
 const CONFIRMED_BY = "otc-iman";

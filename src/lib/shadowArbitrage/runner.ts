@@ -23,6 +23,28 @@ import {
   subscribePaperRestRecoveryRequests
 } from "@/lib/shadowArbitrage/streaming/runtime";
 
+function formatErrorCauseChain(error: unknown, maxDepth = 6): string {
+  const parts: string[] = [];
+  let cur: unknown = error;
+  const seen = new Set<unknown>();
+  for (let depth = 0; cur != null && depth < maxDepth && !seen.has(cur); depth++) {
+    seen.add(cur);
+    if (typeof cur !== "object") {
+      parts.push(`[${depth}] ${String(cur).slice(0, 300)}`);
+      break;
+    }
+    const o = cur as { name?: unknown; message?: unknown; code?: unknown; cause?: unknown };
+    const name = typeof o.name === "string" ? o.name : "Error";
+    const code = o.code != null ? ` code=${String(o.code)}` : "";
+    const msg = typeof o.message === "string" ? o.message : String(o.message ?? "");
+    // Keep ops logs readable: truncate huge Drizzle "Failed query … params:" dumps.
+    const head = msg.length > 400 ? `${msg.slice(0, 400)}…` : msg;
+    parts.push(`[${depth}] ${name}${code}: ${head}`);
+    cur = o.cause;
+  }
+  return parts.join(" | ");
+}
+
 export type CollectorHandle = {
   /** Resolves once the loop has stopped and the lease is released. */
   stop: () => Promise<void>;
@@ -272,7 +294,11 @@ export async function startShadowCollector(
       try {
         await cycle(index, eventDriven, recoveryDriven);
       } catch (e) {
-        log("cycle exception", e instanceof Error ? (e.stack ?? e.message) : e);
+        const chain = formatErrorCauseChain(e);
+        log(
+          "cycle exception",
+          e instanceof Error ? `${e.stack ?? e.message}\nCaused by: ${chain}` : `${e}\nCaused by: ${chain}`
+        );
       }
       if (!eventDriven) {
         regularBootstrapComplete = true;

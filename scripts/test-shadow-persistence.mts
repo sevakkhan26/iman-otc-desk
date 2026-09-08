@@ -1192,6 +1192,225 @@ await test("leg-risk settlement is durable, separately counted, idempotent and c
   await assert.rejects(paperRepo.setPaperSessionStatus(session.id,"RUNNING"),/unresolved leg exposure/);
 });
 
+
+await test("float fabric latencyMs coerces to integer on snapshot insert", async () => {
+  const session = await repo.ensureObservationSession(30_000);
+  const sources = [
+    snap("nobitex", 100_000, 99_500, {
+      meta: {
+        endpoint: "https://example.test",
+        httpStatus: 200,
+        latencyMs: 104.5,
+        attempts: 2,
+        rateLimited: false,
+        timedOut: false,
+        depthAvailable: true,
+        directionVerified: true,
+        priceUnit: "IRT",
+        normalizationNote: null
+      },
+      bookBids: [{ priceToman: 99500, amountUsdt: 10 }],
+      bookAsks: [{ priceToman: 100000, amountUsdt: 10 }]
+    }),
+    snap("wallex", 101_000, 100_500, {
+      meta: {
+        endpoint: "https://example.test",
+        httpStatus: 200,
+        latencyMs: 1070.6666666666667,
+        attempts: 3,
+        rateLimited: false,
+        timedOut: false,
+        depthAvailable: true,
+        directionVerified: true,
+        priceUnit: "IRT",
+        normalizationNote: null
+      },
+      bookBids: [{ priceToman: 100500, amountUsdt: 10 }],
+      bookAsks: [{ priceToman: 101000, amountUsdt: 10 }]
+    })
+  ];
+  const { runId, duplicate } = await repo.beginCollectionRun({
+    sessionId: session.id,
+    idempotencyKey: `float-latency-${Date.now()}`,
+    workerId: "test-worker",
+    pollIntervalMs: 15_000,
+    sourcesTotal: sources.length
+  });
+  assert.equal(duplicate, false);
+  const nowIso = new Date().toISOString();
+  const built = buildOpportunitiesDetailed(sources, await repo.loadLifecyclesForMerge(), nowIso);
+  const certBySource = Object.fromEntries(sources.map((s) => [s.sourceId, certifyFromSnapshot(s)]));
+  await repo.completeCollectionRun({
+    runId,
+    sessionId: session.id,
+    status: "success",
+    sourcesOk: 2,
+    sourcesFailed: 0,
+    sourcesTotal: 2,
+    opportunityCount: built.opportunities.filter((o) => o.isActive).length,
+    durationMs: 10,
+    pollIntervalMs: 15_000,
+    sources,
+    certBySource,
+    opportunities: built.opportunities,
+    transitions: built.transitions,
+    healthEvents: []
+  });
+  const snaps = await repo.loadLatestSourceSnapshots();
+  const byId = Object.fromEntries(snaps.map((s) => [s.sourceId, s]));
+  assert.equal(byId.nobitex?.latencyMs, 105);
+  assert.equal(byId.wallex?.latencyMs, 1071);
+});
+
+await test("snapshot insert failure rolls back run success (atomicity)", async () => {
+  const session = await repo.ensureObservationSession(30_000);
+  const before = await repo.getObservation();
+  const sources = [
+    snap("nobitex", 100_000, 99_500),
+    snap("wallex", 101_000, 100_500)
+  ];
+  const { runId } = await repo.beginCollectionRun({
+    sessionId: session.id,
+    idempotencyKey: `atomic-fail-${Date.now()}`,
+    workerId: "test-worker",
+    pollIntervalMs: 15_000,
+    sourcesTotal: 2
+  });
+  const nowIso = new Date().toISOString();
+  const built = buildOpportunitiesDetailed(sources, await repo.loadLifecyclesForMerge(), nowIso);
+  const certBySource = Object.fromEntries(sources.map((s) => [s.sourceId, certifyFromSnapshot(s)]));
+
+  // Fault injection: NOT NULL health so the snapshot INSERT fails inside the txn.
+  const poisoned = sources.map((s, i) =>
+    i === 0
+      ? {
+          ...s,
+          health: null as unknown as typeof s.health
+        }
+      : s
+  );
+
+  await assert.rejects(
+    repo.completeCollectionRun({
+      runId,
+      sessionId: session.id,
+      status: "success",
+      sourcesOk: 2,
+      sourcesFailed: 0,
+      sourcesTotal: 2,
+      opportunityCount: built.opportunities.filter((o) => o.isActive).length,
+      durationMs: 10,
+      pollIntervalMs: 15_000,
+      sources: poisoned,
+      certBySource,
+      opportunities: built.opportunities,
+      transitions: built.transitions,
+      healthEvents: []
+    })
+  );
+
+  const { getDbAsync } = await import("../src/db/client.ts");
+  const { sql } = await import("drizzle-orm");
+  const db = await getDbAsync();
+  const runRows = await db.execute(sql`
+    SELECT status, error_message,
+      (SELECT count(*)::int FROM shadow_source_snapshots s WHERE s.run_id = ${runId}) AS snap_n
+    FROM shadow_collection_runs WHERE id = ${runId}
+  `);
+  const row = ((runRows as { rows?: Array<Record<string, unknown>> }).rows ??
+    (runRows as Array<Record<string, unknown>>))[0]!;
+  assert.equal(row.status, "failed", "post-rollback marker must be failed, not success");
+  assert.equal(Number(row.snap_n), 0, "no partial snapshots after rollback");
+  assert.ok(String(row.error_message ?? "").length > 0, "sanitized root cause recorded");
+  assert.equal(
+    String(row.error_message).includes("bookBids"),
+    false,
+    "error message must not embed raw books"
+  );
+  const after = await repo.getObservation();
+  assert.equal(
+    after?.successfulCycles,
+    before?.successfulCycles,
+    "observation success counter must not advance on rolled-back commit"
+  );
+});
+
+await test("completeCollectionRun retry does not duplicate snapshots or counters", async () => {
+  const session = await repo.ensureObservationSession(30_000);
+  const before = await repo.getObservation();
+  const sources = [
+    snap("nobitex", 100_000, 99_500, {
+      meta: {
+        endpoint: "https://example.test",
+        httpStatus: 200,
+        latencyMs: 104.5,
+        attempts: 1,
+        rateLimited: false,
+        timedOut: false,
+        depthAvailable: true,
+        directionVerified: true,
+        priceUnit: "IRT",
+        normalizationNote: null
+      },
+      bookBids: [{ priceToman: 99500, amountUsdt: 10 }],
+      bookAsks: [{ priceToman: 100000, amountUsdt: 10 }]
+    }),
+    snap("wallex", 101_000, 100_500)
+  ];
+  const { runId } = await repo.beginCollectionRun({
+    sessionId: session.id,
+    idempotencyKey: `retry-idem-${Date.now()}`,
+    workerId: "test-worker",
+    pollIntervalMs: 15_000,
+    sourcesTotal: 2
+  });
+  const nowIso = new Date().toISOString();
+  const built = buildOpportunitiesDetailed(sources, await repo.loadLifecyclesForMerge(), nowIso);
+  const certBySource = Object.fromEntries(sources.map((s) => [s.sourceId, certifyFromSnapshot(s)]));
+  const payload = {
+    runId,
+    sessionId: session.id,
+    status: "success" as const,
+    sourcesOk: 2,
+    sourcesFailed: 0,
+    sourcesTotal: 2,
+    opportunityCount: built.opportunities.filter((o) => o.isActive).length,
+    durationMs: 10,
+    pollIntervalMs: 15_000,
+    sources,
+    certBySource,
+    opportunities: built.opportunities,
+    transitions: built.transitions,
+    healthEvents: []
+  };
+  await repo.completeCollectionRun(payload);
+  await repo.completeCollectionRun(payload); // retry
+  const { getDbAsync } = await import("../src/db/client.ts");
+  const { sql } = await import("drizzle-orm");
+  const db = await getDbAsync();
+  const rows = await db.execute(sql`
+    SELECT
+      (SELECT count(*)::int FROM shadow_source_snapshots s WHERE s.run_id = ${runId}) AS snap_n,
+      status
+    FROM shadow_collection_runs WHERE id = ${runId}
+  `);
+  const row = ((rows as { rows?: Array<Record<string, unknown>> }).rows ??
+    (rows as Array<Record<string, unknown>>))[0]!;
+  assert.equal(row.status, "success");
+  assert.equal(Number(row.snap_n), 2, "retry must not duplicate snapshots");
+  const after = await repo.getObservation();
+  assert.equal(
+    after?.successfulCycles,
+    (before?.successfulCycles ?? 0) + 1,
+    "retry must not double-count successfulCycles"
+  );
+  assert.equal(
+    after?.completedCycles,
+    (before?.completedCycles ?? 0) + 1,
+    "retry must not double-count completedCycles"
+  );
+});
+
 await closeDb().catch(() => undefined);
 await rm(dir, { recursive: true, force: true });
 

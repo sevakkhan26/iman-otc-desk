@@ -14,7 +14,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
-import { asDbError, getDbAsync, withAdvisoryLock, withPgliteSerial } from "@/db/client";
+import { asDbError, getDbAsync, summarizeDbError, withAdvisoryLock, withPgliteSerial } from "@/db/client";
 
 import {
   shadowCollectionRuns,
@@ -105,6 +105,14 @@ function rowsOf<T = Record<string, unknown>>(result: unknown): T[] {
 
 function utcDay(iso: string): string {
   return iso.slice(0, 10);
+}
+
+/** Coerce adapter/fabric latency estimates to INTEGER column values. */
+function asIntegerMs(value: unknown): number | null {
+  if (value == null) return null;
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.round(n);
 }
 
 /**
@@ -621,216 +629,257 @@ export async function completeCollectionRun(input: {
           ? Math.round((input.sourcesOk / input.sourcesTotal) * 10_000) / 100
           : 0;
 
-      await db
-        .update(shadowCollectionRuns)
-        .set({
-          finishedAt: now,
-          status: input.status,
-          sourcesOk: input.sourcesOk,
-          sourcesFailed: input.sourcesFailed,
-          sourcesTotal: input.sourcesTotal,
-          coveragePercent: String(coverage),
-          opportunityCount: input.opportunityCount,
-          durationMs: input.durationMs,
-          pollIntervalMs: input.pollIntervalMs,
-          errorMessage: input.errorMessage ?? null
-        })
-        .where(eq(shadowCollectionRuns.id, input.runId));
-
-      // One snapshot row per source per cycle — the regular time series.
-      if (input.sources.length) {
-        await db.insert(shadowSourceSnapshots).values(
-          input.sources.map((s) => {
-            const cert = input.certBySource?.[s.sourceId];
-            return {
-              id: randomUUID(),
-              runId: input.runId,
-              sourceId: s.sourceId,
-              receivedAt: s.receivedAt,
-              sourceTimestamp: s.sourceTimestamp,
-              health: s.health,
-              marketModel: s.marketModel,
-              certStatus: cert?.status ?? null,
-              userBuyToman: s.userBuyPriceToman != null ? String(s.userBuyPriceToman) : null,
-              userSellToman: s.userSellPriceToman != null ? String(s.userSellPriceToman) : null,
-              latencyMs: s.meta?.latencyMs ?? null,
-              httpStatus: s.meta?.httpStatus ?? null,
-              depthAvailable: s.meta?.depthAvailable ?? null,
-              maxExecutableUsdt:
-                s.maxExecutableUsdt != null ? String(s.maxExecutableUsdt) : null,
-              feeStatus: s.feeStatus,
-              stale: Boolean(s.stale),
-              payload: {
-                sizeExecutables: s.sizeExecutables,
-                bookBids: s.bookBids,
-                bookAsks: s.bookAsks,
-                feeStatus: s.feeStatus,
-                feeBps: s.marketFeeBps,
-                feeLabel: s.feeLabel,
-                accountStatus: s.accountStatus,
-                eligibilityBase: s.eligibilityBase,
-                marketModel: s.marketModel,
-                sourceName: s.sourceName,
-                depthUsdtBid: s.depthUsdtBid,
-                depthUsdtAsk: s.depthUsdtAsk,
-                meta: s.meta ?? null,
-                sourceBlockedReasons: s.sourceBlockedReasons ?? [],
-                degradedReason: s.degradedReason,
-                diagnostics: s.diagnostics ?? null
-              },
-              errorReason: s.errorReason,
-              createdAt: now
-            };
+      /*
+       * Atomic collection commit: run update + snapshots + health events +
+       * lifecycle upserts/events + observation counters succeed together or
+       * not at all. A snapshot write failure must not leave a success run
+       * without snapshots (PGlite write investigation 2026-09-08).
+       */
+      await db.transaction(async (tx) => {
+        // Idempotent complete: a finished run must not re-insert snapshots or
+        // bump observation counters on retry.
+        const existingRun = await tx
+          .select({
+            id: shadowCollectionRuns.id,
+            status: shadowCollectionRuns.status,
+            finishedAt: shadowCollectionRuns.finishedAt
           })
-        );
-      }
-
-      // Health transitions only — not one row per cycle.
-      if (input.healthEvents?.length) {
-        await db.insert(shadowSourceHealthEvents).values(
-          input.healthEvents.map((e) => ({
-            id: randomUUID(),
-            sourceId: e.sourceId,
-            runId: input.runId,
-            occurredAt: now,
-            fromHealth: e.fromHealth,
-            toHealth: e.toHealth,
-            fromCertStatus: e.fromCertStatus,
-            toCertStatus: e.toCertStatus,
-            reason: e.reason,
-            httpStatus: e.httpStatus,
-            latencyMs: e.latencyMs,
-            createdAt: now
-          }))
-        );
-      }
-
-      // Lifecycles: upsert by id so a persistent opportunity stays one row.
-      for (const o of input.opportunities) {
-        const payload = {
-          buyFeeToman: o.buyFeeToman,
-          sellFeeToman: o.sellFeeToman,
-          buyFeeBps: o.buyFeeBps,
-          sellFeeBps: o.sellFeeBps,
-          totalFeePercent: o.totalFeePercent,
-          slippageBufferToman: o.slippageBufferToman,
-          rebalanceCostToman: o.rebalanceCostToman,
-          buySourceName: o.buySourceName,
-          sellSourceName: o.sellSourceName
-        };
-        const values = {
-          id: o.id,
-          routeKey: o.routeKey,
-          buySourceId: o.buySourceId,
-          sellSourceId: o.sellSourceId,
-          sizeUsdt: String(o.sizeUsdt),
-          eligibility: o.eligibility,
-          isActive: o.isActive,
-          firstSeenAt: o.firstSeenAt,
-          lastSeenAt: o.lastSeenAt,
-          endedAt: o.endedAt,
-          buyVwapToman: String(Math.round(o.buyVwapToman)),
-          sellVwapToman: String(Math.round(o.sellVwapToman)),
-          rawSpreadPercent: String(o.rawSpreadPercent),
-          netEdgePercent: String(o.netEdgePercent),
-          netProfitToman: String(Math.round(o.netProfitToman)),
-          maxNetEdgePercent: String(o.maxNetEdgePercent),
-          maxNetProfitToman: String(Math.round(o.maxNetProfitToman)),
-          maxRawSpreadPercent: String(o.maxRawSpreadPercent ?? o.rawSpreadPercent),
-          feeUnknown: Boolean(o.feeUnknown),
-          observationCount: o.observationCount ?? 1,
-          blockedReasons: o.blockedReasons,
-          payload,
-          updatedAt: now
-        };
-        await db
-          .insert(shadowOpportunityLifecycles)
-          .values(values)
-          .onConflictDoUpdate({
-            target: shadowOpportunityLifecycles.id,
-            set: {
-              eligibility: values.eligibility,
-              isActive: values.isActive,
-              lastSeenAt: values.lastSeenAt,
-              endedAt: values.endedAt,
-              buyVwapToman: values.buyVwapToman,
-              sellVwapToman: values.sellVwapToman,
-              rawSpreadPercent: values.rawSpreadPercent,
-              netEdgePercent: values.netEdgePercent,
-              netProfitToman: values.netProfitToman,
-              maxNetEdgePercent: values.maxNetEdgePercent,
-              maxNetProfitToman: values.maxNetProfitToman,
-              maxRawSpreadPercent: values.maxRawSpreadPercent,
-              feeUnknown: values.feeUnknown,
-              observationCount: values.observationCount,
-              blockedReasons: values.blockedReasons,
-              payload,
-              updatedAt: now
-            }
-          });
-      }
-
-      // Transition records — status changes, not periodic duplicates.
-      if (input.transitions?.length) {
-        await db.insert(shadowOpportunityEvents).values(
-          input.transitions.map((t) => ({
-            id: randomUUID(),
-            lifecycleId: t.lifecycleId,
-            routeKey: t.routeKey,
-            occurredAt: t.occurredAt,
-            eventType: t.eventType,
-            fromEligibility: t.fromEligibility,
-            toEligibility: t.toEligibility,
-            netEdgePercent: t.netEdgePercent != null ? String(t.netEdgePercent) : null,
-            netProfitToman: t.netProfitToman != null ? String(Math.round(t.netProfitToman)) : null,
-            rawSpreadPercent: t.rawSpreadPercent != null ? String(t.rawSpreadPercent) : null,
-            blockedReasons: t.blockedReasons,
-            createdAt: now
-          }))
-        );
-      }
-
-      // Session counters.
-      const session = await db
-        .select()
-        .from(shadowObservationSessions)
-        .where(eq(shadowObservationSessions.id, input.sessionId))
-        .limit(1);
-      const s = session[0];
-      if (s) {
-        const completed = s.completedCycles + 1;
-        const successful = s.successfulCycles + (input.status === "success" ? 1 : 0);
-        const failed = s.failedCycles + (input.status === "failed" ? 1 : 0);
-        const partial = s.partialCycles + (input.status === "partial" ? 1 : 0);
-
-        let status = s.status;
-        if (status === "RUNNING" || status === "DEGRADED") {
-          // Degraded when the unhealthy majority persists, healthy again otherwise.
-          status = failed + partial > successful ? "DEGRADED" : "RUNNING";
-        }
-        const startedMs = s.startedAt ? Date.parse(s.startedAt) : Date.now();
-        const elapsed = Math.max(0, Date.now() - startedMs - num(s.pausedTotalMs));
-        if (status !== "PAUSED" && elapsed >= (num(s.targetDurationMs) || TARGET_MS)) {
-          status = "COMPLETED";
+          .from(shadowCollectionRuns)
+          .where(eq(shadowCollectionRuns.id, input.runId))
+          .limit(1);
+        const prior = existingRun[0];
+        if (prior?.finishedAt && prior.status !== "running") {
+          return;
         }
 
-        await db
-          .update(shadowObservationSessions)
+        await tx
+          .update(shadowCollectionRuns)
           .set({
-            completedCycles: completed,
-            successfulCycles: successful,
-            failedCycles: failed,
-            partialCycles: partial,
-            status,
-            lastSuccessAt: input.status !== "failed" ? now : s.lastSuccessAt,
-            lastHeartbeatAt: now,
-            endedAt: status === "COMPLETED" ? now : s.endedAt,
-            updatedAt: now
+            finishedAt: now,
+            status: input.status,
+            sourcesOk: input.sourcesOk,
+            sourcesFailed: input.sourcesFailed,
+            sourcesTotal: input.sourcesTotal,
+            coveragePercent: String(coverage),
+            opportunityCount: input.opportunityCount,
+            durationMs: input.durationMs,
+            pollIntervalMs: input.pollIntervalMs,
+            errorMessage: input.errorMessage ?? null
           })
-          .where(eq(shadowObservationSessions.id, input.sessionId));
-      }
+          .where(eq(shadowCollectionRuns.id, input.runId));
+
+        if (input.sources.length) {
+          await tx.insert(shadowSourceSnapshots).values(
+            input.sources.map((s) => {
+              const cert = input.certBySource?.[s.sourceId];
+              return {
+                id: randomUUID(),
+                runId: input.runId,
+                sourceId: s.sourceId,
+                receivedAt: s.receivedAt,
+                sourceTimestamp: s.sourceTimestamp,
+                health: s.health,
+                marketModel: s.marketModel,
+                certStatus: cert?.status ?? null,
+                userBuyToman: s.userBuyPriceToman != null ? String(s.userBuyPriceToman) : null,
+                userSellToman: s.userSellPriceToman != null ? String(s.userSellPriceToman) : null,
+                latencyMs: asIntegerMs(s.meta?.latencyMs),
+                httpStatus: s.meta?.httpStatus ?? null,
+                depthAvailable: s.meta?.depthAvailable ?? null,
+                maxExecutableUsdt:
+                  s.maxExecutableUsdt != null ? String(s.maxExecutableUsdt) : null,
+                feeStatus: s.feeStatus,
+                stale: Boolean(s.stale),
+                payload: {
+                  sizeExecutables: s.sizeExecutables,
+                  bookBids: s.bookBids,
+                  bookAsks: s.bookAsks,
+                  feeStatus: s.feeStatus,
+                  feeBps: s.marketFeeBps,
+                  feeLabel: s.feeLabel,
+                  accountStatus: s.accountStatus,
+                  eligibilityBase: s.eligibilityBase,
+                  marketModel: s.marketModel,
+                  sourceName: s.sourceName,
+                  depthUsdtBid: s.depthUsdtBid,
+                  depthUsdtAsk: s.depthUsdtAsk,
+                  meta: s.meta ?? null,
+                  sourceBlockedReasons: s.sourceBlockedReasons ?? [],
+                  degradedReason: s.degradedReason,
+                  diagnostics: s.diagnostics ?? null
+                },
+                errorReason: s.errorReason,
+                createdAt: now
+              };
+            })
+          );
+        }
+
+        if (input.healthEvents?.length) {
+          await tx.insert(shadowSourceHealthEvents).values(
+            input.healthEvents.map((e) => ({
+              id: randomUUID(),
+              sourceId: e.sourceId,
+              runId: input.runId,
+              occurredAt: now,
+              fromHealth: e.fromHealth,
+              toHealth: e.toHealth,
+              fromCertStatus: e.fromCertStatus,
+              toCertStatus: e.toCertStatus,
+              reason: e.reason,
+              httpStatus: e.httpStatus,
+              latencyMs: asIntegerMs(e.latencyMs),
+              createdAt: now
+            }))
+          );
+        }
+
+        for (const o of input.opportunities) {
+          const payload = {
+            buyFeeToman: o.buyFeeToman,
+            sellFeeToman: o.sellFeeToman,
+            buyFeeBps: o.buyFeeBps,
+            sellFeeBps: o.sellFeeBps,
+            totalFeePercent: o.totalFeePercent,
+            slippageBufferToman: o.slippageBufferToman,
+            rebalanceCostToman: o.rebalanceCostToman,
+            buySourceName: o.buySourceName,
+            sellSourceName: o.sellSourceName
+          };
+          const values = {
+            id: o.id,
+            routeKey: o.routeKey,
+            buySourceId: o.buySourceId,
+            sellSourceId: o.sellSourceId,
+            sizeUsdt: String(o.sizeUsdt),
+            eligibility: o.eligibility,
+            isActive: o.isActive,
+            firstSeenAt: o.firstSeenAt,
+            lastSeenAt: o.lastSeenAt,
+            endedAt: o.endedAt,
+            buyVwapToman: String(Math.round(o.buyVwapToman)),
+            sellVwapToman: String(Math.round(o.sellVwapToman)),
+            rawSpreadPercent: String(o.rawSpreadPercent),
+            netEdgePercent: String(o.netEdgePercent),
+            netProfitToman: String(Math.round(o.netProfitToman)),
+            maxNetEdgePercent: String(o.maxNetEdgePercent),
+            maxNetProfitToman: String(Math.round(o.maxNetProfitToman)),
+            maxRawSpreadPercent: String(o.maxRawSpreadPercent ?? o.rawSpreadPercent),
+            feeUnknown: Boolean(o.feeUnknown),
+            observationCount: o.observationCount ?? 1,
+            blockedReasons: o.blockedReasons,
+            payload,
+            updatedAt: now
+          };
+          await tx
+            .insert(shadowOpportunityLifecycles)
+            .values(values)
+            .onConflictDoUpdate({
+              target: shadowOpportunityLifecycles.id,
+              set: {
+                eligibility: values.eligibility,
+                isActive: values.isActive,
+                lastSeenAt: values.lastSeenAt,
+                endedAt: values.endedAt,
+                buyVwapToman: values.buyVwapToman,
+                sellVwapToman: values.sellVwapToman,
+                rawSpreadPercent: values.rawSpreadPercent,
+                netEdgePercent: values.netEdgePercent,
+                netProfitToman: values.netProfitToman,
+                maxNetEdgePercent: values.maxNetEdgePercent,
+                maxNetProfitToman: values.maxNetProfitToman,
+                maxRawSpreadPercent: values.maxRawSpreadPercent,
+                feeUnknown: values.feeUnknown,
+                observationCount: values.observationCount,
+                blockedReasons: values.blockedReasons,
+                payload,
+                updatedAt: now
+              }
+            });
+        }
+
+        if (input.transitions?.length) {
+          await tx.insert(shadowOpportunityEvents).values(
+            input.transitions.map((t) => ({
+              id: randomUUID(),
+              lifecycleId: t.lifecycleId,
+              routeKey: t.routeKey,
+              occurredAt: t.occurredAt,
+              eventType: t.eventType,
+              fromEligibility: t.fromEligibility,
+              toEligibility: t.toEligibility,
+              netEdgePercent: t.netEdgePercent != null ? String(t.netEdgePercent) : null,
+              netProfitToman: t.netProfitToman != null ? String(Math.round(t.netProfitToman)) : null,
+              rawSpreadPercent: t.rawSpreadPercent != null ? String(t.rawSpreadPercent) : null,
+              blockedReasons: t.blockedReasons,
+              createdAt: now
+            }))
+          );
+        }
+
+        const session = await tx
+          .select()
+          .from(shadowObservationSessions)
+          .where(eq(shadowObservationSessions.id, input.sessionId))
+          .limit(1);
+        const s = session[0];
+        if (s) {
+          const completed = s.completedCycles + 1;
+          const successful = s.successfulCycles + (input.status === "success" ? 1 : 0);
+          const failed = s.failedCycles + (input.status === "failed" ? 1 : 0);
+          const partial = s.partialCycles + (input.status === "partial" ? 1 : 0);
+
+          let status = s.status;
+          if (status === "RUNNING" || status === "DEGRADED") {
+            status = failed + partial > successful ? "DEGRADED" : "RUNNING";
+          }
+          const startedMs = s.startedAt ? Date.parse(s.startedAt) : Date.now();
+          const elapsed = Math.max(0, Date.now() - startedMs - num(s.pausedTotalMs));
+          if (status !== "PAUSED" && elapsed >= (num(s.targetDurationMs) || TARGET_MS)) {
+            status = "COMPLETED";
+          }
+
+          await tx
+            .update(shadowObservationSessions)
+            .set({
+              completedCycles: completed,
+              successfulCycles: successful,
+              failedCycles: failed,
+              partialCycles: partial,
+              status,
+              lastSuccessAt: input.status !== "failed" ? now : s.lastSuccessAt,
+              lastHeartbeatAt: now,
+              endedAt: status === "COMPLETED" ? now : s.endedAt,
+              updatedAt: now
+            })
+            .where(eq(shadowObservationSessions.id, input.sessionId));
+        }
+      });
     });
   } catch (error) {
+    // Post-rollback: record a failed run without snapshots / counter bumps from the aborted txn.
+    try {
+      const db = await getDbAsync();
+      const sanitized = summarizeDbError(error).slice(0, 500);
+      await serial(async () => {
+        await db
+          .update(shadowCollectionRuns)
+          .set({
+            finishedAt: new Date().toISOString(),
+            status: "failed",
+            sourcesOk: input.sourcesOk,
+            sourcesFailed: input.sourcesFailed,
+            sourcesTotal: input.sourcesTotal,
+            opportunityCount: 0,
+            durationMs: input.durationMs,
+            pollIntervalMs: input.pollIntervalMs,
+            errorMessage: sanitized
+          })
+          .where(eq(shadowCollectionRuns.id, input.runId));
+      });
+    } catch {
+      /* best-effort failure marking — original error is rethrown below */
+    }
     throw asDbError(error, "completeCollectionRun");
   }
 }

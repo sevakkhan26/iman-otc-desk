@@ -423,9 +423,43 @@ export async function pingDatabase(): Promise<{ ok: true; mode: string }> {
   return { ok: true, mode: "postgres" };
 }
 
+/** Short, ops-safe summary of a DB/driver error (no SQL params / payloads). */
+export function summarizeDbError(error: unknown): string {
+  const parts: string[] = [];
+  let cur: unknown = error;
+  const seen = new Set<unknown>();
+  for (let depth = 0; cur != null && depth < 5 && !seen.has(cur); depth++) {
+    seen.add(cur);
+    if (typeof cur !== "object") {
+      parts.push(String(cur).slice(0, 200));
+      break;
+    }
+    const o = cur as {
+      name?: unknown;
+      message?: unknown;
+      code?: unknown;
+      cause?: unknown;
+      query?: unknown;
+    };
+    const code = o.code != null ? String(o.code) : "";
+    let msg = typeof o.message === "string" ? o.message : String(o.message ?? "");
+    // Strip Drizzle's "params: …" dump — it embeds full order books.
+    const paramsIdx = msg.indexOf("\nparams:");
+    if (paramsIdx >= 0) msg = msg.slice(0, paramsIdx);
+    if (msg.startsWith("Failed query:")) {
+      const q = msg.slice("Failed query:".length).trim();
+      msg = `Failed query: ${q.slice(0, 160)}${q.length > 160 ? "…" : ""}`;
+    } else {
+      msg = msg.slice(0, 240);
+    }
+    parts.push(code ? `${code}: ${msg}` : msg);
+    cur = o.cause;
+  }
+  return parts.join(" ← ") || "unknown database error";
+}
+
 /** Wrap DB errors with a clear operational message (preserve cause). */
 export function asDbError(error: unknown, context: string): DatabaseUnavailableError {
   if (error instanceof DatabaseUnavailableError) return error;
-  const msg = error instanceof Error ? error.message : String(error);
-  return new DatabaseUnavailableError(`${context}: ${msg}`, error);
+  return new DatabaseUnavailableError(`${context}: ${summarizeDbError(error)}`, error);
 }

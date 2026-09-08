@@ -366,7 +366,11 @@ export class PaperMarketDataFabric {
       meta: {
         endpoint,
         httpStatus: null,
-        latencyMs: state.latencyEstimateMs,
+        // INTEGER column shadow_source_snapshots.latency_ms — EMA estimate is float.
+        latencyMs:
+          state.latencyEstimateMs == null || !Number.isFinite(state.latencyEstimateMs)
+            ? null
+            : Math.round(state.latencyEstimateMs),
         attempts: 1,
         rateLimited: false,
         timedOut: false,

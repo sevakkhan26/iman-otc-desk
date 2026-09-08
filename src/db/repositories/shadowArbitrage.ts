@@ -662,8 +662,8 @@ export async function completeCollectionRun(input: {
             sourcesTotal: input.sourcesTotal,
             coveragePercent: String(coverage),
             opportunityCount: input.opportunityCount,
-            durationMs: input.durationMs,
-            pollIntervalMs: input.pollIntervalMs,
+            durationMs: asIntegerMs(input.durationMs),
+            pollIntervalMs: asIntegerMs(input.pollIntervalMs),
             errorMessage: input.errorMessage ?? null
           })
           .where(eq(shadowCollectionRuns.id, input.runId));
@@ -871,11 +871,17 @@ export async function completeCollectionRun(input: {
             sourcesFailed: input.sourcesFailed,
             sourcesTotal: input.sourcesTotal,
             opportunityCount: 0,
-            durationMs: input.durationMs,
-            pollIntervalMs: input.pollIntervalMs,
+            durationMs: asIntegerMs(input.durationMs),
+            pollIntervalMs: asIntegerMs(input.pollIntervalMs),
             errorMessage: sanitized
           })
-          .where(eq(shadowCollectionRuns.id, input.runId));
+          // Only mark still-running rows — never clobber a committed success.
+          .where(
+            and(
+              eq(shadowCollectionRuns.id, input.runId),
+              eq(shadowCollectionRuns.status, "running")
+            )
+          );
       });
     } catch {
       /* best-effort failure marking — original error is rethrown below */

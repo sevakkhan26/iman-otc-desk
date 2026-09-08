@@ -36,8 +36,14 @@ function formatErrorCauseChain(error: unknown, maxDepth = 6): string {
     const o = cur as { name?: unknown; message?: unknown; code?: unknown; cause?: unknown };
     const name = typeof o.name === "string" ? o.name : "Error";
     const code = o.code != null ? ` code=${String(o.code)}` : "";
-    const msg = typeof o.message === "string" ? o.message : String(o.message ?? "");
-    // Keep ops logs readable: truncate huge Drizzle "Failed query … params:" dumps.
+    let msg = typeof o.message === "string" ? o.message : String(o.message ?? "");
+    // Strip Drizzle params dumps before truncate — they embed full order books.
+    const paramsIdx = msg.search(/\nparams:/);
+    if (paramsIdx >= 0) msg = msg.slice(0, paramsIdx);
+    if (msg.startsWith("Failed query:")) {
+      const q = msg.slice("Failed query:".length).trim();
+      msg = `Failed query: ${q.slice(0, 160)}${q.length > 160 ? "…" : ""}`;
+    }
     const head = msg.length > 400 ? `${msg.slice(0, 400)}…` : msg;
     parts.push(`[${depth}] ${name}${code}: ${head}`);
     cur = o.cause;

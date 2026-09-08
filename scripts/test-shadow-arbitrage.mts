@@ -2543,7 +2543,7 @@ await test("Phase 6 blocks on thin inventory, now at sizing rather than at the f
   assert.equal(result.executedCount, 0);
   const skip = result.decisions.find((d) => d.kind === "SKIP");
   assert.ok(skip && skip.kind === "SKIP");
-  if (skip && skip.kind === "SKIP") assert.equal(skip.code, "sizing_blocked");
+  if (skip && skip.kind === "SKIP") assert.equal(skip.code, "sizing_size_floor");
 
   // The sizing evidence says exactly which venue and which cap stopped it.
   const route = result.sizing.find((s) => s.routeKey === "nobitex->wallex");

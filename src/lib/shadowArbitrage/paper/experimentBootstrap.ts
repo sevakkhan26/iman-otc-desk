@@ -194,12 +194,27 @@ export async function runPaperExperimentBootstrap(
     // PAPER-V2 Phase 1A — refuse economically valid N-day start when fees expire early.
     try {
       const { loadEffectiveFees } = await import("@/lib/shadowArbitrage/effectiveFees");
-      const { validateFeeHorizonForRun } = await import(
+      const { validateFeeHorizonForRun, feeExpiryWarnings } = await import(
         "@/lib/shadowArbitrage/paper/feeHorizon"
+      );
+      const { assessCanonicalFeeEvidenceFreshness } = await import(
+        "@/lib/shadowArbitrage/releaseBootstrap"
       );
       const nowMs = Date.now();
       const plannedEndMs = nowMs + PAPER_4D_DURATION_MS;
+      const canonical = assessCanonicalFeeEvidenceFreshness({ nowMs, plannedEndMs });
+      if (canonical.refreshDue) {
+        log("paper 4d fee evidence refresh due (canonical release)", canonical);
+      }
       const fees = await loadEffectiveFees(nowMs);
+      const earlyWarnings = feeExpiryWarnings({
+        venues: fees.venues,
+        nowMs,
+        requiredSourceIds: null
+      });
+      if (earlyWarnings.length) {
+        log("paper 4d fee expiry warnings before start", { warnings: earlyWarnings });
+      }
       const horizon = validateFeeHorizonForRun({
         venues: fees.venues,
         plannedEndMs,

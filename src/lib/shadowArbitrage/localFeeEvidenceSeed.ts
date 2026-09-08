@@ -30,7 +30,10 @@ import {
 import {
   APPROVED_VENUES,
   CONFIRMED_AT,
-  RELEASE_KEY
+  EXPIRES_AT,
+  RELEASE_KEY,
+  assessCanonicalFeeEvidenceFreshness,
+  type CanonicalFeeFreshness
 } from "@/lib/shadowArbitrage/releaseBootstrap";
 /** Marker note only — not a second source of fee numbers. */
 export const LOCAL_FEE_SEED_NOTE =
@@ -55,6 +58,9 @@ export type LocalFeeSeedResult = {
   evidenceSource: "releaseBootstrap.APPROVED_VENUES";
   evidenceKey: typeof RELEASE_KEY;
   confirmedAt: typeof CONFIRMED_AT;
+  expiresAt: typeof EXPIRES_AT;
+  /** Canonical release evidence freshness at seed time (fail-closed signal). */
+  canonicalFreshness: CanonicalFeeFreshness;
   venues: LocalFeeSeedVenueResult[];
   written: number;
   alreadyPresent: number;
@@ -200,11 +206,18 @@ export async function seedLocalFeeEvidence(): Promise<LocalFeeSeedResult> {
     void accState;
   }
 
+  const canonicalFreshness = assessCanonicalFeeEvidenceFreshness({ nowMs: Date.now() });
+  if (canonicalFreshness.refreshDue) {
+    console.warn("[local-fee-seed] canonical fee evidence refresh due:", canonicalFreshness.detail);
+  }
+
   return {
     ran: true,
     evidenceSource: "releaseBootstrap.APPROVED_VENUES",
     evidenceKey: RELEASE_KEY,
     confirmedAt: CONFIRMED_AT,
+    expiresAt: EXPIRES_AT,
+    canonicalFreshness,
     venues,
     written,
     alreadyPresent,

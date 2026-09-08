@@ -10,11 +10,13 @@
 import type { VenueEffectiveFee } from "@/lib/shadowArbitrage/effectiveFees";
 
 export const FEE_WARNING_WINDOWS_MS = {
+  /** Planning lead: refresh admin fee evidence before a scheduled acceptance/run. */
+  T_7D: 7 * 24 * 60 * 60 * 1000,
   T_24H: 24 * 60 * 60 * 1000,
   T_6H: 6 * 60 * 60 * 1000
 } as const;
 
-export type FeeWarningLevel = "ok" | "T_24H" | "T_6H" | "EXPIRED";
+export type FeeWarningLevel = "ok" | "T_7D" | "T_24H" | "T_6H" | "EXPIRED";
 
 export type FeeHorizonBlocker = {
   sourceId: string;
@@ -47,6 +49,18 @@ export type FeeExpiryWarning = {
   msUntilExpiry: number;
   level: Exclude<FeeWarningLevel, "ok" | "EXPIRED">;
 };
+
+/**
+ * Earliest non-ok warning level for a still-valid expiresAt, or EXPIRED / ok.
+ * Pure helper used by runtime warnings and the release-bootstrap freshness gate.
+ */
+export function feeWarningLevelForMsUntil(msUntilExpiry: number): FeeWarningLevel {
+  if (msUntilExpiry <= 0) return "EXPIRED";
+  if (msUntilExpiry <= FEE_WARNING_WINDOWS_MS.T_6H) return "T_6H";
+  if (msUntilExpiry <= FEE_WARNING_WINDOWS_MS.T_24H) return "T_24H";
+  if (msUntilExpiry <= FEE_WARNING_WINDOWS_MS.T_7D) return "T_7D";
+  return "ok";
+}
 
 export type FeeRuntimeHorizon = {
   economicsState: "ECONOMICS_VALID" | "ECONOMICS_INVALID";
@@ -178,10 +192,9 @@ export function feeExpiryWarnings(input: {
     if (!Number.isFinite(expMs)) continue;
     const msUntil = expMs - input.nowMs;
     if (msUntil <= 0) continue;
-    let level: FeeExpiryWarning["level"] | null = null;
-    if (msUntil <= FEE_WARNING_WINDOWS_MS.T_6H) level = "T_6H";
-    else if (msUntil <= FEE_WARNING_WINDOWS_MS.T_24H) level = "T_24H";
-    if (!level) continue;
+    const levelRaw = feeWarningLevelForMsUntil(msUntil);
+    if (levelRaw === "ok" || levelRaw === "EXPIRED") continue;
+    const level = levelRaw;
     out.push({
       sourceId: v.sourceId,
       executionMode: v.executionMode,

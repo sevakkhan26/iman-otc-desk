@@ -36,7 +36,8 @@ const { seedLocalFeeEvidence } = await import(
 const {
   APPROVED_VENUES,
   RELEASE_KEY,
-  CONFIRMED_AT
+  CONFIRMED_AT,
+  EXPIRES_AT
 } = await import("../src/lib/shadowArbitrage/releaseBootstrap.ts");
 const {
   loadLatestFeeConfirmations,
@@ -62,6 +63,9 @@ await test("first seed writes all nine venues from releaseBootstrap", async () =
   assert.equal(r.evidenceSource, "releaseBootstrap.APPROVED_VENUES");
   assert.equal(r.evidenceKey, RELEASE_KEY);
   assert.equal(r.confirmedAt, CONFIRMED_AT);
+  assert.equal(r.expiresAt, EXPIRES_AT);
+  assert.ok(r.canonicalFreshness);
+  assert.equal(r.canonicalFreshness.releaseKey, RELEASE_KEY);
   assert.equal(r.venues.length, 9);
   assert.equal(r.written, 9);
   assert.equal(r.alreadyPresent, 0);
@@ -93,7 +97,7 @@ await test("second seed is a pure no-op (no duplicates)", async () => {
 });
 
 await test("effective fees apply 9/9 with no fee_unknown", async () => {
-  const fees = await loadEffectiveFees(Date.now());
+  const fees = await loadEffectiveFees(Date.parse(CONFIRMED_AT) + 86_400_000);
   assert.equal(fees.venues.length, 9);
   for (const v of fees.venues) {
     assert.equal(v.ok, true, `${v.sourceId} miss=${v.miss}`);

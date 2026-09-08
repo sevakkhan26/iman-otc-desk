@@ -24,8 +24,13 @@ const {
   feeExpiryWarnings,
   assessRuntimeFeeHorizon,
   toEconomicsValidityAudit,
-  FEE_WARNING_WINDOWS_MS
+  FEE_WARNING_WINDOWS_MS,
+  feeWarningLevelForMsUntil
 } = await import("../src/lib/shadowArbitrage/paper/feeHorizon.ts");
+
+const { assessCanonicalFeeEvidenceFreshness, EXPIRES_AT, RELEASE_KEY } = await import(
+  "../src/lib/shadowArbitrage/releaseBootstrap.ts"
+);
 
 const { buildRejectDiagnostics } = await import(
   "../src/lib/shadowArbitrage/paper/rejectDiagnostics.ts"
@@ -92,7 +97,7 @@ await test("start-horizon failure when evidence expires before planned_end", () 
   assert.equal(r.blockers[0].reason, "expires_before_planned_end");
 });
 
-await test("warning window T-24h and T-6h", () => {
+await test("warning window T-7d, T-24h and T-6h", () => {
   const exp = new Date(NOW + 5 * 60 * 60 * 1000).toISOString(); // 5h -> T_6H
   const v = venue({ sourceId: "wallex", expiresAt: exp, ok: true });
   const w = feeExpiryWarnings({ venues: [v], nowMs: NOW });
@@ -103,6 +108,12 @@ await test("warning window T-24h and T-6h", () => {
   const v2 = venue({ sourceId: "bitpin", expiresAt: exp24, ok: true });
   const w2 = feeExpiryWarnings({ venues: [v2], nowMs: NOW });
   assert.equal(w2[0].level, "T_24H");
+
+  const exp7 = new Date(NOW + 3 * 24 * 60 * 60 * 1000).toISOString(); // 3d -> T_7D
+  const v3 = venue({ sourceId: "nobitex", expiresAt: exp7, ok: true });
+  const w3 = feeExpiryWarnings({ venues: [v3], nowMs: NOW });
+  assert.equal(w3[0].level, "T_7D");
+  assert.ok(FEE_WARNING_WINDOWS_MS.T_7D > FEE_WARNING_WINDOWS_MS.T_24H);
   assert.ok(FEE_WARNING_WINDOWS_MS.T_24H > FEE_WARNING_WINDOWS_MS.T_6H);
 });
 
@@ -190,6 +201,27 @@ await test("non-expiring evidence (expiresAt=null) is accepted when ok", () => {
   assert.equal(r.ok, true);
   const w = feeExpiryWarnings({ venues: [v], nowMs: NOW });
   assert.equal(w.length, 0);
+});
+
+await test("canonical release freshness reports EXPIRED after EXPIRES_AT (no date invent)", () => {
+  const after = assessCanonicalFeeEvidenceFreshness({
+    nowMs: Date.parse(EXPIRES_AT) + 1000
+  });
+  assert.equal(after.releaseKey, RELEASE_KEY);
+  assert.equal(after.expired, true);
+  assert.equal(after.refreshDue, true);
+  assert.equal(after.level, "EXPIRED");
+  assert.equal(feeWarningLevelForMsUntil(-1), "EXPIRED");
+  assert.equal(feeWarningLevelForMsUntil(3 * 24 * 60 * 60 * 1000), "T_7D");
+});
+
+await test("canonical release freshness T_7D lead before expiry", () => {
+  const before = assessCanonicalFeeEvidenceFreshness({
+    nowMs: Date.parse(EXPIRES_AT) - 3 * 24 * 60 * 60 * 1000
+  });
+  assert.equal(before.expired, false);
+  assert.equal(before.refreshDue, true);
+  assert.equal(before.level, "T_7D");
 });
 
 console.log("\n== Phase 1B — reject diagnostics ==");

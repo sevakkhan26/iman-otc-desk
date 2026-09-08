@@ -158,7 +158,7 @@ await test("startup creates one account and one fee confirmation per venue", asy
 });
 
 await test("the accounts surface reports KYC 9/9 and eligibility 9/9", async () => {
-  const eff = await loadEffectiveFees(Date.now());
+  const eff = await loadEffectiveFees(Date.parse(CONFIRMED_AT) + 86_400_000);
   const accounts = await loadLatestAccountConfirmations();
   const readiness = buildAllReadiness(
     eff.overrides,
@@ -178,7 +178,7 @@ await test("the accounts surface reports KYC 9/9 and eligibility 9/9", async () 
 });
 
 await test("every taker, maker, tier and settlement value matches the approval", async () => {
-  const eff = await loadEffectiveFees(Date.now());
+  const eff = await loadEffectiveFees(Date.parse(CONFIRMED_AT) + 86_400_000);
   for (const want of APPROVED_VENUES) {
     const f = eff.byVenue[want.sourceId];
     assert.ok(f, `${want.sourceId} resolved`);
@@ -299,7 +299,7 @@ await test("the state survives a database reopen", async () => {
   assert.equal(active!.totalCapitalToman, RELEASE_CAPITAL_TOMAN, "still ten billion after restart");
   const plans = await loadCapitalPlans(20);
   assert.equal(plans[0].totalCapitalToman, RELEASE_CAPITAL_TOMAN);
-  const eff = await loadEffectiveFees(Date.now());
+  const eff = await loadEffectiveFees(Date.parse(CONFIRMED_AT) + 86_400_000);
   assert.equal(eff.venues.filter((v) => v.ok).length, 9, "nine applied fees after restart");
 
   const again = await runReleaseBootstrap();

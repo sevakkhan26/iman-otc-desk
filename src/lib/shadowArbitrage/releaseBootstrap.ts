@@ -81,9 +81,75 @@ export const APPROVED_VENUES: Array<{
 export const CONFIRMED_AT = "2026-08-01T13:00:00.000Z";
 /** The approver's stated expiry. Thirty days from the confirmation date. */
 export const EXPIRES_AT = "2026-08-31T13:00:00.000Z";
-const VALID_DAYS = 30;
+/** Documented admin TTL used when recording confirmations (expiresAt = confirmedAt + VALID_DAYS). */
+export const VALID_DAYS = 30;
 const PROVENANCE = "ADMIN_CONFIRMED_SCREENSHOT";
 const CONFIRMED_BY = "otc-iman";
+
+export type CanonicalFeeFreshnessLevel = "ok" | "T_7D" | "T_24H" | "T_6H" | "EXPIRED";
+
+export type CanonicalFeeFreshness = {
+  releaseKey: string;
+  confirmedAt: string;
+  expiresAt: string;
+  validDays: number;
+  expiresAtMs: number;
+  nowMs: number;
+  msUntilExpiry: number;
+  expired: boolean;
+  /** True when expiry is within the 7-day planning lead (or already expired). */
+  refreshDue: boolean;
+  level: CanonicalFeeFreshnessLevel;
+  /** When plannedEndMs supplied: whether expiresAt is strictly after planned end. */
+  coversPlannedEnd: boolean | null;
+  detail: string;
+};
+
+/**
+ * Release/preflight guard: surface impending canonical fee-evidence expiry early
+ * enough to refresh before a planned run. Does not invent rates or extend TTL.
+ * Horizon gate remains the hard fail-closed check at start.
+ */
+export function assessCanonicalFeeEvidenceFreshness(input: {
+  nowMs: number;
+  plannedEndMs?: number | null;
+}): CanonicalFeeFreshness {
+  const expiresAtMs = Date.parse(EXPIRES_AT);
+  const msUntilExpiry = expiresAtMs - input.nowMs;
+  const expired = !Number.isFinite(expiresAtMs) || msUntilExpiry <= 0;
+  let level: CanonicalFeeFreshnessLevel = "ok";
+  if (expired) level = "EXPIRED";
+  else if (msUntilExpiry <= 6 * 60 * 60 * 1000) level = "T_6H";
+  else if (msUntilExpiry <= 24 * 60 * 60 * 1000) level = "T_24H";
+  else if (msUntilExpiry <= 7 * 24 * 60 * 60 * 1000) level = "T_7D";
+
+  const coversPlannedEnd =
+    input.plannedEndMs == null
+      ? null
+      : Number.isFinite(expiresAtMs) && expiresAtMs > input.plannedEndMs;
+
+  const refreshDue = expired || level === "T_7D" || level === "T_24H" || level === "T_6H";
+  const detail = expired
+    ? `canonical release fee evidence ${RELEASE_KEY} expired at ${EXPIRES_AT}; admin must reconfirm panels and mint a new release key (VALID_DAYS=${VALID_DAYS})`
+    : refreshDue
+      ? `canonical release fee evidence ${RELEASE_KEY} expires at ${EXPIRES_AT} (level=${level}); refresh before scheduling acceptance runs`
+      : `canonical release fee evidence ${RELEASE_KEY} valid until ${EXPIRES_AT}`;
+
+  return {
+    releaseKey: RELEASE_KEY,
+    confirmedAt: CONFIRMED_AT,
+    expiresAt: EXPIRES_AT,
+    validDays: VALID_DAYS,
+    expiresAtMs,
+    nowMs: input.nowMs,
+    msUntilExpiry,
+    expired,
+    refreshDue,
+    level,
+    coversPlannedEnd,
+    detail
+  };
+}
 
 export type BootstrapResult = {
   ran: boolean;

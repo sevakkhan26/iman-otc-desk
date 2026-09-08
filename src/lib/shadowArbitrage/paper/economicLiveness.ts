@@ -78,6 +78,7 @@ export type EconomicAlert = {
     | "NO_FILL_CRITICAL"
     | "FEE_BLOCK_IMMEDIATE"
     | "FEE_UNKNOWN_ROLLING"
+    | "FEE_EXPIRY_T_7D"
     | "FEE_EXPIRY_T_24H"
     | "FEE_EXPIRY_T_6H"
     | "POSITIVE_NET_DROPOUT_WARNING"
@@ -601,7 +602,12 @@ export function assessEconomicLiveness(input: {
   }
   for (const w of expiryWarnings) {
     alerts.push({
-      code: w.level === "T_6H" ? "FEE_EXPIRY_T_6H" : "FEE_EXPIRY_T_24H",
+      code:
+        w.level === "T_6H"
+          ? "FEE_EXPIRY_T_6H"
+          : w.level === "T_7D"
+            ? "FEE_EXPIRY_T_7D"
+            : "FEE_EXPIRY_T_24H",
       severity: "WARNING",
       message: `Fee evidence for ${w.sourceId} expires within ${w.level}`,
       detail: {

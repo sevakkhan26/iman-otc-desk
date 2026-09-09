@@ -511,5 +511,23 @@ await test("mid-run expiry marks ECONOMICS_INVALID; refresh recovers; data stays
   );
 });
 
+
+await test("portfolio_limits_unavailable / sizing_invalid_size stay exact (closure)", async () => {
+  const { primaryReason } = await import("../src/lib/shadowArbitrage/paper/reasons.ts");
+  assert.equal(primaryReason(["portfolio_limits_unavailable"]), "portfolio_limits_unavailable");
+  assert.notEqual(primaryReason(["portfolio_limits_unavailable"]), "sizing_blocked");
+  assert.equal(primaryReason(["sizing_invalid_size"]), "sizing_invalid_size");
+  assert.notEqual(primaryReason(["sizing_invalid_size"]), "sizing_blocked");
+});
+
+await test("venue_min_unknown maps to sizing_size_floor (exact, not opaque)", () => {
+  const sizing = {
+    status: "BLOCKED",
+    blockers: [{ code: "venue_min_unknown", subject: "buy", fa: "x" }],
+    candidates: []
+  };
+  assert.equal(paperReasonFromSizing(sizing as never), "sizing_size_floor");
+});
+
 console.log(`\nPhase2 bugfix: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -25,7 +25,14 @@ function statusFor(
   if (d.code === "net_non_positive" || d.codes.includes("net_non_positive")) {
     return "rejected";
   }
-  if (d.codes.includes("sizing_blocked") || d.code === "sizing_blocked") {
+  if (
+    d.codes.includes("sizing_blocked") ||
+    d.code === "sizing_blocked" ||
+    d.codes.includes("sizing_invalid_size") ||
+    d.code === "sizing_invalid_size" ||
+    d.codes.includes("portfolio_limits_unavailable") ||
+    d.code === "portfolio_limits_unavailable"
+  ) {
     return "rejected";
   }
   return "rejected";

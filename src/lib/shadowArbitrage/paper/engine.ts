@@ -186,8 +186,12 @@ export function paperReasonFromSizing(sizing: SizingResult): PaperReasonCode {
       return "sizing_slippage_over_limit";
     case "size_floor":
       return "sizing_size_floor";
+    case "venue_min_unknown":
+      // Paper continues with paper_policy_min; if this blocker surfaces, keep it exact.
+      return "sizing_size_floor";
     default:
-      // Authoritative path must not emit opaque sizing_blocked when a blocker exists.
+      // Unknown blocker code: still avoid a bare opaque label by retaining diagnostics
+      // via sizingRejectNeedsDiagnostics(sizing_blocked). Prefer never reaching here.
       if (primary) {
         return "sizing_blocked";
       }
@@ -198,6 +202,8 @@ export function paperReasonFromSizing(sizing: SizingResult): PaperReasonCode {
 function sizingRejectNeedsDiagnostics(code: PaperReasonCode): boolean {
   return (
     code === "sizing_blocked" ||
+    code === "sizing_invalid_size" ||
+    code === "portfolio_limits_unavailable" ||
     code === "net_non_positive" ||
     code === "insufficient_depth" ||
     code === "insufficient_irt" ||
@@ -880,7 +886,11 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
   // Fail closed when the caller required portfolio limits but capital is missing.
   if (input.portfolioLimits?.enabled === true && !limits) {
     for (const { c } of rankedRoutes) {
-      skip(c, ["sizing_blocked"], diagFor(c, ["sizing_blocked"]));
+      skip(
+        c,
+        ["portfolio_limits_unavailable"],
+        diagFor(c, ["portfolio_limits_unavailable"])
+      );
     }
     return {
       decisions,
@@ -1291,7 +1301,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
         optimizerFailedClosed
           ? "optimizer_budget_exhausted"
           : rejection?.code === "invalid_size"
-          ? "sizing_blocked"
+          ? "sizing_invalid_size"
           : rejection?.code ?? "portfolio_not_selected"
       ) as PaperReasonCode;
       {

@@ -60,6 +60,8 @@ export type PaperReasonCode =
   | "sizing_expired_policy"
   | "sizing_slippage_over_limit"
   | "sizing_size_floor"
+  | "sizing_invalid_size"
+  | "portfolio_limits_unavailable"
   | "delayed_liquidity_disappeared"
   | "delayed_depth_insufficient"
   | "delayed_net_non_positive"
@@ -115,6 +117,8 @@ export const PAPER_REASON_FA: Record<PaperReasonCode, string> = {
   sizing_expired_policy: "اعتبار سیاست ریسک لازم برای اندازه‌گیری حجم منقضی شده است",
   sizing_slippage_over_limit: "بافر لغزش مدل‌شده از سقف مجاز سیاست بیشتر است",
   sizing_size_floor: "ظرفیت قابل استفاده به حداقل سیاست کاغذی یا حداقل تأییدشدهٔ صرافی نمی‌رسد",
+  sizing_invalid_size: "حجم تخصیص‌یافته از نظر گام/حداقل صرافی یا سیاست نامعتبر است",
+  portfolio_limits_unavailable: "سقف‌های پرتفوی فعال است اما سرمایه یا قیمت مرجع برای اعمال آن‌ها در دسترس نیست",
   delayed_liquidity_disappeared: "پس از تأخیر شبیه‌سازی‌شده نقدینگی قابل اجرا از بین رفته است",
   delayed_depth_insufficient: "عمق دفتر تأخیری برای حجم برنامه‌ریزی‌شده کافی نیست",
   delayed_net_non_positive: "پس از بازبینی دفتر تأخیری سود خالص اقتصادی مثبت نیست",
@@ -201,6 +205,8 @@ const PRIORITY: PaperReasonCode[] = [
   "sizing_expired_policy",
   "sizing_slippage_over_limit",
   "sizing_size_floor",
+  "sizing_invalid_size",
+  "portfolio_limits_unavailable",
   "delayed_liquidity_disappeared",
   "delayed_depth_insufficient",
   "delayed_net_non_positive",

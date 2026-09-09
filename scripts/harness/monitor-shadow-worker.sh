@@ -45,8 +45,10 @@ PLANNED_EPOCH=$(date -u -d "$PLANNED_END" +%s 2>/dev/null \
   || python3 -c "import datetime; print(int(datetime.datetime.strptime('$PLANNED_END','%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc).timestamp()))")
 
 count_success_cycles() {
+  # grep -c exits 1 when count is 0; do NOT append `|| echo 0` or callers
+  # receive "0\n0" and python int() crashes the monitor (silent monitor death).
   if [[ -f "$LOG" ]]; then
-    grep -cE "$SUCCESS_PATTERN" "$LOG" 2>/dev/null || echo 0
+    grep -cE "$SUCCESS_PATTERN" "$LOG" 2>/dev/null || true
   else
     echo 0
   fi

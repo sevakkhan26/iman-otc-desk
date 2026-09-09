@@ -19,11 +19,16 @@ export type DecisionCandidateTrace = {
   sizeUsdt: number;
   buyVwapToman: number | null;
   sellVwapToman: number | null;
+  /** Delayed-book VWAP after simulated arrival (null when recheck not run). */
+  delayedBuyVwapToman?: number | null;
+  delayedSellVwapToman?: number | null;
   grossSpreadToman: number | null;
   economicNetPnlToman: number | null;
   riskAdjustedPnlToman: number | null;
   buyFeeBps: number | null;
   sellFeeBps: number | null;
+  buyFeeProvenance?: string | null;
+  sellFeeProvenance?: string | null;
   feeTomanTotal: number | null;
   slippageBufferToman: number | null;
   bindingConstraint: string | null;
@@ -38,10 +43,17 @@ export type DecisionCandidateTrace = {
   statusFa: string;
   reasonFa: string | null;
   reasonCodes: string[];
+  /** Exact terminal reason for non-fills; null on traded/selected-without-reject. */
+  terminalReason?: string | null;
   selected: boolean;
   ledgerId: string | null;
   capitalCapUsdt: number | null;
   depthCapUsdt: number | null;
+  sourceSkewMs?: number | null;
+  appliedDelayMs?: number | null;
+  delayedNetPnlToman?: number | null;
+  funnelStages?: Array<Record<string, unknown>>;
+  lifecycleEvidence?: Record<string, unknown> | null;
 };
 
 export type DecisionTraceRow = {

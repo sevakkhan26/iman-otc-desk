@@ -4,6 +4,11 @@
  */
 import type { PaperDecision, CycleEvaluation } from "@/lib/shadowArbitrage/paper/engine";
 import type { DecisionCandidateTrace } from "@/db/repositories/shadowDecisionTraces";
+import {
+  buildLifecycleDecisionEvidence,
+  type LifecycleDecisionEvidence
+} from "@/lib/shadowArbitrage/paper/lifecycleFunnel";
+import { isBannedTerminalReason } from "@/lib/shadowArbitrage/paper/reasons";
 
 export type CaptureInput = {
   decisions: PaperDecision[];
@@ -11,6 +16,11 @@ export type CaptureInput = {
   filledLifecycleIds: Set<string>;
   ledgerIdByLifecycle?: Map<string, string>;
   venueCount: number;
+  sessionId?: string | null;
+  runId?: string | null;
+  occurredAt?: string;
+  policyFingerprint?: string | null;
+  fixtureLabel?: "FIXTURE_NOT_REAL_TRADE" | null;
 };
 
 function statusFor(
@@ -18,22 +28,9 @@ function statusFor(
   filled: Set<string>
 ): DecisionCandidateTrace["status"] {
   if (d.kind === "EXECUTE") {
+    if (d.executionOutcome === "LEG_RISK") return "failed";
     if (filled.has(d.candidate.lifecycleId)) return "traded";
     return "selected";
-  }
-  // SKIP
-  if (d.code === "net_non_positive" || d.codes.includes("net_non_positive")) {
-    return "rejected";
-  }
-  if (
-    d.codes.includes("sizing_blocked") ||
-    d.code === "sizing_blocked" ||
-    d.codes.includes("sizing_invalid_size") ||
-    d.code === "sizing_invalid_size" ||
-    d.codes.includes("portfolio_limits_unavailable") ||
-    d.code === "portfolio_limits_unavailable"
-  ) {
-    return "rejected";
   }
   return "rejected";
 }
@@ -58,7 +55,7 @@ export function buildCandidateTraces(input: CaptureInput): DecisionCandidateTrac
     rank += 1;
     const c = d.candidate;
     const status = statusFor(d, input.filledLifecycleIds);
-    const selected = d.kind === "EXECUTE";
+    const selected = d.kind === "EXECUTE" && d.executionOutcome !== "LEG_RISK";
     let economic: number | null = null;
     let riskAdj: number | null = null;
     let gross: number | null = null;
@@ -70,6 +67,8 @@ export function buildCandidateTraces(input: CaptureInput): DecisionCandidateTrac
     let buyVwap = c.buyVwapToman;
     let sellVwap = c.sellVwapToman;
     let size = c.sizeUsdt;
+    let buyProv: string | null = null;
+    let sellProv: string | null = null;
 
     if (d.kind === "EXECUTE") {
       economic = d.plan.economicNetPnlToman;
@@ -79,6 +78,8 @@ export function buildCandidateTraces(input: CaptureInput): DecisionCandidateTrac
       buyVwap = d.plan.buyLeg.vwapToman;
       sellVwap = d.plan.sellLeg.vwapToman;
       size = d.candidate.sizeUsdt;
+      buyProv = d.plan.buyLeg.settlement.provenance;
+      sellProv = d.plan.sellLeg.settlement.provenance;
       if (d.sizing.selection) {
         sizingReason = d.sizing.selection.reasonFa;
         binding = d.sizing.bindingConstraint;
@@ -95,6 +96,29 @@ export function buildCandidateTraces(input: CaptureInput): DecisionCandidateTrac
       }
     }
 
+    const terminalReason =
+      d.kind === "SKIP"
+        ? d.code
+        : d.executionOutcome === "LEG_RISK"
+          ? "leg_risk_second_leg_failed"
+          : null;
+    if (terminalReason && isBannedTerminalReason(terminalReason)) {
+      throw new Error(`banned terminal reason in trace capture: ${terminalReason}`);
+    }
+
+    const delayed = d.delayedRecheck ?? null;
+    const evidence: LifecycleDecisionEvidence = buildLifecycleDecisionEvidence({
+      decision: d,
+      sessionId: input.sessionId ?? null,
+      runId: input.runId ?? null,
+      ledgerId: input.ledgerIdByLifecycle?.get(c.lifecycleId) ?? null,
+      occurredAt: input.occurredAt ?? new Date().toISOString(),
+      rank,
+      selected,
+      policyFingerprint: input.policyFingerprint ?? null,
+      label: input.fixtureLabel ?? null
+    });
+
     out.push({
       rank,
       lifecycleId: c.lifecycleId,
@@ -104,11 +128,15 @@ export function buildCandidateTraces(input: CaptureInput): DecisionCandidateTrac
       sizeUsdt: size,
       buyVwapToman: buyVwap,
       sellVwapToman: sellVwap,
+      delayedBuyVwapToman: delayed?.delayed.buyVwapToman ?? null,
+      delayedSellVwapToman: delayed?.delayed.sellVwapToman ?? null,
       grossSpreadToman: gross,
       economicNetPnlToman: economic,
       riskAdjustedPnlToman: riskAdj,
       buyFeeBps: c.buyFeeBps,
       sellFeeBps: c.sellFeeBps,
+      buyFeeProvenance: buyProv,
+      sellFeeProvenance: sellProv,
       feeTomanTotal: feeToman,
       slippageBufferToman: c.slippageBufferToman,
       bindingConstraint: binding,
@@ -117,10 +145,19 @@ export function buildCandidateTraces(input: CaptureInput): DecisionCandidateTrac
       statusFa: STATUS_FA[status],
       reasonFa: d.kind === "SKIP" ? d.reasonFa : sizingReason,
       reasonCodes: d.kind === "SKIP" ? d.codes : [],
+      terminalReason,
       selected,
       ledgerId: input.ledgerIdByLifecycle?.get(c.lifecycleId) ?? null,
       capitalCapUsdt: capitalCap,
-      depthCapUsdt: depthCap
+      depthCapUsdt: depthCap,
+      sourceSkewMs:
+        (d.kind === "SKIP" ? d.diagnostics?.coherence?.sourceSkewMs : null) ??
+        delayed?.delayed.coherence?.sourceSkewMs ??
+        null,
+      appliedDelayMs: delayed?.appliedDelayMs ?? null,
+      delayedNetPnlToman: delayed?.delayed.economicNetPnlToman ?? null,
+      funnelStages: evidence.stages,
+      lifecycleEvidence: evidence as unknown as Record<string, unknown>
     });
   }
   return out;

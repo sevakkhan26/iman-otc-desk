@@ -560,16 +560,6 @@ async function runPaperCycle(input: {
         "@/lib/shadowArbitrage/paper/decisionTraceCapture"
       );
       const filledIds = new Set(fills.map((f) => f.lifecycleId));
-      const candidates = buildCandidateTraces({
-        decisions: evaluation.decisions,
-        evaluation,
-        filledLifecycleIds: filledIds,
-        venueCount: input.sources.length
-      });
-      const { outcome, reasonFa } = cycleOutcomeFromTraces(candidates, committed.filled);
-      const selected = candidates.find((c) => c.selected);
-      const routes = new Set(candidates.map((c) => c.routeKey)).size;
-      const sizes = new Set(candidates.map((c) => c.sizeUsdt)).size;
       let releaseVersion: string | null = null;
       let policyFingerprint: string | null = null;
       try {
@@ -590,6 +580,20 @@ async function runPaperCycle(input: {
           /* optional */
         }
       }
+      const candidates = buildCandidateTraces({
+        decisions: evaluation.decisions,
+        evaluation,
+        filledLifecycleIds: filledIds,
+        venueCount: input.sources.length,
+        sessionId: session.id,
+        runId: input.runId,
+        occurredAt: input.occurredAt,
+        policyFingerprint
+      });
+      const { outcome, reasonFa } = cycleOutcomeFromTraces(candidates, committed.filled);
+      const selected = candidates.find((c) => c.selected);
+      const routes = new Set(candidates.map((c) => c.routeKey)).size;
+      const sizes = new Set(candidates.map((c) => c.sizeUsdt)).size;
       const written = await appendDecisionTrace({
         sessionId: session.id,
         runId: input.runId,
@@ -610,6 +614,38 @@ async function runPaperCycle(input: {
       if ("error" in written) {
         // Visible only in logs — never mutates the decision.
         console.warn("[shadow-paper] decision trace append failed", written.error);
+      }
+      // Full funnel evidence rows (additive). Failures never alter paper outcome.
+      try {
+        const { appendLifecycleEvidence } = await import(
+          "@/db/repositories/shadowLifecycleEvidence"
+        );
+        const { buildLifecycleDecisionEvidence } = await import(
+          "@/lib/shadowArbitrage/paper/lifecycleFunnel"
+        );
+        let rank = 0;
+        for (const d of evaluation.decisions) {
+          rank += 1;
+          const ev = buildLifecycleDecisionEvidence({
+            decision: d,
+            sessionId: session.id,
+            runId: input.runId,
+            occurredAt: input.occurredAt,
+            rank,
+            selected: d.kind === "EXECUTE" && d.executionOutcome !== "LEG_RISK",
+            policyFingerprint
+          });
+          const w = await appendLifecycleEvidence({
+            evidence: ev,
+            releaseVersion,
+            policyFingerprint
+          });
+          if ("error" in w) {
+            console.warn("[shadow-paper] lifecycle evidence append failed", w.error);
+          }
+        }
+      } catch {
+        /* never take down paper execution */
       }
     }
   } catch {

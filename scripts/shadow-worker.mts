@@ -98,6 +98,24 @@ async function main() {
     process.exit(1);
   }
 
+  // Local Paper ensure: fees + RUNNING session + decision traces.
+  // Fixes continuous collector-only launches that left paper tables empty.
+  try {
+    const { ensureLocalPaperTelemetry, paperEnsureEnabled } = await import(
+      "../src/lib/shadowArbitrage/localPaperEnsure.ts"
+    );
+    if (paperEnsureEnabled()) {
+      const ensured = await ensureLocalPaperTelemetry();
+      log("SHADOW_PAPER_ENSURE applied", ensured);
+    } else {
+      log(
+        "SHADOW_PAPER_ENSURE off — paper runs only if a RUNNING session already exists"
+      );
+    }
+  } catch (e) {
+    log("paper ensure failed (collector continues)", e instanceof Error ? e.message : e);
+  }
+
   const handle = await startShadowCollector({ workerId, pollIntervalMs: pollMs, maxCycles, log });
   if (!handle.leaseAcquired) {
     await closeDb().catch(() => undefined);

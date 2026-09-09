@@ -199,8 +199,11 @@ export async function startShadowCollector(
         wake = null;
         resolve();
       }, ms);
-      // Do not hold the event loop open on shutdown.
-      if (typeof timer === "object" && "unref" in timer) timer.unref();
+      // Keep the poll sleep referenced while the collector is running.
+      // When public WebSockets are unavailable (REST-only), unref'ing this
+      // timer lets Node exit between cycles after handles drain — silent death
+      // after cycle 1 with no "shutdown complete" log. stop() already clears
+      // the timer via wake(), so shutdown does not need unref here.
       wake = () => {
         clearTimeout(timer);
         wake = null;

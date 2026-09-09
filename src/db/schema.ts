@@ -1001,6 +1001,42 @@ export const shadowPaperDecisionTraces = pgTable(
  * endsAt is frozen at activation; restarts never extend the deadline.
  * At most one ACTIVE row (enforced by partial unique index in migration).
  */
+
+/**
+ * Append-only per-decision lifecycle funnel evidence (telemetry).
+ * Written after paper evaluation; never influences ranking or fills.
+ * Historical cycles before migration 0019 have no rows here.
+ */
+export const shadowPaperLifecycleEvidence = pgTable(
+  "shadow_paper_lifecycle_evidence",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: uuid("session_id"),
+    runId: uuid("run_id"),
+    ledgerId: uuid("ledger_id"),
+    lifecycleId: text("lifecycle_id").notNull(),
+    routeKey: text("route_key").notNull(),
+    buySourceId: text("buy_source_id").notNull(),
+    sellSourceId: text("sell_source_id").notNull(),
+    occurredAt: ts("occurred_at").notNull(),
+    outcome: text("outcome").notNull(),
+    terminalReason: text("terminal_reason"),
+    reasonCodes: jsonb("reason_codes").$type<string[]>().default([]).notNull(),
+    evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull(),
+    stages: jsonb("stages").$type<Array<Record<string, unknown>>>().default([]).notNull(),
+    releaseVersion: text("release_version"),
+    policyFingerprint: text("policy_fingerprint"),
+    fixtureLabel: text("fixture_label"),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [
+    index("shadow_paper_lifecycle_evidence_life_idx").on(t.lifecycleId, t.occurredAt),
+    index("shadow_paper_lifecycle_evidence_session_idx").on(t.sessionId, t.occurredAt),
+    index("shadow_paper_lifecycle_evidence_terminal_idx").on(t.terminalReason, t.occurredAt),
+    index("shadow_paper_lifecycle_evidence_outcome_idx").on(t.outcome, t.occurredAt)
+  ]
+);
+
 export const shadowPaperExperiments = pgTable(
   "shadow_paper_experiments",
   {

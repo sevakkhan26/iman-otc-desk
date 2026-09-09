@@ -189,20 +189,25 @@ export function paperReasonFromSizing(sizing: SizingResult): PaperReasonCode {
     case "venue_min_unknown":
       // Paper continues with paper_policy_min; if this blocker surfaces, keep it exact.
       return "sizing_size_floor";
-    default:
-      // Unknown blocker code: still avoid a bare opaque label by retaining diagnostics
-      // via sizingRejectNeedsDiagnostics(sizing_blocked). Prefer never reaching here.
-      if (primary) {
-        return "sizing_blocked";
-      }
-      return "sizing_blocked";
+    default: {
+      // Exhaustive SizingBlockerCode mapping above. Never emit opaque sizing_blocked.
+      // Empty blockers with BLOCKED status → sizing_invalid_size (exact, auditable).
+      if (primary === "missing_policy") return "sizing_missing_policy";
+      if (primary === "expired_policy") return "sizing_expired_policy";
+      if (primary === "slippage_over_limit") return "sizing_slippage_over_limit";
+      if (primary === "size_floor" || primary === "venue_min_unknown") return "sizing_size_floor";
+      return "sizing_invalid_size";
+    }
   }
 }
 
 function sizingRejectNeedsDiagnostics(code: PaperReasonCode): boolean {
   return (
-    code === "sizing_blocked" ||
     code === "sizing_invalid_size" ||
+    code === "sizing_missing_policy" ||
+    code === "sizing_expired_policy" ||
+    code === "sizing_slippage_over_limit" ||
+    code === "sizing_size_floor" ||
     code === "portfolio_limits_unavailable" ||
     code === "net_non_positive" ||
     code === "insufficient_depth" ||

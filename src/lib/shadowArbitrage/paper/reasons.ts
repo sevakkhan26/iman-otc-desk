@@ -44,7 +44,7 @@ export type PaperReasonCode =
   | "no_balance_record"
   | "lifecycle_already_processed"
   | "size_not_selected"
-  | "sizing_blocked"
+  | "sizing_blocked" // HISTORICAL ONLY — banned as NEW terminal (use exact sizing_* / inventory / depth codes)
   | "venue_not_executable"
   | "portfolio_utilization_cap"
   | "route_capital_cap"
@@ -102,7 +102,7 @@ export const PAPER_REASON_FA: Record<PaperReasonCode, string> = {
   no_balance_record: "برای این صرافی موجودی مجازی ثبت نشده است",
   lifecycle_already_processed: "این فرصت قبلاً در همین نشست پردازش شده است",
   size_not_selected: "حجم بهتری برای همین مسیر انتخاب شد",
-  sizing_blocked: "حجم پویا محاسبه نشد — سیاست ریسک یا شواهد لازم کامل نیست",
+  sizing_blocked: "حجم پویا محاسبه نشد — سیاست ریسک یا شواهد لازم کامل نیست (تاریخی؛ برای رد جدید ممنوع)",
   venue_not_executable: "صرافی اجراپذیر نیست",
   portfolio_utilization_cap: "تخصیص از سقف استفادهٔ پرتفوی یا کف نقدینگی آزاد عبور می‌کند",
   route_capital_cap: "سرمایهٔ ترکیبی مسیر از سقف نسبی سهام تجاوز می‌کند",
@@ -266,4 +266,10 @@ export function reasonKey(outcome: string, codes: PaperReasonCode[]): string {
 
 export function reasonLabel(code: string): string {
   return PAPER_REASON_FA[code as PaperReasonCode] ?? code;
+}
+
+/** Banned as the sole NEW terminal reason (historical rows may still carry these). */
+export function isBannedTerminalReason(code: string | null | undefined): boolean {
+  if (code == null || code === "" || code === "unknown") return true;
+  return code === "sizing_blocked";
 }

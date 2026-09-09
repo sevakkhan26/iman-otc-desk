@@ -163,7 +163,18 @@ export function buildRejectDiagnostics(input: {
     }
   };
 
-  if (codes.includes("sizing_blocked") && input.sizing) {
+  const sizingRelated = codes.some(
+    (c) =>
+      c === "sizing_blocked" || // historical reads only
+      c.startsWith("sizing_") ||
+      c === "insufficient_depth" ||
+      c === "insufficient_irt" ||
+      c === "insufficient_usdt" ||
+      c === "inventory_limit" ||
+      c === "net_non_positive" ||
+      c === "portfolio_limits_unavailable"
+  );
+  if (sizingRelated && input.sizing) {
     const audit = input.sizing.audit as Record<string, unknown> | null;
     const blockerCodes = (input.sizing.blockers ?? []).map((b) => b.code);
     base.sizingAudit = {

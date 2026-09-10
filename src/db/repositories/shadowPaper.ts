@@ -870,6 +870,29 @@ export type PaperFillRecord = {
     /** Complete final sizing audit (restart-stable). Optional; write failures must not alter fill. */
     audit?: Record<string, unknown> | null;
   };
+  /** Step 2 durable identity — required for NEW fills (null only for legacy callers/tests). */
+  decisionTraceId?: string | null;
+  experimentId?: string | null;
+  deploymentVersion?: string | null;
+  collectorRunId?: string | null;
+  observationId?: string | null;
+  detectionSnapshotRef?: Record<string, unknown> | null;
+  arrivalSnapshotRef?: Record<string, unknown> | null;
+  allocatorDecisionRef?: Record<string, unknown> | null;
+  liquidityConsumptionEvidence?: Record<string, unknown> | null;
+  liquidityConsumeLevels?: Array<{
+    venueId: string;
+    symbol: string;
+    side: string;
+    priceToman: number;
+    quantityMicros: number;
+    rawDisplayedMicros: number | null;
+    immutableGeneration: string | null;
+    immutableBookHash: string | null;
+    rawSnapshotId: string | null;
+    arrivalSnapshotId: string | null;
+  }>;
+  liquidityConsumeReason?: string | null;
 };
 
 export type PaperSkipRecord = {
@@ -951,6 +974,11 @@ export async function commitPaperCycle(input: {
   occurredAt: string;
   fills: PaperFillRecord[];
   skips: PaperSkipRecord[];
+  /** Pre-allocated decision trace id shared by all NEW fills this cycle. */
+  decisionTraceId?: string | null;
+  experimentId?: string | null;
+  deploymentVersion?: string | null;
+  observationId?: string | null;
 }): Promise<{
   filled: number;
   skipped: number;
@@ -1034,6 +1062,7 @@ export async function commitPaperCycle(input: {
       };
 
       for (const f of input.fills) {
+        let fillId = "";
         seen.add(f.lifecycleId);
         const key = `${input.sessionId}|${f.lifecycleId}`;
         try {
@@ -1043,7 +1072,7 @@ export async function commitPaperCycle(input: {
               if (!active || active.status !== "RUNNING") throw new Error("paper session no longer running");
             }
             await tx.insert(shadowPaperLedger).values({
-              id: randomUUID(),
+              id: (fillId = randomUUID()),
               sessionId: input.sessionId,
               runId: input.runId,
               idempotencyKey: key,
@@ -1110,9 +1139,45 @@ export async function commitPaperCycle(input: {
               nextLargerMarginalPnlToman: f.sizing?.nextLargerMarginalPnlToman ?? null,
               sizingAudit: f.executionEvidence ? { ...(f.sizing?.audit ?? {}), delayedRecheck:f.executionEvidence,
                 executionOutcome:f.executionOutcome ?? "FILLED" } : f.sizing?.audit ?? null,
+              decisionTraceId: f.decisionTraceId ?? input.decisionTraceId ?? null,
+              experimentId: f.experimentId ?? input.experimentId ?? null,
+              deploymentVersion: f.deploymentVersion ?? input.deploymentVersion ?? null,
+              collectorRunId: f.collectorRunId ?? input.runId ?? null,
+              observationId: f.observationId ?? input.observationId ?? null,
+              detectionSnapshotRef: f.detectionSnapshotRef ?? null,
+              arrivalSnapshotRef: f.arrivalSnapshotRef ?? null,
+              allocatorDecisionRef: f.allocatorDecisionRef ?? null,
+              liquidityConsumptionEvidence: f.liquidityConsumptionEvidence ?? (
+                f.liquidityConsumeLevels?.length
+                  ? {
+                      version: "paper_residual_liquidity_v1",
+                      reason: f.liquidityConsumeReason ?? "fill_consume",
+                      levels: f.liquidityConsumeLevels
+                    }
+                  : null
+              ),
               occurredAt: input.occurredAt,
               createdAt: input.occurredAt
             });
+            // Atomic with fill: persist residual consumption (idempotent on retry).
+            if (f.liquidityConsumeLevels?.length) {
+              const { persistResidualConsumption } = await import(
+                "@/db/repositories/shadowResidualLiquidity"
+              );
+              await persistResidualConsumption(
+                {
+                  paperSessionId: input.sessionId,
+                  levels: f.liquidityConsumeLevels as never,
+                  reason: (f.liquidityConsumeReason as never) ?? "fill_consume",
+                  fillLedgerId: fillId,
+                  lifecycleId: f.lifecycleId,
+                  decisionTraceId: f.decisionTraceId ?? input.decisionTraceId ?? null,
+                  occurredAt: input.occurredAt,
+                  evidence: { executionOutcome: f.executionOutcome ?? "FILLED" }
+                },
+                tx as never
+              );
+            }
             if (f.executionOutcome === "LEG_RISK") {
               await tx.update(shadowPaperSessions).set({status:"PAUSED",pausedAt:input.occurredAt,updatedAt:input.occurredAt}).where(eq(shadowPaperSessions.id,input.sessionId));
             }

@@ -1180,7 +1180,27 @@ export async function GET(request: Request) {
         history,
         wizard,
         sizing,
-        allocation
+        allocation,
+        /**
+         * Typed identity — never invent/relabel experiment as observation.
+         * observationId is only paper.session.observationId when it is a real
+         * observation session id; experiment is separate.
+         */
+        typedIdentity: {
+          paperSessionId: snap.session?.id ?? null,
+          paperSessionStatus: snap.session?.status ?? null,
+          observationId: snap.session?.observationId ?? null,
+          experimentId:
+            experiment && typeof experiment === "object" && "id" in (experiment as object)
+              ? ((experiment as { id?: string }).id ?? null)
+              : null,
+          experimentRunKey:
+            experiment && typeof experiment === "object" && "runKey" in (experiment as object)
+              ? ((experiment as { runKey?: string }).runKey ?? null)
+              : null,
+          collectorRunId: null,
+          deploymentVersion: null
+        }
       })
     ),
     {

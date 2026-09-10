@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { observeExecution } from "@/lib/shadowArbitrage/paper/observeExecution";
 /**
  * Phase 6 — orchestration between one collection cycle and the paper engine.
@@ -389,12 +390,36 @@ async function runPaperCycle(input: {
     console.warn("[shadow-paper] fee horizon monitor failed", e);
   }
 
+  // Session-scoped residual liquidity: reconcile refill model, then seed engine.
+  let residualOutstanding: import("@/lib/shadowArbitrage/paper/residualLiquidity").ResidualOutstanding[] =
+    [];
+  try {
+    const {
+      reconcileSessionResidualWithSnapshots,
+      loadSessionResidualOutstanding
+    } = await import("@/db/repositories/shadowResidualLiquidity");
+    await reconcileSessionResidualWithSnapshots({
+      paperSessionId: session.id,
+      sources: input.sources,
+      runId: input.runId,
+      nowMs: Number.isFinite(Date.parse(input.occurredAt))
+        ? Date.parse(input.occurredAt)
+        : Date.now(),
+      occurredAt: input.occurredAt
+    });
+    residualOutstanding = await loadSessionResidualOutstanding(session.id);
+  } catch (e) {
+    console.warn("[shadow-paper] residual liquidity reconcile failed", e);
+  }
+
   const evaluation = evaluateCycle({
     opportunities: input.opportunities,
     sources: input.sources,
     venueStates,
     executedLifecycleIds: filledIds,
     balances,
+    residualOutstanding,
+    collectorRunId: input.runId,
     sizing: {
       policies,
       allocationTomanBySource,
@@ -425,11 +450,85 @@ async function runPaperCycle(input: {
   const fills: PaperFillRecord[] = [];
   const skips: PaperSkipRecord[] = [];
 
+  // Pre-allocate decisionTraceId so NEW fills never persist with null linkage.
+  const decisionTraceId = randomUUID();
+  let deploymentVersion: string | null = null;
+  try {
+    const appVersion = (await import("../../../../version.json")).default as {
+      appVersion: string;
+    };
+    deploymentVersion = appVersion.appVersion;
+  } catch {
+    deploymentVersion = null;
+  }
+  // Typed observation identity: only the real paper.session.observationId.
+  // Never invent or relabel experiment id as observation.
+  const observationId = session.observationId ?? null;
+
   for (const d of evaluation.decisions) {
     if (d.kind === "EXECUTE") {
+      const buySrc = input.sources.find((s) => s.sourceId === d.candidate.buySourceId);
+      const sellSrc = input.sources.find((s) => s.sourceId === d.candidate.sellSourceId);
+      const { bookHash, snapshotGeneration } = await import(
+        "@/lib/shadowArbitrage/paper/residualLiquidity"
+      );
       fills.push({
         executionOutcome: d.executionOutcome ?? "FILLED",
         executionEvidence: d.delayedRecheck as unknown as Record<string, unknown> ?? null,
+        decisionTraceId,
+        experimentId: activeExperimentId,
+        deploymentVersion,
+        collectorRunId: input.runId,
+        observationId,
+        detectionSnapshotRef: {
+          collectorRunId: input.runId,
+          buy: buySrc
+            ? {
+                sourceId: buySrc.sourceId,
+                generation: snapshotGeneration(buySrc, input.runId),
+                bookHash: bookHash(buySrc.bookBids, buySrc.bookAsks)
+              }
+            : null,
+          sell: sellSrc
+            ? {
+                sourceId: sellSrc.sourceId,
+                generation: snapshotGeneration(sellSrc, input.runId),
+                bookHash: bookHash(sellSrc.bookBids, sellSrc.bookAsks)
+              }
+            : null
+        },
+        arrivalSnapshotRef: d.delayedRecheck
+          ? {
+              appliedDelayMs: d.delayedRecheck.appliedDelayMs,
+              arrivalTimestampMs: d.delayedRecheck.arrivalTimestampMs,
+              buy: d.delayedRecheck.delayed?.buy ?? null,
+              sell: d.delayedRecheck.delayed?.sell ?? null
+            }
+          : null,
+        allocatorDecisionRef: evaluation.portfolio
+          ? {
+              version: "paper_allocator_v1",
+              selectedAllocationKey: d.candidate.allocationKey ?? null,
+              portfolio: {
+                engagedCapitalToman: evaluation.portfolio.engagedCapitalToman,
+                utilizationPercent: evaluation.portfolio.utilizationPercent,
+                optimizerOptionsConsidered:
+                  evaluation.portfolio.optimizerOptionsConsidered,
+                optimizerProofStatus: evaluation.portfolio.optimizerProofStatus,
+                selectedPortfolioRiskAdjustedPnlToman:
+                  evaluation.portfolio.selectedPortfolioRiskAdjustedPnlToman
+              }
+            }
+          : null,
+        liquidityConsumeLevels: d.liquidityConsumeLevels,
+        liquidityConsumeReason: d.liquidityConsumeReason ?? "fill_consume",
+        liquidityConsumptionEvidence: d.liquidityConsumeLevels?.length
+          ? {
+              version: "paper_residual_liquidity_v1",
+              reason: d.liquidityConsumeReason ?? "fill_consume",
+              levels: d.liquidityConsumeLevels
+            }
+          : null,
         lifecycleId: d.candidate.lifecycleId,
         routeKey: d.candidate.routeKey,
         buySourceId: d.candidate.buySourceId,
@@ -532,7 +631,11 @@ async function runPaperCycle(input: {
     runId: input.runId,
     occurredAt: new Date().toISOString(),
     fills,
-    skips
+    skips,
+    decisionTraceId,
+    experimentId: activeExperimentId,
+    deploymentVersion,
+    observationId
   });
 
   // Persist cycle utilization sample for average/peak on the experiment row.
@@ -595,6 +698,7 @@ async function runPaperCycle(input: {
       const routes = new Set(candidates.map((c) => c.routeKey)).size;
       const sizes = new Set(candidates.map((c) => c.sizeUsdt)).size;
       const written = await appendDecisionTrace({
+        id: decisionTraceId,
         sessionId: session.id,
         runId: input.runId,
         occurredAt: input.occurredAt,
@@ -607,9 +711,12 @@ async function runPaperCycle(input: {
         outcome,
         outcomeReasonFa: reasonFa,
         snapshotRef: input.runId,
-        releaseVersion,
+        releaseVersion: deploymentVersion ?? releaseVersion,
         policyFingerprint,
-        traceComplete: true
+        traceComplete: true,
+        experimentId: activeExperimentId,
+        observationId,
+        deploymentVersion: deploymentVersion ?? releaseVersion
       });
       if ("error" in written) {
         // Visible only in logs — never mutates the decision.

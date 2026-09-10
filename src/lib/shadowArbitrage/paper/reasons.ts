@@ -69,7 +69,9 @@ export type PaperReasonCode =
   | "delayed_book_incoherent"
   | "delayed_book_invalid"
   | "partial_below_minimum"
-  | "leg_risk_second_leg_failed";
+  | "leg_risk_second_leg_failed"
+  | "paper_residual_liquidity_exhausted"
+  | "raw_exchange_depth_insufficient";
 
 export const PAPER_REASON_FA: Record<PaperReasonCode, string> = {
   sizing_order_limit: "حجم معامله از سقف سفارش بیشتر است",
@@ -126,7 +128,9 @@ export const PAPER_REASON_FA: Record<PaperReasonCode, string> = {
   delayed_book_incoherent: "هم‌زمانی دریافت دو سمت در زمان رسیدن سفارش خارج از بودجه است",
   delayed_book_invalid: "دفتر تأخیری نامعتبر است (NaN/متقاطع/سطح خراب)",
   partial_below_minimum: "عمق تأخیری فقط حجم جزئی زیر حداقل Paper می‌دهد",
-  leg_risk_second_leg_failed: "پای اول در تأخیر قابل اجرا بود اما پای دوم پر نشد — پر کردن اتمی رد شد"
+  leg_risk_second_leg_failed: "پای اول در تأخیر قابل اجرا بود اما پای دوم پر نشد — پر کردن اتمی رد شد",
+  paper_residual_liquidity_exhausted: "نقدینگی باقی‌ماندهٔ شبیه‌سازی‌شده در این نشست تمام شده است",
+  raw_exchange_depth_insufficient: "عمق خام دفتر صرافی برای این حجم کافی نیست"
 };
 
 /**
@@ -183,6 +187,8 @@ const PRIORITY: PaperReasonCode[] = [
   "market_data_time_incoherent",
   "market_data_missing",
   "market_data_unverified",
+  "paper_residual_liquidity_exhausted",
+  "raw_exchange_depth_insufficient",
   "insufficient_depth",
   "mark_price_unavailable",
   "net_non_positive",

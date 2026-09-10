@@ -887,12 +887,24 @@ export const shadowPaperLedger = pgTable(
       .notNull(),
     occurredAt: ts("occurred_at").notNull(),
     experimentRunId: uuid("experiment_run_id"),
+    /** Durable identity links (Step 2). Nullable for pre-fix rows only. */
+    decisionTraceId: uuid("decision_trace_id"),
+    experimentId: uuid("experiment_id"),
+    deploymentVersion: text("deployment_version"),
+    collectorRunId: uuid("collector_run_id"),
+    observationId: uuid("observation_id"),
+    detectionSnapshotRef: jsonb("detection_snapshot_ref").$type<Record<string, unknown> | null>(),
+    arrivalSnapshotRef: jsonb("arrival_snapshot_ref").$type<Record<string, unknown> | null>(),
+    allocatorDecisionRef: jsonb("allocator_decision_ref").$type<Record<string, unknown> | null>(),
+    liquidityConsumptionEvidence: jsonb("liquidity_consumption_evidence").$type<Record<string, unknown> | null>(),
     createdAt: ts("created_at").notNull().defaultNow()
   },
   (t) => [
     uniqueIndex("shadow_paper_ledger_idem_idx").on(t.idempotencyKey),
     index("shadow_paper_ledger_session_time_idx").on(t.sessionId, t.occurredAt),
-    index("shadow_paper_ledger_outcome_idx").on(t.sessionId, t.outcome)
+    index("shadow_paper_ledger_outcome_idx").on(t.sessionId, t.outcome),
+    index("shadow_paper_ledger_decision_trace_idx").on(t.decisionTraceId),
+    index("shadow_paper_ledger_experiment_idx").on(t.experimentId)
   ]
 );
 
@@ -988,6 +1000,11 @@ export const shadowPaperDecisionTraces = pgTable(
       .notNull()
       .default([]),
     traceComplete: boolean("trace_complete").notNull().default(false),
+    /** Typed identity — never invent/relabel experiment as observation. */
+    experimentId: uuid("experiment_id"),
+    observationId: uuid("observation_id"),
+    deploymentVersion: text("deployment_version"),
+    paperSessionId: uuid("paper_session_id"),
     createdAt: ts("created_at").notNull().defaultNow()
   },
   (t) => [
@@ -1109,6 +1126,90 @@ export const shadowPaperLegRiskClosures = pgTable(
   (t) => [
     uniqueIndex("shadow_paper_leg_risk_closures_ledger_uidx").on(t.ledgerId),
     index("shadow_paper_leg_risk_closures_session_idx").on(t.sessionId, t.closedAt)
+  ]
+);
+
+
+/**
+ * Session-scoped simulated residual liquidity (Paper book consumption).
+ * Outstanding reduces effective depth: max(0, raw - outstanding).
+ * Generation change alone never resets outstanding.
+ */
+export const shadowPaperResidualLiquidity = pgTable(
+  "shadow_paper_residual_liquidity",
+  {
+    id: uuid("id").primaryKey(),
+    paperSessionId: uuid("paper_session_id").notNull(),
+    venueId: text("venue_id").notNull(),
+    symbol: text("symbol").notNull().default("USDTIRT"),
+    side: text("side").notNull(),
+    priceLevelKey: text("price_level_key").notNull(),
+    priceToman: bigint("price_toman", { mode: "number" }).notNull(),
+    outstandingConsumedMicros: bigint("outstanding_consumed_micros", { mode: "number" })
+      .notNull()
+      .default(0),
+    lifetimeConsumedMicros: bigint("lifetime_consumed_micros", { mode: "number" })
+      .notNull()
+      .default(0),
+    lifetimeReleasedMicros: bigint("lifetime_released_micros", { mode: "number" })
+      .notNull()
+      .default(0),
+    lastRawDisplayedMicros: bigint("last_raw_displayed_micros", { mode: "number" }),
+    absentConsecutiveSnapshots: integer("absent_consecutive_snapshots").notNull().default(0),
+    lastSeenSnapshotGeneration: text("last_seen_snapshot_generation"),
+    lastSeenBookHash: text("last_seen_book_hash"),
+    state: text("state").notNull().default("ACTIVE"),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [
+    uniqueIndex("shadow_paper_residual_liq_level_uidx").on(
+      t.paperSessionId,
+      t.venueId,
+      t.symbol,
+      t.side,
+      t.priceLevelKey
+    ),
+    index("shadow_paper_residual_liq_session_idx").on(t.paperSessionId, t.state)
+  ]
+);
+
+/** Append-only residual consume/release events with exact reasons. */
+export const shadowPaperResidualLiquidityEvents = pgTable(
+  "shadow_paper_residual_liquidity_events",
+  {
+    id: uuid("id").primaryKey(),
+    paperSessionId: uuid("paper_session_id").notNull(),
+    residualId: uuid("residual_id"),
+    venueId: text("venue_id").notNull(),
+    symbol: text("symbol").notNull().default("USDTIRT"),
+    side: text("side").notNull(),
+    priceLevelKey: text("price_level_key").notNull(),
+    priceToman: bigint("price_toman", { mode: "number" }).notNull(),
+    eventKind: text("event_kind").notNull(),
+    deltaMicros: bigint("delta_micros", { mode: "number" }).notNull(),
+    outstandingAfterMicros: bigint("outstanding_after_micros", { mode: "number" }).notNull(),
+    reason: text("reason").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    fillLedgerId: uuid("fill_ledger_id"),
+    lifecycleId: text("lifecycle_id"),
+    decisionTraceId: uuid("decision_trace_id"),
+    rawSnapshotId: text("raw_snapshot_id"),
+    arrivalSnapshotId: text("arrival_snapshot_id"),
+    immutableGeneration: text("immutable_generation"),
+    immutableBookHash: text("immutable_book_hash"),
+    rawDisplayedMicros: bigint("raw_displayed_micros", { mode: "number" }),
+    priorOutstandingMicros: bigint("prior_outstanding_micros", { mode: "number" }),
+    actualConsumedMicros: bigint("actual_consumed_micros", { mode: "number" }),
+    effectiveRemainingMicros: bigint("effective_remaining_micros", { mode: "number" }),
+    evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull().default({}),
+    occurredAt: ts("occurred_at").notNull(),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [
+    uniqueIndex("shadow_paper_residual_liq_evt_idem_uidx").on(t.idempotencyKey),
+    index("shadow_paper_residual_liq_evt_session_idx").on(t.paperSessionId, t.occurredAt),
+    index("shadow_paper_residual_liq_evt_lifecycle_idx").on(t.lifecycleId, t.occurredAt)
   ]
 );
 

@@ -394,9 +394,38 @@ export async function withAdvisoryLock<T>(
   }
 }
 
+/**
+ * Flush PGlite durability before close so stop+copy can validate checkpoints.
+ * CHECKPOINT updates pg_control; syncToFs pushes the FS image to disk.
+ * Harness/persistence correctness only — not an economic change.
+ */
+export async function flushPgliteCheckpoint(): Promise<{ ok: boolean; detail: string }> {
+  const s = state();
+  if (s.mode !== "pglite" || !s.pglite) {
+    return { ok: true, detail: "not_pglite" };
+  }
+  try {
+    await withPgliteSerial(async () => {
+      await s.pglite!.query("CHECKPOINT");
+      if (typeof s.pglite!.syncToFs === "function") {
+        await s.pglite!.syncToFs();
+      }
+    });
+    return { ok: true, detail: "checkpoint_and_sync" };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    return { ok: false, detail: msg };
+  }
+}
+
 export async function closeDb(): Promise<void> {
   const s = state();
   if (s.pglite) {
+    try {
+      await flushPgliteCheckpoint();
+    } catch {
+      /* best-effort before close */
+    }
     try {
       await s.pglite.close();
     } catch {

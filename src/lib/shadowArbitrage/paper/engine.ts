@@ -37,6 +37,15 @@ import {
   type DelayedBookEvidence,
   type PaperExecutionRealismConfig
 } from "@/lib/shadowArbitrage/paper/delayedBookRecheck";
+import {
+  ResidualLiquidityBook,
+  applyResidualToSnapshots,
+  bookHash,
+  consumeLevelsFromWalk,
+  snapshotGeneration,
+  type ResidualConsumeLevel,
+  type ResidualOutstanding
+} from "@/lib/shadowArbitrage/paper/residualLiquidity";
 import type { VenueCapitalState } from "@/lib/shadowArbitrage/capital";
 import {
   microsToUsdt,
@@ -247,6 +256,12 @@ export type PaperDecision =
       /** PAPER-V2 realism — delayed book recheck evidence (always present when realism on). */
       delayedRecheck?: DelayedBookEvidence | null;
       executionOutcome?: "FILLED" | "LEG_RISK";
+      /** Per-level residual consumption for this fill (actual executed qty). */
+      liquidityConsumeLevels?: ResidualConsumeLevel[];
+      liquidityConsumeReason?:
+        | "fill_consume"
+        | "leg_partial_consume"
+        | "leg_risk_first_leg_consume";
     }
   | {
       kind: "SKIP";
@@ -449,6 +464,14 @@ export type EvaluateInput = {
    * `true` or a config object enables delayed recheck (Paper runner must set this).
    */
   paperExecutionRealism?: Partial<PaperExecutionRealismConfig> | true | false;
+  /**
+   * Session-scoped residual liquidity outstanding (Paper simulation).
+   * Applied to detection + delayed books before sizing/recheck. Same-cycle
+   * fills update the in-memory book so later ranked routes cannot reuse depth.
+   */
+  residualOutstanding?: ResidualOutstanding[];
+  /** Collector run id — used for immutable snapshot generation labels. */
+  collectorRunId?: string | null;
 };
 
 /**
@@ -459,7 +482,29 @@ export type EvaluateInput = {
  */
 export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
   const decisionClock = input.decisionClock ?? Date.now;
-  const sourceById = new Map(input.sources.map((s) => [s.sourceId as string, s]));
+  const residualBook = new ResidualLiquidityBook(input.residualOutstanding ?? []);
+  // Working books: raw snapshots reduced by session + same-cycle consumption.
+  let workingSources = applyResidualToSnapshots(input.sources, residualBook.asMap());
+  let workingDelayed = applyResidualToSnapshots(
+    input.delayedSources ?? [],
+    residualBook.asMap()
+  );
+  let workingPost = applyResidualToSnapshots(
+    input.postFirstLegSources ?? [],
+    residualBook.asMap()
+  );
+  const refreshWorkingBooks = () => {
+    workingSources = applyResidualToSnapshots(input.sources, residualBook.asMap());
+    workingDelayed = applyResidualToSnapshots(
+      input.delayedSources ?? [],
+      residualBook.asMap()
+    );
+    workingPost = applyResidualToSnapshots(
+      input.postFirstLegSources ?? [],
+      residualBook.asMap()
+    );
+  };
+  const sourceById = new Map(workingSources.map((s) => [s.sourceId as string, s]));
   const stateById = new Map(input.venueStates.map((v) => [v.sourceId as string, v]));
   const decisions: PaperDecision[] = [];
   const observedDecisionTimestampMs =
@@ -761,7 +806,8 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
    * twice for a single opportunity, so the lowest lifecycle id represents the
    * route and the rest are recorded as not selected, deterministically.
    */
-  const sourceForSizing = (id: string) => input.sources.find((s) => s.sourceId === id);
+  const sourceForSizing = (id: string) => workingSources.find((s) => s.sourceId === id);
+  const rawSourceFor = (id: string) => input.sources.find((s) => s.sourceId === id);
   const byRoute = new Map<string, PaperCandidate[]>();
   for (const c of viable) {
     const key = `${c.buySourceId}->${c.sellSourceId}`;
@@ -1616,10 +1662,10 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
           };
     if (realismCfg) {
       const delayedById = new Map(
-        (input.delayedSources ?? []).map((s) => [s.sourceId as string, s])
+        workingDelayed.map((s) => [s.sourceId as string, s])
       );
       const postById = new Map(
-        (input.postFirstLegSources ?? []).map((s) => [s.sourceId as string, s])
+        workingPost.map((s) => [s.sourceId as string, s])
       );
       const detectionBuy = sourceById.get(sizedCandidate.buySourceId);
       const detectionSell = sourceById.get(sizedCandidate.sellSourceId);
@@ -1818,6 +1864,88 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
         .__delayedRecheck ?? null;
     const executionOutcome = delayedEvidence?.outcome === "LEG_RISK" ? "LEG_RISK" : "FILLED";
     if (executionOutcome === "FILLED") executedCount += 1;
+    // Session + same-cycle residual consumption from ACTUAL executed leg qtys.
+    const fillMicros = usdtToMicros(sizedCandidate.sizeUsdt);
+    const buyRaw = rawSourceFor(sizedCandidate.buySourceId);
+    const sellRaw = rawSourceFor(sizedCandidate.sellSourceId);
+    const arrivalBuy = (input.delayedSources ?? []).find(
+      (s) => s.sourceId === sizedCandidate.buySourceId
+    );
+    const arrivalSell = (input.delayedSources ?? []).find(
+      (s) => s.sourceId === sizedCandidate.sellSourceId
+    );
+    const legRisk = delayedEvidence?.legRisk;
+    const firstLeg = legRisk?.firstLeg ?? "buy";
+    let buyConsumeMicros = fillMicros;
+    let sellConsumeMicros = fillMicros;
+    let consumeReason:
+      | "fill_consume"
+      | "leg_partial_consume"
+      | "leg_risk_first_leg_consume" = "fill_consume";
+    if (executionOutcome === "LEG_RISK" && legRisk) {
+      consumeReason = "leg_risk_first_leg_consume";
+      const firstFilled = usdtToMicros(legRisk.firstLegFilledUsdt ?? sizedCandidate.sizeUsdt);
+      const secondFilled = usdtToMicros(legRisk.secondLegFilledUsdt ?? 0);
+      if (firstLeg === "buy") {
+        buyConsumeMicros = firstFilled;
+        sellConsumeMicros = secondFilled;
+      } else {
+        sellConsumeMicros = firstFilled;
+        buyConsumeMicros = secondFilled;
+      }
+    } else if (delayedEvidence?.partial) {
+      consumeReason = "leg_partial_consume";
+    }
+    const buyLevels = consumeLevelsFromWalk({
+      venueId: sizedCandidate.buySourceId,
+      side: "buy",
+      levels: (arrivalBuy ?? buyRaw)?.bookAsks,
+      quantityMicros: buyConsumeMicros,
+      generation: buyRaw
+        ? snapshotGeneration(buyRaw, input.collectorRunId)
+        : null,
+      bookHash: buyRaw ? bookHash(buyRaw.bookBids, buyRaw.bookAsks) : null,
+      rawSnapshotId: input.collectorRunId
+        ? `${input.collectorRunId}:${sizedCandidate.buySourceId}:detection`
+        : null,
+      arrivalSnapshotId: arrivalBuy
+        ? `${input.collectorRunId ?? "arrival"}:${sizedCandidate.buySourceId}:arrival`
+        : null
+    });
+    const sellLevels = consumeLevelsFromWalk({
+      venueId: sizedCandidate.sellSourceId,
+      side: "sell",
+      levels: (arrivalSell ?? sellRaw)?.bookBids,
+      quantityMicros: sellConsumeMicros,
+      generation: sellRaw
+        ? snapshotGeneration(sellRaw, input.collectorRunId)
+        : null,
+      bookHash: sellRaw ? bookHash(sellRaw.bookBids, sellRaw.bookAsks) : null,
+      rawSnapshotId: input.collectorRunId
+        ? `${input.collectorRunId}:${sizedCandidate.sellSourceId}:detection`
+        : null,
+      arrivalSnapshotId: arrivalSell
+        ? `${input.collectorRunId ?? "arrival"}:${sizedCandidate.sellSourceId}:arrival`
+        : null
+    });
+    const liquidityConsumeLevels: ResidualConsumeLevel[] = [...buyLevels, ...sellLevels];
+    for (const lvl of liquidityConsumeLevels) {
+      residualBook.consume({
+        venueId: lvl.venueId,
+        side: lvl.side,
+        priceToman: lvl.priceToman,
+        quantityMicros: lvl.quantityMicros,
+        symbol: lvl.symbol,
+        rawDisplayedMicros: lvl.rawDisplayedMicros,
+        generation: lvl.immutableGeneration,
+        bookHash: lvl.immutableBookHash,
+        nowMs: decisionTimestampMs
+      });
+    }
+    refreshWorkingBooks();
+    // Keep sourceById aligned with reduced books for later routes.
+    for (const s of workingSources) sourceById.set(s.sourceId as string, s);
+
     decisions.push({
       kind: "EXECUTE",
       candidate: sizedCandidate,
@@ -1825,7 +1953,9 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       balancesAfter: committed.balancesAfter,
       sizing,
       delayedRecheck: delayedEvidence,
-      executionOutcome
+      executionOutcome,
+      liquidityConsumeLevels,
+      liquidityConsumeReason: consumeReason
     });
     // An unmatched leg requires operator review; never keep opening routes.
     if (executionOutcome === "LEG_RISK") break;

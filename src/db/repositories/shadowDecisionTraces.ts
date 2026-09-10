@@ -106,10 +106,15 @@ export async function appendDecisionTrace(input: {
   releaseVersion: string | null;
   policyFingerprint: string | null;
   traceComplete: boolean;
+  /** Pre-allocated id so fills can durable-link before the trace row exists. */
+  id?: string | null;
+  experimentId?: string | null;
+  observationId?: string | null;
+  deploymentVersion?: string | null;
 }): Promise<{ id: string } | { error: string }> {
   try {
     const db = await getDbAsync();
-    const id = randomUUID();
+    const id = input.id?.trim() ? input.id : randomUUID();
     const rejected = input.candidates.filter((c) => c.status === "rejected").length;
     const valid = input.candidates.filter(
       (c) => c.status === "valid" || c.status === "selected" || c.status === "traded"
@@ -137,6 +142,10 @@ export async function appendDecisionTrace(input: {
         policyFingerprint: input.policyFingerprint,
         candidates: input.candidates as unknown as Array<Record<string, unknown>>,
         traceComplete: input.traceComplete,
+        experimentId: input.experimentId ?? null,
+        observationId: input.observationId ?? null,
+        deploymentVersion: input.deploymentVersion ?? input.releaseVersion ?? null,
+        paperSessionId: input.sessionId,
         createdAt: input.occurredAt
       });
     });

@@ -21,11 +21,41 @@ import {
   shadowPaperCandidateState,
   shadowPaperCycleSummaries,
   shadowPaperLedger,
+  shadowPaperLegRiskClosures,
   shadowPaperSessions
 } from "@/db/schema";
 
 export type PaperSessionMode = "PROVISIONAL_EVALUATION" | "APPROVED_PLAN";
 export type PaperSessionStatus = "NOT_STARTED" | "RUNNING" | "PAUSED" | "STOPPED";
+
+/** Machine-readable resume conflict when LEG_RISK exposure remains open. */
+export class UnresolvedLegRiskError extends Error {
+  readonly code = "unresolved_leg_risk" as const;
+  readonly sessionId: string;
+  readonly ledgerId: string;
+  readonly lifecycleId: string;
+  readonly rejectionCode: string | null;
+
+  constructor(input: {
+    sessionId: string;
+    ledgerId: string;
+    lifecycleId: string;
+    rejectionCode?: string | null;
+  }) {
+    super(
+      `Paper session has unresolved leg exposure; resume is blocked (ledger=${input.ledgerId}, lifecycle=${input.lifecycleId})`
+    );
+    this.name = "UnresolvedLegRiskError";
+    this.sessionId = input.sessionId;
+    this.ledgerId = input.ledgerId;
+    this.lifecycleId = input.lifecycleId;
+    this.rejectionCode = input.rejectionCode ?? null;
+  }
+}
+
+export function isUnresolvedLegRiskError(error: unknown): error is UnresolvedLegRiskError {
+  return error instanceof UnresolvedLegRiskError;
+}
 
 export type PaperSessionRow = {
   id: string;
@@ -325,16 +355,192 @@ export async function setPaperSessionStatus(
         .where(eq(shadowPaperSessions.id, id))
         .limit(1);
       if (status === "RUNNING") {
-        const exposure = await db.select({id: shadowPaperLedger.id}).from(shadowPaperLedger)
-          .where(and(eq(shadowPaperLedger.sessionId, id), eq(shadowPaperLedger.outcome, "LEG_RISK"))).limit(1);
-        if (exposure.length) throw new Error("Paper session has unresolved leg exposure; resume is blocked");
+        const open = await listUnresolvedLegRiskRows(id);
+        if (open.length) {
+          const first = open[0]!;
+          throw new UnresolvedLegRiskError({
+            sessionId: id,
+            ledgerId: first.ledgerId,
+            lifecycleId: first.lifecycleId,
+            rejectionCode: first.rejectionCode
+          });
+        }
       }
       if (status === "RUNNING" && !existing[0]?.startedAt) patch.startedAt = now;
       await db.update(shadowPaperSessions).set(patch).where(eq(shadowPaperSessions.id, id));
     });
     return getPaperSession(id);
   } catch (error) {
+    if (isUnresolvedLegRiskError(error)) throw error;
     throw asDbError(error, "setPaperSessionStatus");
+  }
+}
+
+export type UnresolvedLegRiskRow = {
+  ledgerId: string;
+  lifecycleId: string;
+  rejectionCode: string | null;
+  occurredAt: string;
+  inventoryDeltaUsdtMicros: number | null;
+};
+
+/** LEG_RISK ledger rows with no audited closure. */
+export async function listUnresolvedLegRiskRows(
+  sessionId: string
+): Promise<UnresolvedLegRiskRow[]> {
+  const db = await getDbAsync();
+  const risks = await serial(async () =>
+    db
+      .select({
+        ledgerId: shadowPaperLedger.id,
+        lifecycleId: shadowPaperLedger.lifecycleId,
+        rejectionCode: shadowPaperLedger.rejectionCode,
+        occurredAt: shadowPaperLedger.occurredAt,
+        inventoryDeltaUsdtMicros: shadowPaperLedger.inventoryDeltaUsdtMicros
+      })
+      .from(shadowPaperLedger)
+      .where(
+        and(eq(shadowPaperLedger.sessionId, sessionId), eq(shadowPaperLedger.outcome, "LEG_RISK"))
+      )
+      .orderBy(desc(shadowPaperLedger.occurredAt))
+  );
+  if (!risks.length) return [];
+  const closures = await serial(async () =>
+    db
+      .select({ ledgerId: shadowPaperLegRiskClosures.ledgerId })
+      .from(shadowPaperLegRiskClosures)
+      .where(eq(shadowPaperLegRiskClosures.sessionId, sessionId))
+  );
+  const closed = new Set(closures.map((c) => c.ledgerId));
+  return risks
+    .filter((r) => !closed.has(r.ledgerId))
+    .map((r) => ({
+      ledgerId: r.ledgerId,
+      lifecycleId: r.lifecycleId,
+      rejectionCode: r.rejectionCode,
+      occurredAt: r.occurredAt,
+      inventoryDeltaUsdtMicros: r.inventoryDeltaUsdtMicros
+    }));
+}
+
+export type LegRiskClosureRow = {
+  id: string;
+  sessionId: string;
+  ledgerId: string;
+  lifecycleId: string;
+  rejectionCode: string | null;
+  closedBy: string;
+  closedAt: string;
+  evidence: Record<string, unknown>;
+  note: string | null;
+  reused: boolean;
+};
+
+/**
+ * Explicit Paper-only reconciliation: mark LEG_RISK exposure closed with audit
+ * evidence. Does NOT delete the ledger row, invent fills/hedges, or mutate balances.
+ */
+export async function reconcilePaperLegRisk(input: {
+  sessionId: string;
+  ledgerId: string;
+  closedBy: string;
+  evidence: Record<string, unknown>;
+  note?: string | null;
+}): Promise<LegRiskClosureRow> {
+  try {
+    const db = await getDbAsync();
+    const now = new Date().toISOString();
+    return await serial(async () => {
+      const existingClosure = await db
+        .select()
+        .from(shadowPaperLegRiskClosures)
+        .where(eq(shadowPaperLegRiskClosures.ledgerId, input.ledgerId))
+        .limit(1);
+      if (existingClosure[0]) {
+        const row = existingClosure[0];
+        return {
+          id: row.id,
+          sessionId: row.sessionId,
+          ledgerId: row.ledgerId,
+          lifecycleId: row.lifecycleId,
+          rejectionCode: row.rejectionCode,
+          closedBy: row.closedBy,
+          closedAt: row.closedAt,
+          evidence: (row.evidence ?? {}) as Record<string, unknown>,
+          note: row.note,
+          reused: true
+        };
+      }
+
+      const ledger = await db
+        .select()
+        .from(shadowPaperLedger)
+        .where(
+          and(
+            eq(shadowPaperLedger.id, input.ledgerId),
+            eq(shadowPaperLedger.sessionId, input.sessionId),
+            eq(shadowPaperLedger.outcome, "LEG_RISK")
+          )
+        )
+        .limit(1);
+      if (!ledger[0]) {
+        throw new Error("LEG_RISK ledger row not found for session");
+      }
+      const id = randomUUID();
+      const evidence = {
+        ...input.evidence,
+        paperOnly: true,
+        realOrders: false,
+        balancesMutated: false,
+        ledgerDeleted: false,
+        fabricatedHedge: false,
+        closedAt: now
+      };
+      await db.insert(shadowPaperLegRiskClosures).values({
+        id,
+        sessionId: input.sessionId,
+        ledgerId: input.ledgerId,
+        lifecycleId: ledger[0].lifecycleId,
+        rejectionCode: ledger[0].rejectionCode,
+        closedBy: input.closedBy,
+        closedAt: now,
+        evidence,
+        note: input.note?.slice(0, 2000) ?? null,
+        createdAt: now
+      });
+      try {
+        await db.insert(auditLogs).values({
+          action: "paper_leg_risk_reconcile",
+          entityType: "shadow_paper_ledger",
+          entityId: input.ledgerId,
+          metadata: {
+            sessionId: input.sessionId,
+            ledgerId: input.ledgerId,
+            lifecycleId: ledger[0].lifecycleId,
+            rejectionCode: ledger[0].rejectionCode,
+            closedBy: input.closedBy,
+            closedAt: now,
+            evidence
+          }
+        });
+      } catch {
+        /* optional in fixtures */
+      }
+      return {
+        id,
+        sessionId: input.sessionId,
+        ledgerId: input.ledgerId,
+        lifecycleId: ledger[0].lifecycleId,
+        rejectionCode: ledger[0].rejectionCode,
+        closedBy: input.closedBy,
+        closedAt: now,
+        evidence,
+        note: input.note?.slice(0, 2000) ?? null,
+        reused: false
+      };
+    });
+  } catch (error) {
+    throw asDbError(error, "reconcilePaperLegRisk");
   }
 }
 

@@ -314,6 +314,30 @@ export async function setObservationStatus(
     }
 
     if (action === "resume" || action === "start") {
+      /*
+       * COMPLETED observation: resume stays a no-op (history preserved).
+       * start is additive — open a NEW observation session so Server Paper can
+       * run cleanly without mutating the completed window.
+       */
+      if (row.status === "COMPLETED") {
+        if (action === "resume") return toObs(row);
+        const inserted = await serial(async () =>
+          db
+            .insert(shadowObservationSessions)
+            .values({
+              id: randomUUID(),
+              status: "RUNNING",
+              startedAt: now,
+              pollIntervalMs: interval,
+              targetDurationMs: TARGET_MS,
+              pausedTotalMs: 0,
+              createdAt: now,
+              updatedAt: now
+            })
+            .returning()
+        );
+        return toObs(inserted[0]!);
+      }
       if (row.status !== "PAUSED" && row.status !== "NOT_STARTED") return toObs(row);
       const pausedAdd = row.pausedAt ? Math.max(0, Date.parse(now) - Date.parse(row.pausedAt)) : 0;
       const pausedTotal = num(row.pausedTotalMs) + pausedAdd;

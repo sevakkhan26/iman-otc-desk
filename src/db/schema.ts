@@ -1087,6 +1087,31 @@ export const shadowPaperExperiments = pgTable(
   ]
 );
 
+/**
+ * Append-only Paper LEG_RISK exposure closures.
+ * Marks simulated leg exposure as administratively reconciled without deleting
+ * the LEG_RISK ledger row, inventing hedges, or mutating balances.
+ */
+export const shadowPaperLegRiskClosures = pgTable(
+  "shadow_paper_leg_risk_closures",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: uuid("session_id").notNull(),
+    ledgerId: uuid("ledger_id").notNull(),
+    lifecycleId: text("lifecycle_id").notNull(),
+    rejectionCode: text("rejection_code"),
+    closedBy: text("closed_by").notNull(),
+    closedAt: ts("closed_at").notNull(),
+    evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull().default({}),
+    note: text("note"),
+    createdAt: ts("created_at").notNull().defaultNow()
+  },
+  (t) => [
+    uniqueIndex("shadow_paper_leg_risk_closures_ledger_uidx").on(t.ledgerId),
+    index("shadow_paper_leg_risk_closures_session_idx").on(t.sessionId, t.closedAt)
+  ]
+);
+
 /* ── Phase 7A — guarded live-execution readiness (no live trading) ────────── */
 
 /**

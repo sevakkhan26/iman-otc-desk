@@ -12,7 +12,9 @@ import {
   createPaperSession,
   getActivePaperSession,
   getPaperSession,
+  isUnresolvedLegRiskError,
   listPaperSessions,
+  listUnresolvedLegRiskRows,
   loadCandidateStates,
   loadCycleSummaries,
   countPaperLedger,
@@ -20,6 +22,7 @@ import {
   loadPaperLedger,
   loadPaperStats,
   loadReasonBreakdown,
+  reconcilePaperLegRisk,
   setPaperSessionStatus,
   type PaperSessionMode
 } from "@/db/repositories/shadowPaper";
@@ -1209,11 +1212,70 @@ export async function POST(request: Request) {
 
   const action = String(body.action ?? "");
   if (
-    !["create", "start", "pause", "resume", "stop", "propose_allocation", "apply_allocation"].includes(
-      action
-    )
+    ![
+      "create",
+      "start",
+      "pause",
+      "resume",
+      "stop",
+      "propose_allocation",
+      "apply_allocation",
+      "reconcile_leg_risk"
+    ].includes(action)
   ) {
     return bad("عملیات نامعتبر است");
+  }
+
+  /*
+   * Explicit Paper LEG_RISK reconciliation: audit-only closure. Never deletes
+   * LEG_RISK, never mutates balances, never invents hedges/fills.
+   */
+  if (action === "reconcile_leg_risk") {
+    if (body.confirm !== true) {
+      return bad("reconcile_leg_risk نیازمند confirm: true است", "confirmation_required", 400);
+    }
+    const sessionId = typeof body.sessionId === "string" ? body.sessionId : null;
+    const ledgerId = typeof body.ledgerId === "string" ? body.ledgerId : null;
+    if (!sessionId || !ledgerId) {
+      return bad("sessionId و ledgerId الزامی است", "bad_request", 400);
+    }
+    const evidence =
+      body.evidence && typeof body.evidence === "object" && !Array.isArray(body.evidence)
+        ? (body.evidence as Record<string, unknown>)
+        : null;
+    if (!evidence || Object.keys(evidence).length === 0) {
+      return bad("evidence الزامی است (شواهد آشتی Paper)", "evidence_required", 400);
+    }
+    const target = await getPaperSession(sessionId);
+    if (!target) return bad("نشست کاغذی یافت نشد.", "not_found", 404);
+    try {
+      const closure = await reconcilePaperLegRisk({
+        sessionId,
+        ledgerId,
+        closedBy: session.u ?? "admin",
+        evidence,
+        note: typeof body.note === "string" ? body.note : null
+      });
+      const unresolved = await listUnresolvedLegRiskRows(sessionId);
+      return new NextResponse(
+        JSON.stringify({
+          action: "reconcile_leg_risk",
+          closure,
+          unresolvedCount: unresolved.length,
+          unresolved,
+          paperOnly: true,
+          realOrders: false,
+          balancesMutated: false
+        }),
+        { status: 200, headers: SHADOW_NO_STORE }
+      );
+    } catch (error) {
+      return bad(
+        error instanceof Error ? error.message : "آشتی LEG_RISK ناموفق بود",
+        "reconcile_failed",
+        409
+      );
+    }
   }
 
   /*
@@ -1557,7 +1619,30 @@ export async function POST(request: Request) {
     }
   }
 
-  await setPaperSessionStatus(target.id, next);
+  try {
+    await setPaperSessionStatus(target.id, next);
+  } catch (error) {
+    if (isUnresolvedLegRiskError(error)) {
+      const unresolved = await listUnresolvedLegRiskRows(target.id);
+      return new NextResponse(
+        JSON.stringify({
+          error: "unresolved_leg_risk",
+          conflict: "unresolved_leg_risk",
+          message:
+            "نشست کاغذی دارای مواجههٔ پای باز است؛ ادامه تا آشتی صریح مسدود است.",
+          sessionId: error.sessionId,
+          ledgerId: error.ledgerId,
+          lifecycleId: error.lifecycleId,
+          code: error.rejectionCode ?? "leg_risk_second_leg_failed",
+          unresolved,
+          paperOnly: true,
+          realOrders: false
+        }),
+        { status: 409, headers: SHADOW_NO_STORE }
+      );
+    }
+    throw error;
+  }
   return new NextResponse(
     JSON.stringify(envelope({ ...(await snapshot()), history: await listPaperSessions(20) })),
     { status: 200, headers: SHADOW_NO_STORE }

@@ -25,7 +25,9 @@ import {
   ORDER_CAP_DERIVED_ACTOR,
   PAPER_POLICY_MIN_USDT,
   PAPER_POLICY_MIN_KEY,
+  bindingFromSessionSetupPreview,
   buildSessionSetupPreview,
+  computeSessionEndsAt,
   formatSessionSetupNote,
   parseDurationDays,
   parseManualOrderCapUsdt,
@@ -34,6 +36,12 @@ import {
   type SessionOrderCapChoice,
   type SessionSetupConfig
 } from "@/lib/shadowArbitrage/paper/sessionCapital";
+import {
+  PREVIEW_TOKEN_TTL_MS,
+  loadSessionCapitalPreview,
+  persistSessionCapitalPreview,
+  requestMatchesPreviewBinding
+} from "@/lib/shadowArbitrage/paper/sessionCapitalPreviewStore";
 import { portfolioValueToman } from "@/lib/shadowArbitrage/paper/portfolio";
 import { SHADOW_NO_STORE } from "@/lib/shadowArbitrage/httpHeaders";
 import { loadRiskPolicyValues, recordRiskPolicy } from "@/db/repositories/shadowLive";
@@ -243,36 +251,59 @@ export async function POST(request: Request) {
       : null;
 
   const clockMs = Date.now();
-  const allocationEvidence = openingAllocationEvidence(snapshots);
-  let preview;
-  try {
-    preview = buildSessionSetupPreview({
-      totalCapitalToman: parsed.value,
-      valuationPriceToman: mark,
-      venueIds: venueIds(),
-      eligibleVenueIds: allocationEvidence.eligibleVenueIds,
-      allocationObservations: allocationEvidence.observations,
-      activeSessionId: active?.id ?? null,
-      oldCapitalToman: active?.totalCapitalToman ?? null,
-      currentOrderCap,
-      orderCapChoice,
-      manualOrderCapUsdt,
-      durationDays: durationParsed.value,
-      clockMs
-    });
-  } catch (e) {
-    return bad(
-      e instanceof Error ? e.message : "ساخت تخصیص ناموفق بود",
-      "allocation_failed",
-      400
-    );
-  }
-
-  if (preview.residualToman !== 0) {
-    return bad("باقیماندهٔ تخصیص باید دقیقاً صفر باشد", "residual_nonzero", 400);
-  }
 
   if (action === "preview") {
+    const allocationEvidence = openingAllocationEvidence(snapshots);
+    let preview;
+    try {
+      preview = buildSessionSetupPreview({
+        totalCapitalToman: parsed.value,
+        valuationPriceToman: mark,
+        venueIds: venueIds(),
+        eligibleVenueIds: allocationEvidence.eligibleVenueIds,
+        allocationObservations: allocationEvidence.observations,
+        activeSessionId: active?.id ?? null,
+        oldCapitalToman: active?.totalCapitalToman ?? null,
+        currentOrderCap,
+        orderCapChoice,
+        manualOrderCapUsdt,
+        durationDays: durationParsed.value,
+        clockMs
+      });
+    } catch (e) {
+      return bad(
+        e instanceof Error ? e.message : "ساخت تخصیص ناموفق بود",
+        "allocation_failed",
+        400
+      );
+    }
+
+    if (preview.residualToman !== 0) {
+      return bad("باقیماندهٔ تخصیص باید دقیقاً صفر باشد", "residual_nonzero", 400);
+    }
+    const binding = bindingFromSessionSetupPreview(preview, {
+      activeSessionId: active?.id ?? null,
+      orderCapChoice,
+      manualOrderCapUsdt,
+      durationDays: durationParsed.value
+    });
+    const createdAt = new Date(clockMs).toISOString();
+    const expiresAt = new Date(clockMs + PREVIEW_TOKEN_TTL_MS).toISOString();
+    await persistSessionCapitalPreview({
+      version: 1,
+      previewToken: preview.previewToken,
+      createdAt,
+      expiresAt,
+      binding,
+      startedAt: preview.startedAt,
+      endsAt: preview.endsAt,
+      orderCapChoice: preview.orderCapChoice,
+      paperPolicyMinUsdt: preview.paperPolicyMinUsdt,
+      smartSizeCeilingUsdt: preview.smartSizeCeilingUsdt,
+      usableCapitalToman: preview.usableCapitalToman,
+      reserveCapitalToman: preview.reserveCapitalToman,
+      limits: preview.limits
+    });
     return new NextResponse(
       JSON.stringify({
         unit: "toman",
@@ -310,7 +341,8 @@ export async function POST(request: Request) {
           endsAt: preview.endsAt,
           paperPolicyMinUsdt: preview.paperPolicyMinUsdt,
           smartSizeCeilingUsdt: preview.smartSizeCeilingUsdt,
-          previewToken: preview.previewToken
+          previewToken: preview.previewToken,
+          expiresAt
         },
         requiresConfirmation: true,
         neverSilentExtend: true
@@ -323,60 +355,61 @@ export async function POST(request: Request) {
   if (body.confirm !== true) {
     return bad("اعمال نشست نیازمند confirm: true است", "confirmation_required", 400);
   }
-  if (!preview.allocationValid) {
-    return bad(
-      `تخصیص نقش‌محور اجراپذیر نیست: ${preview.allocationErrorsFa.join("؛ ")}`,
-      "allocation_not_operable",
-      409
-    );
-  }
   const token = typeof body.previewToken === "string" ? body.previewToken : "";
-  if (!token || token !== preview.previewToken) {
+  const applyClock = Date.now();
+  const stored = token ? await loadSessionCapitalPreview(token, applyClock) : null;
+  /*
+   * Apply must bind to the frozen preview plan. Rebuilding from live books here
+   * caused invalid_preview_token whenever depth/eligibility drifted between
+   * preview and apply. Missing/expired/mismatched binding → exact 409.
+   */
+  if (!stored) {
     return bad(
       "previewToken نامعتبر یا منقضی است — دوباره پیش‌نمایش بگیرید",
       "invalid_preview_token",
       409
     );
   }
-
-  // Freeze endsAt at apply clock (must match preview window — re-validate duration).
-  const applyClock = Date.now();
-  // Token already binds durationDays + capital; use preview's endsAt relative duration
-  // but recompute from apply start so startedAt/endsAt are consistent on the new session.
-  const applyPreview = buildSessionSetupPreview({
-    totalCapitalToman: preview.totalCapitalToman,
-    valuationPriceToman: preview.valuationPriceToman,
-    venueIds: venueIds(),
-    eligibleVenueIds: allocationEvidence.eligibleVenueIds,
-    allocationObservations: allocationEvidence.observations,
-    activeSessionId: active?.id ?? null,
-    oldCapitalToman: active?.totalCapitalToman ?? null,
-    currentOrderCap,
-    orderCapChoice,
-    manualOrderCapUsdt,
-    durationDays: preview.durationDays,
-    clockMs: applyClock
-  });
-  // Token must still match the capital/cap/duration inputs (not absolute clock).
-  if (applyPreview.previewToken !== preview.previewToken) {
+  if (
+    !requestMatchesPreviewBinding({
+      binding: stored.binding,
+      totalCapitalToman: parsed.value,
+      valuationPriceToman: mark,
+      durationDays: durationParsed.value,
+      orderCapChoice,
+      manualOrderCapUsdt,
+      activeSessionId: active?.id ?? null
+    })
+  ) {
     return bad(
-      "پیش‌نمایش منقضی شده — دوباره پیش‌نمایش بگیرید",
+      "previewToken نامعتبر یا منقضی است — دوباره پیش‌نمایش بگیرید",
       "invalid_preview_token",
       409
     );
   }
+  if (!stored.binding.allocationValid) {
+    return bad(
+      "تخصیص نقش‌محور اجراپذیر نیست",
+      "allocation_not_operable",
+      409
+    );
+  }
+
+  const bound = stored.binding;
+  const startedAt = new Date(applyClock).toISOString();
+  const endsAt = computeSessionEndsAt(applyClock, bound.durationDays ?? durationParsed.value);
 
   const setupConfig: SessionSetupConfig = {
     version: 1,
-    durationDays: applyPreview.durationDays,
-    endsAt: applyPreview.endsAt,
-    startedAt: applyPreview.startedAt,
-    orderCapChoice: applyPreview.orderCapChoice,
-    orderCapUsdt: applyPreview.orderCap.effectiveMaxOrderUsdt,
+    durationDays: bound.durationDays ?? durationParsed.value,
+    endsAt,
+    startedAt,
+    orderCapChoice,
+    orderCapUsdt: bound.effectiveMaxOrderUsdt,
     paperPolicyMinUsdt: PAPER_POLICY_MIN_USDT,
-    totalCapitalToman: applyPreview.totalCapitalToman,
-    valuationPriceToman: applyPreview.valuationPriceToman,
-    previewToken: applyPreview.previewToken
+    totalCapitalToman: bound.totalCapitalToman,
+    valuationPriceToman: bound.valuationPriceToman,
+    previewToken: token
   };
 
   const sessionNote = formatSessionSetupNote(setupConfig, [
@@ -386,15 +419,15 @@ export async function POST(request: Request) {
   ].join("; "));
 
   const result = await replaceActivePaperSessionCapital({
-    totalCapitalToman: applyPreview.totalCapitalToman,
-    valuationPriceToman: applyPreview.valuationPriceToman,
-    openingAllocations: applyPreview.allocations,
+    totalCapitalToman: bound.totalCapitalToman,
+    valuationPriceToman: bound.valuationPriceToman,
+    openingAllocations: bound.allocations,
     createdBy: session.u ?? "admin",
-    previewToken: applyPreview.previewToken,
+    previewToken: token,
     name:
       typeof body.name === "string" && body.name.trim()
         ? body.name.trim().slice(0, 80)
-        : `نشست کاغذی ${applyPreview.totalCapitalToman.toLocaleString("en-US")} · ${applyPreview.durationDays}d`,
+        : `نشست کاغذی ${bound.totalCapitalToman.toLocaleString("en-US")} · ${setupConfig.durationDays}d`,
     sessionNote
   });
 
@@ -414,44 +447,44 @@ export async function POST(request: Request) {
     if (orderCapChoice === "AUTO_CAPITAL_DERIVED") {
       await recordRiskPolicy({
         policyKey: "max_order_size_usdt",
-        value: applyPreview.orderCap.derivedMaxOrderUsdt,
+        value: bound.effectiveMaxOrderUsdt,
         setBy: ORDER_CAP_DERIVED_ACTOR,
         validForDays: 30,
-        note: `AUTO_CAPITAL_DERIVED equity=${applyPreview.totalCapitalToman} mark=${applyPreview.valuationPriceToman} session=${result.newSession.id}`
+        note: `AUTO_CAPITAL_DERIVED equity=${bound.totalCapitalToman} mark=${bound.valuationPriceToman} session=${result.newSession.id}`
       });
       orderCapPolicy = {
         written: true,
         mode: "capital_derived",
         choice: "AUTO_CAPITAL_DERIVED",
-        valueUsdt: applyPreview.orderCap.derivedMaxOrderUsdt
+        valueUsdt: bound.effectiveMaxOrderUsdt
       };
     } else {
       await recordRiskPolicy({
         policyKey: "max_order_size_usdt",
-        value: applyPreview.orderCap.effectiveMaxOrderUsdt,
+        value: bound.effectiveMaxOrderUsdt,
         setBy: session.u ?? "admin",
         validForDays: 30,
-        note: `MANUAL order cap ${applyPreview.orderCap.effectiveMaxOrderUsdt} USDT session=${result.newSession.id}`
+        note: `MANUAL order cap ${bound.effectiveMaxOrderUsdt} USDT session=${result.newSession.id}`
       });
       orderCapPolicy = {
         written: true,
         mode: "explicit_admin",
         choice: "MANUAL",
-        valueUsdt: applyPreview.orderCap.effectiveMaxOrderUsdt
+        valueUsdt: bound.effectiveMaxOrderUsdt
       };
     }
   } else {
     orderCapPolicy = {
       written: false,
-      mode: applyPreview.orderCap.mode,
+      mode: bound.mode,
       choice: orderCapChoice,
-      valueUsdt: applyPreview.orderCap.effectiveMaxOrderUsdt
+      valueUsdt: bound.effectiveMaxOrderUsdt
     };
   }
 
   const bals = await loadPaperBalances(result.newSession.id);
   const balanceMarked = bals.reduce(
-    (s, b) => s + b.irtToman + Math.round((b.usdtMicros / 1e6) * applyPreview.valuationPriceToman),
+    (s, b) => s + b.irtToman + Math.round((b.usdtMicros / 1e6) * bound.valuationPriceToman),
     0
   );
   const activesAfter = await listActivePaperSessions();
@@ -480,16 +513,16 @@ export async function POST(request: Request) {
       endsAt: setupConfig.endsAt,
       durationDays: setupConfig.durationDays,
       allocationSumToman: portfolioValueToman(
-        applyPreview.allocations,
-        applyPreview.valuationPriceToman
+        bound.allocations,
+        bound.valuationPriceToman
       ),
       residualToman: 0,
       balanceMarkedTotalToman: balanceMarked,
-      oldCapitalToman: applyPreview.oldCapitalToman,
-      limits: applyPreview.limits,
-      usableCapitalToman: applyPreview.usableCapitalToman,
-      reserveCapitalToman: applyPreview.reserveCapitalToman,
-      smartSizeCeilingUsdt: applyPreview.smartSizeCeilingUsdt,
+      oldCapitalToman: bound.oldCapitalToman,
+      limits: stored.limits,
+      usableCapitalToman: stored.usableCapitalToman,
+      reserveCapitalToman: stored.reserveCapitalToman,
+      smartSizeCeilingUsdt: stored.smartSizeCeilingUsdt,
       paperPolicyMinUsdt: PAPER_POLICY_MIN_USDT,
       orderCap: orderCapPolicy,
       activeSessionCount: activesAfter.length,

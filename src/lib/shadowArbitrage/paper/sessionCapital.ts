@@ -453,26 +453,21 @@ export function buildSessionCapitalPreview(input: {
   const orderCapChoice = input.orderCapChoice ?? null;
   const manualCap = input.manualOrderCapUsdt ?? null;
 
-  const previewToken = createHash("sha256")
-    .update(
-      [
-        "paper-session-setup-v3",
-        input.activeSessionId ?? "none",
-        String(total),
-        String(mark),
-        String(oldCapitalToman ?? "none"),
-        mode,
-        String(effectiveMaxOrderUsdt),
-        String(willWritePolicy),
-        String(orderCapChoice ?? "inherit"),
-        String(manualCap ?? "none"),
-        String(durationDays ?? "none"),
-        String(allocationPlan.reserveToman),
-        String(allocationPlan.valid),
-        ...allocations.map((a) => `${a.sourceId}:${a.irtToman}:${a.usdtUnits}`)
-      ].join("|")
-    )
-    .digest("hex");
+  const previewToken = hashSessionSetupPreviewToken({
+    activeSessionId: input.activeSessionId ?? null,
+    totalCapitalToman: total,
+    valuationPriceToman: mark,
+    oldCapitalToman,
+    mode,
+    effectiveMaxOrderUsdt,
+    willWritePolicy,
+    orderCapChoice,
+    manualOrderCapUsdt: manualCap,
+    durationDays,
+    reserveToman: allocationPlan.reserveToman,
+    allocationValid: allocationPlan.valid,
+    allocations
+  });
 
   const base: SessionCapitalPreview = {
     totalCapitalToman: total,
@@ -557,6 +552,86 @@ export function buildSessionSetupPreview(input: {
     throw new Error("session setup preview missing endsAt");
   }
   return p;
+}
+
+/** Deterministic binding fields for previewToken (no clocks / live books). */
+export type SessionSetupPreviewBinding = {
+  activeSessionId: string | null;
+  totalCapitalToman: number;
+  valuationPriceToman: number;
+  oldCapitalToman: number | null;
+  mode: OrderCapMode;
+  effectiveMaxOrderUsdt: number;
+  willWritePolicy: boolean;
+  orderCapChoice: SessionOrderCapChoice | null;
+  manualOrderCapUsdt: number | null;
+  durationDays: number | null;
+  reserveToman: number;
+  allocationValid: boolean;
+  allocations: VenueAllocation[];
+};
+
+/**
+ * Hash only stable binding inputs. Allocations are frozen at preview time so
+ * apply must echo the same plan — never re-hash against a drifted live book.
+ */
+export function hashSessionSetupPreviewToken(binding: SessionSetupPreviewBinding): string {
+  const allocations = [...binding.allocations]
+    .map((a) => ({
+      sourceId: a.sourceId,
+      irtToman: Math.round(a.irtToman),
+      usdtUnits: a.usdtUnits
+    }))
+    .sort((a, b) => a.sourceId.localeCompare(b.sourceId));
+  return createHash("sha256")
+    .update(
+      [
+        "paper-session-setup-v3",
+        binding.activeSessionId ?? "none",
+        String(Math.round(binding.totalCapitalToman)),
+        String(Math.round(binding.valuationPriceToman)),
+        String(binding.oldCapitalToman ?? "none"),
+        binding.mode,
+        String(binding.effectiveMaxOrderUsdt),
+        String(binding.willWritePolicy),
+        String(binding.orderCapChoice ?? "inherit"),
+        String(binding.manualOrderCapUsdt ?? "none"),
+        String(binding.durationDays ?? "none"),
+        String(Math.round(binding.reserveToman)),
+        String(binding.allocationValid),
+        ...allocations.map((a) => `${a.sourceId}:${a.irtToman}:${a.usdtUnits}`)
+      ].join("|")
+    )
+    .digest("hex");
+}
+
+export function bindingFromSessionSetupPreview(
+  preview: SessionCapitalPreview | SessionSetupPreview,
+  extras?: {
+    activeSessionId?: string | null;
+    orderCapChoice?: SessionOrderCapChoice | null;
+    manualOrderCapUsdt?: number | null;
+    durationDays?: number | null;
+  }
+): SessionSetupPreviewBinding {
+  const setup = preview as SessionSetupPreview;
+  return {
+    activeSessionId: extras?.activeSessionId ?? null,
+    totalCapitalToman: preview.totalCapitalToman,
+    valuationPriceToman: preview.valuationPriceToman,
+    oldCapitalToman: preview.oldCapitalToman,
+    mode: preview.orderCap.mode,
+    effectiveMaxOrderUsdt: preview.orderCap.effectiveMaxOrderUsdt,
+    willWritePolicy: preview.orderCap.willWritePolicy,
+    orderCapChoice: extras?.orderCapChoice ?? setup.orderCapChoice ?? null,
+    manualOrderCapUsdt:
+      extras?.manualOrderCapUsdt ??
+      (setup.orderCapChoice === "MANUAL" ? preview.orderCap.effectiveMaxOrderUsdt : null),
+    durationDays: extras?.durationDays ?? setup.durationDays ?? null,
+    reserveToman: preview.unallocatedReserveToman,
+    allocationValid: preview.allocationValid,
+    allocations: preview.allocations
+  };
 }
 
 /** Recompute token for apply verification (same inputs as preview). */

@@ -7,14 +7,27 @@
 # hard-killed — corrupts the durable DB (invalid checkpoint / Aborted()).
 # Always terminate the whole process group first, then sweep any leftover
 # descendants that still match this run's worker.log / pidfile tree.
+#
+# Race-safe planned stop: durable operator-stop markers are written BEFORE
+# signaling so an independent monitor cannot misclassify the death as
+# BLOCKED_UNEXPECTED_DEATH when the process disappears before plannedEnd.
 set -euo pipefail
 RUN_DIR="${1:-}"
 [[ -n "$RUN_DIR" ]] || { echo "Usage: $0 RUN_DIR" >&2; exit 2; }
 PIDFILE="$RUN_DIR/logs/worker.pid"
 LOG="$RUN_DIR/logs/worker.log"
+mkdir -p "$RUN_DIR/logs"
 [[ -f "$PIDFILE" ]] || { echo "no pidfile"; exit 0; }
 PID=$(tr -d '[:space:]' <"$PIDFILE")
 [[ -n "$PID" && "$PID" =~ ^[0-9]+$ ]] || { echo "bad pidfile"; exit 0; }
+
+# Durable planned-stop markers BEFORE any signal (monitor race-safe).
+STOP_AT_UTC=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+printf '%s\n' "PLANNED_OPERATOR_STOP" > "$RUN_DIR/logs/stop-reason.txt"
+printf '%s\n' "PLANNED_OPERATOR_STOP atUtc=$STOP_AT_UTC pid=$PID" > "$RUN_DIR/logs/planned-operator-stop.txt"
+printf '%s\n' "STOPPED" > "$RUN_DIR/logs/STOPPED"
+# Sync filesystem so concurrent monitor reads see markers before kill -0 fails.
+sync "$RUN_DIR/logs/stop-reason.txt" "$RUN_DIR/logs/planned-operator-stop.txt" "$RUN_DIR/logs/STOPPED" 2>/dev/null || true
 
 list_tree() {
   local root="$1"

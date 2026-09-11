@@ -2,6 +2,10 @@
 # Independent monitor for a harness-launched worker.
 # On unexpected death after any completed cycle: HARD FAIL, freeze evidence,
 # write BLOCKED report — ZERO auto-relaunch.
+#
+# Planned operator/harness stops (stop-shadow-worker.sh) write durable markers
+# BEFORE signaling. When the worker is gone before plannedEnd but a planned
+# stop marker is present → STOPPED_PLANNED_OPERATOR (not unexpected death).
 set -euo pipefail
 
 usage() {
@@ -54,6 +58,32 @@ count_success_cycles() {
   fi
 }
 
+# Race-safe planned-stop detection. Markers are written by stop-shadow-worker.sh
+# BEFORE signaling; also accept legacy stopped-at.txt written after kill.
+is_planned_operator_stop() {
+  local reason=""
+  if [[ -f "$RUN_DIR/logs/stop-reason.txt" ]]; then
+    reason=$(tr -d '[:space:]' <"$RUN_DIR/logs/stop-reason.txt" || true)
+    if [[ "$reason" == "PLANNED_OPERATOR_STOP" ]]; then
+      return 0
+    fi
+  fi
+  if [[ -f "$RUN_DIR/logs/planned-operator-stop.txt" ]]; then
+    return 0
+  fi
+  if [[ -f "$RUN_DIR/logs/STOPPED" ]]; then
+    local stopped
+    stopped=$(tr -d '[:space:]' <"$RUN_DIR/logs/STOPPED" || true)
+    if [[ "$stopped" == "STOPPED" ]]; then
+      return 0
+    fi
+  fi
+  if [[ -f "$RUN_DIR/logs/stopped-at.txt" ]]; then
+    return 0
+  fi
+  return 1
+}
+
 write_status() {
   local state="$1" detail="$2"
   python3 - <<PY
@@ -103,6 +133,13 @@ PY
   exit 10
 }
 
+planned_operator_stop_done() {
+  local detail="$1"
+  write_status "STOPPED_PLANNED_OPERATOR" "$detail"
+  echo "monitor_end $(date -u +%Y-%m-%dT%H:%M:%SZ) STOPPED_PLANNED_OPERATOR $detail" | tee -a "$MONLOG"
+  exit 0
+}
+
 graceful_done() {
   write_status "COMPLETED_PLANNED_END" "plannedEnd reached; worker still alive or stopped by stop script"
   echo "monitor_end $(date -u +%Y-%m-%dT%H:%M:%SZ) PLANNED_END_REACHED" | tee -a "$MONLOG"
@@ -114,6 +151,11 @@ while true; do
   remain=$(( PLANNED_EPOCH - now ))
   cycles=$(count_success_cycles | tr -d '[:space:]')
   if ! kill -0 "$PID" 2>/dev/null; then
+    # Process gone. Prefer planned-operator-stop markers over unexpected death
+    # (race: stop script kills before plannedEnd; markers written first).
+    if is_planned_operator_stop; then
+      planned_operator_stop_done "planned operator/harness stop before plannedEnd=$PLANNED_END (successCycles=$cycles)"
+    fi
     # Process gone. If we already passed planned end, treat as post-stop.
     if (( remain <= 0 )); then
       write_status "STOPPED_AFTER_PLANNED_END" "process gone after plannedEnd"

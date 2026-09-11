@@ -56,4 +56,8 @@ for p in "${LEAVES[@]}"; do
   fi
 done
 [[ -f "$TMP/logs/stopped-at.txt" ]] || { echo "FAIL: no stopped-at"; exit 1; }
+[[ -f "$TMP/logs/stop-reason.txt" ]] || { echo "FAIL: no stop-reason"; exit 1; }
+grep -q PLANNED_OPERATOR_STOP "$TMP/logs/stop-reason.txt" || { echo "FAIL: bad stop-reason"; exit 1; }
+[[ -f "$TMP/logs/planned-operator-stop.txt" ]] || { echo "FAIL: no planned-operator-stop"; exit 1; }
+[[ -f "$TMP/logs/STOPPED" ]] || { echo "FAIL: no STOPPED marker"; exit 1; }
 echo "PASS test-stop-kills-process-group"

@@ -255,7 +255,10 @@ try {
  for(const [policyKey,value] of Object.entries(policyValues))await policyRepo.recordRiskPolicy({policyKey,value,setBy:"test",validForDays:1});
  const session=await repo.createPaperSession({observationId:null,name:"isolated runner regression",mode:"PROVISIONAL_EVALUATION",totalCapitalToman:150000000000,valuationPriceToman:200000,openingAllocations:balances.map(b=>({sourceId:b.sourceId,irtToman:b.irtToman,usdtUnits:b.usdtMicros/1e6})),approvalFingerprint:null,createdBy:"test",note:null});
  await repo.setPaperSessionStatus(session.id,"RUNNING");
- const freshSources=()=>[makeSnap("tabdeal",Date.now(),199900,200000,200),makeSnap("ramzinex",Date.now(),206000,206100,200)];
+ // Depth must remain after first-fill residual consume so runner-risk can size and
+// reach arrival LEG_RISK (empty sell book). Residual model correctly blocks reuse;
+// 200 USDT was fully consumed by the first fill → false paper_residual_liquidity_exhausted.
+const freshSources=()=>[makeSnap("tabdeal",Date.now(),199900,200000,5_000),makeSnap("ramzinex",Date.now(),206000,206100,5_000)];
  let observed=0;
  const runArgs={runId:null,occurredAt:new Date().toISOString(),cycleStatus:"success" as const,sources:freshSources(),opportunities:[{...opp,id:"runner-full",firstSeenAt:new Date().toISOString(),lastSeenAt:new Date().toISOString()} as never],observeSources:async (notBefore:number)=>{assert.ok(Date.now()>=notBefore);observed++;return freshSources();}};
  const full=await runPaperExecutionForCycle(runArgs);

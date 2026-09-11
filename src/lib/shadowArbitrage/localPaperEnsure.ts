@@ -8,6 +8,10 @@
  *
  * Opt-in via SHADOW_PAPER_ENSURE=1 (or true/yes/on). Never invents fills.
  * LIVE remains false forever in this path.
+ *
+ * Observation identity: creates/links a real shadow_observation_sessions row
+ * (typed identity: paper session ≠ experiment ≠ observation ≠ run). Never
+ * invents metadata or conflates experimentId with observationId.
  */
 import { SHADOW_SOURCES } from "@/lib/shadowArbitrage/config";
 import { seedLocalFeeEvidence } from "@/lib/shadowArbitrage/localFeeEvidenceSeed";
@@ -17,8 +21,13 @@ import { recordRiskPolicy } from "@/db/repositories/shadowLive";
 import {
   createPaperSession,
   getActivePaperSession,
+  linkPaperSessionObservation,
   setPaperSessionStatus
 } from "@/db/repositories/shadowPaper";
+import {
+  ensureObservationSession,
+  setObservationStatus
+} from "@/db/repositories/shadowArbitrage";
 
 export function paperEnsureEnabled(): boolean {
   const raw = (process.env.SHADOW_PAPER_ENSURE ?? "").trim().toLowerCase();
@@ -30,6 +39,7 @@ export type LocalPaperEnsureResult = {
   feeSeed: Awaited<ReturnType<typeof seedLocalFeeEvidence>>;
   policiesWritten: number;
   sessionId: string;
+  observationId: string;
   sessionReused: boolean;
   decisionTraceForced: boolean;
   capitalToman: number;
@@ -37,9 +47,23 @@ export type LocalPaperEnsureResult = {
 
 const DEFAULT_CAPITAL = 100_000_000;
 const DEFAULT_MARK = 200_000;
+const DEFAULT_POLL_MS = 30_000;
+
+/**
+ * Ensure a durable RUNNING observation session for Local Paper.
+ * If the latest observation is COMPLETED, open a new one (additive; history kept).
+ */
+async function ensureDurableLocalObservation(pollIntervalMs = DEFAULT_POLL_MS) {
+  let observation = await ensureObservationSession(pollIntervalMs);
+  if (observation.status === "COMPLETED") {
+    observation = await setObservationStatus("start", pollIntervalMs);
+  }
+  return observation;
+}
 
 /**
  * Seed fees + paper policies + RUNNING session; force decision traces on.
+ * Always links a real observationId (never null on the ensure create/reuse path).
  */
 export async function ensureLocalPaperTelemetry(input?: {
   capitalToman?: number;
@@ -72,13 +96,20 @@ export async function ensureLocalPaperTelemetry(input?: {
 
   const capital = input?.capitalToman ?? DEFAULT_CAPITAL;
   const mark = input?.markPriceToman ?? DEFAULT_MARK;
+  const observation = await ensureDurableLocalObservation(DEFAULT_POLL_MS);
   const existing = await getActivePaperSession();
   if (existing && existing.status === "RUNNING") {
+    let observationId = existing.observationId;
+    if (!observationId) {
+      const linked = await linkPaperSessionObservation(existing.id, observation.id);
+      observationId = linked?.observationId ?? observation.id;
+    }
     return {
       enabled: true,
       feeSeed,
       policiesWritten,
       sessionId: existing.id,
+      observationId,
       sessionReused: true,
       decisionTraceForced,
       capitalToman: existing.totalCapitalToman
@@ -91,7 +122,7 @@ export async function ensureLocalPaperTelemetry(input?: {
   const venueIds = SHADOW_SOURCES.map((s) => s.id);
   const alloc = defaultAllocation(capital, venueIds, mark);
   const session = await createPaperSession({
-    observationId: null,
+    observationId: observation.id,
     name: "Local Paper ensure (telemetry)",
     mode: "APPROVED_PLAN",
     totalCapitalToman: capital,
@@ -108,6 +139,7 @@ export async function ensureLocalPaperTelemetry(input?: {
     feeSeed,
     policiesWritten,
     sessionId: session.id,
+    observationId: observation.id,
     sessionReused: false,
     decisionTraceForced,
     capitalToman: capital

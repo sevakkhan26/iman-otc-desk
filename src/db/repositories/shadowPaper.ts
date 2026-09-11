@@ -376,6 +376,42 @@ export async function setPaperSessionStatus(
   }
 }
 
+/**
+ * Link a durable observation session to a paper session when observationId is null.
+ * Never invents/relabels experimentId as observationId. Idempotent if already set to same id.
+ */
+export async function linkPaperSessionObservation(
+  sessionId: string,
+  observationId: string
+): Promise<PaperSessionRow | null> {
+  try {
+    const db = await getDbAsync();
+    const now = new Date().toISOString();
+    await serial(async () => {
+      const rows = await db
+        .select({ observationId: shadowPaperSessions.observationId })
+        .from(shadowPaperSessions)
+        .where(eq(shadowPaperSessions.id, sessionId))
+        .limit(1);
+      const existing = rows[0];
+      if (!existing) return;
+      if (existing.observationId && existing.observationId !== observationId) {
+        throw new Error(
+          `linkPaperSessionObservation: session ${sessionId} already linked to ${existing.observationId}`
+        );
+      }
+      if (existing.observationId === observationId) return;
+      await db
+        .update(shadowPaperSessions)
+        .set({ observationId, updatedAt: now })
+        .where(eq(shadowPaperSessions.id, sessionId));
+    });
+    return getPaperSession(sessionId);
+  } catch (error) {
+    throw asDbError(error, "linkPaperSessionObservation");
+  }
+}
+
 export type UnresolvedLegRiskRow = {
   ledgerId: string;
   lifecycleId: string;

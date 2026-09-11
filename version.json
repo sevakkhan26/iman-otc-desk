@@ -1,5 +1,5 @@
 {
-  "appVersion": "4.2.9",
-  "note": "Single authoritative public application version. Injected as NEXT_PUBLIC_APP_VERSION. package.json version matches for 4.2.9 (valid SemVer).",
-  "packageMetadataVersion": "4.2.9"
+  "appVersion": "4.2.10",
+  "note": "Single authoritative public application version. Injected as NEXT_PUBLIC_APP_VERSION. package.json version matches for 4.2.10 (valid SemVer).",
+  "packageMetadataVersion": "4.2.10"
 }

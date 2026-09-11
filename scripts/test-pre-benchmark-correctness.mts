@@ -755,6 +755,27 @@ await test("23 observation vs experiment identity never conflated in typedIdenti
   assert.equal(typedIdentity.claimedWrongNotUsed, true);
 });
 
+await test("24 SHADOW_PAPER_ENSURE creates/links durable observationId (not null)", async () => {
+  process.env.SHADOW_PAPER_ENSURE = "1";
+  process.env.SHADOW_DECISION_TRACE = "true";
+  const { ensureLocalPaperTelemetry } = await import("../src/lib/shadowArbitrage/localPaperEnsure.ts");
+  const { getPaperSession } = await import("../src/db/repositories/shadowPaper.ts");
+  const { getObservation } = await import("../src/db/repositories/shadowArbitrage.ts");
+  const ensured = await ensureLocalPaperTelemetry({ createdBy: "pre-bench-test-24" });
+  assert.equal(ensured.enabled, true);
+  if (!ensured.enabled) throw new Error("ensure disabled");
+  assert.ok(typeof ensured.observationId === "string" && ensured.observationId.length > 10);
+  assert.notEqual(ensured.observationId, null);
+  const session = await getPaperSession(ensured.sessionId);
+  assert.ok(session);
+  assert.equal(session!.observationId, ensured.observationId);
+  const obs = await getObservation();
+  assert.ok(obs);
+  assert.equal(obs!.id, ensured.observationId);
+  // Typed identity: observation ≠ paper session ≠ experiment
+  assert.notEqual(ensured.observationId, ensured.sessionId);
+});
+
 await closeDb().catch(() => undefined);
 
 const summary = {

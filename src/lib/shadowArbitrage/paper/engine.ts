@@ -30,7 +30,7 @@ import {
   totalReserved,
   type ReservationBook
 } from "@/lib/shadowArbitrage/paper/reservations";
-import type { QuoteCapacityInput } from "@/lib/shadowArbitrage/paper/liquidity";
+import { walkBook, type QuoteCapacityInput } from "@/lib/shadowArbitrage/paper/liquidity";
 import {
   recheckDelayedExecutableBook,
   DEFAULT_PAPER_EXECUTION_REALISM,
@@ -41,8 +41,11 @@ import {
   ResidualLiquidityBook,
   applyResidualToSnapshots,
   bookHash,
+  classifyDepthExhaustion,
   consumeLevelsFromWalk,
   snapshotGeneration,
+  PAPER_RESIDUAL_LIQUIDITY_EXHAUSTED,
+  RAW_EXCHANGE_DEPTH_INSUFFICIENT,
   type ResidualConsumeLevel,
   type ResidualOutstanding
 } from "@/lib/shadowArbitrage/paper/residualLiquidity";
@@ -220,6 +223,8 @@ function sizingRejectNeedsDiagnostics(code: PaperReasonCode): boolean {
     code === "portfolio_limits_unavailable" ||
     code === "net_non_positive" ||
     code === "insufficient_depth" ||
+    code === "paper_residual_liquidity_exhausted" ||
+    code === "raw_exchange_depth_insufficient" ||
     code === "insufficient_irt" ||
     code === "insufficient_usdt" ||
     code === "inventory_limit" ||
@@ -382,6 +387,38 @@ function depthUsable(
       : x.sellFillable && x.userSellVwapToman !== null
   );
   return Boolean(any);
+}
+
+/** Exact residual vs raw depth taxonomy (never generic sizing_blocked). */
+function depthExhaustionReason(
+  effective: NormalizedSourceSnapshot | undefined,
+  raw: NormalizedSourceSnapshot | undefined,
+  side: "buy" | "sell",
+  requestedMicros: number
+): PaperReasonCode {
+  const effBook = side === "buy" ? effective?.bookAsks : effective?.bookBids;
+  const rawBook = side === "buy" ? raw?.bookAsks : raw?.bookBids;
+  const effFilled = walkBook(effBook ?? [], requestedMicros, side).filledMicros;
+  const rawFilled = walkBook(rawBook ?? [], requestedMicros, side).filledMicros;
+  const classified = classifyDepthExhaustion({
+    rawFilledMicros: rawFilled,
+    effectiveFilledMicros: effFilled,
+    requestedMicros
+  });
+  if (classified === PAPER_RESIDUAL_LIQUIDITY_EXHAUSTED) {
+    return "paper_residual_liquidity_exhausted";
+  }
+  if (classified === RAW_EXCHANGE_DEPTH_INSUFFICIENT) {
+    return "raw_exchange_depth_insufficient";
+  }
+  // Soft-gate / empty book fallback
+  if (!depthUsable(effective, 1, side) && depthUsable(raw, 1, side)) {
+    return "paper_residual_liquidity_exhausted";
+  }
+  if (!depthUsable(effective, 1, side) && !depthUsable(raw, 1, side)) {
+    return "raw_exchange_depth_insufficient";
+  }
+  return "insufficient_depth";
 }
 
 /**
@@ -789,7 +826,23 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
      * one side must show some walkable liquidity at a minimal size.
      */
     if (!depthUsable(buySnap, 1, "buy") || !depthUsable(sellSnap, 1, "sell")) {
-      skip(c, ["insufficient_depth"]);
+      const rawBuy = input.sources.find((s) => s.sourceId === c.buySourceId);
+      const rawSell = input.sources.find((s) => s.sourceId === c.sellSourceId);
+      const buyCode = !depthUsable(buySnap, 1, "buy")
+        ? depthExhaustionReason(buySnap, rawBuy, "buy", usdtToMicros(1))
+        : null;
+      const sellCode = !depthUsable(sellSnap, 1, "sell")
+        ? depthExhaustionReason(sellSnap, rawSell, "sell", usdtToMicros(1))
+        : null;
+      const code =
+        buyCode === "paper_residual_liquidity_exhausted" ||
+        sellCode === "paper_residual_liquidity_exhausted"
+          ? "paper_residual_liquidity_exhausted"
+          : buyCode === "raw_exchange_depth_insufficient" ||
+              sellCode === "raw_exchange_depth_insufficient"
+            ? "raw_exchange_depth_insufficient"
+            : "insufficient_depth";
+      skip(c, [code]);
       continue;
     }
     // Discovery economics are only a size-free route observation. A red legacy
@@ -1457,7 +1510,30 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
     sizingByRoute.set(venuePairKey, sizing);
 
     if (sizing.status !== "SIZED" || sizing.sizeUsdtMicros === null || !sizing.quote || !sizing.economics) {
-      const code = paperReasonFromSizing(sizing);
+      let code = paperReasonFromSizing(sizing);
+      if (code === "insufficient_depth") {
+        const rawBuy = rawSourceFor(c.buySourceId);
+        const rawSell = rawSourceFor(c.sellSourceId);
+        const buyEff = sourceForSizing(c.buySourceId);
+        const sellEff = sourceForSizing(c.sellSourceId);
+        const req = Math.max(
+          usdtToMicros(1),
+          Number(sizing.sizeUsdtMicros ?? 0) || usdtToMicros(c.sizeUsdt ?? 1)
+        );
+        const buyCode = depthExhaustionReason(buyEff, rawBuy, "buy", req);
+        const sellCode = depthExhaustionReason(sellEff, rawSell, "sell", req);
+        if (
+          buyCode === "paper_residual_liquidity_exhausted" ||
+          sellCode === "paper_residual_liquidity_exhausted"
+        ) {
+          code = "paper_residual_liquidity_exhausted";
+        } else if (
+          buyCode === "raw_exchange_depth_insufficient" ||
+          sellCode === "raw_exchange_depth_insufficient"
+        ) {
+          code = "raw_exchange_depth_insufficient";
+        }
+      }
       skip(
         c,
         [code],
@@ -1868,12 +1944,22 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
     const fillMicros = usdtToMicros(sizedCandidate.sizeUsdt);
     const buyRaw = rawSourceFor(sizedCandidate.buySourceId);
     const sellRaw = rawSourceFor(sizedCandidate.sellSourceId);
-    const arrivalBuy = (input.delayedSources ?? []).find(
+    const arrivalBuyRaw = (input.delayedSources ?? []).find(
       (s) => s.sourceId === sizedCandidate.buySourceId
     );
-    const arrivalSell = (input.delayedSources ?? []).find(
+    const arrivalSellRaw = (input.delayedSources ?? []).find(
       (s) => s.sourceId === sizedCandidate.sellSourceId
     );
+    // Prefer EFFECTIVE (residual-reduced) books that backed the fill walk;
+    // attach rawDisplayedMicros from the matching RAW book at each price.
+    const arrivalBuyEff = workingDelayed.find(
+      (s) => s.sourceId === sizedCandidate.buySourceId
+    );
+    const arrivalSellEff = workingDelayed.find(
+      (s) => s.sourceId === sizedCandidate.sellSourceId
+    );
+    const buyEff = workingSources.find((s) => s.sourceId === sizedCandidate.buySourceId);
+    const sellEff = workingSources.find((s) => s.sourceId === sizedCandidate.sellSourceId);
     const legRisk = delayedEvidence?.legRisk;
     const firstLeg = legRisk?.firstLeg ?? "buy";
     let buyConsumeMicros = fillMicros;
@@ -1899,7 +1985,8 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
     const buyLevels = consumeLevelsFromWalk({
       venueId: sizedCandidate.buySourceId,
       side: "buy",
-      levels: (arrivalBuy ?? buyRaw)?.bookAsks,
+      levels: (arrivalBuyEff ?? buyEff)?.bookAsks,
+      rawLevels: (arrivalBuyRaw ?? buyRaw)?.bookAsks,
       quantityMicros: buyConsumeMicros,
       generation: buyRaw
         ? snapshotGeneration(buyRaw, input.collectorRunId)
@@ -1908,14 +1995,15 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       rawSnapshotId: input.collectorRunId
         ? `${input.collectorRunId}:${sizedCandidate.buySourceId}:detection`
         : null,
-      arrivalSnapshotId: arrivalBuy
+      arrivalSnapshotId: arrivalBuyRaw
         ? `${input.collectorRunId ?? "arrival"}:${sizedCandidate.buySourceId}:arrival`
         : null
     });
     const sellLevels = consumeLevelsFromWalk({
       venueId: sizedCandidate.sellSourceId,
       side: "sell",
-      levels: (arrivalSell ?? sellRaw)?.bookBids,
+      levels: (arrivalSellEff ?? sellEff)?.bookBids,
+      rawLevels: (arrivalSellRaw ?? sellRaw)?.bookBids,
       quantityMicros: sellConsumeMicros,
       generation: sellRaw
         ? snapshotGeneration(sellRaw, input.collectorRunId)
@@ -1924,7 +2012,7 @@ export function evaluateCycle(input: EvaluateInput): CycleEvaluation {
       rawSnapshotId: input.collectorRunId
         ? `${input.collectorRunId}:${sizedCandidate.sellSourceId}:detection`
         : null,
-      arrivalSnapshotId: arrivalSell
+      arrivalSnapshotId: arrivalSellRaw
         ? `${input.collectorRunId ?? "arrival"}:${sizedCandidate.sellSourceId}:arrival`
         : null
     });

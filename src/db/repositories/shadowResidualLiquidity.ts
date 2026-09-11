@@ -20,6 +20,8 @@ import {
   RESIDUAL_SYMBOL_DEFAULT,
   planRefillActions,
   ResidualLiquidityBook,
+  snapshotGeneration,
+  bookHash,
   type ResidualRefillModelConfig
 } from "@/lib/shadowArbitrage/paper/residualLiquidity";
 import type { NormalizedSourceSnapshot } from "@/lib/shadowArbitrage/types";
@@ -133,7 +135,6 @@ export async function persistResidualConsumption(
         continue;
       }
 
-      // Upsert residual row
       const existing = await db
         .select()
         .from(shadowPaperResidualLiquidity)
@@ -148,60 +149,16 @@ export async function persistResidualConsumption(
         )
         .limit(1);
 
-      let residualId: string;
-      let prior: number;
-      let outstandingAfter: number;
-
-      if (existing[0]) {
-        residualId = existing[0].id;
-        prior = Number(existing[0].outstandingConsumedMicros);
-        outstandingAfter = prior + level.quantityMicros;
-        await db
-          .update(shadowPaperResidualLiquidity)
-          .set({
-            outstandingConsumedMicros: outstandingAfter,
-            lifetimeConsumedMicros:
-              Number(existing[0].lifetimeConsumedMicros) + level.quantityMicros,
-            lastRawDisplayedMicros:
-              level.rawDisplayedMicros ?? existing[0].lastRawDisplayedMicros,
-            absentConsecutiveSnapshots: 0,
-            lastSeenSnapshotGeneration:
-              level.immutableGeneration ?? existing[0].lastSeenSnapshotGeneration,
-            lastSeenBookHash: level.immutableBookHash ?? existing[0].lastSeenBookHash,
-            state: "ACTIVE",
-            updatedAt: input.occurredAt
-          })
-          .where(eq(shadowPaperResidualLiquidity.id, residualId));
-      } else {
-        residualId = randomUUID();
-        prior = 0;
-        outstandingAfter = level.quantityMicros;
-        await db.insert(shadowPaperResidualLiquidity).values({
-          id: residualId,
-          paperSessionId: input.paperSessionId,
-          venueId: level.venueId,
-          symbol: level.symbol,
-          side: level.side,
-          priceLevelKey: plk,
-          priceToman: level.priceToman,
-          outstandingConsumedMicros: outstandingAfter,
-          lifetimeConsumedMicros: level.quantityMicros,
-          lifetimeReleasedMicros: 0,
-          lastRawDisplayedMicros: level.rawDisplayedMicros,
-          absentConsecutiveSnapshots: 0,
-          lastSeenSnapshotGeneration: level.immutableGeneration,
-          lastSeenBookHash: level.immutableBookHash,
-          state: "ACTIVE",
-          updatedAt: input.occurredAt,
-          createdAt: input.occurredAt
-        });
-      }
-
+      const residualId = existing[0]?.id ?? randomUUID();
+      const prior = existing[0] ? Number(existing[0].outstandingConsumedMicros) : 0;
+      const outstandingAfter = prior + level.quantityMicros;
       const effectiveRemaining =
         level.rawDisplayedMicros == null
           ? null
           : Math.max(0, level.rawDisplayedMicros - outstandingAfter);
 
+      // Insert event BEFORE mutating outstanding so a unique conflict never
+      // leaves a double-bump (retry / concurrent writer).
       try {
         await db.insert(shadowPaperResidualLiquidityEvents).values({
           id: randomUUID(),
@@ -232,14 +189,53 @@ export async function persistResidualConsumption(
           occurredAt: input.occurredAt,
           createdAt: input.occurredAt
         });
-        events += 1;
       } catch (e) {
         if (isUniqueViolation(e)) {
           duplicates += 1;
-        } else {
-          throw e;
+          continue;
         }
+        throw e;
       }
+
+      if (existing[0]) {
+        await db
+          .update(shadowPaperResidualLiquidity)
+          .set({
+            outstandingConsumedMicros: outstandingAfter,
+            lifetimeConsumedMicros:
+              Number(existing[0].lifetimeConsumedMicros) + level.quantityMicros,
+            lastRawDisplayedMicros:
+              level.rawDisplayedMicros ?? existing[0].lastRawDisplayedMicros,
+            absentConsecutiveSnapshots: 0,
+            lastSeenSnapshotGeneration:
+              level.immutableGeneration ?? existing[0].lastSeenSnapshotGeneration,
+            lastSeenBookHash: level.immutableBookHash ?? existing[0].lastSeenBookHash,
+            state: "ACTIVE",
+            updatedAt: input.occurredAt
+          })
+          .where(eq(shadowPaperResidualLiquidity.id, residualId));
+      } else {
+        await db.insert(shadowPaperResidualLiquidity).values({
+          id: residualId,
+          paperSessionId: input.paperSessionId,
+          venueId: level.venueId,
+          symbol: level.symbol,
+          side: level.side,
+          priceLevelKey: plk,
+          priceToman: level.priceToman,
+          outstandingConsumedMicros: outstandingAfter,
+          lifetimeConsumedMicros: level.quantityMicros,
+          lifetimeReleasedMicros: 0,
+          lastRawDisplayedMicros: level.rawDisplayedMicros,
+          absentConsecutiveSnapshots: 0,
+          lastSeenSnapshotGeneration: level.immutableGeneration,
+          lastSeenBookHash: level.immutableBookHash,
+          state: "ACTIVE",
+          updatedAt: input.occurredAt,
+          createdAt: input.occurredAt
+        });
+      }
+      events += 1;
     }
     return { events, duplicates };
   };
@@ -433,13 +429,16 @@ export async function reconcileSessionResidualWithSnapshots(input: {
     config: input.config
   });
 
-  // Also refresh last_raw / generation for levels that are present (no release).
+  // Atomic: refresh last_raw/generation + apply planned releases in ONE transaction
+  // so a crash cannot update lastRaw without applying a planned delta release.
+  const suffix = `cycle:${input.runId ?? "none"}:${input.occurredAt}`;
   try {
     const db = await getDbAsync();
-    await serial(async () => {
-      await db.transaction(async (tx) => {
+    return await serial(async () =>
+      db.transaction(async (tx) => {
         for (const snap of input.sources) {
-          const gen = `${snap.sourceId}:recv:${snap.marketData?.receiveTimestamp ?? snap.receivedAt}:run:${input.runId ?? "norun"}`;
+          const gen = snapshotGeneration(snap, input.runId);
+          const hash = bookHash(snap.bookBids, snap.bookAsks);
           for (const [levels, side] of [
             [snap.bookBids, "bid"],
             [snap.bookAsks, "ask"]
@@ -466,30 +465,33 @@ export async function reconcileSessionResidualWithSnapshots(input: {
                   lastRawDisplayedMicros: Math.round(lvl.amountUsdt * 1_000_000),
                   absentConsecutiveSnapshots: 0,
                   lastSeenSnapshotGeneration: gen,
+                  lastSeenBookHash: hash,
                   updatedAt: input.occurredAt
                 })
                 .where(eq(shadowPaperResidualLiquidity.id, rows[0].id));
             }
           }
         }
-      });
-    });
-  } catch (error) {
-    throw asDbError(error, "reconcileSessionResidual.refresh");
-  }
 
-  let releasedMicros = 0;
-  let n = 0;
-  const suffix = `cycle:${input.runId ?? "none"}:${input.occurredAt}`;
-  for (const action of actions) {
-    const r = await persistResidualRelease({
-      paperSessionId: input.paperSessionId,
-      action,
-      occurredAt: input.occurredAt,
-      idempotencySuffix: suffix
-    });
-    releasedMicros += r.released;
-    n += 1;
+        let releasedMicros = 0;
+        let n = 0;
+        for (const action of actions) {
+          const r = await persistResidualRelease(
+            {
+              paperSessionId: input.paperSessionId,
+              action,
+              occurredAt: input.occurredAt,
+              idempotencySuffix: suffix
+            },
+            tx as never
+          );
+          releasedMicros += r.released;
+          n += 1;
+        }
+        return { actions: n, releasedMicros };
+      })
+    );
+  } catch (error) {
+    throw asDbError(error, "reconcileSessionResidualWithSnapshots");
   }
-  return { actions: n, releasedMicros };
 }

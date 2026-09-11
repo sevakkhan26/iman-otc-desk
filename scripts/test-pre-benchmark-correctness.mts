@@ -679,6 +679,31 @@ await test("20 evaluateCycle same-cycle residual blocks second route reuse", asy
   assert.equal(typeof evaluateCycle, "function");
 });
 
+await test("20b effective-book walk skips depleted top level (D1)", () => {
+  // Raw: 100@p1 + 400@p2. Prior consume emptied p1 in effective book.
+  // Walking effective for 100 must take from p2, not re-attribute p1.
+  const raw = [lv(100_000, 100), lv(100_100, 400)];
+  const effective = [lv(100_000, 0), lv(100_100, 400)];
+  const records = consumeLevelsFromWalk({
+    venueId: "ramzinex",
+    side: "buy",
+    levels: effective,
+    rawLevels: raw,
+    quantityMicros: usdtToMicros(100)
+  });
+  assert.equal(records.length, 1);
+  assert.equal(records[0].priceToman, 100_100);
+  assert.equal(records[0].quantityMicros, 100_000_000);
+  assert.equal(records[0].rawDisplayedMicros, 400_000_000);
+});
+
+await test("20c snapshotGeneration prefers seq (D2 contract)", () => {
+  const snap = fakeSnap("ramzinex", [lv(99_000, 10)], [lv(100_000, 10)], 42);
+  assert.equal(snapshotGeneration(snap, "run-x"), "ramzinex:seq:42");
+  const noSeq = fakeSnap("bit24", [lv(99_000, 10)], [lv(100_000, 10)]);
+  assert.match(snapshotGeneration(noSeq, "run-y"), /^bit24:recv:/);
+});
+
 await test("21 PGlite flushPgliteCheckpoint succeeds", async () => {
   const r = await flushPgliteCheckpoint();
   assert.equal(r.ok, true, r.detail);

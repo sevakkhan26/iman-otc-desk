@@ -465,6 +465,7 @@ export function planRefillActions(input: {
 export function consumeLevelsFromWalk(input: {
   venueId: string;
   side: BookSide;
+  /** Levels that backed the fill (prefer EFFECTIVE / residual-reduced). */
   levels: BookLevel[] | null | undefined;
   quantityMicros: number;
   generation?: string | null;
@@ -472,10 +473,25 @@ export function consumeLevelsFromWalk(input: {
   rawSnapshotId?: string | null;
   arrivalSnapshotId?: string | null;
   symbol?: string;
+  /**
+   * Optional RAW displayed book at the same venue/side. When provided,
+   * rawDisplayedMicros is taken from the raw level at each walked price
+   * (not from the effective amount). Walk order/qty still follow `levels`.
+   */
+  rawLevels?: BookLevel[] | null | undefined;
 }): ResidualConsumeLevel[] {
   const symbol = input.symbol ?? RESIDUAL_SYMBOL_DEFAULT;
   const residualSide = bookSideToResidual(input.side);
   if (!input.levels?.length || input.quantityMicros <= 0) return [];
+  const rawByPrice = new Map<number, number>();
+  if (input.rawLevels?.length) {
+    for (const rl of input.rawLevels) {
+      if (!Number.isFinite(rl.priceToman) || !Number.isFinite(rl.amountUsdt)) continue;
+      const p = Math.round(rl.priceToman);
+      const m = usdtToMicros(rl.amountUsdt);
+      rawByPrice.set(p, Math.max(rawByPrice.get(p) ?? 0, m));
+    }
+  }
   // Inline walk to avoid circular import issues at module init; mirror walkBook.
   const ordered =
     input.side === "buy"
@@ -488,13 +504,15 @@ export function consumeLevelsFromWalk(input: {
     const levelMicros = usdtToMicros(level.amountUsdt);
     if (levelMicros <= 0) continue;
     const take = Math.min(remaining, levelMicros);
+    const price = Math.round(level.priceToman);
+    const rawDisplayedMicros = rawByPrice.has(price) ? rawByPrice.get(price)! : levelMicros;
     out.push({
       venueId: input.venueId,
       symbol,
       side: residualSide,
-      priceToman: Math.round(level.priceToman),
+      priceToman: price,
       quantityMicros: take,
-      rawDisplayedMicros: levelMicros,
+      rawDisplayedMicros,
       immutableGeneration: input.generation ?? null,
       immutableBookHash: input.bookHash ?? null,
       rawSnapshotId: input.rawSnapshotId ?? null,

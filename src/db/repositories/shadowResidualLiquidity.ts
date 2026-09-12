@@ -4,7 +4,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { asDbError, getDbAsync } from "@/db/client";
+import { asDbError, getDbAsync, type DeskDb } from "@/db/client";
 import { runSerialized } from "@/db/repositories/shadowArbitrage";
 import {
   shadowPaperResidualLiquidity,
@@ -101,14 +101,9 @@ export type PersistConsumeInput = {
  */
 export async function persistResidualConsumption(
   input: PersistConsumeInput,
-  tx?: { insert: Function; select: Function; update: Function }
+  tx?: DeskDb
 ): Promise<{ events: number; duplicates: number }> {
-  const run = async (db: {
-    insert: Function;
-    select: Function;
-    update: Function;
-    transaction?: Function;
-  }) => {
+  const run = async (db: DeskDb) => {
     let events = 0;
     let duplicates = 0;
     for (const level of input.levels) {
@@ -260,9 +255,9 @@ export type PersistReleaseInput = {
 
 export async function persistResidualRelease(
   input: PersistReleaseInput,
-  tx?: { insert: Function; select: Function; update: Function }
+  tx?: DeskDb
 ): Promise<{ released: number; duplicate: boolean }> {
-  const run = async (db: { insert: Function; select: Function; update: Function }) => {
+  const run = async (db: DeskDb) => {
     const a = input.action;
     const plk = a.priceLevelKey || priceLevelKey(a.priceToman);
     const idempotencyKey = [

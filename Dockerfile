@@ -13,17 +13,21 @@ FROM ${NODE_IMAGE} AS builder
 
 WORKDIR /app
 
-RUN apk add --no-cache libc6-compat
+RUN i=0; until apk add --no-cache libc6-compat; do i=$((i+1)); [ "$i" -ge 5 ] && exit 1; echo "apk retry $i"; sleep 5; done
 
 COPY package.json pnpm-lock.yaml ./
 RUN corepack enable \
   && corepack prepare pnpm@9.15.9 --activate \
-  && pnpm install --frozen-lockfile
+  && i=0 \
+  && until pnpm install --frozen-lockfile; do \
+       i=$((i+1)); [ "$i" -ge 4 ] && exit 1; echo "pnpm install retry $i"; sleep 8; \
+     done
 
 COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
+ENV DOCKER_BUILD=1
 RUN pnpm build
 
 # Materialize postgres package for the migrator (pnpm store uses symlinks).

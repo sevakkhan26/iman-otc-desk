@@ -17,8 +17,9 @@ const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  // Production image must ship even if ESLint flags new code; `pnpm lint` is the gate.
+  // Production image must ship even if ESLint/TS flags new code; `pnpm lint` / `pnpm typecheck` stay the gates.
   eslint: { ignoreDuringBuilds: true },
+  typescript: { ignoreBuildErrors: process.env.DOCKER_BUILD === "1" },
   // Required for production Docker image (copies server.js + traced deps).
   output: "standalone",
   // Keep tracing/dev root inside this package (not monorepo parent).

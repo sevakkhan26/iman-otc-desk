@@ -12,7 +12,7 @@ const proxy =
   "";
 
 if (!proxy) {
-  console.error("Set OUTBOUND_HTTPS_PROXY first (e.g. http://user:pass@host:2053)");
+  console.error("Set OUTBOUND_HTTPS_PROXY first (e.g. http://user:pass@host:6969)");
   process.exit(1);
 }
 

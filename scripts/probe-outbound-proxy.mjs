@@ -2,7 +2,7 @@
 /**
  * Probe OUTBOUND_HTTPS_PROXY against Bonbast (same stack as production http.ts).
  * Usage:
- *   OUTBOUND_HTTPS_PROXY=http://user:pass@host:2053 node scripts/probe-outbound-proxy.mjs
+ *   OUTBOUND_HTTPS_PROXY=http://user:pass@host:6969 node scripts/probe-outbound-proxy.mjs
  */
 import { HttpsProxyAgent } from "https-proxy-agent";
 import https from "node:https";

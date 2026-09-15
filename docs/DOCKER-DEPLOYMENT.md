@@ -8,7 +8,7 @@ via `src/lib/http.ts`. If the Docker host cannot reach them directly, set an
 
 ```bash
 # In repo-root `.env` on the server (never commit real credentials)
-OUTBOUND_HTTPS_PROXY=http://USER:PASS@mtproxier.com:2053
+OUTBOUND_HTTPS_PROXY=http://USER:PASS@mtproxier.ir:6969
 PROXY_HOSTS=bonbast.com,navasan.net
 ```
 
@@ -22,7 +22,7 @@ Quick check from the host (expect HTTP 200 + HTML):
 
 ```bash
 curl -sS -o /dev/null -w "%{http_code}\n" \
-  -x "http://USER:PASS@mtproxier.com:2053" \
+  -x "http://USER:PASS@mtproxier.ir:6969" \
   "https://bonbast.com/"
 ```
 

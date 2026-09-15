@@ -1,6 +1,6 @@
 {
   "name": "dealing-desk-otc-dashboard",
-  "version": "4.2.12",
+  "version": "4.2.13",
   "private": true,
   "type": "module",
   "scripts": {

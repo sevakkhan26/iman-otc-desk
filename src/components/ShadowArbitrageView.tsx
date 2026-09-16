@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { DeskPageHeader } from "@/components/DeskPageHeader";
 import { CapitalSimulator } from "@/components/shadowArbitrage/CapitalSimulator";
@@ -177,6 +177,8 @@ export function ShadowArbitrageView() {
   const [notice, setNotice] = useState<string | null>(null);
   const [proposal, setProposal] = useState<ProposalView | null>(null);
   const [proposalBusy, setProposalBusy] = useState(false);
+  const [paperControlBusy, setPaperControlBusy] = useState(false);
+  const loadInFlight = useRef(false);
   /**
    * Scenario caps. `null` is UNSET — not applied to the analysis — and is
    * deliberately distinct from an explicit 0, which is a real limit of zero.
@@ -275,42 +277,58 @@ export function ShadowArbitrageView() {
   }, [proposal]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = useCallback(async (refresh = false) => {
+    // Polls must never pile up behind a slow diagnostic endpoint. One read at a
+    // time is enough; the next 30-second tick will pick up newer state.
+    if (loadInFlight.current) return;
+    loadInFlight.current = true;
     setLoading(true);
     setError(null);
     try {
       const q = refresh ? "?refresh=1" : "";
-      // Passive GETs — tab navigation never mutates. history/analytics kept for API surface.
-      const [mRes, hRes, aRes, oRes, pRes, rRes, accRes] = await Promise.all([
-        fetch(`/api/shadow-arbitrage/matrix${q}`, { cache: "no-store", credentials: "same-origin" }),
-        fetch("/api/shadow-arbitrage/history", { cache: "no-store", credentials: "same-origin" }),
-        fetch("/api/shadow-arbitrage/analytics", { cache: "no-store", credentials: "same-origin" }),
-        fetch("/api/shadow-arbitrage/observation", { cache: "no-store", credentials: "same-origin" }),
-        fetch("/api/shadow-arbitrage/paper", { cache: "no-store", credentials: "same-origin" }),
-        fetch("/api/shadow-arbitrage/live-readiness", {
+      const request = (url: string) =>
+        fetch(url, {
           cache: "no-store",
-          credentials: "same-origin"
-        }),
-        fetch("/api/shadow-arbitrage/accounts", { cache: "no-store", credentials: "same-origin" })
-      ]);
+          credentials: "same-origin",
+          signal: AbortSignal.timeout(15_000)
+        });
 
-      if (mRes.status === 403 || mRes.status === 401) {
+      // Activity uses the compact operator view. The expensive historical and
+      // readiness reads are requested only by tabs that paint them, so one slow
+      // companion endpoint can no longer leave the entire page blank.
+      const paperUrl = tab === "activity" ? "/api/shadow-arbitrage/paper?view=operator" : "/api/shadow-arbitrage/paper";
+      const jobs: Array<Promise<Response>> = [
+        request(`/api/shadow-arbitrage/matrix${q}`),
+        request(paperUrl)
+      ];
+      if (tab === "venues") jobs.push(request("/api/shadow-arbitrage/observation"));
+      if (tab === "venues") jobs.push(request("/api/shadow-arbitrage/accounts"));
+      if (tab === "settings") jobs.push(request("/api/shadow-arbitrage/live-readiness"));
+
+      const settled = await Promise.allSettled(jobs);
+      const responseAt = (index: number) =>
+        settled[index]?.status === "fulfilled" ? settled[index].value : null;
+      const mRes = responseAt(0);
+      const pRes = responseAt(1);
+      let cursor = 2;
+      const oRes = tab === "venues" ? responseAt(cursor++) : null;
+      const accRes = tab === "venues" ? responseAt(cursor++) : null;
+      const rRes = tab === "settings" ? responseAt(cursor++) : null;
+
+      if (mRes?.status === 403 || mRes?.status === 401) {
         setError("این صفحه فقط برای مدیر سیستم است.");
         setMatrix(null);
         return;
       }
-      if (mRes.ok) {
+      if (mRes?.ok) {
         setMatrix((await mRes.json()) as ShadowMatrixResponse);
-      } else {
+      } else if (mRes) {
         const body = (await mRes.json().catch(() => null)) as { message?: string } | null;
         setError(body?.message ?? "دریافت دادهٔ فرصت‌ها ممکن نشد.");
       }
-      // Best-effort companion reads (not displayed on every tab after v4.2.1).
-      if (hRes.ok) await hRes.json().catch(() => null);
-      if (aRes.ok) await aRes.json().catch(() => null);
-      if (oRes.ok) {
+      if (oRes?.ok) {
         setObs((await oRes.json()) as ObservationPayload);
       }
-      if (pRes.ok) {
+      if (pRes?.ok) {
         const payload = (await pRes.json()) as PaperPayload;
         setPaper(payload);
         if (payload.allocation?.proposal) {
@@ -319,14 +337,45 @@ export function ShadowArbitrageView() {
           if (caps && Object.keys(caps).length) setScenarioCaps(caps);
         }
       }
-      if (rRes.ok) setReadiness((await rRes.json()) as ReadinessPayload);
-      if (accRes.ok) setAccounts((await accRes.json()) as AccountsPayload);
+      if (rRes?.ok) setReadiness((await rRes.json()) as ReadinessPayload);
+      if (accRes?.ok) setAccounts((await accRes.json()) as AccountsPayload);
     } catch (e) {
       setError(e instanceof Error ? e.message : "خطای غیرمنتظره در دریافت داده.");
     } finally {
+      loadInFlight.current = false;
       setLoading(false);
     }
-  }, []);
+  }, [tab]);
+
+  const controlPaper = useCallback(
+    async (action: "pause" | "resume") => {
+      const active = paper?.session;
+      if (!active || paperControlBusy) return;
+      setPaperControlBusy(true);
+      setNotice(null);
+      try {
+        const res = await fetch("/api/shadow-arbitrage/paper", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ action, sessionId: active.id })
+        });
+        const body = (await res.json().catch(() => null)) as { message?: string } | null;
+        if (!res.ok) throw new Error(body?.message ?? "تغییر وضعیت نشست ممکن نشد.");
+        setNotice(
+          action === "pause"
+            ? "نشست Paper متوقف شد؛ دفتر و موجودی‌ها حفظ شدند."
+            : "نشست Paper ادامه یافت."
+        );
+        await load(false);
+      } catch (e) {
+        setNotice(e instanceof Error ? e.message : "تغییر وضعیت نشست ممکن نشد.");
+      } finally {
+        setPaperControlBusy(false);
+      }
+    },
+    [load, paper?.session, paperControlBusy]
+  );
 
   const control = useCallback(
     async (action: "pause" | "resume") => {
@@ -417,6 +466,22 @@ export function ShadowArbitrageView() {
         stats={paper?.stats ?? null}
         serverNow={matrix?.serverNow ?? serverNow}
       />
+
+      {paper?.session && (paper.session.status === "RUNNING" || paper.session.status === "PAUSED") ? (
+        <div className="sa-chips" aria-label="کنترل نشست Paper">
+          <span className="sa-sub">
+            وضعیت نشست: {paper.session.status === "RUNNING" ? "در حال اجرا" : "متوقف موقت"}
+          </span>
+          <button
+            type="button"
+            className="sa-btn-clear glass-control"
+            disabled={paperControlBusy}
+            onClick={() => void controlPaper(paper.session!.status === "RUNNING" ? "pause" : "resume")}
+          >
+            {paper.session.status === "RUNNING" ? "توقف امن Paper" : "ادامهٔ Paper"}
+          </button>
+        </div>
+      ) : null}
 
       <ShadowTabs active={tab} onSelect={selectTab} badges={badges} />
 

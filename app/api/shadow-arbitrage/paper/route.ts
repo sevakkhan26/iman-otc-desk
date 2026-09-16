@@ -433,7 +433,9 @@ export async function GET(request: Request) {
   if (!isSession(session)) return session;
 
   // Optional server-side filter so a large session never ships every candidate.
-  const reason = new URL(request.url).searchParams.get("reason");
+  const requestUrl = new URL(request.url);
+  const reason = requestUrl.searchParams.get("reason");
+  const operatorView = requestUrl.searchParams.get("view") === "operator";
   const [snap, history] = await Promise.all([snapshot(reason), listPaperSessions(20)]);
   /*
    * The wizard needs two facts it must not invent: today's mark price and which
@@ -560,8 +562,14 @@ export async function GET(request: Request) {
     };
   });
 
-  const latestProposalRows =
-    ((await listProposals(1))[0]?.rows as Array<{ sourceId: string; role: string }> | undefined) ?? [];
+  // Allocation roles belong to the full planning/reporting view. The compact
+  // operator read must not wait on the proposal store merely to show current
+  // execution state.
+  const latestProposalRows = operatorView
+    ? []
+    : (((await listProposals(1))[0]?.rows as
+        | Array<{ sourceId: string; role: string }>
+        | undefined) ?? []);
 
   /** Dealer quotes, built once and shared by capacity and route sizing. */
   const quoteBySource = new Map<string, QuoteCapacityInput>();
@@ -858,6 +866,59 @@ export async function GET(request: Request) {
   };
 
   /*
+   * Compact, read-only operator path. It deliberately returns before proposal,
+   * experiment-history, accounting and ledger pagination queries. The engine
+   * and the operator can therefore share the same DB without a slow reporting
+   * aggregation hiding the current cycle or sizing decision.
+   */
+  if (operatorView) {
+    const latestCycle = snap.cycleSummaries?.[0] ?? null;
+    const latestTerminal = [...(snap.trades ?? []), ...(snap.transitions ?? [])]
+      .sort((a, b) => Date.parse(String(b.occurredAt)) - Date.parse(String(a.occurredAt)))[0] ?? null;
+    const routeAudit = sizingRoutes.map((route) => ({
+      routeKey: route.routeKey,
+      buySourceId: route.buySourceId,
+      sellSourceId: route.sellSourceId,
+      status: route.sizing.status,
+      safeMaxUsdt:
+        route.sizing.maxFeasibleUsdtMicros === null
+          ? null
+          : microsToUsdt(route.sizing.maxFeasibleUsdtMicros),
+      selectedSizeUsdt: route.sizing.sizeUsdt,
+      bindingConstraint: route.sizing.bindingConstraint,
+      terminalReason:
+        route.sizing.audit?.rejectionReason ??
+        route.sizing.blockers[0]?.detailFa ??
+        route.sizing.selection?.reasonFa ??
+        null,
+      waterfall: route.sizing.audit?.waterfall ?? null
+    }));
+
+    return new NextResponse(
+      JSON.stringify(
+        envelope({
+          ...snap,
+          sizing,
+          operational: {
+            currentCycle: latestCycle,
+            latestDecision: latestTerminal,
+            routes: routeAudit
+          },
+          typedIdentity: {
+            paperSessionId: snap.session?.id ?? null,
+            paperSessionStatus: snap.session?.status ?? null,
+            observationId: snap.session?.observationId ?? null,
+            experimentId: snap.session?.experimentRunId ?? null,
+            collectorRunId: null,
+            deploymentVersion: null
+          }
+        })
+      ),
+      { status: 200, headers: SHADOW_NO_STORE }
+    );
+  }
+
+  /*
    * Phase 8C-5 — the latest persisted proposal and what was decided about it.
    * Loaded on every read so a refresh shows the same proposal, status and
    * audit result rather than an empty panel.
@@ -1142,9 +1203,8 @@ export async function GET(request: Request) {
   });
 
   // Server-side ledger pagination (no silent 2000-row cap for UI).
-  const url = new URL(request.url);
-  const ledgerLimit = Math.min(200, Math.max(1, Number(url.searchParams.get("ledgerLimit") ?? 50) || 50));
-  const ledgerOffset = Math.max(0, Number(url.searchParams.get("ledgerOffset") ?? 0) || 0);
+  const ledgerLimit = Math.min(200, Math.max(1, Number(requestUrl.searchParams.get("ledgerLimit") ?? 50) || 50));
+  const ledgerOffset = Math.max(0, Number(requestUrl.searchParams.get("ledgerOffset") ?? 0) || 0);
   let ledgerPage: { rows: unknown[]; total: number; limit: number; offset: number } | null =
     null;
   if (snap.session?.id) {

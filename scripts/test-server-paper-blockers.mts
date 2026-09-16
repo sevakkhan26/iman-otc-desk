@@ -6,7 +6,7 @@
  *  + observation start after COMPLETED opens a NEW session
  */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -53,6 +53,30 @@ const PAPER_OPENING = [
   { sourceId: "nobitex", irtToman: 20_000_000, usdtUnits: 100 },
   { sourceId: "wallex", irtToman: 20_000_000, usdtUnits: 100 }
 ];
+
+await test("operator UI mounts Paper pause/resume and bounded non-overlapping reads", async () => {
+  const source = await readFile("src/components/ShadowArbitrageView.tsx", "utf8");
+  assert.match(source, /\/api\/shadow-arbitrage\/paper\?view=operator/);
+  assert.match(source, /loadInFlight\.current/);
+  assert.match(source, /AbortSignal\.timeout\(15_000\)/);
+  assert.match(source, /توقف امن Paper/);
+  assert.match(source, /body: JSON\.stringify\(\{ action, sessionId: active\.id \}\)/);
+  assert.doesNotMatch(source, /request\("\/api\/shadow-arbitrage\/history"\)/);
+  assert.doesNotMatch(source, /request\("\/api\/shadow-arbitrage\/analytics"\)/);
+});
+
+await test("compact operator API returns before slow reporting queries", async () => {
+  const source = await readFile("app/api/shadow-arbitrage/paper/route.ts", "utf8");
+  const compact = source.indexOf("if (operatorView)");
+  const reporting = source.indexOf("const [latestProposals, latestDecisions]");
+  assert.ok(compact >= 0 && reporting > compact);
+  assert.match(source, /currentCycle: latestCycle/);
+  assert.match(source, /safeMaxUsdt:/);
+  assert.match(source, /selectedSizeUsdt:/);
+  assert.match(source, /bindingConstraint:/);
+  assert.match(source, /terminalReason:/);
+  assert.match(source, /const latestProposalRows = operatorView\s*\? \[\]/);
+});
 
 function paperFill(
   lifecycleId: string,

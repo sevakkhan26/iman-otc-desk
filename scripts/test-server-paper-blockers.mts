@@ -79,6 +79,9 @@ await test("compact operator API returns before slow reporting queries", async (
   assert.match(source, /operatorView \? operatorSnapshot\(\) : snapshot\(reason\)/);
   assert.match(source, /loadCycleSummaries\(session\.id, 1\)/);
   assert.match(source, /return runSerialized\(async \(\) =>/);
+  assert.match(source, /requestedView === "operator" \|\| requestedView === "control"/);
+  assert.match(source, /<form method="post">/);
+  assert.match(source, /Object\.fromEntries\(await request\.formData\(\)\)/);
   assert.match(source, /Lifecycle controls acknowledge the durable status write immediately/);
   assert.doesNotMatch(source, /envelope\(\{ \.\.\.\(await snapshot\(\)\), history: await listPaperSessions\(20\) \}\)/);
 });

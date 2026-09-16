@@ -478,7 +478,9 @@ export async function GET(request: Request) {
   // Optional server-side filter so a large session never ships every candidate.
   const requestUrl = new URL(request.url);
   const reason = requestUrl.searchParams.get("reason");
-  const operatorView = requestUrl.searchParams.get("view") === "operator";
+  const requestedView = requestUrl.searchParams.get("view");
+  const operatorView = requestedView === "operator" || requestedView === "control";
+  const operatorControl = requestedView === "control";
   const [snap, history] = await Promise.all([
     operatorView ? operatorSnapshot() : snapshot(reason),
     operatorView ? Promise.resolve([]) : listPaperSessions(20)
@@ -491,6 +493,24 @@ export async function GET(request: Request) {
       typeof audit?.maxFeasibleUsdtMicros === "number"
         ? audit.maxFeasibleUsdtMicros
         : latestDecision?.limitingUsableUsdtMicros ?? null;
+    if (operatorControl) {
+      const status = snap.session?.status ?? "NONE";
+      const action = status === "RUNNING" ? "pause" : status === "PAUSED" ? "resume" : null;
+      const label = action === "pause" ? "Pause Paper safely" : action === "resume" ? "Resume Paper" : "No controllable session";
+      const sessionId = snap.session?.id ?? "";
+      return new NextResponse(
+        `<!doctype html><html><head><meta charset="utf-8"><title>Shadow Paper control</title></head><body>` +
+          `<h1>Shadow Paper control</h1><p>LIVE=false · PAPER/DISARMED</p>` +
+          `<p>Session: ${sessionId}</p><p>Status: <strong>${status}</strong></p>` +
+          (action
+            ? `<form method="post"><input type="hidden" name="action" value="${action}">` +
+              `<input type="hidden" name="sessionId" value="${sessionId}">` +
+              `<button type="submit">${label}</button></form>`
+            : `<button disabled>${label}</button>`) +
+          `</body></html>`,
+        { status: 200, headers: { ...SHADOW_NO_STORE, "content-type": "text/html; charset=utf-8" } }
+      );
+    }
     return new NextResponse(
       JSON.stringify(
         envelope({
@@ -1316,7 +1336,11 @@ export async function POST(request: Request) {
 
   let body: Record<string, unknown>;
   try {
-    body = (await request.json()) as Record<string, unknown>;
+    if (request.headers.get("content-type")?.includes("application/json")) {
+      body = (await request.json()) as Record<string, unknown>;
+    } else {
+      body = Object.fromEntries(await request.formData());
+    }
   } catch {
     return bad("بدنهٔ JSON نامعتبر");
   }

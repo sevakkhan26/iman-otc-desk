@@ -6,7 +6,8 @@ import {
   loadLatestCapitalApproval,
   loadLatestCapitalPlan,
   loadLatestAccountConfirmations,
-  loadLatestSourceSnapshots
+  loadLatestSourceSnapshots,
+  runSerialized
 } from "@/db/repositories/shadowArbitrage";
 import {
   createPaperSession,
@@ -270,39 +271,44 @@ async function snapshot(reasonFilter: string | null = null) {
 
 /** Minimal current-state read for operators; deliberately excludes aggregates/history. */
 async function operatorSnapshot() {
-  const session = await getActivePaperSession();
-  if (!session) {
+  // On PGlite a collector cycle owns the serialization queue. Acquire it once
+  // for the complete operator sample: five independent queue entries could be
+  // interleaved with five network cycles and look like a hung API.
+  return runSerialized(async () => {
+    const session = await getActivePaperSession();
+    if (!session) {
+      return {
+        session: null, balances: [], trades: [], legRisks: [], transitions: [], candidates: [],
+        reasonBreakdown: [], cycleSummaries: [], stats: null, accounting: null
+      };
+    }
+    const [balances, trades, transitions, legRisks, cycleSummaries] = await Promise.all([
+      loadPaperBalances(session.id),
+      loadPaperLedger(session.id, { outcome: "FILLED", limit: 1 }),
+      loadPaperLedger(session.id, { outcome: "SKIPPED", limit: 1 }),
+      loadPaperLedger(session.id, { outcome: "LEG_RISK", limit: 1 }),
+      loadCycleSummaries(session.id, 1)
+    ]);
     return {
-      session: null, balances: [], trades: [], legRisks: [], transitions: [], candidates: [],
-      reasonBreakdown: [], cycleSummaries: [], stats: null, accounting: null
+      session,
+      balances: balances.map((balance) => ({
+        sourceId: balance.sourceId,
+        irtToman: balance.irtToman,
+        usdt: microsToUsdt(balance.usdtMicros),
+        usdtMicros: balance.usdtMicros,
+        buySettlement: settlementFor(balance.sourceId as ShadowSourceId, "buy"),
+        sellSettlement: settlementFor(balance.sourceId as ShadowSourceId, "sell")
+      })),
+      trades,
+      legRisks,
+      transitions,
+      candidates: [],
+      reasonBreakdown: [],
+      cycleSummaries,
+      stats: null,
+      accounting: null
     };
-  }
-  const [balances, trades, transitions, legRisks, cycleSummaries] = await Promise.all([
-    loadPaperBalances(session.id),
-    loadPaperLedger(session.id, { outcome: "FILLED", limit: 1 }),
-    loadPaperLedger(session.id, { outcome: "SKIPPED", limit: 1 }),
-    loadPaperLedger(session.id, { outcome: "LEG_RISK", limit: 1 }),
-    loadCycleSummaries(session.id, 1)
-  ]);
-  return {
-    session,
-    balances: balances.map((balance) => ({
-      sourceId: balance.sourceId,
-      irtToman: balance.irtToman,
-      usdt: microsToUsdt(balance.usdtMicros),
-      usdtMicros: balance.usdtMicros,
-      buySettlement: settlementFor(balance.sourceId as ShadowSourceId, "buy"),
-      sellSettlement: settlementFor(balance.sourceId as ShadowSourceId, "sell")
-    })),
-    trades,
-    legRisks,
-    transitions,
-    candidates: [],
-    reasonBreakdown: [],
-    cycleSummaries,
-    stats: null,
-    accounting: null
-  };
+  });
 }
 
 function envelope(extra: Record<string, unknown>) {

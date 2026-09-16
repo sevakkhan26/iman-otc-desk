@@ -78,6 +78,7 @@ await test("compact operator API returns before slow reporting queries", async (
   assert.match(source, /const latestProposalRows = operatorView\s*\? \[\]/);
   assert.match(source, /operatorView \? operatorSnapshot\(\) : snapshot\(reason\)/);
   assert.match(source, /loadCycleSummaries\(session\.id, 1\)/);
+  assert.match(source, /return runSerialized\(async \(\) =>/);
 });
 
 function paperFill(

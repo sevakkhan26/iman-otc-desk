@@ -282,23 +282,20 @@ async function operatorSnapshot() {
         reasonBreakdown: [], cycleSummaries: [], stats: null, accounting: null
       };
     }
-    const [balances, trades, transitions, legRisks, cycleSummaries] = await Promise.all([
-      loadPaperBalances(session.id),
-      loadPaperLedger(session.id, { outcome: "FILLED", limit: 1 }),
-      loadPaperLedger(session.id, { outcome: "SKIPPED", limit: 1 }),
-      loadPaperLedger(session.id, { outcome: "LEG_RISK", limit: 1 }),
+    // One newest-ledger query is enough for the operator view. Reading each
+    // outcome separately made this supposedly small endpoint perform five DB
+    // reads and could leave it waiting behind a busy PGlite collector cycle.
+    const [latestRows, cycleSummaries] = await Promise.all([
+      loadPaperLedger(session.id, { limit: 1 }),
       loadCycleSummaries(session.id, 1)
     ]);
+    const latest = latestRows[0] ?? null;
+    const trades = latest?.outcome === "FILLED" ? [latest] : [];
+    const transitions = latest?.outcome === "SKIPPED" ? [latest] : [];
+    const legRisks = latest?.outcome === "LEG_RISK" ? [latest] : [];
     return {
       session,
-      balances: balances.map((balance) => ({
-        sourceId: balance.sourceId,
-        irtToman: balance.irtToman,
-        usdt: microsToUsdt(balance.usdtMicros),
-        usdtMicros: balance.usdtMicros,
-        buySettlement: settlementFor(balance.sourceId as ShadowSourceId, "buy"),
-        sellSettlement: settlementFor(balance.sourceId as ShadowSourceId, "sell")
-      })),
+      balances: [],
       trades,
       legRisks,
       transitions,

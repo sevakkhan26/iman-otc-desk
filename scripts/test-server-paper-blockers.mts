@@ -68,12 +68,12 @@ await test("operator UI mounts Paper pause/resume and bounded non-overlapping re
 await test("compact operator API returns before slow reporting queries", async () => {
   const source = await readFile("app/api/shadow-arbitrage/paper/route.ts", "utf8");
   const compact = source.indexOf("if (operatorView)");
-  const reporting = source.indexOf("const [latestProposals, latestDecisions]");
+  const reporting = source.indexOf("const [wizardSnapshots, wizardFees");
   assert.ok(compact >= 0 && reporting > compact);
-  assert.match(source, /currentCycle: latestCycle/);
-  assert.match(source, /safeMaxUsdt:/);
-  assert.match(source, /selectedSizeUsdt:/);
-  assert.match(source, /bindingConstraint:/);
+  assert.match(source, /currentCycle: snap\.cycleSummaries\[0\]/);
+  assert.match(source, /safeMaxUsdt: safeMaxMicros/);
+  assert.match(source, /selectedSizeUsdt: latestDecision/);
+  assert.match(source, /sizingWaterfall: audit/);
   assert.match(source, /terminalReason:/);
   assert.match(source, /const latestProposalRows = operatorView\s*\? \[\]/);
   assert.match(source, /operatorView \? operatorSnapshot\(\) : snapshot\(reason\)/);

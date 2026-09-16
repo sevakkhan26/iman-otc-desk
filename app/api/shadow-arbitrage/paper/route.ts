@@ -477,6 +477,42 @@ export async function GET(request: Request) {
     operatorView ? operatorSnapshot() : snapshot(reason),
     operatorView ? Promise.resolve([]) : listPaperSessions(20)
   ]);
+  if (operatorView) {
+    const latestDecision = [...snap.trades, ...snap.transitions, ...snap.legRisks]
+      .sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt))[0] ?? null;
+    const audit = latestDecision?.sizingAudit ?? null;
+    const safeMaxMicros =
+      typeof audit?.maxFeasibleUsdtMicros === "number"
+        ? audit.maxFeasibleUsdtMicros
+        : latestDecision?.limitingUsableUsdtMicros ?? null;
+    return new NextResponse(
+      JSON.stringify(
+        envelope({
+          ...snap,
+          sessionHistory: history,
+          sizing: { routes: [] },
+          operational: {
+            currentCycle: snap.cycleSummaries[0] ?? null,
+            latestDecision,
+            sizingWaterfall: audit?.waterfall ?? null,
+            safeMaxUsdt: safeMaxMicros === null ? null : microsToUsdt(safeMaxMicros),
+            selectedSizeUsdt: latestDecision?.sizeUsdt ?? null,
+            terminalReason:
+              latestDecision?.rejectionCode ?? latestDecision?.outcome ?? null
+          },
+          typedIdentity: {
+            paperSessionId: snap.session?.id ?? null,
+            paperSessionStatus: snap.session?.status ?? null,
+            observationId: snap.session?.observationId ?? null,
+            experimentId: snap.session?.experimentRunId ?? null,
+            collectorRunId: latestDecision?.runId ?? null,
+            deploymentVersion: null
+          }
+        })
+      ),
+      { status: 200, headers: SHADOW_NO_STORE }
+    );
+  }
   /*
    * The wizard needs two facts it must not invent: today's mark price and which
    * venues may hold capital. Both are derived here, on the server, from the same
@@ -911,53 +947,6 @@ export async function GET(request: Request) {
    * and the operator can therefore share the same DB without a slow reporting
    * aggregation hiding the current cycle or sizing decision.
    */
-  if (operatorView) {
-    const latestCycle = snap.cycleSummaries?.[0] ?? null;
-    const latestTerminal = [...(snap.trades ?? []), ...(snap.transitions ?? [])]
-      .sort((a, b) => Date.parse(String(b.occurredAt)) - Date.parse(String(a.occurredAt)))[0] ?? null;
-    const routeAudit = sizingRoutes.map((route) => ({
-      routeKey: route.routeKey,
-      buySourceId: route.buySourceId,
-      sellSourceId: route.sellSourceId,
-      status: route.sizing.status,
-      safeMaxUsdt:
-        route.sizing.maxFeasibleUsdtMicros === null
-          ? null
-          : microsToUsdt(route.sizing.maxFeasibleUsdtMicros),
-      selectedSizeUsdt: route.sizing.sizeUsdt,
-      bindingConstraint: route.sizing.bindingConstraint,
-      terminalReason:
-        route.sizing.audit?.rejectionReason ??
-        route.sizing.blockers[0]?.detailFa ??
-        route.sizing.selection?.reasonFa ??
-        null,
-      waterfall: route.sizing.audit?.waterfall ?? null
-    }));
-
-    return new NextResponse(
-      JSON.stringify(
-        envelope({
-          ...snap,
-          sizing,
-          operational: {
-            currentCycle: latestCycle,
-            latestDecision: latestTerminal,
-            routes: routeAudit
-          },
-          typedIdentity: {
-            paperSessionId: snap.session?.id ?? null,
-            paperSessionStatus: snap.session?.status ?? null,
-            observationId: snap.session?.observationId ?? null,
-            experimentId: snap.session?.experimentRunId ?? null,
-            collectorRunId: null,
-            deploymentVersion: null
-          }
-        })
-      ),
-      { status: 200, headers: SHADOW_NO_STORE }
-    );
-  }
-
   /*
    * Phase 8C-5 — the latest persisted proposal and what was decided about it.
    * Loaded on every read so a refresh shows the same proposal, status and

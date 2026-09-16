@@ -1734,8 +1734,9 @@ export async function POST(request: Request) {
     }
   }
 
+  let updated;
   try {
-    await setPaperSessionStatus(target.id, next);
+    updated = await setPaperSessionStatus(target.id, next);
   } catch (error) {
     if (isUnresolvedLegRiskError(error)) {
       const unresolved = await listUnresolvedLegRiskRows(target.id);
@@ -1756,10 +1757,18 @@ export async function POST(request: Request) {
         { status: 409, headers: SHADOW_NO_STORE }
       );
     }
-    throw error;
+    return bad(
+      error instanceof Error ? error.message : "تغییر وضعیت نشست کاغذی ناموفق بود.",
+      "paper_status_change_failed",
+      409
+    );
   }
+  // Lifecycle controls acknowledge the durable status write immediately.
+  // Rebuilding the full historical dashboard here made an otherwise successful
+  // pause look failed while the collector was running; the UI performs its own
+  // compact operator refresh after this acknowledgement.
   return new NextResponse(
-    JSON.stringify(envelope({ ...(await snapshot()), history: await listPaperSessions(20) })),
+    JSON.stringify(envelope({ action, session: updated, status: updated?.status ?? next })),
     { status: 200, headers: SHADOW_NO_STORE }
   );
 }

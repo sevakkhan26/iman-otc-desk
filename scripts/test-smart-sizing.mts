@@ -469,7 +469,8 @@ await test("a shallow top of book with a flattering price does not win", () => {
     assert.equal(tight.status, "BLOCKED");
   }
 
-  // An admin value cannot widen the Phase-3 hard 10bps accepted-depth prefix.
+  // A wider approved policy must widen accepted depth; there is no second,
+  // hidden 10 bps cap inside the sizing engine.
   const wide = size({
     ...trapBook,
     policies: policies({ max_slippage_bps: 5_000 }),
@@ -497,14 +498,22 @@ await test("a shallow top of book with a flattering price does not win", () => {
       `expected fail-closed block, got ${JSON.stringify(wide.blockers.map((b: Any) => b.code))}`
     );
   }
-  // Hard 10bps means the far wall is A-only and cannot enter execution candidates.
+  assert.equal(
+    wide.capacity!.buyDepth.depthMicros,
+    usdtToMicros(1_502),
+    "the configured 5,000bps policy admits the real wall depth"
+  );
+  assert.equal(wide.audit?.waterfall.acceptedDepthB.hardBps, 5_000);
   const pastTeaser = (wide.candidates as Array<Any>).filter(
     (c) =>
       (c.sizeUsdtMicros as number) > usdtToMicros(2) + 100 &&
       (c.buyVwapToman as number) > 0
   );
-  assert.equal(pastTeaser.length, 0, "out-of-policy wall never enters the execution set");
-  assert.ok((wide.audit?.waterfall.rawVisibleA.buyUsdtMicros ?? 0) > (wide.audit?.waterfall.acceptedDepthB.buyUsdtMicros ?? 0));
+  assert.ok(pastTeaser.length > 0, "approved wall depth enters the execution set");
+  assert.equal(
+    wide.audit?.waterfall.rawVisibleA.buyUsdtMicros,
+    wide.audit?.waterfall.acceptedDepthB.buyUsdtMicros
+  );
 });
 
 await test("executable depth stops at the admin's slippage ceiling", () => {
@@ -533,7 +542,7 @@ await test("the depth cap uses full slippage-bounded depth of the tighter leg", 
   const r = size({
     buySnapshot: snap("nobitex", [lv(190_000, 5_000)], ladder(192_000, 50, 16, 25))
   });
-  assert.equal(capOf(r, "depth_cap"), usdtToMicros(100), "hard 10bps accepts four levels");
+  assert.equal(capOf(r, "depth_cap"), usdtToMicros(400), "the 200bps policy accepts the full ladder");
   assert.equal(r.capacity!.depthCapSide, "buy");
   assert.equal(r.status, "SIZED");
   // Final size is limited by min of depth and balances — at least uses multi-level depth.

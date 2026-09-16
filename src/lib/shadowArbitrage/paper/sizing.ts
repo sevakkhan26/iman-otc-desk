@@ -418,7 +418,7 @@ export type SizingAudit = {
   /** Replayable A→F waterfall; raw visibility is never executable capacity. */
   waterfall: {
     rawVisibleA: { buyUsdtMicros: number | null; sellUsdtMicros: number | null };
-    acceptedDepthB: { buyUsdtMicros: number | null; sellUsdtMicros: number | null; hardBps: 10 };
+    acceptedDepthB: { buyUsdtMicros: number | null; sellUsdtMicros: number | null; hardBps: number };
     twoLegExecutableC: {
       capacityUsdtMicros: number | null;
       buyBalanceHeadroomUsdtMicros: number | null;
@@ -964,7 +964,10 @@ function buildAudit(partial: {
       acceptedDepthB: {
         buyUsdtMicros: partial.capacity?.buyDepth.depthMicros ?? null,
         sellUsdtMicros: partial.capacity?.sellDepth.depthMicros ?? null,
-        hardBps: 10
+        hardBps:
+          partial.capacity?.buyDepth.maxSlippageBps ??
+          partial.capacity?.sellDepth.maxSlippageBps ??
+          10
       },
       twoLegExecutableC: {
         capacityUsdtMicros: partial.capacity
@@ -1247,9 +1250,11 @@ export function computeRouteSize(input: SizingInput): SizingResult {
    * one, the study falls back to the full ladder and the result stays BLOCKED
    * on the missing key — the capacity is inspectable, the trade is not allowed.
    */
-  // Accepted-depth policy B is a hard 10 bps prefix. An admin policy may be
-  // tighter, never wider for this Phase-3 paper implementation.
-  const slippageCeilingBps = Math.min(10, maxSlippageBps ?? 10);
+  // Accepted depth follows the configured risk policy exactly. The old code
+  // silently added a second 10 bps cap here and discarded otherwise-approved
+  // executable depth. Missing policy still blocks execution above; the 10 bps
+  // fallback only keeps that blocked route's capacity study inspectable.
+  const slippageCeilingBps = maxSlippageBps ?? 10;
   const buyDepth = slippageBoundedDepth(buyAsks, "buy", slippageCeilingBps);
   const sellDepth = slippageBoundedDepth(sellBids, "sell", slippageCeilingBps);
 

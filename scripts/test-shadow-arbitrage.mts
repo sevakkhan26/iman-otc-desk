@@ -41,7 +41,10 @@ import {
   sizesFromQuote,
   type AdapterResult
 } from "../src/lib/shadowArbitrage/adapters/base.ts";
-import { crossCheckUnits } from "../src/lib/shadowArbitrage/adapters/index.ts";
+import {
+  crossCheckUnits,
+  withSourceCollectionDeadline
+} from "../src/lib/shadowArbitrage/adapters/index.ts";
 import { bucketIdempotencyKey } from "../src/lib/shadowArbitrage/collector.ts";
 import {
   FEE_REVERIFY_DAYS,
@@ -1033,6 +1036,25 @@ await test("per-source timeout aborts a hanging endpoint", async () => {
       assert.ok(Date.now() - started < 2_500, "must abort well before the server responds");
     }
   );
+});
+
+await test("one slow source cannot hold the whole collection cycle past its deadline", async () => {
+  const started = Date.now();
+  const never = new Promise<string>(() => undefined);
+  const result = await withSourceCollectionDeadline({
+    task: never,
+    timeoutMs: 40,
+    onTimeout: () => "timed_out"
+  });
+  assert.equal(result, "timed_out");
+  assert.ok(Date.now() - started < 500, "the cycle deadline, not internal retries, must win");
+
+  const fast = await withSourceCollectionDeadline({
+    task: Promise.resolve("fresh"),
+    timeoutMs: 40,
+    onTimeout: () => "timed_out"
+  });
+  assert.equal(fast, "fresh", "a healthy source still returns normally");
 });
 
 await test("rate-limited snapshot cannot be certified live", () => {

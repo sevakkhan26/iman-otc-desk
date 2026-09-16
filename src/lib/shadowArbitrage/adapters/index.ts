@@ -76,7 +76,8 @@ function refreshedCachedSnapshot(
 async function runOne(
   id: ShadowSourceId,
   eventDriven: boolean,
-  freshAfterMs?: number
+  freshAfterMs?: number,
+  collectionDeadlineMs?: number
 ): Promise<NormalizedSourceSnapshot> {
   const cfg = getSourceConfig(id);
   const receivedAt = new Date().toISOString();
@@ -102,6 +103,17 @@ async function runOne(
 
   try {
     const result = await FETCHERS[id](cfg);
+    // A transport can spend its timeout again in direct/fallback/proxy retries.
+    // Once the source's whole-cycle deadline has passed, do not let that late
+    // result refresh the stream fabric or masquerade as a current snapshot.
+    if (collectionDeadlineMs !== undefined && Date.now() >= collectionDeadlineMs) {
+      return unavailableSnapshot(
+        cfg,
+        new Date().toISOString(),
+        `مهلت کل جمع‌آوری منبع (${cfg.timeoutMs}ms) تمام شد`,
+        { latencyMs: Math.max(0, Date.now() - Date.parse(receivedAt)), timedOut: true }
+      );
+    }
     /*
      * No per-venue clamp lives here any more.
      *
@@ -138,6 +150,29 @@ async function runOne(
       });
     }
     return unavailableSnapshot(cfg, receivedAt, msg);
+  }
+}
+
+/**
+ * Bound a source's entire contribution to one collector cycle. Adapter-level
+ * retries may continue in the background, but they cannot hold every healthy
+ * venue hostage or enter the returned cycle after this deadline.
+ */
+export async function withSourceCollectionDeadline<T>(input: {
+  task: Promise<T>;
+  timeoutMs: number;
+  onTimeout: () => T;
+}): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      input.task,
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(input.onTimeout()), Math.max(1, input.timeoutMs));
+      })
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -191,7 +226,26 @@ export async function collectAllShadowSources(input?: {
   freshAfterMs?: number;
 }): Promise<NormalizedSourceSnapshot[]> {
   const settled = await Promise.allSettled(
-    SHADOW_SOURCES.map((s) => runOne(s.id, Boolean(input?.eventDriven), input?.freshAfterMs))
+    SHADOW_SOURCES.map((s) => {
+      const startedAtMs = Date.now();
+      const deadlineAtMs = startedAtMs + s.timeoutMs;
+      return withSourceCollectionDeadline({
+        task: runOne(
+          s.id,
+          Boolean(input?.eventDriven),
+          input?.freshAfterMs,
+          deadlineAtMs
+        ),
+        timeoutMs: s.timeoutMs,
+        onTimeout: () =>
+          unavailableSnapshot(
+            s,
+            new Date().toISOString(),
+            `مهلت کل جمع‌آوری منبع (${s.timeoutMs}ms) تمام شد`,
+            { latencyMs: Date.now() - startedAtMs, timedOut: true }
+          )
+      });
+    })
   );
   const results = settled.map((outcome, i) => {
     const cfg = SHADOW_SOURCES[i]!;

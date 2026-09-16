@@ -767,5 +767,19 @@ await test("new: delayed partial volume respects accepted-depth slippage ceiling
   const r=recheckDelayedExecutableBook(baseInput({delayedBuy:snap({sourceId:"tabdeal",receivedAtMs:T0+300,asks:[{priceToman:200000,amountUsdt:20},{priceToman:201000,amountUsdt:200}]}),config:{...baseInput().config,allowPartialFill:true,maxSlippageBps:10}}));
   assert.ok(r.ok);if(r.ok){assert.equal(r.fillSizeUsdt,20);assert.equal(r.plan.buyLeg.vwapToman,200000);}
 });
+await test("new: delayed recheck honors a wider configured slippage ceiling", () => {
+  const r=recheckDelayedExecutableBook(baseInput({
+    delayedBuy:snap({sourceId:"tabdeal",receivedAtMs:T0+300,asks:[
+      {priceToman:200000,amountUsdt:20},
+      {priceToman:200400,amountUsdt:200}
+    ]}),
+    config:{...baseInput().config,allowPartialFill:true,maxSlippageBps:25}
+  }));
+  assert.ok(r.ok);
+  if(r.ok){
+    assert.equal(r.fillSizeUsdt,50);
+    assert.ok(r.plan.buyLeg.vwapToman>200000);
+  }
+});
 console.log(`\nResult: ${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

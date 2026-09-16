@@ -298,9 +298,10 @@ function walkSide(
       return { ok: false, code: "delayed_book_invalid" };
     }
   }
-  // Preserve the sizing engine's accepted-depth ceiling at the new book.
+  // Preserve the sizing engine's configured accepted-depth ceiling at the new
+  // book. Do not re-introduce a hidden 10 bps cap during delayed validation.
   const best = levels[0].priceToman;
-  const ceiling = Math.min(10, Math.max(0,maxSlippageBps));
+  const ceiling = Math.max(0, maxSlippageBps);
   const accepted = levels.filter(l => (side === "buy" ? l.priceToman-best : best-l.priceToman) / best * 10000 <= ceiling + 1e-9);
   const walk = walkBook(accepted, usdtToMicros(sizeUsdt), side);
   if (walk.filledMicros <= 0 || walk.vwapToman === null || !(walk.vwapToman > 0)) {

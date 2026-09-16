@@ -175,6 +175,14 @@ await test("larger capital → larger safe max when depth allows", () => {
   );
 });
 
+await test("1B Paper capital is not trapped on the 20/25 USDT probe ladder", () => {
+  const r = sizeAtCapital(1_000_000_000, 5_000, 30);
+  assert.equal(r.status, "SIZED", JSON.stringify(r.blockers));
+  assert.ok(r.sizeUsdtMicros! > usdtToMicros(25));
+  assert.ok(r.maxFeasibleUsdtMicros! > usdtToMicros(25));
+  assert.ok(!BASELINE_FIXED_SIZES_USDT.includes(microsToUsdt(r.sizeUsdtMicros!) as never));
+});
+
 await test("shallow book stays small; deep book consumes multi-level VWAP", () => {
   const shallow = sizeAtCapital(10_000_000_000, 2, 5); // only 10 USDT total depth-ish
   const deep = sizeAtCapital(10_000_000_000, 2_000, 40);

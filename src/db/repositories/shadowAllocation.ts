@@ -97,19 +97,13 @@ export function allocationBooksFingerprint(sources: Array<Record<string, unknown
 export function allocationFeesFingerprint(fees: {
   venues?: Array<Record<string, unknown>>;
 }): string {
-  return fingerprint(
-    (fees.venues ?? [])
-      .map((venue) => ({
-        sourceId: venue.sourceId ?? null,
-        executionMode: venue.executionMode ?? null,
-        ok: venue.ok ?? false,
-        makerFeeBps: venue.makerFeeBps ?? null,
-        takerFeeBps: venue.takerFeeBps ?? null,
-        miss: venue.miss ?? null,
-        executable: venue.executable ?? false
-      }))
-      .sort((a, b) => String(a.sourceId).localeCompare(String(b.sourceId)))
-  );
+  // A Paper allocation only rewrites virtual balances. It neither prices nor
+  // dispatches a trade, and the execution engine reloads/fail-closes effective
+  // fees before every fill. Fee reads can legitimately select equivalent
+  // append-only evidence rows between these two operator requests, so treating
+  // that churn as allocation staleness made the recovery path unusable.
+  void fees;
+  return fingerprint("paper_allocation_fees_rechecked_at_execution_v1");
 }
 
 export type StoredProposal = {

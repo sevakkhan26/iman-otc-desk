@@ -90,6 +90,13 @@ await test("allocation fingerprints ignore quote ticks and fee-loader time", () 
     allocationFeesFingerprint(fee),
     allocationFeesFingerprint({ ...fee, nowMs: 999 } as typeof fee)
   );
+  assert.equal(
+    allocationFeesFingerprint(fee),
+    allocationFeesFingerprint({
+      ...fee,
+      venues: [{ ...fee.venues[0], evidenceKey: "e2", expiresAt: "2100-01-01" }]
+    })
+  );
   assert.notEqual(
     allocationFeesFingerprint(fee),
     allocationFeesFingerprint({ ...fee, venues: [{ ...fee.venues[0], takerFeeBps: 30 }] })

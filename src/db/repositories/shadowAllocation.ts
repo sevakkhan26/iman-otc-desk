@@ -96,31 +96,20 @@ export function allocationBooksFingerprint(sources: Array<Record<string, unknown
 
 export function allocationFeesFingerprint(fees: {
   venues?: Array<Record<string, unknown>>;
-  blocks?: Array<Record<string, unknown>>;
 }): string {
-  return fingerprint({
-    venues: (fees.venues ?? [])
+  return fingerprint(
+    (fees.venues ?? [])
       .map((venue) => ({
         sourceId: venue.sourceId ?? null,
         executionMode: venue.executionMode ?? null,
-        currentTierLabel: venue.currentTierLabel ?? null,
-        evidenceKey: venue.evidenceKey ?? null,
         ok: venue.ok ?? false,
         makerFeeBps: venue.makerFeeBps ?? null,
         takerFeeBps: venue.takerFeeBps ?? null,
-        expiresAt: venue.expiresAt ?? null,
         miss: venue.miss ?? null,
         executable: venue.executable ?? false
       }))
-      .sort((a, b) => String(a.sourceId).localeCompare(String(b.sourceId))),
-    blocks: (fees.blocks ?? [])
-      .map((block) => ({
-        sourceId: block.sourceId ?? null,
-        miss: block.miss ?? null,
-        detailFa: block.detailFa ?? null
-      }))
       .sort((a, b) => String(a.sourceId).localeCompare(String(b.sourceId)))
-  });
+  );
 }
 
 export type StoredProposal = {

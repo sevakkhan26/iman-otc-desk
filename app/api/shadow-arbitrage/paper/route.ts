@@ -73,6 +73,8 @@ import {
 import { venueCapacity, type QuoteCapacityInput } from "@/lib/shadowArbitrage/paper/liquidity";
 import {
   applyProposal,
+  allocationBooksFingerprint,
+  allocationFeesFingerprint,
   fingerprint,
   listDecisions,
   listProposals,
@@ -453,12 +455,11 @@ async function buildAllocationContext(): Promise<
     ),
     capacityBySource,
     fingerprints: {
-      books: fingerprint(
-        sources
-          .map((x) => ({ id: x.sourceId, bids: x.bookBids, asks: x.bookAsks }))
-          .sort((a, b) => a.id.localeCompare(b.id))
-      ),
-      fees: fingerprint(fees),
+      books: allocationBooksFingerprint(sources as unknown as Array<Record<string, unknown>>),
+      fees: allocationFeesFingerprint(fees as unknown as {
+        venues?: Array<Record<string, unknown>>;
+        blocks?: Array<Record<string, unknown>>;
+      }),
       accounts: fingerprint(accounts),
       policy: fingerprint({ applied: appliedPolicyCaps, unset: [...unsetPolicyCaps].sort() })
     },

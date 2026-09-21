@@ -44,6 +44,8 @@ await runMigrations();
 
 const {
   applyProposal,
+  allocationBooksFingerprint,
+  allocationFeesFingerprint,
   fingerprint,
   getProposal,
   listDecisions,
@@ -59,6 +61,40 @@ const NINE = [
 ];
 
 const FP = { books: "b1", fees: "f1", accounts: "a1", policy: "p1" };
+
+await test("allocation fingerprints ignore quote ticks and fee-loader time", () => {
+  const source = {
+    sourceId: "wallex",
+    marketModel: "ORDER_BOOK",
+    bookBids: [{ priceToman: 100, amountUsdt: 5 }],
+    bookAsks: [{ priceToman: 101, amountUsdt: 5 }],
+    errorReason: null,
+    degradedReason: null
+  };
+  assert.equal(
+    allocationBooksFingerprint([source]),
+    allocationBooksFingerprint([{ ...source, bookBids: [{ priceToman: 999, amountUsdt: 1 }] }])
+  );
+  assert.notEqual(
+    allocationBooksFingerprint([source]),
+    allocationBooksFingerprint([{ ...source, errorReason: "timeout" }])
+  );
+
+  const fee = {
+    nowMs: 1,
+    venues: [{ sourceId: "wallex", executionMode: "ORDER_BOOK", ok: true,
+      makerFeeBps: 20, takerFeeBps: 25, evidenceKey: "e1", expiresAt: "2099-01-01", executable: true }],
+    blocks: []
+  };
+  assert.equal(
+    allocationFeesFingerprint(fee),
+    allocationFeesFingerprint({ ...fee, nowMs: 999 } as typeof fee)
+  );
+  assert.notEqual(
+    allocationFeesFingerprint(fee),
+    allocationFeesFingerprint({ ...fee, venues: [{ ...fee.venues[0], takerFeeBps: 30 }] })
+  );
+});
 
 /** Nine rows that conserve exactly, with the toman side absorbing rounding. */
 function rows(total = TEN_B) {

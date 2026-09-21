@@ -72,6 +72,57 @@ export function fingerprint(value: unknown): string {
   return createHash("sha256").update(canonical ?? "null").digest("hex").slice(0, 32);
 }
 
+/**
+ * Allocation proposals span two HTTP requests.  Raw books and the fee loader's
+ * clock necessarily move between those requests, so hashing them verbatim made
+ * every proposal impossible to apply.  Allocation staleness only needs the
+ * execution universe and the effective fee evidence; price/depth is rechecked
+ * by the trading engine before any Paper fill.
+ */
+export function allocationBooksFingerprint(sources: Array<Record<string, unknown>>): string {
+  return fingerprint(
+    sources
+      .map((source) => ({
+        sourceId: source.sourceId ?? null,
+        marketModel: source.marketModel ?? null,
+        hasBids: Array.isArray(source.bookBids) && source.bookBids.length > 0,
+        hasAsks: Array.isArray(source.bookAsks) && source.bookAsks.length > 0,
+        errorReason: source.errorReason ?? null,
+        degradedReason: source.degradedReason ?? null
+      }))
+      .sort((a, b) => String(a.sourceId).localeCompare(String(b.sourceId)))
+  );
+}
+
+export function allocationFeesFingerprint(fees: {
+  venues?: Array<Record<string, unknown>>;
+  blocks?: Array<Record<string, unknown>>;
+}): string {
+  return fingerprint({
+    venues: (fees.venues ?? [])
+      .map((venue) => ({
+        sourceId: venue.sourceId ?? null,
+        executionMode: venue.executionMode ?? null,
+        currentTierLabel: venue.currentTierLabel ?? null,
+        evidenceKey: venue.evidenceKey ?? null,
+        ok: venue.ok ?? false,
+        makerFeeBps: venue.makerFeeBps ?? null,
+        takerFeeBps: venue.takerFeeBps ?? null,
+        expiresAt: venue.expiresAt ?? null,
+        miss: venue.miss ?? null,
+        executable: venue.executable ?? false
+      }))
+      .sort((a, b) => String(a.sourceId).localeCompare(String(b.sourceId))),
+    blocks: (fees.blocks ?? [])
+      .map((block) => ({
+        sourceId: block.sourceId ?? null,
+        miss: block.miss ?? null,
+        detailFa: block.detailFa ?? null
+      }))
+      .sort((a, b) => String(a.sourceId).localeCompare(String(b.sourceId)))
+  });
+}
+
 export type StoredProposal = {
   id: string;
   totalCapitalToman: number;
